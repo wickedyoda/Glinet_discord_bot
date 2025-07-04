@@ -23,6 +23,7 @@ This is a Discord bot that allows server admins to generate invite links that au
 ```
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 ## 📦 Features
 
 - **Auto-role for new users** via `on_member_join`
@@ -39,6 +40,8 @@ This is a Discord bot that allows server admins to generate invite links that au
 git clone https://github.com/youruser/discord-role-bot.git
 cd discord-role-bot
 =======
+=======
+>>>>>>> Stashed changes
 ## 🛠️ Slash Commands
 | Command        | Description                                     |
 |----------------|-------------------------------------------------|
@@ -85,5 +88,9 @@ https://discord.com/oauth2/authorize?client_id=1390519966050291734&permissions=2
 
 ---
 
+<<<<<<< Updated upstream
+Built with ❤️ for Discord role automation and access control.
+>>>>>>> Stashed changes
+=======
 Built with ❤️ for Discord role automation and access control.
 >>>>>>> Stashed changes
