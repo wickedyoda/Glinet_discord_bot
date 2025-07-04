@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  discord-bot:
+    build: .
+    container_name: discord_role_bot
+    env_file: .env
+    volumes:
+      - ./data:/app
+    restart: unless-stopped
