@@ -28,7 +28,7 @@ jobs:
         id: vars
         run: |
           echo "DATE_TAG=$(date +'%Y%m%d')" >> "$GITHUB_OUTPUT"
-          echo "IMAGE=ghcr.io/${{ github.repository_owner }}/discord_invite_bot" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=ghcr.io/${{ github.actor }}/discord_invite_bot" >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         uses: docker/build-push-action@v4
