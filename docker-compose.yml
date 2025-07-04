@@ -1,0 +1,9 @@
+services:
+  discord-bot:
+    build:
+      context: .  # 👈 must be the folder where bot.py is
+    container_name: discord_role_bot
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

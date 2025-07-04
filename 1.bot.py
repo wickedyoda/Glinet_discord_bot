@@ -1,6 +1,5 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 import os
 from dotenv import load_dotenv
 
@@ -13,9 +12,8 @@ INVITE_FILE = "permanent_invite.txt"
 
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True
+intents.message_content = True  # ✅ this is critical for reading `!commands`
 bot = commands.Bot(command_prefix='!', intents=intents)
-tree = bot.tree
 
 invite_code = None
 previous_uses = {}
@@ -43,25 +41,23 @@ def load_invite():
 @bot.event
 async def on_ready():
     print(f"Logged in as {bot.user.name}")
-    guild = discord.Object(id=GUILD_ID)
-    await tree.sync(guild=guild)
-    print("Slash commands synced")
-    full_guild = bot.get_guild(GUILD_ID)
-    invites = await full_guild.invites()
+    guild = bot.get_guild(GUILD_ID)
+    invites = await guild.invites()
     global previous_uses
     previous_uses = {invite.code: invite.uses for invite in invites}
 
-@tree.command(name="setaccessrole", description="Set the role to assign via invite", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(role="The role to assign")
-async def setaccessrole(interaction: discord.Interaction, role: discord.Role):
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setaccessrole(ctx, role: discord.Role):
     save_role_id(role.id)
-    await interaction.response.send_message(f"Access role set to {role.name}.", ephemeral=True)
+    await ctx.send(f"Access role set to {role.name}.")
 
-@tree.command(name="generateinvite", description="Generate a permanent invite link", guild=discord.Object(id=GUILD_ID))
-async def generateinvite(interaction: discord.Interaction):
-    invite = await interaction.channel.create_invite(max_age=0, max_uses=0, unique=True)
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def generateinvite(ctx):
+    invite = await ctx.channel.create_invite(max_age=0, max_uses=0, unique=True)
     save_invite(invite)
-    await interaction.response.send_message(f"Permanent invite created: {invite.url}", ephemeral=True)
+    await ctx.send(f"Permanent invite created: {invite.url}")
 
 @bot.event
 async def on_member_join(member):

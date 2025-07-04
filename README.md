@@ -22,8 +22,6 @@ This is a Discord bot that allows server admins to generate invite links that au
 └── permanent_invite.txt    # Saved invite code (auto-generated)
 ```
 
-<<<<<<< Updated upstream
-<<<<<<< Updated upstream
 ## 📦 Features
 
 - **Auto-role for new users** via `on_member_join`
@@ -39,9 +37,7 @@ This is a Discord bot that allows server admins to generate invite links that au
 ```bash
 git clone https://github.com/youruser/discord-role-bot.git
 cd discord-role-bot
-=======
-=======
->>>>>>> Stashed changes
+
 ## 🛠️ Slash Commands
 | Command        | Description                                     |
 |----------------|-------------------------------------------------|
@@ -88,9 +84,39 @@ https://discord.com/oauth2/authorize?client_id=1390519966050291734&permissions=2
 
 ---
 
-<<<<<<< Updated upstream
-Built with ❤️ for Discord role automation and access control.
->>>>>>> Stashed changes
 =======
 Built with ❤️ for Discord role automation and access control.
->>>>>>> Stashed changes
+
+---
+
+## 🧪 Deployment Instructions
+
+### 1. Setup
+
+Create a `.env` file in the root directory:
+
+```env
+DISCORD_TOKEN=your_discord_token_here
+GUILD_ID=your_discord_guild_id
+```
+
+### 2. Build and Run with Docker
+
+```bash
+docker build -t discord-role-bot .
+docker run --env-file .env -v $(pwd)/data:/app --name rolebot discord-role-bot
+```
+
+### 3. Or Use Docker Compose
+
+```bash
+docker compose up -d
+```
+
+### 4. Usage
+
+- `!setaccessrole @RoleName` — Sets the role to assign
+- `!generateinvite` — Generates a permanent invite link
+
+Users (new or existing) who use the invite will receive the set role.
+
