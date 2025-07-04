@@ -42,10 +42,10 @@ def load_invite():
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user.name}")
+    print(f"✅ Logged in as {bot.user.name}")
     guild = discord.Object(id=GUILD_ID)
-    await tree.sync(guild=guild)
-    print("Slash commands synced")
+    synced = await tree.sync(guild=guild)
+    print(f"✅ Slash commands synced to {len(synced)} command(s): {[cmd.name for cmd in synced]}")
     full_guild = bot.get_guild(GUILD_ID)
     invites = await full_guild.invites()
     global previous_uses
@@ -55,13 +55,25 @@ async def on_ready():
 @app_commands.describe(role="The role to assign")
 async def setaccessrole(interaction: discord.Interaction, role: discord.Role):
     save_role_id(role.id)
-    await interaction.response.send_message(f"Access role set to {role.name}.", ephemeral=True)
+    await interaction.response.send_message(f"🔐 Access role set to **{role.name}**.", ephemeral=True)
 
 @tree.command(name="generateinvite", description="Generate a permanent invite link", guild=discord.Object(id=GUILD_ID))
 async def generateinvite(interaction: discord.Interaction):
     invite = await interaction.channel.create_invite(max_age=0, max_uses=0, unique=True)
     save_invite(invite)
-    await interaction.response.send_message(f"Permanent invite created: {invite.url}", ephemeral=True)
+    await interaction.response.send_message(f"🔗 Permanent invite created: {invite.url}", ephemeral=True)
+
+@tree.command(name="getaccess", description="Assign yourself the protected role", guild=discord.Object(id=GUILD_ID))
+async def getaccess(interaction: discord.Interaction):
+    try:
+        with open(ROLE_FILE, "r") as f:
+            role_id = int(f.read().strip())
+        role = interaction.guild.get_role(role_id)
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message("❌ Could not assign role. Contact an admin.", ephemeral=True)
+        print("Error in /getaccess:", e)
 
 @bot.event
 async def on_member_join(member):
@@ -70,7 +82,7 @@ async def on_member_join(member):
         role = member.guild.get_role(role_id)
         if role:
             await member.add_roles(role)
-            print(f"Assigned role to new member {member.name}")
+            print(f"🎉 Assigned role to new member {member.name}")
 
 @bot.event
 async def on_invite_create(invite):
@@ -91,7 +103,7 @@ async def on_member_update(before, after):
         if invite.code in previous_uses and invite.uses > previous_uses[invite.code]:
             if target_role not in after.roles:
                 await after.add_roles(target_role)
-                print(f"Assigned role to existing member {after.name} via invite")
+                print(f"✨ Assigned role to existing member {after.name} via invite")
         previous_uses[invite.code] = invite.uses
 
 bot.run(TOKEN)
