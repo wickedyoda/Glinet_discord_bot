@@ -94,4 +94,16 @@ async def on_member_update(before, after):
                 print(f"Assigned role to existing member {after.name} via invite")
         previous_uses[invite.code] = invite.uses
 
+@tree.command(name="getaccess", description="Assign yourself the protected role")
+async def getaccess(interaction: discord.Interaction):
+    try:
+        with open(ROLE_FILE, "r") as f:
+            role_id = int(f.read().strip())
+        role = interaction.guild.get_role(role_id)
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message("❌ Could not assign role. Contact an admin.", ephemeral=True)
+        print("Error in /getaccess:", e)
+
 bot.run(TOKEN)
