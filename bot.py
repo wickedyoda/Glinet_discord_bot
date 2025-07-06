@@ -19,6 +19,7 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
 
+
 def generate_code():
     while True:
         code = ""
@@ -37,9 +38,11 @@ def generate_code():
         if len(code) == 6:
             return code
 
+
 def save_role_code(code, role_id):
     with open(CODES_FILE, 'a') as f:
         f.write(f"{code}:{role_id}\n")
+
 
 def get_role_id_by_code(code):
     if not os.path.exists(CODES_FILE):
@@ -50,16 +53,22 @@ def get_role_id_by_code(code):
                 return int(line.strip().split(":")[1])
     return None
 
+
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user.name}")
+    print(f"Logged in as {bot.user} (ID: {bot.user.id})")
     guild = discord.Object(id=GUILD_ID)
-    await tree.sync(guild=guild)
-    print("Slash commands synced")
+    try:
+        synced = await tree.sync(guild=guild)
+        print(f"✅ Slash commands synced to guild {GUILD_ID}. Total: {len(synced)}")
+    except Exception as e:
+        print("❌ Failed to sync slash commands:", e)
+
 
 @tree.command(name="submitrole", description="Submit a role for invite/code linking")
 async def submitrole(interaction: discord.Interaction):
-    if not any(role.name == "Employee" for role in interaction.user.roles):
+    allowed_roles = ["Employee", "Admin", "Gl.iNet Moderators"]
+    if not any(role.name in allowed_roles for role in interaction.user.roles):
         await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
         return
 
@@ -82,6 +91,7 @@ async def submitrole(interaction: discord.Interaction):
         await interaction.followup.send("❌ Something went wrong.", ephemeral=True)
         print("Error in /submitrole:", e)
 
+
 @tree.command(name="enter_role", description="Enter a 6-digit code to receive a role")
 async def enter_role(interaction: discord.Interaction, code: str):
     role_id = get_role_id_by_code(code)
@@ -95,6 +105,7 @@ async def enter_role(interaction: discord.Interaction, code: str):
     await interaction.user.add_roles(role)
     await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
 
+
 @tree.command(name="getaccess", description="Assign yourself the protected role")
 async def getaccess(interaction: discord.Interaction):
     try:
@@ -106,5 +117,6 @@ async def getaccess(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message("❌ Could not assign role. Contact an admin.", ephemeral=True)
         print("Error in /getaccess:", e)
+
 
 bot.run(TOKEN)
