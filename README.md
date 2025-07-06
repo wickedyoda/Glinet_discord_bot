@@ -154,7 +154,7 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for a history of updates and improvements.
 
 Created and maintained by [WickedYoda](https://wickedyoda.com)
 
-For advanced support, join the [GL.iNet Discord](https://discord.gg/5tH6dGZQEp)
+For advanced support, join WickedYoda's Discord https://discord.gg/m6UjX6UhKe
 =======
 - Slash command `/getaccess`:
   - Assigns a single configured role to the user.
