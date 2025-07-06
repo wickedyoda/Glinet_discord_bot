@@ -1,122 +1,140 @@
-# 🔗 Discord Invite Role Bot
+# 🔐 Discord Invite Role Bot
 
-## 🎯 Overview
-This is a Discord bot that allows server admins to generate invite links that automatically assign a role to users when they join the server. The bot is designed to work both for new members and existing members who need access to protected channels.
+This bot allows select Discord users to create **role-bound invite links** and **6-digit access codes** that assign roles automatically to new or existing users. The system supports slash commands and permission control via role checks.
 
-## 💡 Key Features
-- Slash command `/setrole` to assign the role to use.
-- Slash command `/createinvite` to generate a permanent invite link.
-- Slash command `/getaccess` for existing users to claim the access role.
-- Automatically assigns role to users who join using the permanent invite.
-- Persistent storage of the selected role and invite link.
-
-## 🧱 Project Structure
-```
-.
-├── bot.py                  # Main bot logic
-├── Dockerfile              # Docker image setup
-├── docker-compose.yml      # Container orchestration
-├── requirements.txt        # Python dependencies
-├── .env                    # Token and guild config
-├── access_role.txt         # Saved role ID (auto-generated)
-└── permanent_invite.txt    # Saved invite code (auto-generated)
-```
+---
 
 ## 📦 Features
 
-- **Auto-role for new users** via `on_member_join`
-- **Manual command** for current members (`!grantaccess`)
-- **Secure and portable** deployment with Docker
+- `/submitrole`: Submit a role, get an invite and access code.
+- `/enter_role <code>`: Enter a 6-digit code to receive the corresponding role.
+- `/getaccess`: Public command to assign a preconfigured access role.
+- Only users with the **Employee** role can run role-submitting commands.
+- **Admins** and **Gl.iNet Moderators** get full access to manage all bot commands.
+- Invite-based role assignment works for new members who join via generated links.
 
 ---
 
-## 📁 Setup Instructions
+## 🧠 How It Works
 
-### 1. Clone and configure
+### ➤ 1. Role Submission Flow
 
-```bash
-git clone https://github.com/youruser/discord-role-bot.git
-cd discord-role-bot
+An authorized user types `/submitrole`.  
+The bot will:
+- Ask the user to mention a role.
+- Generate:
+  - A **permanent invite link**
+  - A **6-digit access code** (no more than 2 identical digits in a row)
+- Log the invite/code → role association.
+- Return the invite and code to the user privately.
 
-## 🛠️ Slash Commands
-| Command        | Description                                     |
-|----------------|-------------------------------------------------|
-| `/setrole`     | Admins use to define the role to assign         |
-| `/createinvite`| Generates a no-expire invite for access         |
-| `/getaccess`   | Assigns role to user if they already joined     |
+### ➤ 2. Role Access by Code
 
-## 🐳 Running via Docker
-### 1. Create a `.env` file:
-```env
-DISCORD_TOKEN=your_bot_token
-GUILD_ID=your_server_id
+Any member can type:
 ```
-
-### 2. Build and run:
-```bash
-docker compose build
-docker compose up
+/enter_role <6-digit-code>
 ```
+The bot checks if the code is valid and assigns the associated role.
 
-## 🔐 Required Bot Permissions
-Make sure your bot has the following permissions in your Discord server:
-- Manage Roles
-- Manage Channels
-- Create Invite
-- Read Messages / View Channels
-- Send Messages
-- Use Slash Commands
+### ➤ 3. Automatic Role Assignment via Invite
 
-## ⚙️ Intents Configuration
-In the [Discord Developer Portal](https://discord.com/developers/applications/), enable:
-- **Server Members Intent**
-- **Message Content Intent** (optional warning may appear)
+If someone joins the server via a generated invite, the bot will automatically assign the associated role.
 
-## 🔗 Bot Invite URL
-Use this URL to add the bot to your server:
-```
-https://discord.com/oauth2/authorize?client_id=1390519966050291734&permissions=268512257&integration_type=0&scope=bot+applications.commands
-```
+### ➤ 4. Manual Role Access
 
-## 🧪 Testing Behavior
-- New members who join using the invite get the role automatically.
-- Existing members use `/getaccess` to get the role.
+All users can run `/getaccess` to receive the default access role defined in `access_role.txt`.
 
 ---
 
-=======
-Built with ❤️ for Discord role automation and access control.
+## 🛠 Project Structure
+
+```
+.
+├── bot.py               # Main bot script
+├── Dockerfile           # Image build setup
+├── docker-compose.yml   # Deployment stack
+├── .gitignore           # Ignore secrets and DS_Store
+├── access_role.txt      # (Generated) Default role ID for /getaccess
+├── role_codes.txt       # (Generated) Stores role-code pairs
+├── permanent_invite.txt # (Generated) Optional saved invite link
+└── README.md            # You're reading it!
+```
 
 ---
 
-## 🧪 Deployment Instructions
+## 🚀 Running the Bot via Docker Compose
 
-### 1. Setup
+**Docker Compose (Pulls from GitHub Container Registry):**
+```yaml
+version: "3.9"
 
-Create a `.env` file in the root directory:
-
-```env
-DISCORD_TOKEN=your_discord_token_here
-GUILD_ID=your_discord_guild_id
+services:
+  discord_role_bot:
+    image: ghcr.io/wickedyoda/discord_invite_bot:latest
+    container_name: discord_role_bot
+    restart: unless-stopped
+    environment:
+      - DISCORD_TOKEN=your_discord_token
+      - GUILD_ID=your_guild_id
+    volumes:
+      - ./data:/app
 ```
 
-### 2. Build and Run with Docker
+> 📁 Create a `data/` folder to persist files like `access_role.txt` and `role_codes.txt`.
 
+To start:
 ```bash
-docker build -t discord-role-bot .
-docker run --env-file .env -v $(pwd)/data:/app --name rolebot discord-role-bot
-```
-
-### 3. Or Use Docker Compose
-
-```bash
+docker compose pull
 docker compose up -d
 ```
 
-### 4. Usage
+To rebuild:
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
 
-- `!setaccessrole @RoleName` — Sets the role to assign
-- `!generateinvite` — Generates a permanent invite link
+---
 
-Users (new or existing) who use the invite will receive the set role.
+## 🔐 Role Permissions
 
+| Command        | Who Can Use                     |
+|----------------|----------------------------------|
+| `/submitrole`  | Employee, Admins, Gl.iNet Mods  |
+| `/generateinvite` | Admins and Gl.iNet Mods     |
+| `/getaccess`   | Any member                      |
+| `/enter_role`  | Any member                      |
+
+---
+
+## 🌐 Discord OAuth2 Invite Link
+
+Use this link to add the bot to your server:
+
+[👉 Add to Server](https://discord.com/oauth2/authorize?client_id=1390519966050291734&integration_type=0&scope=applications.commands+bot)
+
+Make sure to:
+- Enable **Message Content** and **Server Members Intent**.
+- Grant it permission to **manage roles** and **create invites**.
+
+---
+
+## 🔒 Security Notes
+
+- The `.env` file containing `DISCORD_TOKEN` should **never be committed**.
+- It is excluded via `.gitignore`.
+- Use secrets when deploying via GitHub Actions.
+
+---
+
+## 🧾 Change History
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for a history of updates and improvements.
+
+---
+
+## 🧑‍💻 Maintainers
+
+Created and maintained by [WickedYoda](https://wickedyoda.com)
+
+For advanced support, join the [GL.iNet Discord](https://discord.gg/5tH6dGZQEp)
