@@ -1,10 +1,27 @@
+
 # 🔐 Discord Invite Role Bot
 
 This bot allows select Discord users to create **role-bound invite links** and **6-digit access codes** that assign roles automatically to new or existing users. The system supports slash commands and permission control via role checks.
 
 ---
+=======
+# Discord Invite Role Bot
 
-## 📦 Features
+This bot manages invite-based and code-based role assignments within a Discord server. Designed to run in Docker and pull its image from GitHub Container Registry.
+
+## 💡 Features
+
+- Slash command `/submitrole`:
+  - Asks the user for a role.
+  - Generates a 6-digit code (with no more than 2 consecutive digits).
+  - Creates a permanent invite link.
+  - Assigns the submitted role to:
+    - Users joining through the invite.
+    - Existing users who submit the generated code via `/enter_role`.
+
+
+- Slash command `/enter_role <code>`:
+  - Allows members to claim a role by entering the 6-digit code.
 
 - `/submitrole`: Submit a role, get an invite and access code.
 - `/enter_role <code>`: Enter a 6-digit code to receive the corresponding role.
@@ -138,3 +155,15 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for a history of updates and improvements.
 Created and maintained by [WickedYoda](https://wickedyoda.com)
 
 For advanced support, join the [GL.iNet Discord](https://discord.gg/5tH6dGZQEp)
+=======
+- Slash command `/getaccess`:
+  - Assigns a single configured role to the user.
+  - Usable by all members.
+
+## 🛡️ Role Permissions
+
+- Only members with the `Employee` role can use `/submitrole`.
+- All members can use `/getaccess` and `/enter_role`.
+- You can expand access to more roles like `Admin` or `GL.iNet Moderators` by adjusting role checks in `bot.py`.
+
+---
