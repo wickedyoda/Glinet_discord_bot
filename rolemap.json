@@ -1,0 +1,11 @@
+{
+  "entries": [
+    {
+      "role_id": 1234567890,
+      "role_name": "Protected Role",
+      "invite_link": "https://discord.gg/example",
+      "code": "837462",
+      "created_at": "2025-07-05T20:34:52.008916"
+    }
+  ]
+}
