@@ -2,105 +2,109 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import os
-import json
-import random
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
-ROLEMAP_FILE = "rolemap.json"
+ROLE_FILE = "access_role.txt"
+INVITE_FILE = "permanent_invite.txt"
+CODES_FILE = "role_codes.txt"
 
 intents = discord.Intents.default()
 intents.members = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+intents.message_content = True
+bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
-
-# Load/save role-code-invite mappings
-def load_rolemap():
-    if not os.path.exists(ROLEMAP_FILE):
-        return {}
-    with open(ROLEMAP_FILE, "r") as f:
-        return json.load(f)
-
-def save_rolemap(data):
-    with open(ROLEMAP_FILE, "w") as f:
-        json.dump(data, f, indent=2)
 
 def generate_code():
     while True:
-        code = ''.join(random.choices("0123456789", k=6))
-        if all(code[i] != code[i+1] or code[i] != code[i+2] for i in range(4)):  # no more than 2 in a row
+        code = ""
+        last_digit = None
+        streak = 1
+        for _ in range(6):
+            digit = str(random.randint(0, 9))
+            if digit == last_digit:
+                streak += 1
+            else:
+                streak = 1
+            if streak > 2:
+                break
+            code += digit
+            last_digit = digit
+        if len(code) == 6:
             return code
+
+def save_role_code(code, role_id):
+    with open(CODES_FILE, 'a') as f:
+        f.write(f"{code}:{role_id}\n")
+
+def get_role_id_by_code(code):
+    if not os.path.exists(CODES_FILE):
+        return None
+    with open(CODES_FILE, 'r') as f:
+        for line in f:
+            if line.startswith(code + ":"):
+                return int(line.strip().split(":")[1])
+    return None
 
 @bot.event
 async def on_ready():
-    await tree.sync(guild=discord.Object(id=GUILD_ID))
-    print(f"✅ Bot is ready as {bot.user.name}")
+    print(f"Logged in as {bot.user.name}")
+    guild = discord.Object(id=GUILD_ID)
+    await tree.sync(guild=guild)
+    print("Slash commands synced")
 
-@tree.command(name="submitrole", description="Begin protected role invite setup", guild=discord.Object(id=GUILD_ID))
+@tree.command(name="submitrole", description="Submit a role for invite/code linking")
 async def submitrole(interaction: discord.Interaction):
-    await interaction.response.send_message("🛠 Please mention the role you'd like to protect access to.", ephemeral=True)
+    if not any(role.name == "Employee" for role in interaction.user.roles):
+        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+        return
 
-    def check(msg):
-        return msg.author.id == interaction.user.id and msg.channel == interaction.channel and len(msg.role_mentions) > 0
+    await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
+
+    def check(m):
+        return m.author == interaction.user and m.channel == interaction.channel
 
     try:
-        msg = await bot.wait_for("message", timeout=60.0, check=check)
+        msg = await bot.wait_for('message', timeout=30.0, check=check)
+        if not msg.role_mentions:
+            await interaction.followup.send("❌ No role mentioned.", ephemeral=True)
+            return
         role = msg.role_mentions[0]
-
-        invite = await msg.channel.create_invite(max_age=0, max_uses=0, unique=True)
+        invite = await interaction.channel.create_invite(max_age=0, max_uses=0, unique=True)
         code = generate_code()
-
-        rolemap = load_rolemap()
-        rolemap[code] = {
-            "role_id": role.id,
-            "invite": invite.code
-        }
-        save_rolemap(rolemap)
-
-        await interaction.followup.send(
-            f"✅ Invite created: {invite.url}\n🔢 6-digit code for existing members: `{code}`\n\n"
-            f"New members who use the invite will be assigned **{role.name}**.\n"
-            f"Existing members can use `/enter_role` and submit the code.",
-            ephemeral=True
-        )
-
+        save_role_code(code, role.id)
+        await interaction.followup.send(f"✅ Invite link: {invite.url}\n6-digit code: `{code}`", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send("❌ Timeout or error occurred. Please try again.", ephemeral=True)
-        print(f"Error in /submitrole: {e}")
+        await interaction.followup.send("❌ Something went wrong.", ephemeral=True)
+        print("Error in /submitrole:", e)
 
-@bot.event
-async def on_member_join(member):
-    rolemap = load_rolemap()
-    invites = await member.guild.invites()
-    used = None
-
-    for invite in invites:
-        if invite.uses > 0:
-            for code, data in rolemap.items():
-                if data["invite"] == invite.code:
-                    role = member.guild.get_role(data["role_id"])
-                    if role:
-                        await member.add_roles(role)
-                        print(f"Assigned {role.name} to {member.name}")
-                        return
-
-@tree.command(name="enter_role", description="Submit your 6-digit access code", guild=discord.Object(id=GUILD_ID))
-@app_commands.describe(code="6-digit code given to you")
+@tree.command(name="enter_role", description="Enter a 6-digit code to receive a role")
 async def enter_role(interaction: discord.Interaction, code: str):
-    rolemap = load_rolemap()
-    data = rolemap.get(code)
+    role_id = get_role_id_by_code(code)
+    if not role_id:
+        await interaction.response.send_message("❌ Invalid code.", ephemeral=True)
+        return
+    role = interaction.guild.get_role(role_id)
+    if not role:
+        await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+        return
+    await interaction.user.add_roles(role)
+    await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
 
-    if data:
-        role = interaction.guild.get_role(data["role_id"])
-        if role:
-            await interaction.user.add_roles(role)
-            await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
-        else:
-            await interaction.response.send_message("❌ Role no longer exists.", ephemeral=True)
-    else:
-        await interaction.response.send_message("❌ Invalid or expired code.", ephemeral=True)
+@tree.command(name="getaccess", description="Assign yourself the protected role")
+async def getaccess(interaction: discord.Interaction):
+    try:
+        with open(ROLE_FILE, "r") as f:
+            role_id = int(f.read().strip())
+        role = interaction.guild.get_role(role_id)
+        await interaction.user.add_roles(role)
+        await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
+    except Exception as e:
+        await interaction.response.send_message("❌ Could not assign role. Contact an admin.", ephemeral=True)
+        print("Error in /getaccess:", e)
 
 bot.run(TOKEN)

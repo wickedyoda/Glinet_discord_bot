@@ -183,3 +183,4 @@ cython_debug/
 .DS_Store
 .env
 
+.DS_Store
