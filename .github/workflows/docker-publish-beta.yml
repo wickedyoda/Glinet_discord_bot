@@ -1,4 +1,6 @@
 name: Build and Publish Docker image (beta)
+# Triggers on pushes to beta branch or manual dispatch
+=======
 
 on:
   push:
