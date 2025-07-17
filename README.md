@@ -4,10 +4,6 @@
 This bot allows select Discord users to create **role-bound invite links** and **6-digit access codes** that assign roles automatically to new or existing users. The system supports slash commands and permission control via role checks.
 
 ---
-=======
-# Discord Invite Role Bot
-
-This bot manages invite-based and code-based role assignments within a Discord server. Designed to run in Docker and pull its image from GitHub Container Registry.
 
 ## 💡 Features
 
@@ -19,12 +15,11 @@ This bot manages invite-based and code-based role assignments within a Discord s
     - Users joining through the invite.
     - Existing users who submit the generated code via `/enter_role`.
 
-
-- Slash command `/enter_role <code>`:
-  - Allows members to claim a role by entering the 6-digit code.
+- Slash command `/enter_role`:
+  - Prompts the user for a 6-digit code and assigns the matching role.
 
 - `/submitrole`: Submit a role, get an invite and access code.
-- `/enter_role <code>`: Enter a 6-digit code to receive the corresponding role.
+- `/enter_role`: Enter the 6-digit code to receive the corresponding role.
 - `/getaccess`: Public command to assign a preconfigured access role.
 - Only users with the **Employee** role can run role-submitting commands.
 - **Admins** and **Gl.iNet Moderators** get full access to manage all bot commands.
@@ -47,11 +42,9 @@ The bot will:
 
 ### ➤ 2. Role Access by Code
 
-Any member can type:
-```
-/enter_role <6-digit-code>
-```
-The bot checks if the code is valid and assigns the associated role.
+Any member can type `/enter_role`. The bot will prompt them privately for the
+6-digit code. After they submit it, the bot assigns the associated role if the
+code is valid.
 
 ### ➤ 3. Automatic Role Assignment via Invite
 
@@ -155,7 +148,6 @@ See [`CHANGELOG.md`](./CHANGELOG.md) for a history of updates and improvements.
 Created and maintained by [WickedYoda](https://wickedyoda.com)
 
 For advanced support, join WickedYoda's Discord https://discord.gg/m6UjX6UhKe
-=======
 - Slash command `/getaccess`:
   - Assigns a single configured role to the user.
   - Usable by all members.
