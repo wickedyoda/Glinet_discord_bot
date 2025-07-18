@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 - Implement admin-only invite cleanup feature (planned)
 - Add web dashboard for role/code management (planned)
+- `/enter_role` now opens a private modal for the 6-digit code
 
 ---
 
