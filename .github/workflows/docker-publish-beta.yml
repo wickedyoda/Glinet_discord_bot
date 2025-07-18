@@ -1,4 +1,4 @@
-name: Build and Publish Docker image (beta)
+name: (beta) Build and Publish Docker image 
 
 on:
   workflow_dispatch:  # Manual trigger from the GitHub UI
