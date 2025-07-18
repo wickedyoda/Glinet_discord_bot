@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
@@ -29,6 +32,12 @@ jobs:
         run: |
           echo "DATE_TAG=$(date +'%Y%m%d')" >> "$GITHUB_OUTPUT"
           echo "IMAGE=ghcr.io/${{ github.actor }}/discord_invite_bot" >> "$GITHUB_OUTPUT"
+
+      - name: Print PR info
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "🔖 PR Title: ${{ github.event.pull_request.title }}"
+          echo "📝 PR Body: ${{ github.event.pull_request.body }}"
 
       - name: Build and push image
         uses: docker/build-push-action@v4
