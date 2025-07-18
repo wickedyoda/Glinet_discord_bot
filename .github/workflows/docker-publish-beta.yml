@@ -3,6 +3,7 @@ name: Build and Publish Docker image (beta)
 beta
 
 on:
+  workflow_dispatch:  # Manual trigger from the GitHub UI
   push:
     branches:
       - beta
