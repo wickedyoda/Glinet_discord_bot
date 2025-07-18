@@ -111,14 +111,12 @@ class CodeEntryModal(discord.ui.Modal):
         await interaction.user.add_roles(role)
         await interaction.response.send_message(
             f"✅ You've been given the **{role.name}** role!", ephemeral=True
+        )
+
 @tree.command(
     name="enter_role",
     description="Enter a 6-digit code to receive a role",
     guild=discord.Object(id=GUILD_ID),
-)
-async def enter_role(interaction: discord.Interaction):
-    modal = CodeEntryModal()
-    await interaction.response.send_modal(modal)
 )
 async def enter_role(interaction: discord.Interaction):
     await interaction.response.send_modal(CodeEntryModal())
