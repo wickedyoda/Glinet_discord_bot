@@ -91,8 +91,11 @@ async def submitrole(interaction: discord.Interaction):
         print("Error in /submitrole:", e)
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
 
-class CodeEntryModal(discord.ui.Modal, title="Enter Role Code"):
-    code = discord.ui.TextInput(label="6-digit code", min_length=6, max_length=6)
+class CodeEntryModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Enter Role Code")
+        self.code = discord.ui.TextInput(label="6-digit code", min_length=6, max_length=6)
+        self.add_item(self.code)
 
     async def on_submit(self, interaction: discord.Interaction):
         role_id = get_role_id_by_code(self.code.value.strip())
@@ -108,13 +111,14 @@ class CodeEntryModal(discord.ui.Modal, title="Enter Role Code"):
         await interaction.user.add_roles(role)
         await interaction.response.send_message(
             f"✅ You've been given the **{role.name}** role!", ephemeral=True
-        )
-
-
 @tree.command(
     name="enter_role",
     description="Enter a 6-digit code to receive a role",
     guild=discord.Object(id=GUILD_ID),
+)
+async def enter_role(interaction: discord.Interaction):
+    modal = CodeEntryModal()
+    await interaction.response.send_modal(modal)
 )
 async def enter_role(interaction: discord.Interaction):
     await interaction.response.send_modal(CodeEntryModal())
