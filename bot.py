@@ -44,13 +44,6 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
 
 
-# Runtime caches for invite tracking
-invite_roles = load_invite_roles()
-invite_uses = {}
-
-beta
-
-beta
 def generate_code():
     while True:
         code = ""
