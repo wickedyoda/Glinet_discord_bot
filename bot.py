@@ -188,7 +188,7 @@ async def submitrole(interaction: discord.Interaction):
         await interaction.followup.send(
             f"✅ Invite link: {invite.url}\n🔢 6-digit code: `{code}`", ephemeral=True
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Error in /submitrole")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
 

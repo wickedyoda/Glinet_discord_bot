@@ -128,7 +128,8 @@ Use this link to add the bot to your server:
 
 Make sure to:
 - Enable **Message Content** and **Server Members Intent**.
-- Grant it permission to **manage roles** and **create invites**.
+- Grant it permission to **manage roles**, **create invites**,
+  and **manage server** so invite tracking works.
 
 ---
 
