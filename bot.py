@@ -1,17 +1,40 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+import logging
 import os
 from dotenv import load_dotenv
 import random
 
 load_dotenv()
 
+# Directory to persist data files. This folder is mounted as a Docker volume
+# so codes and invites survive container rebuilds.
+DATA_DIR = os.getenv("DATA_DIR", "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# Set up logging to console and persistent file
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+logger = logging.getLogger("invite_bot")
+logger.setLevel(LOG_LEVEL)
+formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+logger.addHandler(console_handler)
+
+file_handler = logging.FileHandler(os.path.join(DATA_DIR, "bot.log"))
+file_handler.setFormatter(formatter)
+logger.addHandler(file_handler)
+
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
-ROLE_FILE = "access_role.txt"
-INVITE_FILE = "permanent_invite.txt"
-CODES_FILE = "role_codes.txt"
+GENERAL_CHANNEL_ID = int(os.getenv("GENERAL_CHANNEL_ID", "0"))
+
+ROLE_FILE = os.path.join(DATA_DIR, "access_role.txt")
+INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
+CODES_FILE = os.path.join(DATA_DIR, "role_codes.txt")
+INVITE_ROLE_FILE = os.path.join(DATA_DIR, "invite_roles.json")
 
 intents = discord.Intents.default()
 intents.members = True
@@ -20,6 +43,14 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
 
+
+# Runtime caches for invite tracking
+invite_roles = load_invite_roles()
+invite_uses = {}
+
+beta
+
+beta
 def generate_code():
     while True:
         code = ""
@@ -36,11 +67,13 @@ def generate_code():
             code += digit
             last_digit = digit
         if len(code) == 6:
+            logger.debug("Generated code %s", code)
             return code
 
 def save_role_code(code, role_id):
     with open(CODES_FILE, 'a') as f:
         f.write(f"{code}:{role_id}\n")
+    logger.info("Saved code %s for role %s", code, role_id)
 
 def get_role_id_by_code(code):
     if not os.path.exists(CODES_FILE):
@@ -48,22 +81,85 @@ def get_role_id_by_code(code):
     with open(CODES_FILE, 'r') as f:
         for line in f:
             if line.startswith(code + ":"):
-                return int(line.strip().split(":")[1])
+                role_id = int(line.strip().split(":")[1])
+                logger.info("Code %s matched role %s", code, role_id)
+                return role_id
     return None
+
+def load_invite_roles():
+    if not os.path.exists(INVITE_ROLE_FILE):
+        return {}
+    try:
+        with open(INVITE_ROLE_FILE, "r") as f:
+            import json
+            return json.load(f)
+    except Exception:
+        logger.exception("Failed to load invite-role mappings")
+        return {}
+
+def save_invite_role(invite_code, role_id):
+    mapping = load_invite_roles()
+    mapping[invite_code] = role_id
+    with open(INVITE_ROLE_FILE, "w") as f:
+        import json
+        json.dump(mapping, f)
+    logger.info("Saved invite %s for role %s", invite_code, role_id)
 
 def has_allowed_role(member: discord.Member):
     allowed = {"Employee", "Admin", "Gl.iNet Moderator"}
-    return any(role.name in allowed for role in member.roles)
+    has_role = any(role.name in allowed for role in member.roles)
+    logger.debug("User %s allowed: %s", member, has_role)
+    return has_role
+
+# Runtime caches for invite tracking
+invite_roles = load_invite_roles()
+invite_uses = {}
 
 @bot.event
 async def on_ready():
-    print(f"Logged in as {bot.user.name}")
-    guild = discord.Object(id=GUILD_ID)
+    logger.info("Logged in as %s", bot.user.name)
+    guild = bot.get_guild(GUILD_ID)
     synced = await tree.sync(guild=guild)
-    print(f"Synced {len(synced)} command(s) to guild {GUILD_ID}")
+    logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
+
+    # Cache invite uses for tracking
+    try:
+        invites = await guild.invites()
+        for inv in invites:
+            invite_uses[inv.code] = inv.uses
+    except Exception:
+        logger.exception("Failed to cache invites on startup")
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    """Assign role based on the invite used to join."""
+    guild = member.guild
+    try:
+        invites = await guild.invites()
+    except Exception:
+        logger.exception("Failed to fetch invites on member join")
+        return
+
+    used_invite = None
+    for inv in invites:
+        if inv.code in invite_roles and inv.uses > invite_uses.get(inv.code, 0):
+            invite_uses[inv.code] = inv.uses
+            used_invite = inv
+            break
+
+    if used_invite:
+        role_id = invite_roles.get(used_invite.code)
+        role = guild.get_role(role_id)
+        if role:
+            try:
+                await member.add_roles(role)
+                logger.info("Assigned role %s to %s via invite %s", role.id, member, used_invite.code)
+            except Exception:
+                logger.exception("Failed to assign role on join for %s", member)
 
 @tree.command(name="submitrole", description="Submit a role for invite/code linking", guild=discord.Object(id=GUILD_ID))
 async def submitrole(interaction: discord.Interaction):
+    logger.info("/submitrole invoked by %s", interaction.user)
     if not has_allowed_role(interaction.user):
         await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
         return
@@ -80,16 +176,29 @@ async def submitrole(interaction: discord.Interaction):
             return
 
         role = msg.role_mentions[0]
-        invite = await interaction.channel.create_invite(max_age=0, max_uses=0, unique=True)
+        channel = bot.get_channel(GENERAL_CHANNEL_ID) or interaction.channel
+        invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
         code = generate_code()
         save_role_code(code, role.id)
+        save_invite_role(invite.code, role.id)
+        invite_roles[invite.code] = role.id
+        invite_uses[invite.code] = invite.uses
+
+        logger.info(
+            "Generated invite %s and code %s for role %s using channel %s",
+            invite.url,
+            code,
+            role.id,
+            channel.id,
+        )
 
         await interaction.followup.send(
             f"✅ Invite link: {invite.url}\n🔢 6-digit code: `{code}`", ephemeral=True
         )
-    except Exception as e:
-        print("Error in /submitrole:", e)
+    except Exception:
+        logger.exception("Error in /submitrole")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
+
 
 class CodeEntryModal(discord.ui.Modal):
     def __init__(self):
@@ -103,6 +212,7 @@ class CodeEntryModal(discord.ui.Modal):
             await interaction.response.send_message("❌ Invalid code.", ephemeral=True)
             return
 
+
         role = interaction.guild.get_role(role_id)
         if not role:
             await interaction.response.send_message("❌ Role not found.", ephemeral=True)
@@ -113,24 +223,33 @@ class CodeEntryModal(discord.ui.Modal):
             f"✅ You've been given the **{role.name}** role!", ephemeral=True
         )
 
+
 @tree.command(
     name="enter_role",
     description="Enter a 6-digit code to receive a role",
     guild=discord.Object(id=GUILD_ID),
 )
 async def enter_role(interaction: discord.Interaction):
+    """Prompt the user to enter their code via a modal."""
+    logger.info("/enter_role invoked by %s", interaction.user)
     await interaction.response.send_modal(CodeEntryModal())
+
 
 @tree.command(name="getaccess", description="Assign yourself the protected role", guild=discord.Object(id=GUILD_ID))
 async def getaccess(interaction: discord.Interaction):
+    logger.info("/getaccess invoked by %s", interaction.user)
     try:
         with open(ROLE_FILE, "r") as f:
             role_id = int(f.read().strip())
         role = interaction.guild.get_role(role_id)
         await interaction.user.add_roles(role)
+        logger.info("Assigned default role %s to user %s", role.id, interaction.user)
         await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
-    except Exception as e:
-        print("Error in /getaccess:", e)
-        await interaction.response.send_message("❌ Could not assign role. Contact an admin.", ephemeral=True)
+    except Exception:
+        logger.exception("Error in /getaccess")
+        await interaction.response.send_message(
+            "❌ Could not assign role. Contact an admin.", ephemeral=True
+        )
+
 
 bot.run(TOKEN)
