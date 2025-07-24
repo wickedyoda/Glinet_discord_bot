@@ -43,6 +43,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
 
+codex/fix-invite-link-role-assignment
+
+auhzhl-codex/fix-invite-link-role-assignment
+
+# Runtime caches for invite tracking
+invite_roles = load_invite_roles()
+invite_uses = {}
+
+beta
 
 def generate_code():
     while True:
@@ -188,7 +197,7 @@ async def submitrole(interaction: discord.Interaction):
         await interaction.followup.send(
             f"✅ Invite link: {invite.url}\n🔢 6-digit code: `{code}`", ephemeral=True
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Error in /submitrole")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
 
