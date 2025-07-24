@@ -20,6 +20,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
 
+<<<<<<< Updated upstream
+=======
+# Runtime caches for invite tracking
+invite_roles = load_invite_roles()
+invite_uses = {}
+
+beta
+
+>>>>>>> Stashed changes
 def generate_code():
     while True:
         code = ""
