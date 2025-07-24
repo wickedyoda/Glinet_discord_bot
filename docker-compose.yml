@@ -1,7 +1,8 @@
+version: "3.9"
 services:
   discord-bot:
     build:
-      context: .  # 👈 must be the folder where bot.py is
+      context: .
     container_name: discord_role_bot
     env_file: .env
     volumes:

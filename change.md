@@ -5,8 +5,18 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 - Implement admin-only invite cleanup feature (planned)
 - Add web dashboard for role/code management (planned)
-- `/enter_role` now opens a private modal for the 6-digit code
 
+
+## [2025-07-24] - Invite Tracking Enhancements
+### Added
+- `/enter_role` now opens a private modal for the 6-digit code
+- Docker publish workflow for the `beta` branch
+- Invite data persists via the `data/` Docker volume
+- Automatic role assignment when members join via tracked invites
+
+### Changed
+- Improved logging and Docker output
+- Fixed syntax errors in `bot.py`
 ---
 
 ## [2025-07-06] - Role Invite Bot Restructure
