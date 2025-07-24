@@ -43,12 +43,15 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
 
+codex/fix-invite-link-role-assignment
+
 auhzhl-codex/fix-invite-link-role-assignment
 
 # Runtime caches for invite tracking
 invite_roles = load_invite_roles()
 invite_uses = {}
 
+beta
 
 def generate_code():
     while True:
