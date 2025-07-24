@@ -43,9 +43,12 @@ intents.message_content = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
 
+auhzhl-codex/fix-invite-link-role-assignment
+
 # Runtime caches for invite tracking
 invite_roles = load_invite_roles()
 invite_uses = {}
+
 
 def generate_code():
     while True:
@@ -106,6 +109,10 @@ def has_allowed_role(member: discord.Member):
     has_role = any(role.name in allowed for role in member.roles)
     logger.debug("User %s allowed: %s", member, has_role)
     return has_role
+
+# Runtime caches for invite tracking
+invite_roles = load_invite_roles()
+invite_uses = {}
 
 @bot.event
 async def on_ready():
@@ -187,7 +194,7 @@ async def submitrole(interaction: discord.Interaction):
         await interaction.followup.send(
             f"✅ Invite link: {invite.url}\n🔢 6-digit code: `{code}`", ephemeral=True
         )
-    except Exception as e:
+    except Exception:
         logger.exception("Error in /submitrole")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
 
@@ -237,14 +244,11 @@ async def getaccess(interaction: discord.Interaction):
         await interaction.user.add_roles(role)
         logger.info("Assigned default role %s to user %s", role.id, interaction.user)
         await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
-    except Exception as e:
-        print("Error in /getaccess:", e)
+    except Exception:
+        logger.exception("Error in /getaccess")
         await interaction.response.send_message(
             "❌ Could not assign role. Contact an admin.", ephemeral=True
         )
-
-        logger.exception("Error in /getaccess")
-        await interaction.response.send_message("❌ Could not assign role. Contact an admin.", ephemeral=True)
 
 
 bot.run(TOKEN)
