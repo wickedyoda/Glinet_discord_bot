@@ -86,12 +86,14 @@ services:
     environment:
       - DISCORD_TOKEN=your_discord_token
       - GUILD_ID=your_guild_id
+      - GENERAL_CHANNEL_ID=general_channel_id
+      - LOG_LEVEL=INFO
     volumes:
       - ./data:/app/data
 ```
 
-> 📁 Create a `data/` folder to persist files like `access_role.txt` and `role_codes.txt`.
-> These files are stored inside `/app/data` in the container.
+> 📁 Create a `data/` folder to persist files like `access_role.txt`, `role_codes.txt`, and `invite_roles.json`.
+> A log file `bot.log` will also be written to this folder.
 
 To start:
 ```bash
