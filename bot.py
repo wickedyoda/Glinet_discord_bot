@@ -21,7 +21,10 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
 
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
 =======
+=======
+>>>>>>> Stashed changes
 # Runtime caches for invite tracking
 invite_roles = load_invite_roles()
 invite_uses = {}
