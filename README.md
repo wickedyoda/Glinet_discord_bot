@@ -87,10 +87,11 @@ services:
       - DISCORD_TOKEN=your_discord_token
       - GUILD_ID=your_guild_id
     volumes:
-      - ./data:/app
+      - ./data:/app/data
 ```
 
 > 📁 Create a `data/` folder to persist files like `access_role.txt` and `role_codes.txt`.
+> These files are stored inside `/app/data` in the container.
 
 To start:
 ```bash

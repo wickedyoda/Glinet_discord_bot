@@ -9,9 +9,15 @@ load_dotenv()
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
-ROLE_FILE = "access_role.txt"
-INVITE_FILE = "permanent_invite.txt"
-CODES_FILE = "role_codes.txt"
+
+# Directory to persist data files. This folder is mounted as a Docker volume
+# so codes and invites survive container rebuilds.
+DATA_DIR = os.getenv("DATA_DIR", "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+ROLE_FILE = os.path.join(DATA_DIR, "access_role.txt")
+INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
+CODES_FILE = os.path.join(DATA_DIR, "role_codes.txt")
 
 intents = discord.Intents.default()
 intents.members = True
@@ -111,16 +117,16 @@ class CodeEntryModal(discord.ui.Modal):
         await interaction.user.add_roles(role)
         await interaction.response.send_message(
             f"✅ You've been given the **{role.name}** role!", ephemeral=True
+        )
+
+
 @tree.command(
     name="enter_role",
     description="Enter a 6-digit code to receive a role",
     guild=discord.Object(id=GUILD_ID),
 )
 async def enter_role(interaction: discord.Interaction):
-    modal = CodeEntryModal()
-    await interaction.response.send_modal(modal)
-)
-async def enter_role(interaction: discord.Interaction):
+    """Prompt the user to enter their code via a modal."""
     await interaction.response.send_modal(CodeEntryModal())
 
 @tree.command(name="getaccess", description="Assign yourself the protected role", guild=discord.Object(id=GUILD_ID))
@@ -133,6 +139,8 @@ async def getaccess(interaction: discord.Interaction):
         await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
     except Exception as e:
         print("Error in /getaccess:", e)
-        await interaction.response.send_message("❌ Could not assign role. Contact an admin.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Could not assign role. Contact an admin.", ephemeral=True
+        )
 
 bot.run(TOKEN)
