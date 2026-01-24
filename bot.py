@@ -96,19 +96,6 @@ def get_tag_responses():
     return tag_responses
 
 
-def build_command_list():
-    command_names = sorted(cmd.name for cmd in tree.get_commands())
-    parts = []
-    if command_names:
-        parts.append("Slash commands: " + ", ".join(f"/{name}" for name in command_names))
-    tags = sorted(get_tag_responses().keys())
-    if tags:
-        parts.append("Tag triggers: " + ", ".join(tags))
-    if not parts:
-        return "No commands are available yet."
-    return "\n".join(parts)
-
-
 def generate_code():
     while True:
         code = ""
@@ -223,10 +210,6 @@ async def on_message(message: discord.Message):
         return
     if message.content:
         tag = message.content.strip().split()[0]
-        if normalize_tag(tag) == "!list":
-            await message.channel.send(build_command_list())
-            await bot.process_commands(message)
-            return
         response = get_tag_responses().get(normalize_tag(tag))
         if response:
             await message.channel.send(response)
