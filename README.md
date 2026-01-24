@@ -24,6 +24,7 @@ This bot allows select Discord users to create **role-bound invite links** and *
 - Only users with the **Employee** role can run role-submitting commands.
 - **Admins** and **Gl.iNet Moderators** get full access to manage all bot commands.
 - Invite-based role assignment works for new members who join via generated links.
+- Tag-based auto-replies for messages like `!betatest`, configurable via `data/tag_responses.json`.
 
 ---
 
@@ -54,6 +55,20 @@ If someone joins the server via a generated invite, the bot will automatically a
 
 All users can run `/getaccess` to receive the default access role defined in `access_role.txt`.
 
+### ➤ 5. Tag-Based Auto Replies
+
+You can configure short tag responses (like `!betatest`) in `data/tag_responses.json`. When a user sends a message that starts with a configured tag, the bot replies with the preset response.
+
+Example file contents:
+```json
+{
+  "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
+  "!support": "🛠️ Need help? Please open a ticket or message a moderator."
+}
+```
+
+To add more later, edit the JSON file and add new keys for each tag. Changes are picked up automatically without restarting the bot.
+
 ---
 
 ## 🛠 Project Structure
@@ -67,6 +82,8 @@ All users can run `/getaccess` to receive the default access role defined in `ac
 ├── access_role.txt      # (Generated) Default role ID for /getaccess
 ├── role_codes.txt       # (Generated) Stores role-code pairs
 ├── permanent_invite.txt # (Generated) Optional saved invite link
+├── data
+│   └── tag_responses.json # (Config) Tag-based auto reply mapping
 └── README.md            # You're reading it!
 ```
 
@@ -92,7 +109,7 @@ services:
       - ./data:/app/data
 ```
 
-> 📁 Create a `data/` folder to persist files like `access_role.txt`, `role_codes.txt`, and `invite_roles.json`.
+> 📁 Create a `data/` folder to persist files like `access_role.txt`, `role_codes.txt`, `invite_roles.json`, and `tag_responses.json`.
 > A log file `bot.log` will also be written to this folder.
 
 To start:
