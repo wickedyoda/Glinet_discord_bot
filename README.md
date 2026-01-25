@@ -25,6 +25,7 @@ This bot allows select Discord users to create **role-bound invite links** and *
 - **Admins** and **Gl.iNet Moderators** get full access to manage all bot commands.
 - Invite-based role assignment works for new members who join via generated links.
 - Tag-based auto-replies for messages like `!betatest`, configurable via `data/tag_responses.json`.
+- `!list` message to display available tag commands.
 
 ---
 
