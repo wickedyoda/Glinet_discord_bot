@@ -220,6 +220,7 @@ async def on_ready():
         register_tag_commands()
     else:
         logger.warning("Tag slash commands not registered: register_tag_commands missing")
+    register_tag_commands()
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
     get_tag_responses()
