@@ -128,21 +128,19 @@ def register_tag_commands():
             logger.warning("Skipping tag slash command /%s due to name conflict", command_name)
             continue
 
-        def make_tag_reply(tag_response: str):
-            async def tag_reply(interaction: discord.Interaction):
-                await interaction.response.send_message(tag_response)
-
-            return tag_reply
+        async def tag_reply(interaction: discord.Interaction, message=response):
+            await interaction.response.send_message(message)
 
         tree.add_command(
             app_commands.Command(
                 name=command_name,
                 description=f"Tag response for {command_name}",
-                callback=make_tag_reply(response),
+                callback=tag_reply,
             ),
             guild=discord.Object(id=GUILD_ID),
         )
         tag_command_names.add(command_name)
+    return "Tag commands: " + ", ".join(tags)
 
 
 def generate_code():
@@ -217,6 +215,7 @@ async def on_ready():
         register_tag_commands()
     else:
         logger.warning("Tag slash commands not registered: register_tag_commands missing")
+    register_tag_commands()
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
     get_tag_responses()
@@ -267,6 +266,11 @@ async def on_message(message: discord.Message):
             await bot.process_commands(message)
             return
         response = get_tag_responses().get(tag)
+        tag = message.content.strip().split()[0]
+        if normalize_tag(tag) == "!list":
+            await bot.process_commands(message)
+            return
+        response = get_tag_responses().get(normalize_tag(tag))
         if response:
             await message.channel.send(response)
     await bot.process_commands(message)
