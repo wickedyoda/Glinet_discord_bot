@@ -140,6 +140,7 @@ def register_tag_commands():
             guild=discord.Object(id=GUILD_ID),
         )
         tag_command_names.add(command_name)
+    return "Tag commands: " + ", ".join(tags)
 
 
 def generate_code():
@@ -214,6 +215,7 @@ async def on_ready():
         register_tag_commands()
     else:
         logger.warning("Tag slash commands not registered: register_tag_commands missing")
+    register_tag_commands()
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
     get_tag_responses()
@@ -264,6 +266,11 @@ async def on_message(message: discord.Message):
             await bot.process_commands(message)
             return
         response = get_tag_responses().get(tag)
+        tag = message.content.strip().split()[0]
+        if normalize_tag(tag) == "!list":
+            await bot.process_commands(message)
+            return
+        response = get_tag_responses().get(normalize_tag(tag))
         if response:
             await message.channel.send(response)
     await bot.process_commands(message)
