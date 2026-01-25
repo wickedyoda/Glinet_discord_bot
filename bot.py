@@ -144,6 +144,8 @@ def register_tag_commands():
                 guild=discord.Object(id=GUILD_ID),
             )
             tag_command_names.add(command_name)
+        except app_commands.errors.CommandAlreadyRegistered:
+            logger.info("Tag slash command /%s already registered", command_name)
         except TypeError:
             logger.exception("Failed to register tag slash command /%s", command_name)
 
@@ -220,7 +222,6 @@ async def on_ready():
         register_tag_commands()
     else:
         logger.warning("Tag slash commands not registered: register_tag_commands missing")
-    register_tag_commands()
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
     get_tag_responses()

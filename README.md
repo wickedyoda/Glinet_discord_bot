@@ -25,6 +25,7 @@ This bot allows select Discord users to create **role-bound invite links** and *
 - **Admins** and **Gl.iNet Moderators** get full access to manage all bot commands.
 - Invite-based role assignment works for new members who join via generated links.
 - Tag-based auto-replies for messages like `!betatest`, configurable via `data/tag_responses.json`.
+- Tag-based auto-replies are also available as slash commands (e.g., `/betatest`).
 - `!list` message to display available tag commands.
 
 ---
@@ -59,6 +60,7 @@ All users can run `/getaccess` to receive the default access role defined in `ac
 ### ➤ 5. Tag-Based Auto Replies
 
 You can configure short tag responses (like `!betatest`) in `data/tag_responses.json`. When a user sends a message that starts with a configured tag, the bot replies with the preset response.
+Each tag is also registered as a slash command (for example, `!betatest` becomes `/betatest`) on startup.
 
 Example file contents:
 ```json
@@ -69,6 +71,10 @@ Example file contents:
 ```
 
 To add more later, edit the JSON file and add new keys for each tag. Changes are picked up automatically without restarting the bot.
+
+### ➤ 6. Command Listing
+
+Send `!list` in a channel to get a list of configured tag commands from `data/tag_responses.json`.
 
 ---
 
