@@ -70,10 +70,6 @@ Example file contents:
 
 To add more later, edit the JSON file and add new keys for each tag. Changes are picked up automatically without restarting the bot.
 
-### ➤ 6. Command Listing
-
-Send `!list` in a channel to get a list of configured tag commands from `data/tag_responses.json`.
-
 ---
 
 ## 🛠 Project Structure
