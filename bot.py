@@ -100,6 +100,7 @@ def build_command_list():
     tags = sorted(get_tag_responses().keys())
     if not tags:
         return "No tag commands are available yet."
+    return "Tag commands:\n" + "\n".join(tags)
     return "Tag commands: " + ", ".join(tags)
 
 
