@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import logging
 import os
+import json
 from dotenv import load_dotenv
 import random
 
@@ -35,13 +36,116 @@ ROLE_FILE = os.path.join(DATA_DIR, "access_role.txt")
 INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
 CODES_FILE = os.path.join(DATA_DIR, "role_codes.txt")
 INVITE_ROLE_FILE = os.path.join(DATA_DIR, "invite_roles.json")
+TAG_RESPONSES_FILE = os.path.join(DATA_DIR, "tag_responses.json")
+
+DEFAULT_TAG_RESPONSES = {
+    "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
+    "!support": "🛠️ Need help? Please open a ticket or message a moderator.",
+}
 
 intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents, case_insensitive=True)
 tree = bot.tree
+
+tag_responses = {}
+tag_responses_mtime = None
+tag_command_names = set()
+
+
+def normalize_tag(tag: str) -> str:
+    return tag.strip().lower()
+
+
+def tag_to_command_name(tag: str) -> str:
+    normalized = normalize_tag(tag)
+    if normalized.startswith("!"):
+        normalized = normalized[1:]
+    if normalized.startswith("/"):
+        normalized = normalized[1:]
+    return normalized.replace(" ", "_")
+
+
+def load_tag_responses():
+    if not os.path.exists(TAG_RESPONSES_FILE):
+        save_tag_responses(DEFAULT_TAG_RESPONSES)
+        return {normalize_tag(k): str(v) for k, v in DEFAULT_TAG_RESPONSES.items()}
+    try:
+        with open(TAG_RESPONSES_FILE, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            logger.warning("Tag responses file does not contain an object. Using empty mapping.")
+            return {}
+        return {normalize_tag(k): str(v) for k, v in data.items()}
+    except Exception:
+        logger.exception("Failed to load tag responses")
+        return {}
+
+
+def save_tag_responses(mapping):
+    with open(TAG_RESPONSES_FILE, "w") as f:
+        json.dump(mapping, f, indent=2)
+
+
+def get_tag_responses():
+    global tag_responses, tag_responses_mtime
+    try:
+        current_mtime = os.path.getmtime(TAG_RESPONSES_FILE)
+    except FileNotFoundError:
+        tag_responses = load_tag_responses()
+        try:
+            tag_responses_mtime = os.path.getmtime(TAG_RESPONSES_FILE)
+        except FileNotFoundError:
+            tag_responses_mtime = None
+        return tag_responses
+    if tag_responses_mtime != current_mtime:
+        tag_responses = load_tag_responses()
+        tag_responses_mtime = current_mtime
+    return tag_responses
+
+
+def build_command_list():
+    tags = sorted(get_tag_responses().keys())
+    if not tags:
+        return "No tag commands are available yet."
+    return "Tag commands:\n" + "\n".join(tags)
+
+
+def register_tag_commands():
+    global tag_command_names
+    tag_commands = {}
+    for tag, response in get_tag_responses().items():
+        command_name = tag_to_command_name(tag)
+        if not command_name:
+            continue
+        tag_commands[command_name] = response
+
+    existing_names = {cmd.name for cmd in tree.get_commands()}
+    for command_name, response in tag_commands.items():
+        if command_name in existing_names:
+            logger.warning("Skipping tag slash command /%s due to name conflict", command_name)
+            continue
+
+        def make_tag_reply(tag_response: str):
+            async def tag_reply(interaction: discord.Interaction):
+                await interaction.response.send_message(tag_response)
+
+            return tag_reply
+
+        try:
+            tree.add_command(
+                app_commands.Command(
+                    name=command_name,
+                    description=f"Tag response for {command_name}",
+                    callback=make_tag_reply(response),
+                ),
+                guild=discord.Object(id=GUILD_ID),
+            )
+            tag_command_names.add(command_name)
+        except TypeError:
+            logger.exception("Failed to register tag slash command /%s", command_name)
 
 
 def generate_code():
@@ -112,8 +216,13 @@ invite_uses = {}
 async def on_ready():
     logger.info("Logged in as %s", bot.user.name)
     guild = bot.get_guild(GUILD_ID)
+    if callable(globals().get("register_tag_commands")):
+        register_tag_commands()
+    else:
+        logger.warning("Tag slash commands not registered: register_tag_commands missing")
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
+    get_tag_responses()
 
     # Cache invite uses for tracking
     try:
@@ -149,6 +258,26 @@ async def on_member_join(member: discord.Member):
                 logger.info("Assigned role %s to %s via invite %s", role.id, member, used_invite.code)
             except Exception:
                 logger.exception("Failed to assign role on join for %s", member)
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    if message.content:
+        tag = normalize_tag(message.content.strip().split()[0])
+        if tag == "!list":
+            await bot.process_commands(message)
+            return
+        response = get_tag_responses().get(tag)
+        if response:
+            await message.channel.send(response)
+    await bot.process_commands(message)
+
+
+@bot.command(name="list")
+async def list_commands(ctx: commands.Context):
+    await ctx.send(build_command_list())
 
 @tree.command(name="submitrole", description="Submit a role for invite/code linking", guild=discord.Object(id=GUILD_ID))
 async def submitrole(interaction: discord.Interaction):
