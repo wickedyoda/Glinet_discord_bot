@@ -47,7 +47,7 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents, case_insensitive=True)
 tree = bot.tree
 
 tag_responses = {}
@@ -172,6 +172,7 @@ invite_uses = {}
 async def on_ready():
     logger.info("Logged in as %s", bot.user.name)
     guild = bot.get_guild(GUILD_ID)
+    register_tag_commands()
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
     get_tag_responses()
