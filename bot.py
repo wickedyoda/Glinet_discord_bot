@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import logging
 import os
+import json
 from dotenv import load_dotenv
 import random
 
@@ -35,6 +36,12 @@ ROLE_FILE = os.path.join(DATA_DIR, "access_role.txt")
 INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
 CODES_FILE = os.path.join(DATA_DIR, "role_codes.txt")
 INVITE_ROLE_FILE = os.path.join(DATA_DIR, "invite_roles.json")
+TAG_RESPONSES_FILE = os.path.join(DATA_DIR, "tag_responses.json")
+
+DEFAULT_TAG_RESPONSES = {
+    "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
+    "!support": "🛠️ Need help? Please open a ticket or message a moderator.",
+}
 
 intents = discord.Intents.default()
 intents.members = True
@@ -42,6 +49,58 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 tree = bot.tree
+
+tag_responses = {}
+tag_responses_mtime = None
+
+
+def normalize_tag(tag: str) -> str:
+    return tag.strip().lower()
+
+
+def load_tag_responses():
+    if not os.path.exists(TAG_RESPONSES_FILE):
+        save_tag_responses(DEFAULT_TAG_RESPONSES)
+        return {normalize_tag(k): str(v) for k, v in DEFAULT_TAG_RESPONSES.items()}
+    try:
+        with open(TAG_RESPONSES_FILE, "r") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            logger.warning("Tag responses file does not contain an object. Using empty mapping.")
+            return {}
+        return {normalize_tag(k): str(v) for k, v in data.items()}
+    except Exception:
+        logger.exception("Failed to load tag responses")
+        return {}
+
+
+def save_tag_responses(mapping):
+    with open(TAG_RESPONSES_FILE, "w") as f:
+        json.dump(mapping, f, indent=2)
+
+
+def get_tag_responses():
+    global tag_responses, tag_responses_mtime
+    try:
+        current_mtime = os.path.getmtime(TAG_RESPONSES_FILE)
+    except FileNotFoundError:
+        tag_responses = load_tag_responses()
+        try:
+            tag_responses_mtime = os.path.getmtime(TAG_RESPONSES_FILE)
+        except FileNotFoundError:
+            tag_responses_mtime = None
+        return tag_responses
+    if tag_responses_mtime != current_mtime:
+        tag_responses = load_tag_responses()
+        tag_responses_mtime = current_mtime
+    return tag_responses
+
+
+def build_command_list():
+    tags = sorted(get_tag_responses().keys())
+    if not tags:
+        return "No tag commands are available yet."
+    return "Tag commands: " + ", ".join(tags)
 
 
 def generate_code():
@@ -114,6 +173,7 @@ async def on_ready():
     guild = bot.get_guild(GUILD_ID)
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
+    get_tag_responses()
 
     # Cache invite uses for tracking
     try:
@@ -149,6 +209,22 @@ async def on_member_join(member: discord.Member):
                 logger.info("Assigned role %s to %s via invite %s", role.id, member, used_invite.code)
             except Exception:
                 logger.exception("Failed to assign role on join for %s", member)
+
+
+@bot.event
+async def on_message(message: discord.Message):
+    if message.author.bot:
+        return
+    if message.content:
+        tag = message.content.strip().split()[0]
+        if normalize_tag(tag) == "!list":
+            await message.channel.send(build_command_list())
+            await bot.process_commands(message)
+            return
+        response = get_tag_responses().get(normalize_tag(tag))
+        if response:
+            await message.channel.send(response)
+    await bot.process_commands(message)
 
 @tree.command(name="submitrole", description="Submit a role for invite/code linking", guild=discord.Object(id=GUILD_ID))
 async def submitrole(interaction: discord.Interaction):
