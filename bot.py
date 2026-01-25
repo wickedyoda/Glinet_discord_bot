@@ -52,10 +52,20 @@ tree = bot.tree
 
 tag_responses = {}
 tag_responses_mtime = None
+tag_command_names = set()
 
 
 def normalize_tag(tag: str) -> str:
     return tag.strip().lower()
+
+
+def tag_to_command_name(tag: str) -> str:
+    normalized = normalize_tag(tag)
+    if normalized.startswith("!"):
+        normalized = normalized[1:]
+    if normalized.startswith("/"):
+        normalized = normalized[1:]
+    return normalized.replace(" ", "_")
 
 
 def load_tag_responses():
@@ -101,6 +111,35 @@ def build_command_list():
     if not tags:
         return "No tag commands are available yet."
     return "Tag commands:\n" + "\n".join(tags)
+
+
+def register_tag_commands():
+    global tag_command_names
+    tag_commands = {}
+    for tag, response in get_tag_responses().items():
+        command_name = tag_to_command_name(tag)
+        if not command_name:
+            continue
+        tag_commands[command_name] = response
+
+    existing_names = {cmd.name for cmd in tree.get_commands()}
+    for command_name, response in tag_commands.items():
+        if command_name in existing_names:
+            logger.warning("Skipping tag slash command /%s due to name conflict", command_name)
+            continue
+
+        async def tag_reply(interaction: discord.Interaction, message=response):
+            await interaction.response.send_message(message)
+
+        tree.add_command(
+            app_commands.Command(
+                name=command_name,
+                description=f"Tag response for {command_name}",
+                callback=tag_reply,
+            ),
+            guild=discord.Object(id=GUILD_ID),
+        )
+        tag_command_names.add(command_name)
     return "Tag commands: " + ", ".join(tags)
 
 
@@ -172,6 +211,10 @@ invite_uses = {}
 async def on_ready():
     logger.info("Logged in as %s", bot.user.name)
     guild = bot.get_guild(GUILD_ID)
+    if callable(globals().get("register_tag_commands")):
+        register_tag_commands()
+    else:
+        logger.warning("Tag slash commands not registered: register_tag_commands missing")
     register_tag_commands()
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
@@ -218,6 +261,11 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
     if message.content:
+        tag = normalize_tag(message.content.strip().split()[0])
+        if tag == "!list":
+            await bot.process_commands(message)
+            return
+        response = get_tag_responses().get(tag)
         tag = message.content.strip().split()[0]
         if normalize_tag(tag) == "!list":
             await bot.process_commands(message)
