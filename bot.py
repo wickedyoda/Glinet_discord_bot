@@ -421,6 +421,32 @@ async def send_moderation_log(
         return False
 
 
+def clip_text(value: str, max_chars: int = 250):
+    if not value:
+        return "N/A"
+    cleaned = value.strip().replace("\n", " ")
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return f"{cleaned[: max_chars - 3]}..."
+
+
+async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
+    channel = await resolve_mod_log_channel(guild)
+    if channel is None:
+        return False
+
+    message = f"📌 **Server Event:** `{event_name}`\n{details}"
+    try:
+        await channel.send(message)
+        return True
+    except discord.Forbidden:
+        logger.warning("No permission to send server event logs to channel %s", MOD_LOG_CHANNEL_ID)
+        return False
+    except discord.HTTPException:
+        logger.exception("Failed to send server event log for %s", event_name)
+        return False
+
+
 def search_forum_links(query: str):
     search_url = f"{FORUM_BASE_URL}/search.json"
     try:
@@ -607,18 +633,19 @@ async def on_ready():
 async def on_member_join(member: discord.Member):
     """Assign role based on the invite used to join."""
     guild = member.guild
-    try:
-        invites = await guild.invites()
-    except Exception:
-        logger.exception("Failed to fetch invites on member join")
+    if guild.id != GUILD_ID:
         return
 
     used_invite = None
-    for inv in invites:
-        if inv.code in invite_roles and inv.uses > invite_uses.get(inv.code, 0):
-            invite_uses[inv.code] = inv.uses
-            used_invite = inv
-            break
+    try:
+        invites = await guild.invites()
+        for inv in invites:
+            if inv.code in invite_roles and inv.uses > invite_uses.get(inv.code, 0):
+                invite_uses[inv.code] = inv.uses
+                used_invite = inv
+                break
+    except Exception:
+        logger.exception("Failed to fetch invites on member join")
 
     if used_invite:
         role_id = invite_roles.get(used_invite.code)
@@ -629,6 +656,195 @@ async def on_member_join(member: discord.Member):
                 logger.info("Assigned role %s to %s via invite %s", role.id, member, used_invite.code)
             except Exception:
                 logger.exception("Failed to assign role on join for %s", member)
+
+    join_details = (
+        f"**Member:** {member.mention} (`{member.id}`)\n"
+        f"**Created:** <t:{int(member.created_at.timestamp())}:f>\n"
+    )
+    if used_invite:
+        join_details += f"**Invite:** `{used_invite.code}`\n"
+    await send_server_event_log(guild, "member_join", join_details)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    guild = member.guild
+    if guild.id != GUILD_ID:
+        return
+
+    details = (
+        f"**Member:** {member} (`{member.id}`)\n"
+        f"**Nickname:** {clip_text(member.nick or 'N/A')}\n"
+    )
+    await send_server_event_log(guild, "member_leave", details)
+
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    guild = message.guild
+    if guild is None or guild.id != GUILD_ID:
+        return
+
+    channel_name = message.channel.mention if hasattr(message.channel, "mention") else f"`{message.channel.id}`"
+    details = (
+        f"**Author:** {message.author} (`{message.author.id}`)\n"
+        f"**Channel:** {channel_name}\n"
+        f"**Message ID:** `{message.id}`\n"
+        f"**Content:** {clip_text(message.content)}\n"
+        f"**Attachments:** `{len(message.attachments)}`\n"
+    )
+    await send_server_event_log(guild, "message_delete", details)
+
+
+@bot.event
+async def on_bulk_message_delete(messages: list[discord.Message]):
+    if not messages:
+        return
+    guild = messages[0].guild
+    if guild is None or guild.id != GUILD_ID:
+        return
+
+    channel = messages[0].channel
+    channel_name = channel.mention if hasattr(channel, "mention") else f"`{channel.id}`"
+    details = (
+        f"**Channel:** {channel_name}\n"
+        f"**Messages Deleted:** `{len(messages)}`\n"
+    )
+    await send_server_event_log(guild, "bulk_message_delete", details)
+
+
+@bot.event
+async def on_user_update(before: discord.User, after: discord.User):
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+    member = guild.get_member(after.id)
+    if member is None:
+        return
+
+    if before.name != after.name or before.global_name != after.global_name:
+        details = (
+            f"**User:** {member.mention} (`{after.id}`)\n"
+            f"**Username:** {clip_text(before.name)} -> {clip_text(after.name)}\n"
+            f"**Global Name:** {clip_text(before.global_name or 'N/A')} -> {clip_text(after.global_name or 'N/A')}\n"
+        )
+        await send_server_event_log(guild, "user_name_change", details)
+
+    if before.display_avatar != after.display_avatar:
+        details = (
+            f"**User:** {member.mention} (`{after.id}`)\n"
+            f"**New Avatar:** {after.display_avatar.url}\n"
+        )
+        await send_server_event_log(guild, "user_avatar_change", details)
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    guild = after.guild
+    if guild.id != GUILD_ID:
+        return
+
+    if before.nick != after.nick:
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Nickname:** {clip_text(before.nick or 'N/A')} -> {clip_text(after.nick or 'N/A')}\n"
+        )
+        await send_server_event_log(guild, "member_nickname_change", details)
+
+    before_role_map = {role.id: role for role in before.roles}
+    after_role_map = {role.id: role for role in after.roles}
+    added_role_ids = sorted(set(after_role_map) - set(before_role_map))
+    removed_role_ids = sorted(set(before_role_map) - set(after_role_map))
+
+    for role_id in added_role_ids:
+        role = after_role_map[role_id]
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Role Added:** {role.mention} (`{role.id}`)\n"
+        )
+        await send_server_event_log(guild, "member_role_added", details)
+
+    for role_id in removed_role_ids:
+        role = before_role_map[role_id]
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Role Removed:** {role.name} (`{role.id}`)\n"
+        )
+        await send_server_event_log(guild, "member_role_removed", details)
+
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    guild = invite.guild
+    if guild is None or guild.id != GUILD_ID:
+        return
+
+    inviter_text = f"{invite.inviter} (`{invite.inviter.id}`)" if invite.inviter else "Unknown"
+    channel_text = invite.channel.mention if getattr(invite, "channel", None) else "N/A"
+    details = (
+        f"**Invite Code:** `{invite.code}`\n"
+        f"**Inviter:** {inviter_text}\n"
+        f"**Channel:** {channel_text}\n"
+        f"**Max Uses:** `{invite.max_uses}`\n"
+        f"**Max Age:** `{invite.max_age}`\n"
+    )
+    await send_server_event_log(guild, "invite_created", details)
+
+
+@bot.event
+async def on_guild_channel_create(channel: discord.abc.GuildChannel):
+    guild = channel.guild
+    if guild.id != GUILD_ID:
+        return
+
+    if isinstance(channel, discord.CategoryChannel):
+        event_name = "category_created"
+    else:
+        event_name = "channel_created"
+
+    parent_name = channel.category.name if channel.category else "N/A"
+    details = (
+        f"**Name:** {clip_text(channel.name)}\n"
+        f"**ID:** `{channel.id}`\n"
+        f"**Type:** `{channel.type}`\n"
+        f"**Category:** {clip_text(parent_name)}\n"
+    )
+    await send_server_event_log(guild, event_name, details)
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
+    guild = channel.guild
+    if guild.id != GUILD_ID:
+        return
+
+    if isinstance(channel, discord.CategoryChannel):
+        event_name = "category_deleted"
+    else:
+        event_name = "channel_deleted"
+
+    parent_name = channel.category.name if channel.category else "N/A"
+    details = (
+        f"**Name:** {clip_text(channel.name)}\n"
+        f"**ID:** `{channel.id}`\n"
+        f"**Type:** `{channel.type}`\n"
+        f"**Category:** {clip_text(parent_name)}\n"
+    )
+    await send_server_event_log(guild, event_name, details)
+
+
+@bot.event
+async def on_guild_role_create(role: discord.Role):
+    guild = role.guild
+    if guild.id != GUILD_ID:
+        return
+
+    details = (
+        f"**Role:** {role.mention} (`{role.id}`)\n"
+        f"**Color:** `{role.color}`\n"
+        f"**Position:** `{role.position}`\n"
+    )
+    await send_server_event_log(guild, "role_created", details)
 
 
 @bot.event
