@@ -887,6 +887,138 @@ async def modlog_test_prefix(ctx: commands.Context):
 
 
 @tree.command(
+    name="ban_member",
+    description="Ban a member from the server",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to ban", reason="Reason for ban")
+async def ban_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+    logger.info("/ban_member invoked by %s targeting %s", interaction.user, member)
+    if not has_moderator_access(interaction.user):
+        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "ban_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    action_reason = (reason or "").strip() or f"Banned by {interaction.user} via bot"
+    try:
+        await member.ban(reason=action_reason, delete_message_seconds=0)
+    except discord.Forbidden:
+        logger.exception("Missing permission to ban member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "ban_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Ban Members` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't ban that member. Check role hierarchy and `Ban Members` permission.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to ban member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "ban_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while banning member.",
+        )
+        await interaction.response.send_message("❌ Failed to ban the member. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "ban_member",
+        target=member,
+        reason=action_reason,
+        details="Banned successfully.",
+    )
+    await interaction.response.send_message(f"✅ Banned **{member}**.", ephemeral=True)
+
+
+@bot.command(name="banmember")
+async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+    logger.info("!banmember invoked by %s targeting %s", ctx.author, member)
+    if not has_moderator_access(ctx.author):
+        await ctx.send("❌ Only moderators can use this command.")
+        return
+
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "ban_member",
+            member,
+            reason.strip() or None,
+            outcome="blocked",
+            details=error_message,
+        )
+        await ctx.send(error_message)
+        return
+
+    action_reason = reason.strip() or f"Banned by {ctx.author} via bot"
+    try:
+        await member.ban(reason=action_reason, delete_message_seconds=0)
+    except discord.Forbidden:
+        logger.exception("Missing permission to ban member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "ban_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Ban Members` permission or role hierarchy block.",
+        )
+        await ctx.send("❌ I can't ban that member. Check role hierarchy and `Ban Members` permission.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to ban member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "ban_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while banning member.",
+        )
+        await ctx.send("❌ Failed to ban the member. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "ban_member",
+        target=member,
+        reason=action_reason,
+        details="Banned successfully.",
+    )
+    await ctx.send(f"✅ Banned **{member}**.")
+
+
+@tree.command(
     name="kick_member",
     description="Kick a member and prune their last 72 hours of messages",
     guild=discord.Object(id=GUILD_ID),

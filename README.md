@@ -37,6 +37,7 @@ This bot allows select Discord users to create **role-bound invite links** and *
   - Set: `/country`, `!country` (example: `US`)
   - Clear: `/clear_country`, `!clearcountry`
 - Moderation commands (moderators only):
+  - `/ban_member`, `!banmember` (ban member)
   - `/kick_member`, `!kickmember` (kicks and prunes 72h messages)
   - `/timeout_member`, `!timeoutmember` (duration like `30m`, `2h`, `1d`)
   - `/modlog_test`, `!modlogtest` (sends a test moderation log message)
@@ -120,6 +121,8 @@ To remove it, use:
 
 ### ➤ 9. Moderation Commands
 
+- `/ban_member @user [reason]` or `!banmember @user [reason]`
+  - Bans the user from the server.
 - `/kick_member @user [reason]` or `!kickmember @user [reason]`
   - Kicks the user and prunes their messages from the last 72 hours.
 - `/timeout_member @user <duration> [reason]` or `!timeoutmember @user <duration> [reason]`
@@ -211,6 +214,7 @@ docker compose up -d
 | `/search_router`| Any member                     |
 | `/country`     | Any member                      |
 | `/clear_country`| Any member                     |
+| `/ban_member`  | Moderator/Admin roles           |
 | `/kick_member` | Moderator/Admin roles           |
 | `/timeout_member` | Moderator/Admin roles        |
 
@@ -225,7 +229,7 @@ Use this link to add the bot to your server:
 Make sure to:
 - Enable **Message Content** and **Server Members Intent**.
 - Grant it permission to **manage roles**, **create invites**,
-  **manage server**, **kick members**, **moderate members**, and **manage messages**.
+  **manage server**, **ban members**, **kick members**, **moderate members**, and **manage messages**.
 
 ---
 
@@ -255,7 +259,7 @@ For advanced support, join WickedYoda's Discord https://discord.gg/m6UjX6UhKe
 ## 🛡️ Role Permissions
 
 - Only members with the `Employee` role can use `/submitrole`.
-- Members with role IDs `1294957416294645771` (Moderator) or `1138302148292116551` (Admin) can use `/kick_member` and `/timeout_member`.
+- Members with role IDs `1294957416294645771` (Moderator) or `1138302148292116551` (Admin) can use `/ban_member`, `/kick_member`, and `/timeout_member`.
 - All members can use `/getaccess`, `/enter_role`, `/search`, `/search_forum`, `/search_kvm`, `/search_iot`, `/search_router`, `/country`, and `/clear_country`.
 - You can change moderation access role IDs using `MODERATOR_ROLE_ID` and `ADMIN_ROLE_ID` env vars.
 
