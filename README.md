@@ -36,6 +36,9 @@ This bot allows select Discord users to create **role-bound invite links** and *
 - Country nickname commands:
   - Set: `/country`, `!country` (example: `US`)
   - Clear: `/clear_country`, `!clearcountry`
+- Moderation commands (moderators only):
+  - `/kick_member`, `!kickmember` (kicks and prunes 72h messages)
+  - `/timeout_member`, `!timeoutmember` (duration like `30m`, `2h`, `1d`)
 
 ---
 
@@ -113,6 +116,13 @@ To remove it, use:
 - `/clear_country`
 - `!clearcountry`
 
+### ➤ 9. Moderation Commands
+
+- `/kick_member @user [reason]` or `!kickmember @user [reason]`
+  - Kicks the user and prunes their messages from the last 72 hours.
+- `/timeout_member @user <duration> [reason]` or `!timeoutmember @user <duration> [reason]`
+  - Timeouts for a duration like `30m`, `2h`, or `1d` (up to 28 days).
+
 ---
 
 ## 🛠 Project Structure
@@ -154,6 +164,9 @@ services:
       - DOCS_MAX_RESULTS_PER_SITE=2
       - DOCS_INDEX_TTL_SECONDS=3600
       - SEARCH_RESPONSE_MAX_CHARS=1900
+      - KICK_PRUNE_HOURS=72
+      - MODERATOR_ROLE_ID=1294957416294645771
+      - ADMIN_ROLE_ID=1138302148292116551
     volumes:
       - ./data:/app/data
 ```
@@ -190,6 +203,8 @@ docker compose up -d
 | `/search_router`| Any member                     |
 | `/country`     | Any member                      |
 | `/clear_country`| Any member                     |
+| `/kick_member` | Moderator/Admin roles           |
+| `/timeout_member` | Moderator/Admin roles        |
 
 ---
 
@@ -202,7 +217,7 @@ Use this link to add the bot to your server:
 Make sure to:
 - Enable **Message Content** and **Server Members Intent**.
 - Grant it permission to **manage roles**, **create invites**,
-  and **manage server** so invite tracking works.
+  **manage server**, **kick members**, **moderate members**, and **manage messages**.
 
 ---
 
@@ -232,7 +247,8 @@ For advanced support, join WickedYoda's Discord https://discord.gg/m6UjX6UhKe
 ## 🛡️ Role Permissions
 
 - Only members with the `Employee` role can use `/submitrole`.
+- Members with role IDs `1294957416294645771` (Moderator) or `1138302148292116551` (Admin) can use `/kick_member` and `/timeout_member`.
 - All members can use `/getaccess`, `/enter_role`, `/search`, `/search_forum`, `/search_kvm`, `/search_iot`, `/search_router`, `/country`, and `/clear_country`.
-- You can expand access to more roles like `Admin` or `GL.iNet Moderators` by adjusting role checks in `bot.py`.
+- You can change moderation access role IDs using `MODERATOR_ROLE_ID` and `ADMIN_ROLE_ID` env vars.
 
 ---

@@ -7,6 +7,7 @@ import json
 import asyncio
 import re
 import time
+from datetime import timedelta
 from html import unescape
 from urllib.parse import urljoin
 from dotenv import load_dotenv
@@ -46,6 +47,13 @@ COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
 COUNTRY_LEGACY_SUFFIX_PATTERN = re.compile(r"_[A-Z]{2}$")
 COUNTRY_FLAG_SUFFIX_PATTERN = re.compile(r"\s*-\s*[\U0001F1E6-\U0001F1FF]{2}$")
 COUNTRY_CODE_SUFFIX_PATTERN = re.compile(r"\s*-\s*[A-Z]{2}$")
+TIMEOUT_DURATION_PATTERN = re.compile(r"^\s*(\d+)\s*([mhd]?)\s*$", re.IGNORECASE)
+MODERATOR_ROLE_IDS = {
+    int(os.getenv("MODERATOR_ROLE_ID", "1294957416294645771")),
+    int(os.getenv("ADMIN_ROLE_ID", "1138302148292116551")),
+}
+KICK_PRUNE_HOURS = int(os.getenv("KICK_PRUNE_HOURS", "72"))
+TIMEOUT_MAX_MINUTES = 28 * 24 * 60
 DOCS_SITE_MAP = {
     "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
@@ -233,6 +241,40 @@ def has_allowed_role(member: discord.Member):
     return has_role
 
 
+def has_moderator_access(member: discord.Member):
+    return any(role.id in MODERATOR_ROLE_IDS for role in member.roles)
+
+
+def validate_moderation_target(actor: discord.Member, target: discord.Member, bot_member: discord.Member):
+    if target.id == actor.id:
+        return False, "❌ You cannot moderate yourself."
+    if target.id == actor.guild.owner_id:
+        return False, "❌ You cannot moderate the server owner."
+    if target.id == bot_member.id:
+        return False, "❌ You cannot moderate the bot."
+    if actor.id != actor.guild.owner_id and actor.top_role <= target.top_role:
+        return False, "❌ You can only moderate members below your top role."
+    if bot_member.top_role <= target.top_role:
+        return False, "❌ I can only moderate members below my top role."
+    return True, None
+
+
+def parse_timeout_duration(value: str):
+    match = TIMEOUT_DURATION_PATTERN.fullmatch(value or "")
+    if not match:
+        return None, None, "❌ Invalid duration. Use `30m`, `2h`, or `1d`."
+
+    amount = int(match.group(1))
+    unit = (match.group(2) or "m").lower()
+    multiplier = {"m": 1, "h": 60, "d": 1440}
+    total_minutes = amount * multiplier[unit]
+    if total_minutes < 1:
+        return None, None, "❌ Duration must be at least 1 minute."
+    if total_minutes > TIMEOUT_MAX_MINUTES:
+        return None, None, "❌ Duration cannot exceed 28 days."
+    return timedelta(minutes=total_minutes), f"{amount}{unit}", None
+
+
 def normalize_country_code(value: str):
     normalized = value.strip().upper()
     if COUNTRY_CODE_PATTERN.fullmatch(normalized):
@@ -281,6 +323,41 @@ async def clear_member_country(member: discord.Member):
     if stripped:
         return True, f"✅ Country removed. Your nickname is now `{stripped}`."
     return True, "✅ Country removed. Your nickname has been reset."
+
+
+async def prune_user_messages(guild: discord.Guild, user_id: int, hours: int):
+    cutoff = discord.utils.utcnow() - timedelta(hours=hours)
+    deleted_count = 0
+    scanned_channels = 0
+    reason = f"Prune last {hours}h messages for kicked member {user_id}"
+    channels = list(guild.text_channels) + list(guild.threads)
+    seen_channel_ids = set()
+
+    for channel in channels:
+        if channel.id in seen_channel_ids:
+            continue
+        seen_channel_ids.add(channel.id)
+
+        perms = channel.permissions_for(guild.me)
+        if not (perms.view_channel and perms.read_message_history and perms.manage_messages):
+            continue
+
+        scanned_channels += 1
+        try:
+            deleted = await channel.purge(
+                limit=None,
+                after=cutoff,
+                check=lambda message: message.author.id == user_id,
+                bulk=True,
+                reason=reason,
+            )
+            deleted_count += len(deleted)
+        except discord.Forbidden:
+            logger.warning("Skipping channel %s while pruning: missing permissions", channel.id)
+        except discord.HTTPException:
+            logger.exception("Failed to prune messages in channel %s", channel.id)
+
+    return deleted_count, scanned_channels
 
 
 def search_forum_links(query: str):
@@ -688,6 +765,174 @@ async def clear_country_prefix(ctx: commands.Context):
     except discord.HTTPException:
         logger.exception("Failed to clear nickname suffix for %s", ctx.author)
         await ctx.send("❌ Could not update your nickname right now. Try again.")
+
+
+@tree.command(
+    name="kick_member",
+    description="Kick a member and prune their last 72 hours of messages",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to kick", reason="Reason for kicking")
+async def kick_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+    logger.info("/kick_member invoked by %s targeting %s", interaction.user, member)
+    if not has_moderator_access(interaction.user):
+        await interaction.response.send_message(
+            "❌ Only moderators can use this command.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    if not can_moderate:
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    action_reason = (reason or "").strip() or f"Kicked by {interaction.user} via bot"
+    target_id = member.id
+    target_name = str(member)
+
+    try:
+        await member.kick(reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to kick member %s", member)
+        await interaction.followup.send(
+            "❌ I can't kick that member. Check role hierarchy and `Kick Members` permission.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to kick member %s", member)
+        await interaction.followup.send("❌ Failed to kick the member. Try again.", ephemeral=True)
+        return
+
+    deleted_count, scanned_channels = await prune_user_messages(interaction.guild, target_id, KICK_PRUNE_HOURS)
+    await interaction.followup.send(
+        f"✅ Kicked **{target_name}** and pruned **{deleted_count}** messages "
+        f"from the last **{KICK_PRUNE_HOURS}** hours across **{scanned_channels}** channels.",
+        ephemeral=True,
+    )
+
+
+@bot.command(name="kickmember")
+async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+    logger.info("!kickmember invoked by %s targeting %s", ctx.author, member)
+    if not has_moderator_access(ctx.author):
+        await ctx.send("❌ Only moderators can use this command.")
+        return
+
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    if not can_moderate:
+        await ctx.send(error_message)
+        return
+
+    action_reason = reason.strip() or f"Kicked by {ctx.author} via bot"
+    target_id = member.id
+    target_name = str(member)
+    try:
+        await member.kick(reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to kick member %s", member)
+        await ctx.send("❌ I can't kick that member. Check role hierarchy and `Kick Members` permission.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to kick member %s", member)
+        await ctx.send("❌ Failed to kick the member. Try again.")
+        return
+
+    deleted_count, scanned_channels = await prune_user_messages(ctx.guild, target_id, KICK_PRUNE_HOURS)
+    await ctx.send(
+        f"✅ Kicked **{target_name}** and pruned **{deleted_count}** messages "
+        f"from the last **{KICK_PRUNE_HOURS}** hours across **{scanned_channels}** channels."
+    )
+
+
+@tree.command(
+    name="timeout_member",
+    description="Timeout a member for a duration (e.g. 30m, 2h, 1d)",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    member="Member to timeout",
+    duration="Duration like 30m, 2h, or 1d",
+    reason="Reason for timeout",
+)
+async def timeout_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    duration: str,
+    reason: str | None = None,
+):
+    logger.info("/timeout_member invoked by %s targeting %s for %s", interaction.user, member, duration)
+    if not has_moderator_access(interaction.user):
+        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    if not can_moderate:
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    timeout_delta, duration_text, parse_error = parse_timeout_duration(duration)
+    if parse_error:
+        await interaction.response.send_message(parse_error, ephemeral=True)
+        return
+
+    until = discord.utils.utcnow() + timeout_delta
+    action_reason = (reason or "").strip() or f"Timed out by {interaction.user} via bot"
+    try:
+        await member.timeout(until, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to timeout member %s", member)
+        await interaction.response.send_message(
+            "❌ I can't timeout that member. Check role hierarchy and `Moderate Members` permission.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to timeout member %s", member)
+        await interaction.response.send_message("❌ Failed to timeout the member. Try again.", ephemeral=True)
+        return
+
+    timestamp = int(until.timestamp())
+    await interaction.response.send_message(
+        f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>).",
+        ephemeral=True,
+    )
+
+
+@bot.command(name="timeoutmember")
+async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""):
+    logger.info("!timeoutmember invoked by %s targeting %s for %s", ctx.author, member, duration)
+    if not has_moderator_access(ctx.author):
+        await ctx.send("❌ Only moderators can use this command.")
+        return
+
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    if not can_moderate:
+        await ctx.send(error_message)
+        return
+
+    timeout_delta, duration_text, parse_error = parse_timeout_duration(duration)
+    if parse_error:
+        await ctx.send(parse_error)
+        return
+
+    until = discord.utils.utcnow() + timeout_delta
+    action_reason = reason.strip() or f"Timed out by {ctx.author} via bot"
+    try:
+        await member.timeout(until, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to timeout member %s", member)
+        await ctx.send("❌ I can't timeout that member. Check role hierarchy and `Moderate Members` permission.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to timeout member %s", member)
+        await ctx.send("❌ Failed to timeout the member. Try again.")
+        return
+
+    timestamp = int(until.timestamp())
+    await ctx.send(f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>).")
 
 
 @tree.command(name="search", description="Search GL.iNet forum and docs", guild=discord.Object(id=GUILD_ID))
