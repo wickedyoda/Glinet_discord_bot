@@ -42,6 +42,9 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
+COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
+COUNTRY_LEGACY_SUFFIX_PATTERN = re.compile(r"_[A-Z]{2}$")
+COUNTRY_FLAG_SUFFIX_PATTERN = re.compile(r"\s*-\s*[\U0001F1E6-\U0001F1FF]{2}$")
 DOCS_SITE_MAP = {
     "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
@@ -227,6 +230,59 @@ def has_allowed_role(member: discord.Member):
     has_role = any(role.name in allowed for role in member.roles)
     logger.debug("User %s allowed: %s", member, has_role)
     return has_role
+
+
+def normalize_country_code(value: str):
+    normalized = value.strip().upper()
+    if COUNTRY_CODE_PATTERN.fullmatch(normalized):
+        return normalized
+    return None
+
+
+def strip_country_suffix(name: str):
+    without_flag = COUNTRY_FLAG_SUFFIX_PATTERN.sub("", name)
+    without_legacy = COUNTRY_LEGACY_SUFFIX_PATTERN.sub("", without_flag)
+    return without_legacy.rstrip(" _-")
+
+
+def country_code_to_flag(country_code: str):
+    return "".join(chr(0x1F1E6 + ord(char) - ord("A")) for char in country_code)
+
+
+def build_country_nickname(member: discord.Member, country_code: str):
+    base_name = member.nick or member.display_name or member.name
+    base_name = strip_country_suffix(base_name)
+    if not base_name:
+        base_name = member.name or "user"
+
+    suffix = f"-{country_code_to_flag(country_code)}"
+    max_base_length = 32 - len(suffix)
+    trimmed_base = base_name[:max_base_length].rstrip() or base_name[:max_base_length]
+    if not trimmed_base:
+        trimmed_base = "user"[:max_base_length]
+    return f"{trimmed_base}{suffix}"
+
+
+async def set_member_country(member: discord.Member, country_code: str):
+    nickname = build_country_nickname(member, country_code)
+    if member.nick == nickname:
+        return False, f"ℹ️ Your nickname already includes `{country_code}`."
+    await member.edit(nick=nickname, reason=f"Set country code to {country_code}")
+    return True, f"✅ Country updated. Your nickname is now `{nickname}`."
+
+
+async def clear_member_country(member: discord.Member):
+    if not member.nick:
+        return False, "❌ You do not currently have a server nickname to update."
+
+    stripped = strip_country_suffix(member.nick)
+    if stripped == member.nick:
+        return False, "❌ Your nickname does not end with a country code suffix."
+
+    await member.edit(nick=stripped or None, reason="Clear country code suffix")
+    if stripped:
+        return True, f"✅ Country removed. Your nickname is now `{stripped}`."
+    return True, "✅ Country removed. Your nickname has been reset."
 
 
 def search_forum_links(query: str):
@@ -551,6 +607,89 @@ async def getaccess(interaction: discord.Interaction):
         await interaction.response.send_message(
             "❌ Could not assign role. Contact an admin.", ephemeral=True
         )
+
+
+@tree.command(name="country", description="Add your country code to your nickname", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(code="2-letter country code (e.g. US, CA, DE)")
+async def country_slash(interaction: discord.Interaction, code: str):
+    logger.info("/country invoked by %s with code %s", interaction.user, code)
+    normalized = normalize_country_code(code)
+    if not normalized:
+        await interaction.response.send_message(
+            "❌ Please provide a valid 2-letter country code (A-Z).",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        success, message = await set_member_country(interaction.user, normalized)
+        await interaction.response.send_message(message, ephemeral=True)
+        logger.info("/country result for %s success=%s", interaction.user, success)
+    except discord.Forbidden:
+        logger.exception("Missing permission to edit nickname for %s", interaction.user)
+        await interaction.response.send_message(
+            "❌ I can't edit your nickname. Check role hierarchy and nickname permissions.",
+            ephemeral=True,
+        )
+    except discord.HTTPException:
+        logger.exception("Failed to update nickname for %s", interaction.user)
+        await interaction.response.send_message(
+            "❌ Could not update your nickname right now. Try again.",
+            ephemeral=True,
+        )
+
+
+@bot.command(name="country")
+async def country_prefix(ctx: commands.Context, code: str):
+    logger.info("!country invoked by %s with code %s", ctx.author, code)
+    normalized = normalize_country_code(code)
+    if not normalized:
+        await ctx.send("❌ Please provide a valid 2-letter country code (A-Z).")
+        return
+
+    try:
+        _, message = await set_member_country(ctx.author, normalized)
+        await ctx.send(message)
+    except discord.Forbidden:
+        logger.exception("Missing permission to edit nickname for %s", ctx.author)
+        await ctx.send("❌ I can't edit your nickname. Check role hierarchy and nickname permissions.")
+    except discord.HTTPException:
+        logger.exception("Failed to update nickname for %s", ctx.author)
+        await ctx.send("❌ Could not update your nickname right now. Try again.")
+
+
+@tree.command(name="clear_country", description="Remove country code suffix from your nickname", guild=discord.Object(id=GUILD_ID))
+async def clear_country_slash(interaction: discord.Interaction):
+    logger.info("/clear_country invoked by %s", interaction.user)
+    try:
+        _, message = await clear_member_country(interaction.user)
+        await interaction.response.send_message(message, ephemeral=True)
+    except discord.Forbidden:
+        logger.exception("Missing permission to edit nickname for %s", interaction.user)
+        await interaction.response.send_message(
+            "❌ I can't edit your nickname. Check role hierarchy and nickname permissions.",
+            ephemeral=True,
+        )
+    except discord.HTTPException:
+        logger.exception("Failed to clear nickname suffix for %s", interaction.user)
+        await interaction.response.send_message(
+            "❌ Could not update your nickname right now. Try again.",
+            ephemeral=True,
+        )
+
+
+@bot.command(name="clearcountry")
+async def clear_country_prefix(ctx: commands.Context):
+    logger.info("!clearcountry invoked by %s", ctx.author)
+    try:
+        _, message = await clear_member_country(ctx.author)
+        await ctx.send(message)
+    except discord.Forbidden:
+        logger.exception("Missing permission to edit nickname for %s", ctx.author)
+        await ctx.send("❌ I can't edit your nickname. Check role hierarchy and nickname permissions.")
+    except discord.HTTPException:
+        logger.exception("Failed to clear nickname suffix for %s", ctx.author)
+        await ctx.send("❌ Could not update your nickname right now. Try again.")
 
 
 @tree.command(name="search", description="Search GL.iNet forum and docs", guild=discord.Object(id=GUILD_ID))
