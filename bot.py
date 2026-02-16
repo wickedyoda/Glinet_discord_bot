@@ -52,6 +52,7 @@ MODERATOR_ROLE_IDS = {
     int(os.getenv("MODERATOR_ROLE_ID", "1294957416294645771")),
     int(os.getenv("ADMIN_ROLE_ID", "1138302148292116551")),
 }
+MOD_LOG_CHANNEL_ID = int(os.getenv("MOD_LOG_CHANNEL_ID", "1311820410269995009"))
 KICK_PRUNE_HOURS = int(os.getenv("KICK_PRUNE_HOURS", "72"))
 TIMEOUT_MAX_MINUTES = 28 * 24 * 60
 DOCS_SITE_MAP = {
@@ -358,6 +359,66 @@ async def prune_user_messages(guild: discord.Guild, user_id: int, hours: int):
             logger.exception("Failed to prune messages in channel %s", channel.id)
 
     return deleted_count, scanned_channels
+
+
+async def resolve_mod_log_channel(guild: discord.Guild):
+    channel = guild.get_channel(MOD_LOG_CHANNEL_ID)
+    if channel is None:
+        channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(MOD_LOG_CHANNEL_ID)
+        except discord.NotFound:
+            logger.warning("Moderation log channel %s not found", MOD_LOG_CHANNEL_ID)
+            return None
+        except discord.Forbidden:
+            logger.warning("No permission to access moderation log channel %s", MOD_LOG_CHANNEL_ID)
+            return None
+        except discord.HTTPException:
+            logger.exception("Failed to fetch moderation log channel %s", MOD_LOG_CHANNEL_ID)
+            return None
+
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+
+    logger.warning("Moderation log channel %s is not a text channel", MOD_LOG_CHANNEL_ID)
+    return None
+
+
+async def send_moderation_log(
+    guild: discord.Guild,
+    actor: discord.Member,
+    action: str,
+    target: discord.Member | None = None,
+    reason: str | None = None,
+    outcome: str = "success",
+    details: str | None = None,
+):
+    channel = await resolve_mod_log_channel(guild)
+    if channel is None:
+        return False
+
+    target_text = f"{target} (`{target.id}`)" if target else "N/A"
+    reason_text = reason or "N/A"
+    details_text = details or "N/A"
+    message = (
+        "🛡️ **Moderation Action**\n"
+        f"**Moderator:** {actor.mention} (`{actor.id}`)\n"
+        f"**Action:** `{action}`\n"
+        f"**Target:** {target_text}\n"
+        f"**Outcome:** `{outcome}`\n"
+        f"**Reason:** {reason_text}\n"
+        f"**Details:** {details_text}"
+    )
+    try:
+        await channel.send(message)
+        return True
+    except discord.Forbidden:
+        logger.warning("No permission to send moderation logs to channel %s", MOD_LOG_CHANNEL_ID)
+        return False
+    except discord.HTTPException:
+        logger.exception("Failed to send moderation log for action %s", action)
+        return False
 
 
 def search_forum_links(query: str):
@@ -768,6 +829,64 @@ async def clear_country_prefix(ctx: commands.Context):
 
 
 @tree.command(
+    name="modlog_test",
+    description="Send a test moderation log entry",
+    guild=discord.Object(id=GUILD_ID),
+)
+async def modlog_test_slash(interaction: discord.Interaction):
+    logger.info("/modlog_test invoked by %s", interaction.user)
+    if not has_moderator_access(interaction.user):
+        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+        return
+
+    sent = await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        action="modlog_test",
+        target=interaction.user,
+        reason="Manual moderation log test",
+        outcome="success",
+        details="Triggered via /modlog_test",
+    )
+    if sent:
+        await interaction.response.send_message(
+            f"✅ Test moderation log sent to <#{MOD_LOG_CHANNEL_ID}>.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            f"❌ Could not send test log to channel ID `{MOD_LOG_CHANNEL_ID}`. "
+            "Check channel ID and bot permissions.",
+            ephemeral=True,
+        )
+
+
+@bot.command(name="modlogtest")
+async def modlog_test_prefix(ctx: commands.Context):
+    logger.info("!modlogtest invoked by %s", ctx.author)
+    if not has_moderator_access(ctx.author):
+        await ctx.send("❌ Only moderators can use this command.")
+        return
+
+    sent = await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        action="modlog_test",
+        target=ctx.author,
+        reason="Manual moderation log test",
+        outcome="success",
+        details="Triggered via !modlogtest",
+    )
+    if sent:
+        await ctx.send(f"✅ Test moderation log sent to <#{MOD_LOG_CHANNEL_ID}>.")
+    else:
+        await ctx.send(
+            f"❌ Could not send test log to channel ID `{MOD_LOG_CHANNEL_ID}`. "
+            "Check channel ID and bot permissions."
+        )
+
+
+@tree.command(
     name="kick_member",
     description="Kick a member and prune their last 72 hours of messages",
     guild=discord.Object(id=GUILD_ID),
@@ -784,6 +903,15 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
 
     can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
     if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "kick_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
         await interaction.response.send_message(error_message, ephemeral=True)
         return
 
@@ -796,6 +924,15 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
         await member.kick(reason=action_reason)
     except discord.Forbidden:
         logger.exception("Missing permission to kick member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "kick_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Kick Members` permission or role hierarchy block.",
+        )
         await interaction.followup.send(
             "❌ I can't kick that member. Check role hierarchy and `Kick Members` permission.",
             ephemeral=True,
@@ -803,10 +940,30 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
         return
     except discord.HTTPException:
         logger.exception("Failed to kick member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "kick_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while kicking member.",
+        )
         await interaction.followup.send("❌ Failed to kick the member. Try again.", ephemeral=True)
         return
 
     deleted_count, scanned_channels = await prune_user_messages(interaction.guild, target_id, KICK_PRUNE_HOURS)
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "kick_member",
+        target=member,
+        reason=action_reason,
+        details=(
+            f"Kicked successfully; pruned {deleted_count} messages "
+            f"from last {KICK_PRUNE_HOURS}h across {scanned_channels} channels."
+        ),
+    )
     await interaction.followup.send(
         f"✅ Kicked **{target_name}** and pruned **{deleted_count}** messages "
         f"from the last **{KICK_PRUNE_HOURS}** hours across **{scanned_channels}** channels.",
@@ -823,6 +980,15 @@ async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, r
 
     can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
     if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "kick_member",
+            member,
+            reason.strip() or None,
+            outcome="blocked",
+            details=error_message,
+        )
         await ctx.send(error_message)
         return
 
@@ -833,14 +999,43 @@ async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, r
         await member.kick(reason=action_reason)
     except discord.Forbidden:
         logger.exception("Missing permission to kick member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "kick_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Kick Members` permission or role hierarchy block.",
+        )
         await ctx.send("❌ I can't kick that member. Check role hierarchy and `Kick Members` permission.")
         return
     except discord.HTTPException:
         logger.exception("Failed to kick member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "kick_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while kicking member.",
+        )
         await ctx.send("❌ Failed to kick the member. Try again.")
         return
 
     deleted_count, scanned_channels = await prune_user_messages(ctx.guild, target_id, KICK_PRUNE_HOURS)
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "kick_member",
+        target=member,
+        reason=action_reason,
+        details=(
+            f"Kicked successfully; pruned {deleted_count} messages "
+            f"from last {KICK_PRUNE_HOURS}h across {scanned_channels} channels."
+        ),
+    )
     await ctx.send(
         f"✅ Kicked **{target_name}** and pruned **{deleted_count}** messages "
         f"from the last **{KICK_PRUNE_HOURS}** hours across **{scanned_channels}** channels."
@@ -870,11 +1065,29 @@ async def timeout_member_slash(
 
     can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
     if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "timeout_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
         await interaction.response.send_message(error_message, ephemeral=True)
         return
 
     timeout_delta, duration_text, parse_error = parse_timeout_duration(duration)
     if parse_error:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "timeout_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=parse_error,
+        )
         await interaction.response.send_message(parse_error, ephemeral=True)
         return
 
@@ -884,6 +1097,15 @@ async def timeout_member_slash(
         await member.timeout(until, reason=action_reason)
     except discord.Forbidden:
         logger.exception("Missing permission to timeout member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "timeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Moderate Members` permission or role hierarchy block.",
+        )
         await interaction.response.send_message(
             "❌ I can't timeout that member. Check role hierarchy and `Moderate Members` permission.",
             ephemeral=True,
@@ -891,10 +1113,27 @@ async def timeout_member_slash(
         return
     except discord.HTTPException:
         logger.exception("Failed to timeout member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "timeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while applying timeout.",
+        )
         await interaction.response.send_message("❌ Failed to timeout the member. Try again.", ephemeral=True)
         return
 
     timestamp = int(until.timestamp())
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "timeout_member",
+        target=member,
+        reason=action_reason,
+        details=f"Timed out for {duration_text} until <t:{timestamp}:f>.",
+    )
     await interaction.response.send_message(
         f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>).",
         ephemeral=True,
@@ -910,11 +1149,29 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
 
     can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
     if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "timeout_member",
+            member,
+            reason.strip() or None,
+            outcome="blocked",
+            details=error_message,
+        )
         await ctx.send(error_message)
         return
 
     timeout_delta, duration_text, parse_error = parse_timeout_duration(duration)
     if parse_error:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "timeout_member",
+            member,
+            reason.strip() or None,
+            outcome="blocked",
+            details=parse_error,
+        )
         await ctx.send(parse_error)
         return
 
@@ -924,14 +1181,40 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
         await member.timeout(until, reason=action_reason)
     except discord.Forbidden:
         logger.exception("Missing permission to timeout member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "timeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Moderate Members` permission or role hierarchy block.",
+        )
         await ctx.send("❌ I can't timeout that member. Check role hierarchy and `Moderate Members` permission.")
         return
     except discord.HTTPException:
         logger.exception("Failed to timeout member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "timeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while applying timeout.",
+        )
         await ctx.send("❌ Failed to timeout the member. Try again.")
         return
 
     timestamp = int(until.timestamp())
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "timeout_member",
+        target=member,
+        reason=action_reason,
+        details=f"Timed out for {duration_text} until <t:{timestamp}:f>.",
+    )
     await ctx.send(f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>).")
 
 

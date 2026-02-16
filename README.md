@@ -39,6 +39,8 @@ This bot allows select Discord users to create **role-bound invite links** and *
 - Moderation commands (moderators only):
   - `/kick_member`, `!kickmember` (kicks and prunes 72h messages)
   - `/timeout_member`, `!timeoutmember` (duration like `30m`, `2h`, `1d`)
+  - `/modlog_test`, `!modlogtest` (sends a test moderation log message)
+  - All moderation actions are logged to a configured logs channel.
 
 ---
 
@@ -122,6 +124,11 @@ To remove it, use:
   - Kicks the user and prunes their messages from the last 72 hours.
 - `/timeout_member @user <duration> [reason]` or `!timeoutmember @user <duration> [reason]`
   - Timeouts for a duration like `30m`, `2h`, or `1d` (up to 28 days).
+- `/modlog_test` or `!modlogtest`
+  - Sends a test moderation log message to verify log channel delivery.
+- Moderation log channel:
+  - Controlled by `MOD_LOG_CHANNEL_ID` (default: `1311820410269995009`)
+  - Logs include moderator, action, target, outcome, reason, and details.
 
 ---
 
@@ -167,6 +174,7 @@ services:
       - KICK_PRUNE_HOURS=72
       - MODERATOR_ROLE_ID=1294957416294645771
       - ADMIN_ROLE_ID=1138302148292116551
+      - MOD_LOG_CHANNEL_ID=1311820410269995009
     volumes:
       - ./data:/app/data
 ```
