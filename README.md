@@ -104,11 +104,11 @@ The bot returns top matching links for the selected source(s).
 
 ### ➤ 8. Country of Origin Nickname
 
-Users can add a country flag suffix to their nickname with:
+Users can add a country code suffix to their nickname with:
 - `/country US`
 - `!country US`
 
-This updates their server nickname to end with `-🇺🇸` (or another flag from a 2-letter code).
+This updates their server nickname to end with ` - US` (space, dash, space, 2-letter code).
 To remove it, use:
 - `/clear_country`
 - `!clearcountry`

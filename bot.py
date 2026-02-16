@@ -45,6 +45,7 @@ SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
 COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
 COUNTRY_LEGACY_SUFFIX_PATTERN = re.compile(r"_[A-Z]{2}$")
 COUNTRY_FLAG_SUFFIX_PATTERN = re.compile(r"\s*-\s*[\U0001F1E6-\U0001F1FF]{2}$")
+COUNTRY_CODE_SUFFIX_PATTERN = re.compile(r"\s*-\s*[A-Z]{2}$")
 DOCS_SITE_MAP = {
     "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
@@ -241,12 +242,9 @@ def normalize_country_code(value: str):
 
 def strip_country_suffix(name: str):
     without_flag = COUNTRY_FLAG_SUFFIX_PATTERN.sub("", name)
-    without_legacy = COUNTRY_LEGACY_SUFFIX_PATTERN.sub("", without_flag)
+    without_code = COUNTRY_CODE_SUFFIX_PATTERN.sub("", without_flag)
+    without_legacy = COUNTRY_LEGACY_SUFFIX_PATTERN.sub("", without_code)
     return without_legacy.rstrip(" _-")
-
-
-def country_code_to_flag(country_code: str):
-    return "".join(chr(0x1F1E6 + ord(char) - ord("A")) for char in country_code)
 
 
 def build_country_nickname(member: discord.Member, country_code: str):
@@ -255,7 +253,7 @@ def build_country_nickname(member: discord.Member, country_code: str):
     if not base_name:
         base_name = member.name or "user"
 
-    suffix = f"-{country_code_to_flag(country_code)}"
+    suffix = f" - {country_code}"
     max_base_length = 32 - len(suffix)
     trimmed_base = base_name[:max_base_length].rstrip() or base_name[:max_base_length]
     if not trimmed_base:
