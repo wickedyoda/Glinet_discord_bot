@@ -27,6 +27,12 @@ This bot allows select Discord users to create **role-bound invite links** and *
 - Tag-based auto-replies for messages like `!betatest`, configurable via `data/tag_responses.json`.
 - Tag-based auto-replies are also available as slash commands (e.g., `/betatest`).
 - `!list` message to display available tag commands.
+- Search commands:
+  - Combined: `/search`, `!search`
+  - Forum only: `/search_forum`, `!searchforum`
+  - KVM docs only: `/search_kvm`, `!searchkvm`
+  - IoT docs only: `/search_iot`, `!searchiot`
+  - Router v4 docs only: `/search_router`, `!searchrouter`
 
 ---
 
@@ -76,6 +82,23 @@ To add more later, edit the JSON file and add new keys for each tag. Changes are
 
 Send `!list` in a channel to get a list of configured tag commands from `data/tag_responses.json`.
 
+### ➤ 7. Forum Search
+
+Use these commands:
+- `/search` or `!search` for all sources combined.
+- `/search_forum` or `!searchforum` for forum-only search.
+- `/search_kvm` or `!searchkvm` for KVM docs only.
+- `/search_iot` or `!searchiot` for IoT docs only.
+- `/search_router` or `!searchrouter` for Router v4 docs only.
+
+Search sources:
+- [forum.gl-inet.com](https://forum.gl-inet.com/)
+- [docs.gl-inet.com/kvm/en](https://docs.gl-inet.com/kvm/en/)
+- [docs.gl-inet.com/iot/en](https://docs.gl-inet.com/iot/en/)
+- [docs.gl-inet.com/router/en/4](https://docs.gl-inet.com/router/en/4/)
+
+The bot returns top matching links for the selected source(s).
+
 ---
 
 ## 🛠 Project Structure
@@ -112,6 +135,11 @@ services:
       - GUILD_ID=your_guild_id
       - GENERAL_CHANNEL_ID=general_channel_id
       - LOG_LEVEL=INFO
+      - FORUM_BASE_URL=https://forum.gl-inet.com
+      - FORUM_MAX_RESULTS=5
+      - DOCS_MAX_RESULTS_PER_SITE=2
+      - DOCS_INDEX_TTL_SECONDS=3600
+      - SEARCH_RESPONSE_MAX_CHARS=1900
     volumes:
       - ./data:/app/data
 ```
@@ -141,6 +169,11 @@ docker compose up -d
 | `/generateinvite` | Admins and Gl.iNet Mods     |
 | `/getaccess`   | Any member                      |
 | `/enter_role`  | Any member                      |
+| `/search`      | Any member                      |
+| `/search_forum`| Any member                      |
+| `/search_kvm`  | Any member                      |
+| `/search_iot`  | Any member                      |
+| `/search_router`| Any member                     |
 
 ---
 
@@ -183,7 +216,7 @@ For advanced support, join WickedYoda's Discord https://discord.gg/m6UjX6UhKe
 ## 🛡️ Role Permissions
 
 - Only members with the `Employee` role can use `/submitrole`.
-- All members can use `/getaccess` and `/enter_role`.
+- All members can use `/getaccess`, `/enter_role`, `/search`, `/search_forum`, `/search_kvm`, `/search_iot`, and `/search_router`.
 - You can expand access to more roles like `Admin` or `GL.iNet Moderators` by adjusting role checks in `bot.py`.
 
 ---
