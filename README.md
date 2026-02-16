@@ -24,6 +24,23 @@ This bot allows select Discord users to create **role-bound invite links** and *
 - Only users with the **Employee** role can run role-submitting commands.
 - **Admins** and **Gl.iNet Moderators** get full access to manage all bot commands.
 - Invite-based role assignment works for new members who join via generated links.
+- Tag-based auto-replies for messages like `!betatest`, configurable via `data/tag_responses.json`.
+- Tag-based auto-replies are also available as slash commands (e.g., `/betatest`).
+- `!list` message to display available tag commands.
+- Search commands:
+  - Combined: `/search`, `!search`
+  - Forum only: `/search_forum`, `!searchforum`
+  - KVM docs only: `/search_kvm`, `!searchkvm`
+  - IoT docs only: `/search_iot`, `!searchiot`
+  - Router v4 docs only: `/search_router`, `!searchrouter`
+- Country nickname commands:
+  - Set: `/country`, `!country` (example: `US`)
+  - Clear: `/clear_country`, `!clearcountry`
+- Moderation commands (moderators only):
+  - `/kick_member`, `!kickmember` (kicks and prunes 72h messages)
+  - `/timeout_member`, `!timeoutmember` (duration like `30m`, `2h`, `1d`)
+  - `/modlog_test`, `!modlogtest` (sends a test moderation log message)
+  - All moderation actions are logged to a configured logs channel.
 
 ---
 
@@ -54,6 +71,65 @@ If someone joins the server via a generated invite, the bot will automatically a
 
 All users can run `/getaccess` to receive the default access role defined in `access_role.txt`.
 
+### ➤ 5. Tag-Based Auto Replies
+
+You can configure short tag responses (like `!betatest`) in `data/tag_responses.json`. When a user sends a message that starts with a configured tag, the bot replies with the preset response.
+Each tag is also registered as a slash command (for example, `!betatest` becomes `/betatest`) on startup.
+
+Example file contents:
+```json
+{
+  "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
+  "!support": "🛠️ Need help? Please open a ticket or message a moderator."
+}
+```
+
+To add more later, edit the JSON file and add new keys for each tag. Changes are picked up automatically without restarting the bot.
+
+### ➤ 6. Command Listing
+
+Send `!list` in a channel to get a list of configured tag commands from `data/tag_responses.json`.
+
+### ➤ 7. Forum Search
+
+Use these commands:
+- `/search` or `!search` for all sources combined.
+- `/search_forum` or `!searchforum` for forum-only search.
+- `/search_kvm` or `!searchkvm` for KVM docs only.
+- `/search_iot` or `!searchiot` for IoT docs only.
+- `/search_router` or `!searchrouter` for Router v4 docs only.
+
+Search sources:
+- [forum.gl-inet.com](https://forum.gl-inet.com/)
+- [docs.gl-inet.com/kvm/en](https://docs.gl-inet.com/kvm/en/)
+- [docs.gl-inet.com/iot/en](https://docs.gl-inet.com/iot/en/)
+- [docs.gl-inet.com/router/en/4](https://docs.gl-inet.com/router/en/4/)
+
+The bot returns top matching links for the selected source(s).
+
+### ➤ 8. Country of Origin Nickname
+
+Users can add a country code suffix to their nickname with:
+- `/country US`
+- `!country US`
+
+This updates their server nickname to end with ` - US` (space, dash, space, 2-letter code).
+To remove it, use:
+- `/clear_country`
+- `!clearcountry`
+
+### ➤ 9. Moderation Commands
+
+- `/kick_member @user [reason]` or `!kickmember @user [reason]`
+  - Kicks the user and prunes their messages from the last 72 hours.
+- `/timeout_member @user <duration> [reason]` or `!timeoutmember @user <duration> [reason]`
+  - Timeouts for a duration like `30m`, `2h`, or `1d` (up to 28 days).
+- `/modlog_test` or `!modlogtest`
+  - Sends a test moderation log message to verify log channel delivery.
+- Moderation log channel:
+  - Controlled by `MOD_LOG_CHANNEL_ID` (default: `1311820410269995009`)
+  - Logs include moderator, action, target, outcome, reason, and details.
+
 ---
 
 ## 🛠 Project Structure
@@ -67,6 +143,8 @@ All users can run `/getaccess` to receive the default access role defined in `ac
 ├── access_role.txt      # (Generated) Default role ID for /getaccess
 ├── role_codes.txt       # (Generated) Stores role-code pairs
 ├── permanent_invite.txt # (Generated) Optional saved invite link
+├── data
+│   └── tag_responses.json # (Config) Tag-based auto reply mapping
 └── README.md            # You're reading it!
 ```
 
@@ -88,11 +166,20 @@ services:
       - GUILD_ID=your_guild_id
       - GENERAL_CHANNEL_ID=general_channel_id
       - LOG_LEVEL=INFO
+      - FORUM_BASE_URL=https://forum.gl-inet.com
+      - FORUM_MAX_RESULTS=5
+      - DOCS_MAX_RESULTS_PER_SITE=2
+      - DOCS_INDEX_TTL_SECONDS=3600
+      - SEARCH_RESPONSE_MAX_CHARS=1900
+      - KICK_PRUNE_HOURS=72
+      - MODERATOR_ROLE_ID=1294957416294645771
+      - ADMIN_ROLE_ID=1138302148292116551
+      - MOD_LOG_CHANNEL_ID=1311820410269995009
     volumes:
       - ./data:/app/data
 ```
 
-> 📁 Create a `data/` folder to persist files like `access_role.txt`, `role_codes.txt`, and `invite_roles.json`.
+> 📁 Create a `data/` folder to persist files like `access_role.txt`, `role_codes.txt`, `invite_roles.json`, and `tag_responses.json`.
 > A log file `bot.log` will also be written to this folder.
 
 To start:
@@ -117,6 +204,15 @@ docker compose up -d
 | `/generateinvite` | Admins and Gl.iNet Mods     |
 | `/getaccess`   | Any member                      |
 | `/enter_role`  | Any member                      |
+| `/search`      | Any member                      |
+| `/search_forum`| Any member                      |
+| `/search_kvm`  | Any member                      |
+| `/search_iot`  | Any member                      |
+| `/search_router`| Any member                     |
+| `/country`     | Any member                      |
+| `/clear_country`| Any member                     |
+| `/kick_member` | Moderator/Admin roles           |
+| `/timeout_member` | Moderator/Admin roles        |
 
 ---
 
@@ -129,7 +225,7 @@ Use this link to add the bot to your server:
 Make sure to:
 - Enable **Message Content** and **Server Members Intent**.
 - Grant it permission to **manage roles**, **create invites**,
-  and **manage server** so invite tracking works.
+  **manage server**, **kick members**, **moderate members**, and **manage messages**.
 
 ---
 
@@ -159,7 +255,8 @@ For advanced support, join WickedYoda's Discord https://discord.gg/m6UjX6UhKe
 ## 🛡️ Role Permissions
 
 - Only members with the `Employee` role can use `/submitrole`.
-- All members can use `/getaccess` and `/enter_role`.
-- You can expand access to more roles like `Admin` or `GL.iNet Moderators` by adjusting role checks in `bot.py`.
+- Members with role IDs `1294957416294645771` (Moderator) or `1138302148292116551` (Admin) can use `/kick_member` and `/timeout_member`.
+- All members can use `/getaccess`, `/enter_role`, `/search`, `/search_forum`, `/search_kvm`, `/search_iot`, `/search_router`, `/country`, and `/clear_country`.
+- You can change moderation access role IDs using `MODERATOR_ROLE_ID` and `ADMIN_ROLE_ID` env vars.
 
 ---
