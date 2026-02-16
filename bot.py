@@ -4,8 +4,14 @@ from discord import app_commands
 import logging
 import os
 import json
+import asyncio
+import re
+import time
+from html import unescape
+from urllib.parse import urljoin
 from dotenv import load_dotenv
 import random
+import requests
 
 load_dotenv()
 
@@ -31,6 +37,17 @@ logger.addHandler(file_handler)
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
 GENERAL_CHANNEL_ID = int(os.getenv("GENERAL_CHANNEL_ID", "0"))
+FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", "https://forum.gl-inet.com").rstrip("/")
+FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
+DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
+DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
+SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
+DOCS_SITE_MAP = {
+    "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
+    "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
+    "router": ("Router Docs v4", "https://docs.gl-inet.com/router/en/4"),
+}
+DOCS_SOURCES = [DOCS_SITE_MAP["kvm"], DOCS_SITE_MAP["iot"], DOCS_SITE_MAP["router"]]
 
 ROLE_FILE = os.path.join(DATA_DIR, "access_role.txt")
 INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
@@ -53,6 +70,7 @@ tree = bot.tree
 tag_responses = {}
 tag_responses_mtime = None
 tag_command_names = set()
+docs_index_cache = {}
 
 
 def normalize_tag(tag: str) -> str:
@@ -209,6 +227,165 @@ def has_allowed_role(member: discord.Member):
     has_role = any(role.name in allowed for role in member.roles)
     logger.debug("User %s allowed: %s", member, has_role)
     return has_role
+
+
+def search_forum_links(query: str):
+    search_url = f"{FORUM_BASE_URL}/search.json"
+    try:
+        response = requests.get(search_url, params={"q": query}, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException:
+        logger.exception("Forum search request failed for query: %s", query)
+        return ["❌ Failed to fetch forum results."]
+    except ValueError:
+        logger.exception("Forum search returned invalid JSON for query: %s", query)
+        return ["❌ Forum returned an invalid response."]
+
+    topics = data.get("topics", [])
+    links = []
+    for topic in topics[:FORUM_MAX_RESULTS]:
+        topic_id = topic.get("id")
+        slug = topic.get("slug")
+        if topic_id and slug:
+            links.append(f"{FORUM_BASE_URL}/t/{slug}/{topic_id}")
+
+    return links if links else ["No results found."]
+
+
+def normalize_search_terms(query: str):
+    terms = [term.lower() for term in re.findall(r"[a-zA-Z0-9]+", query)]
+    return list(dict.fromkeys(terms))
+
+
+def clean_search_text(value: str):
+    no_html = re.sub(r"<[^>]+>", " ", value or "")
+    return re.sub(r"\s+", " ", unescape(no_html)).strip()
+
+
+def load_docs_index(base_url: str):
+    now = time.time()
+    cached = docs_index_cache.get(base_url)
+    if cached and now - cached["fetched_at"] < DOCS_INDEX_TTL_SECONDS:
+        return cached["docs"]
+
+    index_url = f"{base_url}/search/search_index.json"
+    try:
+        response = requests.get(index_url, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        docs = data.get("docs", [])
+        if not isinstance(docs, list):
+            docs = []
+        docs_index_cache[base_url] = {"fetched_at": now, "docs": docs}
+        return docs
+    except requests.RequestException:
+        logger.exception("Docs index request failed for %s", base_url)
+        return []
+    except ValueError:
+        logger.exception("Docs index returned invalid JSON for %s", base_url)
+        return []
+
+
+def score_document(title: str, text: str, terms):
+    title_lc = title.lower()
+    text_lc = text.lower()
+    score = 0
+    for term in terms:
+        if term in title_lc:
+            score += 8
+        if term in text_lc:
+            score += min(4, text_lc.count(term))
+    return score
+
+
+def search_docs_site_links(query: str, base_url: str):
+    terms = normalize_search_terms(query)
+    docs = load_docs_index(base_url)
+    ranked = []
+    for doc in docs:
+        location = doc.get("location")
+        if not location:
+            continue
+        title = clean_search_text(str(doc.get("title", "")))
+        text = clean_search_text(str(doc.get("text", "")))
+        score = score_document(title, text, terms)
+        if score <= 0:
+            continue
+        resolved_url = urljoin(f"{base_url}/", location)
+        ranked.append((score, title or location, resolved_url))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return ranked[:DOCS_MAX_RESULTS_PER_SITE]
+
+
+def search_docs_links(query: str):
+    by_site = {}
+    for site_name, base_url in DOCS_SOURCES:
+        by_site[site_name] = search_docs_site_links(query, base_url)
+    return by_site
+
+
+def trim_search_message(message: str):
+    if len(message) <= SEARCH_RESPONSE_MAX_CHARS:
+        return message
+    trimmed = message[: SEARCH_RESPONSE_MAX_CHARS - 24].rsplit("\n", 1)[0]
+    return f"{trimmed}\n...results truncated."
+
+
+def build_search_message(query: str):
+    forum_results = search_forum_links(query)
+    docs_results = search_docs_links(query)
+
+    lines = [f"🔎 Results for: `{query}`", "", "**Forum**"]
+    forum_links = [item for item in forum_results if item.startswith("http")]
+    if forum_links:
+        lines.extend([f"- {link}" for link in forum_links])
+    else:
+        lines.append(f"- {forum_results[0]}")
+
+    lines.append("")
+    lines.append("**Docs**")
+    docs_found = 0
+    for site_name, _ in DOCS_SOURCES:
+        site_results = docs_results.get(site_name, [])
+        if not site_results:
+            continue
+        docs_found += len(site_results)
+        lines.append(f"{site_name}:")
+        for _, title, link in site_results:
+            lines.append(f"- {title} - {link}")
+
+    if docs_found == 0:
+        lines.append("No matching docs results found.")
+
+    return trim_search_message("\n".join(lines))
+
+
+def build_forum_search_message(query: str):
+    forum_results = search_forum_links(query)
+    lines = [f"🔎 Forum results for: `{query}`", "", "**Forum**"]
+    forum_links = [item for item in forum_results if item.startswith("http")]
+    if forum_links:
+        lines.extend([f"- {link}" for link in forum_links])
+    else:
+        lines.append(f"- {forum_results[0]}")
+    return trim_search_message("\n".join(lines))
+
+
+def build_docs_site_search_message(query: str, site_key: str):
+    site_info = DOCS_SITE_MAP.get(site_key)
+    if not site_info:
+        return "❌ Invalid documentation site."
+
+    site_name, base_url = site_info
+    site_results = search_docs_site_links(query, base_url)
+    lines = [f"🔎 {site_name} results for: `{query}`", "", f"**{site_name}**"]
+    if site_results:
+        for _, title, link in site_results:
+            lines.append(f"- {title} - {link}")
+    else:
+        lines.append("- No matching docs results found.")
+    return trim_search_message("\n".join(lines))
 
 # Runtime caches for invite tracking
 invite_roles = load_invite_roles()
@@ -374,6 +551,131 @@ async def getaccess(interaction: discord.Interaction):
         await interaction.response.send_message(
             "❌ Could not assign role. Contact an admin.", ephemeral=True
         )
+
+
+@tree.command(name="search", description="Search GL.iNet forum and docs", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(query="Enter search keywords")
+async def search_slash(interaction: discord.Interaction, query: str):
+    logger.info("/search invoked by %s with query %s", interaction.user, query)
+    query = query.strip()
+    if not query:
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    message = await asyncio.to_thread(build_search_message, query)
+    await interaction.followup.send(message)
+
+
+@bot.command(name="search")
+async def search_prefix(ctx: commands.Context, *, query: str):
+    logger.info("!search invoked by %s with query %s", ctx.author, query)
+    query = query.strip()
+    if not query:
+        await ctx.send("❌ Please provide a search query.")
+        return
+    await ctx.send("🔍 Searching forum + docs...")
+    message = await asyncio.to_thread(build_search_message, query)
+    await ctx.send(message)
+
+
+@tree.command(name="search_forum", description="Search the GL.iNet forum only", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(query="Enter search keywords")
+async def search_forum_slash(interaction: discord.Interaction, query: str):
+    logger.info("/search_forum invoked by %s with query %s", interaction.user, query)
+    query = query.strip()
+    if not query:
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    message = await asyncio.to_thread(build_forum_search_message, query)
+    await interaction.followup.send(message)
+
+
+@bot.command(name="searchforum")
+async def search_forum_prefix(ctx: commands.Context, *, query: str):
+    logger.info("!searchforum invoked by %s with query %s", ctx.author, query)
+    query = query.strip()
+    if not query:
+        await ctx.send("❌ Please provide a search query.")
+        return
+    await ctx.send("🔍 Searching forum...")
+    message = await asyncio.to_thread(build_forum_search_message, query)
+    await ctx.send(message)
+
+
+@tree.command(name="search_kvm", description="Search KVM docs only", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(query="Enter search keywords")
+async def search_kvm_slash(interaction: discord.Interaction, query: str):
+    logger.info("/search_kvm invoked by %s with query %s", interaction.user, query)
+    query = query.strip()
+    if not query:
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    message = await asyncio.to_thread(build_docs_site_search_message, query, "kvm")
+    await interaction.followup.send(message)
+
+
+@bot.command(name="searchkvm")
+async def search_kvm_prefix(ctx: commands.Context, *, query: str):
+    logger.info("!searchkvm invoked by %s with query %s", ctx.author, query)
+    query = query.strip()
+    if not query:
+        await ctx.send("❌ Please provide a search query.")
+        return
+    await ctx.send("🔍 Searching KVM docs...")
+    message = await asyncio.to_thread(build_docs_site_search_message, query, "kvm")
+    await ctx.send(message)
+
+
+@tree.command(name="search_iot", description="Search IoT docs only", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(query="Enter search keywords")
+async def search_iot_slash(interaction: discord.Interaction, query: str):
+    logger.info("/search_iot invoked by %s with query %s", interaction.user, query)
+    query = query.strip()
+    if not query:
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    message = await asyncio.to_thread(build_docs_site_search_message, query, "iot")
+    await interaction.followup.send(message)
+
+
+@bot.command(name="searchiot")
+async def search_iot_prefix(ctx: commands.Context, *, query: str):
+    logger.info("!searchiot invoked by %s with query %s", ctx.author, query)
+    query = query.strip()
+    if not query:
+        await ctx.send("❌ Please provide a search query.")
+        return
+    await ctx.send("🔍 Searching IoT docs...")
+    message = await asyncio.to_thread(build_docs_site_search_message, query, "iot")
+    await ctx.send(message)
+
+
+@tree.command(name="search_router", description="Search Router v4 docs only", guild=discord.Object(id=GUILD_ID))
+@app_commands.describe(query="Enter search keywords")
+async def search_router_slash(interaction: discord.Interaction, query: str):
+    logger.info("/search_router invoked by %s with query %s", interaction.user, query)
+    query = query.strip()
+    if not query:
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    message = await asyncio.to_thread(build_docs_site_search_message, query, "router")
+    await interaction.followup.send(message)
+
+
+@bot.command(name="searchrouter")
+async def search_router_prefix(ctx: commands.Context, *, query: str):
+    logger.info("!searchrouter invoked by %s with query %s", ctx.author, query)
+    query = query.strip()
+    if not query:
+        await ctx.send("❌ Please provide a search query.")
+        return
+    await ctx.send("🔍 Searching Router v4 docs...")
+    message = await asyncio.to_thread(build_docs_site_search_message, query, "router")
+    await ctx.send(message)
 
 
 bot.run(TOKEN)
