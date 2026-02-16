@@ -33,6 +33,9 @@ This bot allows select Discord users to create **role-bound invite links** and *
   - KVM docs only: `/search_kvm`, `!searchkvm`
   - IoT docs only: `/search_iot`, `!searchiot`
   - Router v4 docs only: `/search_router`, `!searchrouter`
+- Country nickname commands:
+  - Set: `/country`, `!country` (example: `US`)
+  - Clear: `/clear_country`, `!clearcountry`
 
 ---
 
@@ -98,6 +101,17 @@ Search sources:
 - [docs.gl-inet.com/router/en/4](https://docs.gl-inet.com/router/en/4/)
 
 The bot returns top matching links for the selected source(s).
+
+### ➤ 8. Country of Origin Nickname
+
+Users can add a country code suffix to their nickname with:
+- `/country US`
+- `!country US`
+
+This updates their server nickname to end with ` - US` (space, dash, space, 2-letter code).
+To remove it, use:
+- `/clear_country`
+- `!clearcountry`
 
 ---
 
@@ -174,6 +188,8 @@ docker compose up -d
 | `/search_kvm`  | Any member                      |
 | `/search_iot`  | Any member                      |
 | `/search_router`| Any member                     |
+| `/country`     | Any member                      |
+| `/clear_country`| Any member                     |
 
 ---
 
@@ -216,7 +232,7 @@ For advanced support, join WickedYoda's Discord https://discord.gg/m6UjX6UhKe
 ## 🛡️ Role Permissions
 
 - Only members with the `Employee` role can use `/submitrole`.
-- All members can use `/getaccess`, `/enter_role`, `/search`, `/search_forum`, `/search_kvm`, `/search_iot`, and `/search_router`.
+- All members can use `/getaccess`, `/enter_role`, `/search`, `/search_forum`, `/search_kvm`, `/search_iot`, `/search_router`, `/country`, and `/clear_country`.
 - You can expand access to more roles like `Admin` or `GL.iNet Moderators` by adjusting role checks in `bot.py`.
 
 ---
