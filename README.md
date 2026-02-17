@@ -171,6 +171,11 @@ Stored under `data/` (or `DATA_DIR`):
 - Never commit `.env`.
 - Rotate credentials immediately if exposed.
 
+## License
+
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
+See [`LICENSE`](./LICENSE) for the full text.
+
 ## Maintainer
 
 Created and maintained by [WickedYoda](https://wickedyoda.com)  
