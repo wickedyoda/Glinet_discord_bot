@@ -9,6 +9,7 @@ import re
 import time
 import csv
 import io
+import threading
 from datetime import timedelta, datetime, timezone
 from html import unescape
 from urllib.parse import urljoin
@@ -17,6 +18,7 @@ import random
 import requests
 from bs4 import BeautifulSoup
 from croniter import croniter
+from web_admin import start_web_admin_interface
 
 load_dotenv()
 
@@ -75,11 +77,24 @@ if not FIRMWARE_CHECK_SCHEDULE:
 
 FIRMWARE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "30"))
 FIRMWARE_RELEASE_NOTES_MAX_CHARS = max(200, int(os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "900")))
+WEB_ENABLED = (os.getenv("WEB_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"})
+WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "0.0.0.0").strip() or "0.0.0.0"
+try:
+    WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
+except ValueError:
+    WEB_PORT = 8080
+WEB_ENV_FILE = os.getenv("WEB_ENV_FILE", ".env").strip() or ".env"
+WEB_ADMIN_DEFAULT_EMAIL = os.getenv(
+    "WEB_ADMIN_DEFAULT_EMAIL",
+    os.getenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com"),
+).strip()
+WEB_ADMIN_DEFAULT_PASSWORD = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
 COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
 COUNTRY_LEGACY_SUFFIX_PATTERN = re.compile(r"_[A-Z]{2}$")
 COUNTRY_FLAG_SUFFIX_PATTERN = re.compile(r"\s*-\s*[\U0001F1E6-\U0001F1FF]{2}$")
 COUNTRY_CODE_SUFFIX_PATTERN = re.compile(r"\s*-\s*[A-Z]{2}$")
 TIMEOUT_DURATION_PATTERN = re.compile(r"^\s*(\d+)\s*([mhd]?)\s*$", re.IGNORECASE)
+HEX_COLOR_PATTERN = re.compile(r"^[0-9a-fA-F]{6}$")
 MODERATOR_ROLE_IDS = {
     int(os.getenv("MODERATOR_ROLE_ID", "1294957416294645771")),
     int(os.getenv("ADMIN_ROLE_ID", "1138302148292116551")),
@@ -87,6 +102,7 @@ MODERATOR_ROLE_IDS = {
 MOD_LOG_CHANNEL_ID = int(os.getenv("MOD_LOG_CHANNEL_ID", "1311820410269995009"))
 KICK_PRUNE_HOURS = int(os.getenv("KICK_PRUNE_HOURS", "72"))
 TIMEOUT_MAX_MINUTES = 28 * 24 * 60
+ROLE_NAME_MAX_LENGTH = 100
 CSV_ROLE_ASSIGN_MAX_NAMES = int(os.getenv("CSV_ROLE_ASSIGN_MAX_NAMES", "500"))
 DOCS_SITE_MAP = {
     "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
@@ -119,10 +135,31 @@ tag_responses_mtime = None
 tag_command_names = set()
 docs_index_cache = {}
 firmware_monitor_task = None
+web_admin_thread = None
 
 
 def normalize_tag(tag: str) -> str:
     return tag.strip().lower()
+
+
+def parse_int_setting(raw_value, default_value, minimum=None):
+    try:
+        parsed = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return default_value
+    if minimum is not None and parsed < minimum:
+        return default_value
+    return parsed
+
+
+def parse_firmware_channel_id(raw_value, default_value):
+    value = str(raw_value or "").strip()
+    if value.startswith("<#") and value.endswith(">"):
+        value = value[2:-1]
+    try:
+        return int(value) if value else default_value
+    except ValueError:
+        return default_value
 
 
 def tag_to_command_name(tag: str) -> str:
@@ -293,6 +330,40 @@ def validate_moderation_target(actor: discord.Member, target: discord.Member, bo
     if bot_member.top_role <= target.top_role:
         return False, "❌ I can only moderate members below my top role."
     return True, None
+
+
+def validate_manageable_role(actor: discord.Member, role: discord.Role, bot_member: discord.Member):
+    if role == actor.guild.default_role:
+        return False, "❌ You cannot manage the @everyone role."
+    if role.managed:
+        return False, "❌ That role is managed by an integration and cannot be changed here."
+    if actor.id != actor.guild.owner_id and actor.top_role <= role:
+        return False, "❌ You can only manage roles below your top role."
+    if bot_member.top_role <= role:
+        return False, "❌ I can only manage roles below my top role."
+    return True, None
+
+
+def parse_role_color(value: str | None):
+    if value is None:
+        return None, None
+
+    cleaned = value.strip()
+    if not cleaned:
+        return None, "❌ Color cannot be blank."
+
+    if cleaned.lower() in {"none", "default", "reset"}:
+        return discord.Color.default(), None
+
+    if cleaned.startswith("#"):
+        cleaned = cleaned[1:]
+    if cleaned.lower().startswith("0x"):
+        cleaned = cleaned[2:]
+
+    if not HEX_COLOR_PATTERN.fullmatch(cleaned):
+        return None, "❌ Invalid color. Use hex like `#1ABC9C`, `1ABC9C`, or `none`."
+
+    return discord.Color(int(cleaned, 16)), None
 
 
 def normalize_member_lookup_name(value: str):
@@ -803,6 +874,140 @@ async def firmware_monitor_loop():
         logger.debug("Next firmware check scheduled for %s UTC", next_run_utc.isoformat())
         await asyncio.sleep(wait_seconds)
         await check_firmware_updates_once()
+
+
+def restart_firmware_monitor_task():
+    global firmware_monitor_task
+    if firmware_monitor_task is not None and not firmware_monitor_task.done():
+        firmware_monitor_task.cancel()
+    firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
+
+
+def schedule_firmware_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_firmware_monitor_task)
+
+
+def refresh_runtime_settings_from_env(_updated_values=None):
+    global LOG_LEVEL
+    global GENERAL_CHANNEL_ID
+    global FORUM_BASE_URL
+    global FORUM_MAX_RESULTS
+    global DOCS_MAX_RESULTS_PER_SITE
+    global DOCS_INDEX_TTL_SECONDS
+    global SEARCH_RESPONSE_MAX_CHARS
+    global MODERATOR_ROLE_IDS
+    global MOD_LOG_CHANNEL_ID
+    global KICK_PRUNE_HOURS
+    global CSV_ROLE_ASSIGN_MAX_NAMES
+    global FIRMWARE_FEED_URL
+    global FIRMWARE_NOTIFY_CHANNEL_ID
+    global FIRMWARE_CHECK_SCHEDULE
+    global FIRMWARE_REQUEST_TIMEOUT_SECONDS
+    global FIRMWARE_RELEASE_NOTES_MAX_CHARS
+
+    LOG_LEVEL = os.getenv("LOG_LEVEL", LOG_LEVEL)
+    logger.setLevel(LOG_LEVEL)
+
+    GENERAL_CHANNEL_ID = parse_int_setting(os.getenv("GENERAL_CHANNEL_ID", GENERAL_CHANNEL_ID), GENERAL_CHANNEL_ID, minimum=0)
+    FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", FORUM_BASE_URL).rstrip("/")
+    FORUM_MAX_RESULTS = parse_int_setting(os.getenv("FORUM_MAX_RESULTS", FORUM_MAX_RESULTS), FORUM_MAX_RESULTS, minimum=1)
+    DOCS_MAX_RESULTS_PER_SITE = parse_int_setting(
+        os.getenv("DOCS_MAX_RESULTS_PER_SITE", DOCS_MAX_RESULTS_PER_SITE),
+        DOCS_MAX_RESULTS_PER_SITE,
+        minimum=1,
+    )
+    DOCS_INDEX_TTL_SECONDS = parse_int_setting(
+        os.getenv("DOCS_INDEX_TTL_SECONDS", DOCS_INDEX_TTL_SECONDS),
+        DOCS_INDEX_TTL_SECONDS,
+        minimum=60,
+    )
+    SEARCH_RESPONSE_MAX_CHARS = parse_int_setting(
+        os.getenv("SEARCH_RESPONSE_MAX_CHARS", SEARCH_RESPONSE_MAX_CHARS),
+        SEARCH_RESPONSE_MAX_CHARS,
+        minimum=200,
+    )
+
+    moderator_role_id = parse_int_setting(
+        os.getenv("MODERATOR_ROLE_ID", next(iter(MODERATOR_ROLE_IDS))),
+        next(iter(MODERATOR_ROLE_IDS)),
+        minimum=1,
+    )
+    admin_role_id = parse_int_setting(
+        os.getenv("ADMIN_ROLE_ID", moderator_role_id),
+        moderator_role_id,
+        minimum=1,
+    )
+    MODERATOR_ROLE_IDS = {moderator_role_id, admin_role_id}
+
+    MOD_LOG_CHANNEL_ID = parse_int_setting(os.getenv("MOD_LOG_CHANNEL_ID", MOD_LOG_CHANNEL_ID), MOD_LOG_CHANNEL_ID, minimum=1)
+    KICK_PRUNE_HOURS = parse_int_setting(os.getenv("KICK_PRUNE_HOURS", KICK_PRUNE_HOURS), KICK_PRUNE_HOURS, minimum=1)
+    CSV_ROLE_ASSIGN_MAX_NAMES = parse_int_setting(
+        os.getenv("CSV_ROLE_ASSIGN_MAX_NAMES", CSV_ROLE_ASSIGN_MAX_NAMES),
+        CSV_ROLE_ASSIGN_MAX_NAMES,
+        minimum=1,
+    )
+
+    FIRMWARE_FEED_URL = os.getenv("FIRMWARE_FEED_URL", FIRMWARE_FEED_URL).strip() or FIRMWARE_FEED_URL
+    FIRMWARE_NOTIFY_CHANNEL_ID = parse_firmware_channel_id(
+        os.getenv("firmware_notification_channel", FIRMWARE_NOTIFY_CHANNEL_ID),
+        FIRMWARE_NOTIFY_CHANNEL_ID,
+    )
+    candidate_schedule = os.getenv("firmware_check_schedule", FIRMWARE_CHECK_SCHEDULE).strip() or FIRMWARE_CHECK_SCHEDULE
+    if croniter.is_valid(candidate_schedule):
+        FIRMWARE_CHECK_SCHEDULE = candidate_schedule
+    else:
+        logger.warning("Ignoring invalid firmware_check_schedule value: %s", candidate_schedule)
+    FIRMWARE_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", FIRMWARE_REQUEST_TIMEOUT_SECONDS),
+        FIRMWARE_REQUEST_TIMEOUT_SECONDS,
+        minimum=5,
+    )
+    FIRMWARE_RELEASE_NOTES_MAX_CHARS = parse_int_setting(
+        os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", FIRMWARE_RELEASE_NOTES_MAX_CHARS),
+        FIRMWARE_RELEASE_NOTES_MAX_CHARS,
+        minimum=200,
+    )
+
+    docs_index_cache.clear()
+    schedule_firmware_monitor_restart()
+    logger.info("Runtime settings refreshed from environment")
+
+
+def refresh_tag_responses_from_web():
+    get_tag_responses()
+    logger.info("Tag responses refreshed from file")
+
+
+def start_web_admin_server():
+    global web_admin_thread
+    if not WEB_ENABLED:
+        logger.info("Web admin interface disabled via WEB_ENABLED")
+        return
+    if web_admin_thread is not None and web_admin_thread.is_alive():
+        return
+
+    def runner():
+        try:
+            start_web_admin_interface(
+                host=WEB_BIND_HOST,
+                port=WEB_PORT,
+                data_dir=DATA_DIR,
+                env_file_path=WEB_ENV_FILE,
+                tag_responses_file=TAG_RESPONSES_FILE,
+                default_admin_email=WEB_ADMIN_DEFAULT_EMAIL,
+                default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
+                on_env_settings_saved=refresh_runtime_settings_from_env,
+                on_tag_responses_saved=refresh_tag_responses_from_web,
+                logger=logger,
+            )
+        except Exception:
+            logger.exception("Web admin interface stopped unexpectedly")
+
+    web_admin_thread = threading.Thread(target=runner, name="web_admin", daemon=True)
+    web_admin_thread.start()
 
 
 def search_forum_links(query: str):
@@ -1587,6 +1792,341 @@ async def clear_country_prefix(ctx: commands.Context):
 
 
 @tree.command(
+    name="create_role",
+    description="Create a new role",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    name="Name for the new role",
+    color="Optional role color like #1ABC9C",
+    hoist="Display this role separately in the member list",
+    mentionable="Allow members to mention this role",
+)
+async def create_role_slash(
+    interaction: discord.Interaction,
+    name: str,
+    color: str | None = None,
+    hoist: bool = False,
+    mentionable: bool = False,
+):
+    logger.info("/create_role invoked by %s for role name %s", interaction.user, name)
+    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
+        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    normalized_name = name.strip()
+    if not normalized_name:
+        await interaction.response.send_message("❌ Role name cannot be empty.", ephemeral=True)
+        return
+    if len(normalized_name) > ROLE_NAME_MAX_LENGTH:
+        await interaction.response.send_message(
+            f"❌ Role name must be {ROLE_NAME_MAX_LENGTH} characters or fewer.",
+            ephemeral=True,
+        )
+        return
+
+    parsed_color, color_error = parse_role_color(color)
+    if color_error:
+        await interaction.response.send_message(color_error, ephemeral=True)
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Roles` permission to create roles.",
+            ephemeral=True,
+        )
+        return
+
+    create_kwargs = {
+        "name": normalized_name,
+        "hoist": hoist,
+        "mentionable": mentionable,
+    }
+    if parsed_color is not None:
+        create_kwargs["color"] = parsed_color
+
+    action_reason = f"Role created by {interaction.user} ({interaction.user.id}) via bot"
+    try:
+        role = await interaction.guild.create_role(reason=action_reason, **create_kwargs)
+    except discord.Forbidden:
+        logger.exception("Missing permission to create role %s", normalized_name)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "create_role",
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't create roles. Check `Manage Roles` permission and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to create role %s", normalized_name)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "create_role",
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while creating role.",
+        )
+        await interaction.response.send_message("❌ Failed to create role. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "create_role",
+        reason=action_reason,
+        details=f"Created role {role.mention} (`{role.id}`).",
+    )
+    await interaction.response.send_message(
+        f"✅ Created role {role.mention} (`{role.id}`).",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="delete_role",
+    description="Delete a role",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(role="Role to delete", reason="Reason for deletion")
+async def delete_role_slash(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    reason: str | None = None,
+):
+    logger.info("/delete_role invoked by %s for role %s", interaction.user, role)
+    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
+        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Roles` permission to delete roles.",
+            ephemeral=True,
+        )
+        return
+
+    can_manage, error_message = validate_manageable_role(interaction.user, role, bot_member)
+    action_reason = (reason or "").strip() or f"Role deleted by {interaction.user} via bot"
+    if not can_manage:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "delete_role",
+            reason=action_reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    role_name = role.name
+    role_id = role.id
+    try:
+        await role.delete(reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to delete role %s", role)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "delete_role",
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't delete that role. Check `Manage Roles` permission and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to delete role %s", role)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "delete_role",
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while deleting role.",
+        )
+        await interaction.response.send_message("❌ Failed to delete that role. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "delete_role",
+        reason=action_reason,
+        details=f"Deleted role `{role_name}` (`{role_id}`).",
+    )
+    await interaction.response.send_message(
+        f"✅ Deleted role `{role_name}` (`{role_id}`).",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="edit_role",
+    description="Edit role settings",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(
+    role="Role to edit",
+    name="New role name",
+    color="New color like #1ABC9C, or `none` to reset",
+    hoist="Display this role separately in the member list",
+    mentionable="Allow members to mention this role",
+    reason="Reason for the edit",
+)
+async def edit_role_slash(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    name: str | None = None,
+    color: str | None = None,
+    hoist: bool | None = None,
+    mentionable: bool | None = None,
+    reason: str | None = None,
+):
+    logger.info("/edit_role invoked by %s for role %s", interaction.user, role)
+    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
+        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Roles` permission to edit roles.",
+            ephemeral=True,
+        )
+        return
+
+    can_manage, error_message = validate_manageable_role(interaction.user, role, bot_member)
+    action_reason = (reason or "").strip() or f"Role edited by {interaction.user} via bot"
+    if not can_manage:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "edit_role",
+            reason=action_reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    edit_kwargs = {}
+    changed_fields = []
+    if name is not None:
+        normalized_name = name.strip()
+        if not normalized_name:
+            await interaction.response.send_message("❌ Role name cannot be empty.", ephemeral=True)
+            return
+        if len(normalized_name) > ROLE_NAME_MAX_LENGTH:
+            await interaction.response.send_message(
+                f"❌ Role name must be {ROLE_NAME_MAX_LENGTH} characters or fewer.",
+                ephemeral=True,
+            )
+            return
+        edit_kwargs["name"] = normalized_name
+        changed_fields.append(f"name=`{normalized_name}`")
+
+    if color is not None:
+        parsed_color, color_error = parse_role_color(color)
+        if color_error:
+            await interaction.response.send_message(color_error, ephemeral=True)
+            return
+        edit_kwargs["color"] = parsed_color
+        if parsed_color.value == 0:
+            changed_fields.append("color=`default`")
+        else:
+            changed_fields.append(f"color=`#{parsed_color.value:06X}`")
+
+    if hoist is not None:
+        edit_kwargs["hoist"] = hoist
+        changed_fields.append(f"hoist=`{hoist}`")
+
+    if mentionable is not None:
+        edit_kwargs["mentionable"] = mentionable
+        changed_fields.append(f"mentionable=`{mentionable}`")
+
+    if not edit_kwargs:
+        await interaction.response.send_message(
+            "❌ Provide at least one field to edit (`name`, `color`, `hoist`, `mentionable`).",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        await role.edit(reason=action_reason, **edit_kwargs)
+    except discord.Forbidden:
+        logger.exception("Missing permission to edit role %s", role)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "edit_role",
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't edit that role. Check `Manage Roles` permission and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to edit role %s", role)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "edit_role",
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while editing role.",
+        )
+        await interaction.response.send_message("❌ Failed to edit that role. Try again.", ephemeral=True)
+        return
+
+    details = f"Edited role {role.mention} (`{role.id}`): {', '.join(changed_fields)}."
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "edit_role",
+        reason=action_reason,
+        details=details,
+    )
+    await interaction.response.send_message(f"✅ {details}", ephemeral=True)
+
+
+@tree.command(
     name="modlog_test",
     description="Send a test moderation log entry",
     guild=discord.Object(id=GUILD_ID),
@@ -2233,4 +2773,5 @@ async def search_router_prefix(ctx: commands.Context, *, query: str):
     await ctx.send(message)
 
 
+start_web_admin_server()
 bot.run(TOKEN)

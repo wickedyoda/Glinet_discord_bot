@@ -11,5 +11,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the bot code and env files into the container
 COPY . .
 
+EXPOSE 8080
+
 # Run the bot
 CMD ["python", "-u", "bot.py"]

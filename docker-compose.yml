@@ -5,6 +5,9 @@ services:
     container_name: discord_role_bot
     env_file:
       - .env
+    ports:
+      - "${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
+      - ./.env:/app/.env
     restart: unless-stopped

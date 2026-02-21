@@ -41,6 +41,9 @@ Discord bot for GL.iNet community operations:
 - Format is always: `display_name - CC` (uppercase country code).
 
 5. Moderator Commands (ID-restricted)
+- `/create_role`
+- `/edit_role`
+- `/delete_role`
 - `/ban_member`, `!banmember`
 - `/kick_member`, `!kickmember` (includes message prune window, default 72h)
 - `/timeout_member`, `!timeoutmember` (durations like `30m`, `2h`, `1d`)
@@ -67,6 +70,21 @@ Discord bot for GL.iNet community operations:
   - Release notes excerpt
 - Uses `data/firmware_seen.json` to persist seen entries across restarts.
 
+8. Web Admin Interface
+- Built-in password-protected web panel for bot management.
+- Login uses email + password.
+- Password policy is enforced for created/updated users:
+  - At least 6 digits
+  - At least 2 uppercase letters
+  - At least 1 symbol
+- No self-signup route; users can only be created by an admin.
+- Supports multiple users (admin and non-admin accounts).
+- Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
+- Admin can manage:
+  - Bot environment settings (channels, firmware schedule, logging/mod settings, etc.)
+  - Tag response mappings
+  - Web users
+
 ## Command Reference
 
 | Slash Command | Prefix Command | Access |
@@ -84,6 +102,9 @@ Discord bot for GL.iNet community operations:
 | `/search_router` | `!searchrouter` | Any member |
 | `/country` | `!country` | Any member |
 | `/clear_country` | `!clearcountry` | Any member |
+| `/create_role` | N/A | Moderator role IDs only (see env vars) |
+| `/edit_role` | N/A | Moderator role IDs only (see env vars) |
+| `/delete_role` | N/A | Moderator role IDs only (see env vars) |
 | `/ban_member` | `!banmember` | Moderator role IDs only (see env vars) |
 | `/kick_member` | `!kickmember` | Moderator role IDs only (see env vars) |
 | `/timeout_member` | `!timeoutmember` | Moderator role IDs only (see env vars) |
@@ -114,6 +135,14 @@ Optional:
 - `firmware_check_schedule` (cron, 5-field, UTC; default `*/30 * * * *`)
 - `FIRMWARE_REQUEST_TIMEOUT_SECONDS` (default `30`)
 - `FIRMWARE_RELEASE_NOTES_MAX_CHARS` (default `900`)
+- `WEB_ENABLED` (default `true`)
+- `WEB_BIND_HOST` (default `0.0.0.0`)
+- `WEB_PORT` (default `8080`, internal container port)
+- `WEB_HOST_PORT` (default `8080`, host mapping used by docker-compose)
+- `WEB_ENV_FILE` (default `.env`)
+- `WEB_ADMIN_DEFAULT_USERNAME` (default admin email used on first run)
+- `WEB_ADMIN_DEFAULT_PASSWORD` (default admin password used on first run)
+- `WEB_ADMIN_SESSION_SECRET` (optional explicit session signing secret)
 
 Example `.env`:
 ```env
@@ -136,21 +165,32 @@ FIRMWARE_FEED_URL=https://gl-fw.remotetohome.io/
 firmware_check_schedule=*/30 * * * *
 FIRMWARE_REQUEST_TIMEOUT_SECONDS=30
 FIRMWARE_RELEASE_NOTES_MAX_CHARS=900
+WEB_ENABLED=true
+WEB_BIND_HOST=0.0.0.0
+WEB_PORT=8080
+WEB_HOST_PORT=8080
+WEB_ENV_FILE=.env
+WEB_ADMIN_DEFAULT_USERNAME=admin@example.com
+WEB_ADMIN_DEFAULT_PASSWORD=AA!!123456
+WEB_ADMIN_SESSION_SECRET=replace_with_random_secret
 ```
 
 ## Docker
 
 Repository `docker-compose.yml`:
 ```yaml
-version: "3.9"
 services:
-  discord-bot:
+  discord_invite_bot:
     build:
       context: .
     container_name: discord_role_bot
-    env_file: .env
+    env_file:
+      - .env
+    ports:
+      - "${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
+      - ./.env:/app/.env
     restart: unless-stopped
 ```
 
@@ -162,6 +202,11 @@ docker compose up -d --build
 View logs:
 ```bash
 docker logs -f discord_role_bot
+```
+
+Open web admin:
+```bash
+http://localhost:${WEB_HOST_PORT:-8080}
 ```
 
 ## Discord Requirements
@@ -192,6 +237,7 @@ Stored under `data/` (or `DATA_DIR`):
 - `tag_responses.json`
 - `bot.log`
 - `firmware_seen.json`
+- `web_users.json`
 
 ## Security
 
