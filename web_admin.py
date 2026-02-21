@@ -397,6 +397,27 @@ def create_web_app(
 
     _ensure_default_admin(users_file, default_admin_email, default_admin_password, logger)
     wiki_dir = Path(__file__).resolve().parent / "wiki"
+    wiki_dir_resolved = wiki_dir.resolve()
+
+    def _is_within_wiki_dir(path: Path):
+        try:
+            path.resolve().relative_to(wiki_dir_resolved)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def _get_wiki_page_map():
+        page_map = {}
+        if not wiki_dir.exists():
+            return page_map
+        for path in wiki_dir.glob("*.md"):
+            if not path.is_file() or path.name.startswith("_"):
+                continue
+            if not _is_within_wiki_dir(path):
+                continue
+            resolved = path.resolve()
+            page_map[path.stem.casefold()] = resolved
+        return page_map
 
     def _current_user():
         email = _normalize_email(session.get("auth_email", ""))
@@ -502,9 +523,7 @@ def create_web_app(
     @login_required
     def documentation():
         user = _current_user()
-        page_paths = []
-        if wiki_dir.exists():
-            page_paths = [path for path in wiki_dir.glob("*.md") if path.is_file() and not path.name.startswith("_")]
+        page_paths = list(_get_wiki_page_map().values())
 
         def sort_key(path: Path):
             if path.stem.lower() == "home":
@@ -541,16 +560,19 @@ def create_web_app(
         if not re.fullmatch(r"[A-Za-z0-9_-]+", page_slug or ""):
             return {"ok": False, "error": "Invalid documentation page."}, 404
 
-        page_path = wiki_dir / f"{page_slug}.md"
-        if not page_path.exists():
-            for candidate in wiki_dir.glob("*.md"):
-                if candidate.stem.casefold() == page_slug.casefold():
-                    page_path = candidate
-                    break
+        page_path = _get_wiki_page_map().get(page_slug.casefold())
+        if page_path is None:
+            return {"ok": False, "error": "Documentation page not found."}, 404
         if not page_path.exists() or not page_path.is_file() or page_path.name.startswith("_"):
             return {"ok": False, "error": "Documentation page not found."}, 404
+        try:
+            resolved = page_path.resolve()
+        except OSError:
+            return {"ok": False, "error": "Documentation page not found."}, 404
+        if not _is_within_wiki_dir(resolved):
+            return {"ok": False, "error": "Documentation page not found."}, 404
 
-        content = page_path.read_text(encoding="utf-8", errors="replace")
+        content = resolved.read_text(encoding="utf-8", errors="replace")
         title = page_slug.replace("-", " ")
         first_line = content.splitlines()[0].strip() if content else ""
         if first_line.startswith("#"):
