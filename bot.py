@@ -7,12 +7,16 @@ import json
 import asyncio
 import re
 import time
-from datetime import timedelta
+import csv
+import io
+from datetime import timedelta, datetime, timezone
 from html import unescape
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 import random
 import requests
+from bs4 import BeautifulSoup
+from croniter import croniter
 
 load_dotenv()
 
@@ -43,6 +47,34 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
+FIRMWARE_FEED_URL = os.getenv("FIRMWARE_FEED_URL", "https://gl-fw.remotetohome.io/").strip()
+FIRMWARE_NOTIFICATION_CHANNEL_RAW = os.getenv(
+    "firmware_notification_channel",
+    os.getenv("FIRMWARE_NOTIFY_CHANNEL_ID", ""),
+).strip()
+if FIRMWARE_NOTIFICATION_CHANNEL_RAW.startswith("<#") and FIRMWARE_NOTIFICATION_CHANNEL_RAW.endswith(">"):
+    FIRMWARE_NOTIFICATION_CHANNEL_RAW = FIRMWARE_NOTIFICATION_CHANNEL_RAW[2:-1]
+try:
+    FIRMWARE_NOTIFY_CHANNEL_ID = int(FIRMWARE_NOTIFICATION_CHANNEL_RAW) if FIRMWARE_NOTIFICATION_CHANNEL_RAW else 0
+except ValueError:
+    logger.warning("Invalid firmware_notification_channel value: %s", FIRMWARE_NOTIFICATION_CHANNEL_RAW)
+    FIRMWARE_NOTIFY_CHANNEL_ID = 0
+
+FIRMWARE_CHECK_SCHEDULE = os.getenv("firmware_check_schedule", "").strip()
+if not FIRMWARE_CHECK_SCHEDULE:
+    legacy_interval_raw = os.getenv("FIRMWARE_CHECK_INTERVAL_SECONDS", "").strip()
+    if legacy_interval_raw:
+        try:
+            interval_seconds = max(60, int(legacy_interval_raw))
+            interval_minutes = max(1, interval_seconds // 60)
+            FIRMWARE_CHECK_SCHEDULE = f"*/{interval_minutes} * * * *"
+        except ValueError:
+            logger.warning("Invalid FIRMWARE_CHECK_INTERVAL_SECONDS value: %s", legacy_interval_raw)
+if not FIRMWARE_CHECK_SCHEDULE:
+    FIRMWARE_CHECK_SCHEDULE = "*/30 * * * *"
+
+FIRMWARE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "30"))
+FIRMWARE_RELEASE_NOTES_MAX_CHARS = max(200, int(os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "900")))
 COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
 COUNTRY_LEGACY_SUFFIX_PATTERN = re.compile(r"_[A-Z]{2}$")
 COUNTRY_FLAG_SUFFIX_PATTERN = re.compile(r"\s*-\s*[\U0001F1E6-\U0001F1FF]{2}$")
@@ -55,6 +87,7 @@ MODERATOR_ROLE_IDS = {
 MOD_LOG_CHANNEL_ID = int(os.getenv("MOD_LOG_CHANNEL_ID", "1311820410269995009"))
 KICK_PRUNE_HOURS = int(os.getenv("KICK_PRUNE_HOURS", "72"))
 TIMEOUT_MAX_MINUTES = 28 * 24 * 60
+CSV_ROLE_ASSIGN_MAX_NAMES = int(os.getenv("CSV_ROLE_ASSIGN_MAX_NAMES", "500"))
 DOCS_SITE_MAP = {
     "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
@@ -67,6 +100,7 @@ INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
 CODES_FILE = os.path.join(DATA_DIR, "role_codes.txt")
 INVITE_ROLE_FILE = os.path.join(DATA_DIR, "invite_roles.json")
 TAG_RESPONSES_FILE = os.path.join(DATA_DIR, "tag_responses.json")
+FIRMWARE_STATE_FILE = os.path.join(DATA_DIR, "firmware_seen.json")
 
 DEFAULT_TAG_RESPONSES = {
     "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
@@ -84,6 +118,7 @@ tag_responses = {}
 tag_responses_mtime = None
 tag_command_names = set()
 docs_index_cache = {}
+firmware_monitor_task = None
 
 
 def normalize_tag(tag: str) -> str:
@@ -260,6 +295,66 @@ def validate_moderation_target(actor: discord.Member, target: discord.Member, bo
     return True, None
 
 
+def normalize_member_lookup_name(value: str):
+    if not value:
+        return None
+    normalized = re.sub(r"\s+", " ", value.strip().lstrip("@")).casefold()
+    return normalized or None
+
+
+def parse_member_names_from_csv_bytes(data: bytes):
+    decoded = None
+    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
+        try:
+            decoded = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if decoded is None:
+        return []
+
+    names = []
+    reader = csv.reader(io.StringIO(decoded))
+    for row in reader:
+        for cell in row:
+            candidate = cell.strip()
+            if candidate:
+                names.append(candidate)
+    return names
+
+
+def build_member_name_lookup(guild: discord.Guild):
+    lookup = {}
+    for member in guild.members:
+        candidates = {
+            member.name,
+            member.display_name,
+            member.global_name,
+            str(member),
+        }
+        if member.discriminator and member.discriminator != "0":
+            candidates.add(f"{member.name}#{member.discriminator}")
+
+        for candidate in candidates:
+            key = normalize_member_lookup_name(candidate)
+            if not key:
+                continue
+            lookup.setdefault(key, []).append(member)
+    return lookup
+
+
+def unique_member_names(values: list[str]):
+    seen = set()
+    unique = []
+    for value in values:
+        key = normalize_member_lookup_name(value)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(value.strip())
+    return unique
+
+
 def parse_timeout_duration(value: str):
     match = TIMEOUT_DURATION_PATTERN.fullmatch(value or "")
     if not match:
@@ -419,6 +514,295 @@ async def send_moderation_log(
     except discord.HTTPException:
         logger.exception("Failed to send moderation log for action %s", action)
         return False
+
+
+def clip_text(value: str, max_chars: int = 250):
+    if not value:
+        return "N/A"
+    cleaned = value.strip().replace("\n", " ")
+    if len(cleaned) <= max_chars:
+        return cleaned
+    return f"{cleaned[: max_chars - 3]}..."
+
+
+async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
+    channel = await resolve_mod_log_channel(guild)
+    if channel is None:
+        return False
+
+    message = f"📌 **Server Event:** `{event_name}`\n{details}"
+    try:
+        await channel.send(message)
+        return True
+    except discord.Forbidden:
+        logger.warning("No permission to send server event logs to channel %s", MOD_LOG_CHANNEL_ID)
+        return False
+    except discord.HTTPException:
+        logger.exception("Failed to send server event log for %s", event_name)
+        return False
+
+
+def normalize_release_notes_text(value: str):
+    lines = []
+    for raw_line in (value or "").splitlines():
+        cleaned = re.sub(r"\s+", " ", raw_line).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines)
+
+
+def load_firmware_seen_ids():
+    if not os.path.exists(FIRMWARE_STATE_FILE):
+        return None
+    try:
+        with open(FIRMWARE_STATE_FILE, "r") as f:
+            data = json.load(f)
+        seen_ids = data.get("seen_ids", [])
+        if not isinstance(seen_ids, list):
+            return None
+        return {str(item) for item in seen_ids if item}
+    except Exception:
+        logger.exception("Failed to load firmware state from %s", FIRMWARE_STATE_FILE)
+        return None
+
+
+def save_firmware_state(seen_ids: set[str], sync_label: str = ""):
+    payload = {
+        "source_url": FIRMWARE_FEED_URL,
+        "updated_at": int(time.time()),
+        "seen_ids": sorted(seen_ids),
+    }
+    if sync_label:
+        payload["last_synced"] = sync_label
+    with open(FIRMWARE_STATE_FILE, "w") as f:
+        json.dump(payload, f, indent=2)
+
+
+def parse_firmware_entries(page_html: str):
+    soup = BeautifulSoup(page_html, "html.parser")
+    sync_line = soup.select_one(".sync-line")
+    sync_label = clean_search_text(sync_line.get_text(" ", strip=True)) if sync_line else ""
+    entries = []
+
+    for section in soup.select("section.model-section"):
+        model_code = (section.get("id") or "").strip()
+        model_name = model_code.upper() if model_code else "Unknown Model"
+        heading = section.find("h2")
+        if heading:
+            code_tag = heading.find("span", class_="code")
+            if code_tag is not None:
+                code_tag.extract()
+            model_name = clean_search_text(heading.get_text(" ", strip=True)) or model_name
+
+        for row in section.find_all("div", class_="fw-row"):
+            stage = (row.get("data-stage") or "unknown").strip().lower()
+            version_tag = row.find("span", class_="fw-version")
+            date_tag = row.find("span", class_="fw-date")
+            version = clean_search_text(version_tag.get_text(" ", strip=True)) if version_tag else "unknown"
+            published_date = clean_search_text(date_tag.get_text(" ", strip=True)) if date_tag else "unknown"
+
+            files = []
+            for link in row.select(".fw-files a[href]"):
+                label = clean_search_text(link.get_text(" ", strip=True)) or "Download"
+                url = link["href"].strip()
+                if url:
+                    files.append({"label": label, "url": url})
+
+            sha256_values = []
+            for badge in row.select(".fw-sha .sha-badge"):
+                title = (badge.get("title") or "").strip()
+                if title:
+                    sha256_values.append(title.split(" —", 1)[0].strip())
+
+            release_notes = ""
+            notes_block = row.find_next_sibling()
+            if notes_block and notes_block.name == "details" and "release-notes" in (notes_block.get("class") or []):
+                notes_content = notes_block.find("div", class_="content")
+                if notes_content:
+                    release_notes = normalize_release_notes_text(notes_content.get_text("\n", strip=True))
+
+            file_key = "|".join(sorted(file_info["url"] for file_info in files))
+            sha_key = "|".join(sorted(value for value in sha256_values if value))
+            entry_id = f"{model_code}|{stage}|{version}|{published_date}|{file_key or sha_key}"
+            entries.append(
+                {
+                    "id": entry_id,
+                    "model_code": model_code or "unknown",
+                    "model_name": model_name,
+                    "stage": stage,
+                    "version": version,
+                    "published_date": published_date,
+                    "files": files,
+                    "sha256": sha256_values,
+                    "release_notes": release_notes,
+                }
+            )
+
+    return entries, sync_label
+
+
+def fetch_firmware_entries():
+    response = requests.get(FIRMWARE_FEED_URL, timeout=FIRMWARE_REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return parse_firmware_entries(response.text)
+
+
+def format_release_notes_excerpt(release_notes: str):
+    if not release_notes:
+        return "- No release notes available on source page."
+
+    excerpt_lines = []
+    used_chars = 0
+    for raw_line in release_notes.splitlines():
+        line = clip_text(raw_line, max_chars=220)
+        if not line or line == "N/A":
+            continue
+        projected = used_chars + len(line) + 3
+        if excerpt_lines and projected > FIRMWARE_RELEASE_NOTES_MAX_CHARS:
+            excerpt_lines.append("- ...")
+            break
+        excerpt_lines.append(f"- {line}")
+        used_chars = projected
+        if len(excerpt_lines) >= 12:
+            excerpt_lines.append("- ...")
+            break
+
+    if not excerpt_lines:
+        return "- No release notes available on source page."
+    return "\n".join(excerpt_lines)
+
+
+def trim_discord_message(message: str, max_chars: int = 1900):
+    if len(message) <= max_chars:
+        return message
+    return message[: max_chars - 4].rstrip() + " ..."
+
+
+def format_firmware_notification(entry: dict, sync_label: str):
+    stage_text = "Stable" if entry["stage"] == "release" else "Testing" if entry["stage"] == "testing" else entry["stage"].title()
+    lines = [
+        "🆕 **New firmware mirrored**",
+        f"**Model:** {entry['model_name']} (`{entry['model_code']}`)",
+        f"**Track:** `{stage_text}`",
+        f"**Version:** `{entry['version']}`",
+        f"**Date:** `{entry['published_date']}`",
+    ]
+
+    if entry["files"]:
+        lines.append("**Files:**")
+        for file_info in entry["files"]:
+            lines.append(f"- [{file_info['label']}]({file_info['url']})")
+
+    if entry["sha256"]:
+        lines.append("**SHA256:**")
+        for sha_value in entry["sha256"][:2]:
+            lines.append(f"- `{sha_value}`")
+
+    lines.append("**Release Notes (excerpt):**")
+    lines.append(format_release_notes_excerpt(entry["release_notes"]))
+    if sync_label:
+        lines.append(f"`{sync_label}`")
+    lines.append(f"Source: {FIRMWARE_FEED_URL}")
+    return trim_discord_message("\n".join(lines))
+
+
+async def resolve_firmware_notify_channel():
+    if FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
+        return None
+
+    channel = bot.get_channel(FIRMWARE_NOTIFY_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(FIRMWARE_NOTIFY_CHANNEL_ID)
+        except discord.NotFound:
+            logger.warning("Firmware notify channel %s not found", FIRMWARE_NOTIFY_CHANNEL_ID)
+            return None
+        except discord.Forbidden:
+            logger.warning("No permission to access firmware notify channel %s", FIRMWARE_NOTIFY_CHANNEL_ID)
+            return None
+        except discord.HTTPException:
+            logger.exception("Failed to fetch firmware notify channel %s", FIRMWARE_NOTIFY_CHANNEL_ID)
+            return None
+
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+
+    logger.warning("Firmware notify channel %s is not a text channel", FIRMWARE_NOTIFY_CHANNEL_ID)
+    return None
+
+
+async def check_firmware_updates_once():
+    try:
+        entries, sync_label = await asyncio.to_thread(fetch_firmware_entries)
+    except requests.RequestException:
+        logger.exception("Firmware fetch failed from %s", FIRMWARE_FEED_URL)
+        return
+    except Exception:
+        logger.exception("Unexpected firmware parsing failure")
+        return
+
+    if not entries:
+        logger.warning("Firmware monitor parsed no entries from %s", FIRMWARE_FEED_URL)
+        return
+
+    current_ids = {entry["id"] for entry in entries}
+    seen_ids = load_firmware_seen_ids()
+    if seen_ids is None:
+        save_firmware_state(current_ids, sync_label)
+        logger.info("Firmware monitor baseline initialized with %d entries", len(current_ids))
+        return
+
+    new_entries = [entry for entry in entries if entry["id"] not in seen_ids]
+    if not new_entries:
+        save_firmware_state(current_ids, sync_label)
+        return
+
+    channel = await resolve_firmware_notify_channel()
+    if channel is None:
+        logger.warning(
+            "Firmware monitor found %d new entries but channel is unavailable; retrying on next check",
+            len(new_entries),
+        )
+        return
+
+    new_entries.sort(key=lambda item: (item["published_date"], item["model_code"], item["version"]))
+    logger.info("Firmware monitor found %d new entries", len(new_entries))
+    for entry in new_entries:
+        try:
+            await channel.send(format_firmware_notification(entry, sync_label))
+        except discord.Forbidden:
+            logger.warning("No permission to post firmware notification in channel %s", channel.id)
+            return
+        except discord.HTTPException:
+            logger.exception("Failed to post firmware notification for %s %s", entry["model_code"], entry["version"])
+            return
+
+    save_firmware_state(current_ids, sync_label)
+
+
+async def firmware_monitor_loop():
+    if FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
+        logger.info("Firmware monitor disabled: set firmware_notification_channel to enable it.")
+        return
+
+    if not croniter.is_valid(FIRMWARE_CHECK_SCHEDULE):
+        logger.error("Firmware monitor disabled: invalid firmware_check_schedule '%s'", FIRMWARE_CHECK_SCHEDULE)
+        return
+
+    logger.info(
+        "Firmware monitor active: checking %s on cron '%s' (UTC)",
+        FIRMWARE_FEED_URL,
+        FIRMWARE_CHECK_SCHEDULE,
+    )
+    await check_firmware_updates_once()
+
+    while not bot.is_closed():
+        now_utc = datetime.now(timezone.utc)
+        next_run_utc = croniter(FIRMWARE_CHECK_SCHEDULE, now_utc).get_next(datetime)
+        wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
+        logger.debug("Next firmware check scheduled for %s UTC", next_run_utc.isoformat())
+        await asyncio.sleep(wait_seconds)
+        await check_firmware_updates_once()
 
 
 def search_forum_links(query: str):
@@ -585,6 +969,7 @@ invite_uses = {}
 
 @bot.event
 async def on_ready():
+    global firmware_monitor_task
     logger.info("Logged in as %s", bot.user.name)
     guild = bot.get_guild(GUILD_ID)
     if callable(globals().get("register_tag_commands")):
@@ -603,22 +988,26 @@ async def on_ready():
     except Exception:
         logger.exception("Failed to cache invites on startup")
 
+    if firmware_monitor_task is None or firmware_monitor_task.done():
+        firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
+
 @bot.event
 async def on_member_join(member: discord.Member):
     """Assign role based on the invite used to join."""
     guild = member.guild
-    try:
-        invites = await guild.invites()
-    except Exception:
-        logger.exception("Failed to fetch invites on member join")
+    if guild.id != GUILD_ID:
         return
 
     used_invite = None
-    for inv in invites:
-        if inv.code in invite_roles and inv.uses > invite_uses.get(inv.code, 0):
-            invite_uses[inv.code] = inv.uses
-            used_invite = inv
-            break
+    try:
+        invites = await guild.invites()
+        for inv in invites:
+            if inv.code in invite_roles and inv.uses > invite_uses.get(inv.code, 0):
+                invite_uses[inv.code] = inv.uses
+                used_invite = inv
+                break
+    except Exception:
+        logger.exception("Failed to fetch invites on member join")
 
     if used_invite:
         role_id = invite_roles.get(used_invite.code)
@@ -629,6 +1018,195 @@ async def on_member_join(member: discord.Member):
                 logger.info("Assigned role %s to %s via invite %s", role.id, member, used_invite.code)
             except Exception:
                 logger.exception("Failed to assign role on join for %s", member)
+
+    join_details = (
+        f"**Member:** {member.mention} (`{member.id}`)\n"
+        f"**Created:** <t:{int(member.created_at.timestamp())}:f>\n"
+    )
+    if used_invite:
+        join_details += f"**Invite:** `{used_invite.code}`\n"
+    await send_server_event_log(guild, "member_join", join_details)
+
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    guild = member.guild
+    if guild.id != GUILD_ID:
+        return
+
+    details = (
+        f"**Member:** {member} (`{member.id}`)\n"
+        f"**Nickname:** {clip_text(member.nick or 'N/A')}\n"
+    )
+    await send_server_event_log(guild, "member_leave", details)
+
+
+@bot.event
+async def on_message_delete(message: discord.Message):
+    guild = message.guild
+    if guild is None or guild.id != GUILD_ID:
+        return
+
+    channel_name = message.channel.mention if hasattr(message.channel, "mention") else f"`{message.channel.id}`"
+    details = (
+        f"**Author:** {message.author} (`{message.author.id}`)\n"
+        f"**Channel:** {channel_name}\n"
+        f"**Message ID:** `{message.id}`\n"
+        f"**Content:** {clip_text(message.content)}\n"
+        f"**Attachments:** `{len(message.attachments)}`\n"
+    )
+    await send_server_event_log(guild, "message_delete", details)
+
+
+@bot.event
+async def on_bulk_message_delete(messages: list[discord.Message]):
+    if not messages:
+        return
+    guild = messages[0].guild
+    if guild is None or guild.id != GUILD_ID:
+        return
+
+    channel = messages[0].channel
+    channel_name = channel.mention if hasattr(channel, "mention") else f"`{channel.id}`"
+    details = (
+        f"**Channel:** {channel_name}\n"
+        f"**Messages Deleted:** `{len(messages)}`\n"
+    )
+    await send_server_event_log(guild, "bulk_message_delete", details)
+
+
+@bot.event
+async def on_user_update(before: discord.User, after: discord.User):
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return
+    member = guild.get_member(after.id)
+    if member is None:
+        return
+
+    if before.name != after.name or before.global_name != after.global_name:
+        details = (
+            f"**User:** {member.mention} (`{after.id}`)\n"
+            f"**Username:** {clip_text(before.name)} -> {clip_text(after.name)}\n"
+            f"**Global Name:** {clip_text(before.global_name or 'N/A')} -> {clip_text(after.global_name or 'N/A')}\n"
+        )
+        await send_server_event_log(guild, "user_name_change", details)
+
+    if before.display_avatar != after.display_avatar:
+        details = (
+            f"**User:** {member.mention} (`{after.id}`)\n"
+            f"**New Avatar:** {after.display_avatar.url}\n"
+        )
+        await send_server_event_log(guild, "user_avatar_change", details)
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    guild = after.guild
+    if guild.id != GUILD_ID:
+        return
+
+    if before.nick != after.nick:
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Nickname:** {clip_text(before.nick or 'N/A')} -> {clip_text(after.nick or 'N/A')}\n"
+        )
+        await send_server_event_log(guild, "member_nickname_change", details)
+
+    before_role_map = {role.id: role for role in before.roles}
+    after_role_map = {role.id: role for role in after.roles}
+    added_role_ids = sorted(set(after_role_map) - set(before_role_map))
+    removed_role_ids = sorted(set(before_role_map) - set(after_role_map))
+
+    for role_id in added_role_ids:
+        role = after_role_map[role_id]
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Role Added:** {role.mention} (`{role.id}`)\n"
+        )
+        await send_server_event_log(guild, "member_role_added", details)
+
+    for role_id in removed_role_ids:
+        role = before_role_map[role_id]
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Role Removed:** {role.name} (`{role.id}`)\n"
+        )
+        await send_server_event_log(guild, "member_role_removed", details)
+
+
+@bot.event
+async def on_invite_create(invite: discord.Invite):
+    guild = invite.guild
+    if guild is None or guild.id != GUILD_ID:
+        return
+
+    inviter_text = f"{invite.inviter} (`{invite.inviter.id}`)" if invite.inviter else "Unknown"
+    channel_text = invite.channel.mention if getattr(invite, "channel", None) else "N/A"
+    details = (
+        f"**Invite Code:** `{invite.code}`\n"
+        f"**Inviter:** {inviter_text}\n"
+        f"**Channel:** {channel_text}\n"
+        f"**Max Uses:** `{invite.max_uses}`\n"
+        f"**Max Age:** `{invite.max_age}`\n"
+    )
+    await send_server_event_log(guild, "invite_created", details)
+
+
+@bot.event
+async def on_guild_channel_create(channel: discord.abc.GuildChannel):
+    guild = channel.guild
+    if guild.id != GUILD_ID:
+        return
+
+    if isinstance(channel, discord.CategoryChannel):
+        event_name = "category_created"
+    else:
+        event_name = "channel_created"
+
+    parent_name = channel.category.name if channel.category else "N/A"
+    details = (
+        f"**Name:** {clip_text(channel.name)}\n"
+        f"**ID:** `{channel.id}`\n"
+        f"**Type:** `{channel.type}`\n"
+        f"**Category:** {clip_text(parent_name)}\n"
+    )
+    await send_server_event_log(guild, event_name, details)
+
+
+@bot.event
+async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
+    guild = channel.guild
+    if guild.id != GUILD_ID:
+        return
+
+    if isinstance(channel, discord.CategoryChannel):
+        event_name = "category_deleted"
+    else:
+        event_name = "channel_deleted"
+
+    parent_name = channel.category.name if channel.category else "N/A"
+    details = (
+        f"**Name:** {clip_text(channel.name)}\n"
+        f"**ID:** `{channel.id}`\n"
+        f"**Type:** `{channel.type}`\n"
+        f"**Category:** {clip_text(parent_name)}\n"
+    )
+    await send_server_event_log(guild, event_name, details)
+
+
+@bot.event
+async def on_guild_role_create(role: discord.Role):
+    guild = role.guild
+    if guild.id != GUILD_ID:
+        return
+
+    details = (
+        f"**Role:** {role.mention} (`{role.id}`)\n"
+        f"**Color:** `{role.color}`\n"
+        f"**Position:** `{role.position}`\n"
+    )
+    await send_server_event_log(guild, "role_created", details)
 
 
 @bot.event
@@ -691,6 +1269,186 @@ async def submitrole(interaction: discord.Interaction):
     except Exception:
         logger.exception("Error in /submitrole")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
+
+
+@tree.command(
+    name="bulk_assign_role_csv",
+    description="Assign a role to members listed in an uploaded CSV file",
+    guild=discord.Object(id=GUILD_ID),
+)
+async def bulk_assign_role_csv(interaction: discord.Interaction):
+    logger.info("/bulk_assign_role_csv invoked by %s", interaction.user)
+    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
+        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+        return
+
+    if interaction.guild is None or interaction.channel is None:
+        await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
+        return
+
+    await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
+
+    channel_id = interaction.channel.id
+
+    def role_message_check(message: discord.Message):
+        return message.author.id == interaction.user.id and message.channel.id == channel_id
+
+    try:
+        role_message = await bot.wait_for("message", timeout=60.0, check=role_message_check)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("❌ Timed out waiting for role mention.", ephemeral=True)
+        return
+
+    if not role_message.role_mentions:
+        await interaction.followup.send("❌ No role mentioned. Run the command again and mention a role.", ephemeral=True)
+        return
+
+    role = role_message.role_mentions[0]
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    actor = interaction.user if isinstance(interaction.user, discord.Member) else None
+    if bot_member is None:
+        await interaction.followup.send("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if role == interaction.guild.default_role:
+        await interaction.followup.send("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
+        return
+    if role.managed:
+        await interaction.followup.send("❌ That role is managed by an integration and cannot be assigned manually.", ephemeral=True)
+        return
+    if bot_member.top_role <= role:
+        await interaction.followup.send(
+            "❌ I can't assign that role because it's above my top role.",
+            ephemeral=True,
+        )
+        return
+    if actor and actor.id != interaction.guild.owner_id and actor.top_role <= role:
+        await interaction.followup.send(
+            "❌ You can only bulk-assign roles below your top role.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.followup.send(
+        "Upload a `.csv` file with Discord names separated by commas.",
+        ephemeral=True,
+    )
+
+    def attachment_message_check(message: discord.Message):
+        return (
+            message.author.id == interaction.user.id
+            and message.channel.id == channel_id
+            and len(message.attachments) > 0
+        )
+
+    try:
+        csv_message = await bot.wait_for("message", timeout=120.0, check=attachment_message_check)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("❌ Timed out waiting for CSV upload.", ephemeral=True)
+        return
+
+    attachment = csv_message.attachments[0]
+    try:
+        payload = await attachment.read()
+    except Exception:
+        logger.exception("Failed reading CSV attachment for /bulk_assign_role_csv")
+        await interaction.followup.send("❌ Could not read that file. Please try again.", ephemeral=True)
+        return
+
+    raw_names = parse_member_names_from_csv_bytes(payload)
+    unique_names = unique_member_names(raw_names)
+    if not unique_names:
+        await interaction.followup.send(
+            "❌ The uploaded file did not contain any names.",
+            ephemeral=True,
+        )
+        return
+    if len(unique_names) > CSV_ROLE_ASSIGN_MAX_NAMES:
+        await interaction.followup.send(
+            f"❌ Too many names. Limit is `{CSV_ROLE_ASSIGN_MAX_NAMES}` unique names per file.",
+            ephemeral=True,
+        )
+        return
+
+    member_lookup = build_member_name_lookup(interaction.guild)
+    matched_members = {}
+    duplicate_member_inputs = []
+    ambiguous_names = []
+    unmatched_names = []
+    for raw_name in unique_names:
+        key = normalize_member_lookup_name(raw_name)
+        matches = member_lookup.get(key, [])
+        if len(matches) == 1:
+            member = matches[0]
+            if member.id in matched_members:
+                duplicate_member_inputs.append(raw_name)
+                continue
+            matched_members[member.id] = (member, raw_name)
+        elif len(matches) > 1:
+            ambiguous_names.append(f"{raw_name} ({len(matches)} matches)")
+        else:
+            unmatched_names.append(raw_name)
+
+    assigned = []
+    already_had_role = []
+    assignment_failures = []
+    for member, matched_name in matched_members.values():
+        if role in member.roles:
+            already_had_role.append(f"{matched_name} ({member})")
+            continue
+        try:
+            await member.add_roles(
+                role,
+                reason=f"Bulk CSV role assignment by {interaction.user} ({interaction.user.id})",
+            )
+            assigned.append(f"{matched_name} ({member})")
+        except discord.Forbidden:
+            assignment_failures.append(f"{matched_name} (permission denied)")
+        except discord.HTTPException:
+            assignment_failures.append(f"{matched_name} (Discord API error)")
+
+    logger.info(
+        "CSV role assignment by %s role=%s processed=%s assigned=%s already=%s unmatched=%s ambiguous=%s failed=%s",
+        interaction.user,
+        role.id,
+        len(unique_names),
+        len(assigned),
+        len(already_had_role),
+        len(unmatched_names),
+        len(ambiguous_names),
+        len(assignment_failures),
+    )
+
+    def format_preview(title: str, values: list[str], limit: int = 20):
+        if not values:
+            return None
+        preview = ", ".join(f"`{clip_text(value, 40)}`" for value in values[:limit])
+        remaining = len(values) - limit
+        if remaining > 0:
+            preview = f"{preview} ... (+{remaining} more)"
+        return f"**{title}:** {preview}"
+
+    summary_lines = [
+        f"✅ Finished processing `{attachment.filename}` for role {role.mention}.",
+        f"- Unique names processed: `{len(unique_names)}`",
+        f"- Matched members: `{len(matched_members)}`",
+        f"- Assigned now: `{len(assigned)}`",
+        f"- Already had role: `{len(already_had_role)}`",
+        f"- Unmatched names: `{len(unmatched_names)}`",
+        f"- Ambiguous names: `{len(ambiguous_names)}`",
+        f"- Assignment failures: `{len(assignment_failures)}`",
+    ]
+
+    for line in (
+        format_preview("Unmatched", unmatched_names),
+        format_preview("Ambiguous", ambiguous_names),
+        format_preview("Failed", assignment_failures),
+        format_preview("Duplicate member inputs", duplicate_member_inputs),
+    ):
+        if line:
+            summary_lines.append(line)
+
+    await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
 
 
 class CodeEntryModal(discord.ui.Modal):
@@ -884,6 +1642,138 @@ async def modlog_test_prefix(ctx: commands.Context):
             f"❌ Could not send test log to channel ID `{MOD_LOG_CHANNEL_ID}`. "
             "Check channel ID and bot permissions."
         )
+
+
+@tree.command(
+    name="ban_member",
+    description="Ban a member from the server",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to ban", reason="Reason for ban")
+async def ban_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+    logger.info("/ban_member invoked by %s targeting %s", interaction.user, member)
+    if not has_moderator_access(interaction.user):
+        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "ban_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    action_reason = (reason or "").strip() or f"Banned by {interaction.user} via bot"
+    try:
+        await member.ban(reason=action_reason, delete_message_seconds=0)
+    except discord.Forbidden:
+        logger.exception("Missing permission to ban member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "ban_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Ban Members` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't ban that member. Check role hierarchy and `Ban Members` permission.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to ban member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "ban_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while banning member.",
+        )
+        await interaction.response.send_message("❌ Failed to ban the member. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "ban_member",
+        target=member,
+        reason=action_reason,
+        details="Banned successfully.",
+    )
+    await interaction.response.send_message(f"✅ Banned **{member}**.", ephemeral=True)
+
+
+@bot.command(name="banmember")
+async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+    logger.info("!banmember invoked by %s targeting %s", ctx.author, member)
+    if not has_moderator_access(ctx.author):
+        await ctx.send("❌ Only moderators can use this command.")
+        return
+
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "ban_member",
+            member,
+            reason.strip() or None,
+            outcome="blocked",
+            details=error_message,
+        )
+        await ctx.send(error_message)
+        return
+
+    action_reason = reason.strip() or f"Banned by {ctx.author} via bot"
+    try:
+        await member.ban(reason=action_reason, delete_message_seconds=0)
+    except discord.Forbidden:
+        logger.exception("Missing permission to ban member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "ban_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Ban Members` permission or role hierarchy block.",
+        )
+        await ctx.send("❌ I can't ban that member. Check role hierarchy and `Ban Members` permission.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to ban member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "ban_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while banning member.",
+        )
+        await ctx.send("❌ Failed to ban the member. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "ban_member",
+        target=member,
+        reason=action_reason,
+        details="Banned successfully.",
+    )
+    await ctx.send(f"✅ Banned **{member}**.")
 
 
 @tree.command(

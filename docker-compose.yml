@@ -1,10 +1,10 @@
-version: "3.9"
 services:
-  discord-bot:
+  discord_invite_bot:
     build:
       context: .
     container_name: discord_role_bot
-    env_file: .env
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data
     restart: unless-stopped
