@@ -1,0 +1,43 @@
+# Discord Invite + Utility Bot Wiki
+
+This wiki is the documentation hub for the Discord Invite + Utility Bot.
+The content mirrors the core `README.md` and splits features into focused pages.
+
+## What This Bot Does
+
+- Role-bound invite links and 6-digit access codes
+- CSV-based bulk role assignment with missing/error reporting
+- Tag auto-replies and dynamic tag slash commands
+- GL.iNet forum/docs search commands
+- Country code nickname management (`- CC`)
+- Moderation actions (ban, kick + prune, timeout) and event logging
+- Firmware mirror monitoring with scheduled notifications
+- Password-protected web admin panel
+
+## Main Feature Pages
+
+- [Role Access and Invites](Role-Access-and-Invites)
+- [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment)
+- [Tag Responses](Tag-Responses)
+- [Search and Docs](Search-and-Docs)
+- [Country Code Commands](Country-Code-Commands)
+- [Moderation and Logs](Moderation-and-Logs)
+- [Firmware Monitor](Firmware-Monitor)
+- [Web Admin Interface](Web-Admin-Interface)
+
+## Operations Pages
+
+- [Environment Variables](Environment-Variables)
+- [Docker and Portainer Deploy](Docker-and-Portainer-Deploy)
+- [Data Files](Data-Files)
+- [Command Reference](Command-Reference)
+
+## Command Reference
+
+See [Command Reference](Command-Reference) for a complete command list, and use the feature pages for behavior details.
+
+## Source of Truth
+
+- Main README: [`README.md`](../README.md)
+- Bot implementation: [`bot.py`](../bot.py)
+- Web admin implementation: [`web_admin.py`](../web_admin.py)
