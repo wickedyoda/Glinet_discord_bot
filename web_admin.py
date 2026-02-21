@@ -282,6 +282,7 @@ def _render_layout(title: str, body_html: str, current_email: str, is_admin: boo
         <a href="{{ url_for('dashboard') }}">Dashboard</a>
         <a href="{{ url_for('settings') }}">Settings</a>
         <a href="{{ url_for('tag_responses') }}">Tag Responses</a>
+        {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
         {% if is_admin %}<a href="{{ url_for('users') }}">Users</a>{% endif %}
         <a href="{{ url_for('logout') }}">Logout</a>
       {% endif %}
@@ -313,6 +314,7 @@ def create_web_app(
     default_admin_password: str,
     on_env_settings_saved=None,
     on_tag_responses_saved=None,
+    on_bulk_assign_role_csv=None,
     logger=None,
 ):
     app = Flask(__name__)
@@ -417,6 +419,7 @@ def create_web_app(
               <h2>Dashboard</h2>
               <p>Use <a href="/admin/settings">Settings</a> to edit environment-driven bot settings.</p>
               <p>Use <a href="/admin/tag-responses">Tag Responses</a> to manage dynamic tag commands.</p>
+              <p>Use <a href="/admin/bulk-role-csv">Bulk Role CSV</a> to upload members and assign a role.</p>
               <p>Use <a href="/admin/users">Users</a> to create/manage login users (admin only).</p>
               <p class="muted">Some Discord command metadata (for example guild-specific slash registration) may still require a process restart after changes.</p>
             </div>
@@ -523,6 +526,97 @@ def create_web_app(
         </div>
         """
         return _render_layout("Tag Responses", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/bulk-role-csv", methods=["GET", "POST"])
+    @admin_required
+    def bulk_role_csv():
+        user = _current_user()
+        operation_result = None
+
+        if request.method == "POST":
+            role_input = request.form.get("role_id", "").strip()
+            uploaded_file = request.files.get("csv_file")
+            if not role_input:
+                flash("Role ID is required.", "error")
+            elif uploaded_file is None or not uploaded_file.filename:
+                flash("CSV file is required.", "error")
+            elif not uploaded_file.filename.lower().endswith(".csv"):
+                flash("Uploaded file must be a .csv file.", "error")
+            elif not callable(on_bulk_assign_role_csv):
+                flash("Bulk CSV assignment is not configured in this runtime.", "error")
+            else:
+                payload = uploaded_file.read()
+                if not payload:
+                    flash("Uploaded CSV is empty.", "error")
+                else:
+                    response = on_bulk_assign_role_csv(role_input, payload, uploaded_file.filename, user["email"])
+                    if not isinstance(response, dict):
+                        flash("Invalid response from bulk assignment handler.", "error")
+                    elif not response.get("ok"):
+                        flash(response.get("error", "Bulk assignment failed."), "error")
+                    else:
+                        operation_result = response
+                        flash("Bulk assignment completed.", "success")
+
+        summary_html = ""
+        details_html = ""
+        report_html = ""
+        if operation_result:
+            summary_lines = operation_result.get("summary_lines", [])
+            summary_rows = "".join(f"<div class='mono'>{escape(line)}</div>" for line in summary_lines)
+            summary_html = f"""
+            <div class="card">
+              <h3>Result Summary</h3>
+              {summary_rows}
+            </div>
+            """
+
+            result_data = operation_result.get("result", {})
+
+            def build_list_section(title: str, key: str, limit: int = 50):
+                values = result_data.get(key, []) or []
+                if not values:
+                    return f"<div><h4>{escape(title)} (0)</h4><p class='muted'>None</p></div>"
+                items = "".join(f"<li class='mono'>{escape(value)}</li>" for value in values[:limit])
+                overflow = len(values) - limit
+                overflow_note = f"<p class='muted'>... and {overflow} more</p>" if overflow > 0 else ""
+                return f"<div><h4>{escape(title)} ({len(values)})</h4><ul>{items}</ul>{overflow_note}</div>"
+
+            details_html = f"""
+            <div class="card">
+              <h3>Missing / Errors</h3>
+              {build_list_section("Unmatched", "unmatched_names")}
+              {build_list_section("Ambiguous", "ambiguous_names")}
+              {build_list_section("Failed", "assignment_failures")}
+            </div>
+            """
+
+            report_html = f"""
+            <div class="card">
+              <h3>Full Report</h3>
+              <textarea readonly>{escape(operation_result.get("report_text", ""))}</textarea>
+            </div>
+            """
+
+        body = f"""
+        <div class="card">
+          <h2>Bulk Assign Role from CSV</h2>
+          <p class="muted">Upload a CSV of Discord names (comma-separated or one-per-line), and assign all matched members to the specified role.</p>
+          <form method="post" enctype="multipart/form-data">
+            <label>Role ID (or role mention like &lt;@&amp;123&gt;)</label>
+            <input type="text" name="role_id" placeholder="123456789012345678" required />
+            <label style="margin-top:10px;display:block;">CSV file</label>
+            <input type="file" name="csv_file" accept=".csv,text/csv" required />
+            <div style="margin-top:14px;">
+              <button class="btn" type="submit">Run Bulk Assignment</button>
+            </div>
+          </form>
+        </div>
+        {summary_html}
+        {details_html}
+        {report_html}
+        """
+        return _render_layout("Bulk Role CSV", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/users", methods=["GET", "POST"])
     @admin_required
@@ -689,6 +783,7 @@ def start_web_admin_interface(
     default_admin_password: str,
     on_env_settings_saved=None,
     on_tag_responses_saved=None,
+    on_bulk_assign_role_csv=None,
     logger=None,
 ):
     app = create_web_app(
@@ -699,6 +794,7 @@ def start_web_admin_interface(
         default_admin_password=default_admin_password,
         on_env_settings_saved=on_env_settings_saved,
         on_tag_responses_saved=on_tag_responses_saved,
+        on_bulk_assign_role_csv=on_bulk_assign_role_csv,
         logger=logger,
     )
     if logger:

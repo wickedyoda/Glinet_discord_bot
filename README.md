@@ -15,10 +15,11 @@ Discord bot for GL.iNet community operations:
   - 6-digit code
 - Members joining via invite or entering code with `/enter_role` get the mapped role.
 - `/getaccess` gives a default configured role.
-- `/bulk_assign_role_csv` (moderators) prompts for:
-  - A target role mention
-  - A CSV upload of Discord names (comma-separated)
-  Then bulk-assigns that role and reports unmatched/ambiguous names.
+- `/bulk_assign_role_csv` (moderators):
+  - Takes a target role parameter
+  - Takes a `.csv` attachment of Discord names (comma-separated or one-per-line)
+  - Bulk-assigns that role and reports missing/ambiguous members and assignment errors
+  - Returns a downloadable detailed report file
 
 2. Tag Auto-Replies
 - Message-based tags from `data/tag_responses.json` (example: `!betatest`).
@@ -83,6 +84,7 @@ Discord bot for GL.iNet community operations:
 - Admin can manage:
   - Bot environment settings (channels, firmware schedule, logging/mod settings, etc.)
   - Tag response mappings
+  - Bulk role assignment from uploaded CSV (with missing/error report)
   - Web users
 
 ## Command Reference
