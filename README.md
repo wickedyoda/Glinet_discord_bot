@@ -15,6 +15,10 @@ Discord bot for GL.iNet community operations:
   - 6-digit code
 - Members joining via invite or entering code with `/enter_role` get the mapped role.
 - `/getaccess` gives a default configured role.
+- `/bulk_assign_role_csv` (moderators) prompts for:
+  - A target role mention
+  - A CSV upload of Discord names (comma-separated)
+  Then bulk-assigns that role and reports unmatched/ambiguous names.
 
 2. Tag Auto-Replies
 - Message-based tags from `data/tag_responses.json` (example: `!betatest`).
@@ -54,11 +58,21 @@ Discord bot for GL.iNet community operations:
   - Role creation
   - Role add/remove on members
 
+7. Firmware Mirror Monitor
+- Polls `https://gl-fw.remotetohome.io/` (or custom URL) on a schedule.
+- Detects newly added firmware rows by model/track/version/files.
+- Posts a notification to `firmware_notification_channel` with:
+  - Model, track, version, date
+  - Download links + SHA256
+  - Release notes excerpt
+- Uses `data/firmware_seen.json` to persist seen entries across restarts.
+
 ## Command Reference
 
 | Slash Command | Prefix Command | Access |
 |---|---|---|
 | `/submitrole` | N/A | `Employee`, `Admin`, `Gl.iNet Moderator` role names |
+| `/bulk_assign_role_csv` | N/A | Moderator role IDs only (see env vars) |
 | `/enter_role` | N/A | Any member |
 | `/getaccess` | N/A | Any member |
 | Dynamic tag commands (from JSON) | Tag text (e.g. `!betatest`) | Any member |
@@ -94,6 +108,12 @@ Optional:
 - `MODERATOR_ROLE_ID` (default `1294957416294645771`)
 - `ADMIN_ROLE_ID` (default `1138302148292116551`)
 - `MOD_LOG_CHANNEL_ID` (default `1311820410269995009`)
+- `CSV_ROLE_ASSIGN_MAX_NAMES` (default `500`)
+- `firmware_notification_channel` (required to enable firmware alerts; channel ID or `<#channel>` mention)
+- `FIRMWARE_FEED_URL` (default `https://gl-fw.remotetohome.io/`)
+- `firmware_check_schedule` (cron, 5-field, UTC; default `*/30 * * * *`)
+- `FIRMWARE_REQUEST_TIMEOUT_SECONDS` (default `30`)
+- `FIRMWARE_RELEASE_NOTES_MAX_CHARS` (default `900`)
 
 Example `.env`:
 ```env
@@ -110,6 +130,12 @@ KICK_PRUNE_HOURS=72
 MODERATOR_ROLE_ID=1294957416294645771
 ADMIN_ROLE_ID=1138302148292116551
 MOD_LOG_CHANNEL_ID=1311820410269995009
+CSV_ROLE_ASSIGN_MAX_NAMES=500
+firmware_notification_channel=123456789012345678
+FIRMWARE_FEED_URL=https://gl-fw.remotetohome.io/
+firmware_check_schedule=*/30 * * * *
+FIRMWARE_REQUEST_TIMEOUT_SECONDS=30
+FIRMWARE_RELEASE_NOTES_MAX_CHARS=900
 ```
 
 ## Docker
@@ -165,6 +191,7 @@ Stored under `data/` (or `DATA_DIR`):
 - `invite_roles.json`
 - `tag_responses.json`
 - `bot.log`
+- `firmware_seen.json`
 
 ## Security
 
