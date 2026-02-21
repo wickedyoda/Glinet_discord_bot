@@ -33,6 +33,8 @@ INT_KEYS = {
     "WEB_BULK_ASSIGN_TIMEOUT_SECONDS",
     "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES",
     "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT",
+    "WEB_BOT_PROFILE_TIMEOUT_SECONDS",
+    "WEB_AVATAR_MAX_UPLOAD_BYTES",
 }
 SENSITIVE_KEYS = {"DISCORD_TOKEN", "WEB_ADMIN_DEFAULT_PASSWORD", "WEB_ADMIN_SESSION_SECRET"}
 ENV_FIELDS = [
@@ -65,6 +67,8 @@ ENV_FIELDS = [
     ("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "Web Bulk Assign Timeout", "Timeout in seconds for web-triggered CSV role assignment."),
     ("WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", "Web Bulk Assign Max Upload", "Maximum CSV upload size in bytes for web bulk assignment."),
     ("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", "Web Bulk Assign Report Limit", "Maximum items displayed per section in web bulk-assignment details."),
+    ("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "Web Bot Profile Timeout", "Timeout in seconds for loading/updating bot profile from web UI."),
+    ("WEB_AVATAR_MAX_UPLOAD_BYTES", "Web Avatar Max Upload", "Maximum avatar upload size in bytes for bot profile uploads."),
     ("WEB_ADMIN_DEFAULT_USERNAME", "Default Admin Email", "Default admin email used for first boot user creation."),
     ("WEB_ADMIN_DEFAULT_PASSWORD", "Default Admin Password", "Default admin password for first boot user creation."),
     ("WEB_ADMIN_SESSION_SECRET", "Web Session Secret", "Flask session signing secret."),
@@ -262,8 +266,17 @@ def _get_int_env(name: str, default: int, minimum: int = 0):
     return parsed
 
 
+def _normalize_select_value(value: str):
+    selected = str(value or "").strip()
+    if selected.startswith("<#") and selected.endswith(">"):
+        selected = selected[2:-1]
+    if selected.startswith("<@&") and selected.endswith(">"):
+        selected = selected[3:-1]
+    return selected
+
+
 def _render_select_input(name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."):
-    selected = str(selected_value or "")
+    selected = _normalize_select_value(selected_value)
     rows = [f"<option value=''>{escape(placeholder)}</option>"]
     seen = set()
     for option in options:
@@ -328,6 +341,7 @@ def _render_layout(title: str, body_html: str, current_email: str, is_admin: boo
       {% if current_email %}
         <span>{{ current_email }}</span>
         <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        {% if is_admin %}<a href="{{ url_for('bot_profile') }}">Bot Profile</a>{% endif %}
         <a href="{{ url_for('settings') }}">Settings</a>
         <a href="{{ url_for('tag_responses') }}">Tag Responses</a>
         {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
@@ -364,6 +378,8 @@ def create_web_app(
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
     on_get_discord_catalog=None,
+    on_get_bot_profile=None,
+    on_update_bot_avatar=None,
     logger=None,
 ):
     app = Flask(__name__)
@@ -466,6 +482,7 @@ def create_web_app(
             """
             <div class="card">
               <h2>Dashboard</h2>
+              <p>Use <a href="/admin/bot-profile">Bot Profile</a> to view current bot identity and upload a new avatar.</p>
               <p>Use <a href="/admin/settings">Settings</a> to edit environment-driven bot settings.</p>
               <p>Use <a href="/admin/tag-responses">Tag Responses</a> to manage dynamic tag commands.</p>
               <p>Use <a href="/admin/bulk-role-csv">Bulk Role CSV</a> to upload members and assign a role.</p>
@@ -476,6 +493,79 @@ def create_web_app(
             user["email"],
             bool(user.get("is_admin")),
         )
+
+    @app.route("/admin/bot-profile", methods=["GET", "POST"])
+    @admin_required
+    def bot_profile():
+        user = _current_user()
+        max_avatar_upload_bytes = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
+        profile = on_get_bot_profile() if callable(on_get_bot_profile) else {"ok": False, "error": "Not configured"}
+
+        if request.method == "POST":
+            uploaded_file = request.files.get("avatar_file")
+            if uploaded_file is None or not uploaded_file.filename:
+                flash("Avatar image file is required.", "error")
+            elif not callable(on_update_bot_avatar):
+                flash("Avatar update callback is not configured.", "error")
+            else:
+                payload = uploaded_file.read()
+                lowered_name = uploaded_file.filename.lower()
+                allowed_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+                if not payload:
+                    flash("Uploaded avatar file is empty.", "error")
+                elif len(payload) > max_avatar_upload_bytes:
+                    flash(
+                        f"Avatar file is too large ({len(payload)} bytes). Max allowed is {max_avatar_upload_bytes} bytes.",
+                        "error",
+                    )
+                elif not lowered_name.endswith(allowed_extensions):
+                    flash("Avatar must be PNG, JPG, JPEG, WEBP, or GIF.", "error")
+                else:
+                    response = on_update_bot_avatar(payload, uploaded_file.filename, user["email"])
+                    if not isinstance(response, dict):
+                        flash("Invalid response from avatar update handler.", "error")
+                    elif not response.get("ok"):
+                        flash(response.get("error", "Failed to update bot avatar."), "error")
+                    else:
+                        profile = response
+                        flash("Bot avatar updated successfully.", "success")
+
+        profile_html = ""
+        if isinstance(profile, dict) and profile.get("ok"):
+            avatar_url = str(profile.get("avatar_url") or "").strip()
+            avatar_image = (
+                f"<img src='{escape(avatar_url, quote=True)}' alt='Bot avatar' "
+                "style='max-width:160px;max-height:160px;border-radius:12px;border:1px solid #d1d5db;' />"
+                if avatar_url
+                else "<p class='muted'>No avatar is currently set.</p>"
+            )
+            profile_html = f"""
+            <div class="card">
+              <h3>Current Bot Profile</h3>
+              <p><strong>Name:</strong> {escape(str(profile.get('name') or 'unknown'))}</p>
+              <p><strong>ID:</strong> <span class="mono">{escape(str(profile.get('id') or 'unknown'))}</span></p>
+              {avatar_image}
+            </div>
+            """
+        else:
+            profile_error = str(profile.get("error") if isinstance(profile, dict) else "Unable to load profile.")
+            profile_html = f"<div class='card'><p class='muted'>Could not load bot profile: {escape(profile_error)}</p></div>"
+
+        body = f"""
+        <div class="card">
+          <h2>Bot Profile</h2>
+          <p class="muted">Upload a new bot avatar. Max size is {max_avatar_upload_bytes} bytes.</p>
+          <form method="post" enctype="multipart/form-data">
+            <label>Avatar image (PNG/JPG/WEBP/GIF)</label>
+            <input type="file" name="avatar_file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" required />
+            <div style="margin-top:14px;">
+              <button class="btn" type="submit">Upload Avatar</button>
+            </div>
+          </form>
+        </div>
+        {profile_html}
+        """
+        return _render_layout("Bot Profile", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/settings", methods=["GET", "POST"])
     @admin_required
@@ -522,25 +612,23 @@ def create_web_app(
                 flash("Settings saved to .env and applied where supported.", "success")
                 file_values = _parse_env_file(env_file)
 
-        select_field_options = {
-            "GENERAL_CHANNEL_ID": channel_options,
-            "MOD_LOG_CHANNEL_ID": channel_options,
-            "firmware_notification_channel": channel_options,
-            "MODERATOR_ROLE_ID": role_options,
-            "ADMIN_ROLE_ID": role_options,
-        }
-
         rows = []
         for key, label, description in ENV_FIELDS:
             value = file_values.get(key, os.getenv(key, ""))
             safe_value = "" if key in SENSITIVE_KEYS else value
             placeholder = "•••••• (unchanged if blank)" if key in SENSITIVE_KEYS else ""
             input_type = "password" if key in SENSITIVE_KEYS else "text"
-            if key in select_field_options and select_field_options[key]:
+            select_options = []
+            if key == "firmware_notification_channel" or key.endswith("_CHANNEL_ID"):
+                select_options = channel_options
+            elif key.endswith("_ROLE_ID"):
+                select_options = role_options
+
+            if select_options:
                 input_html = _render_select_input(
                     name=key,
                     selected_value=safe_value,
-                    options=select_field_options[key],
+                    options=select_options,
                     placeholder="Select from Discord...",
                 )
             else:
@@ -638,10 +726,10 @@ def create_web_app(
         if request.method == "POST":
             selected_role_input = request.form.get("role_id_select", "").strip()
             manual_role_input = request.form.get("role_id", "").strip()
-            role_input = manual_role_input or selected_role_input
+            role_input = selected_role_input if role_options else (manual_role_input or selected_role_input)
             uploaded_file = request.files.get("csv_file")
             if not role_input:
-                flash("Role ID is required.", "error")
+                flash("Role selection is required.", "error")
             elif uploaded_file is None or not uploaded_file.filename:
                 flash("CSV file is required.", "error")
             elif not uploaded_file.filename.lower().endswith(".csv"):
@@ -712,10 +800,12 @@ def create_web_app(
             role_picker_html = (
                 "<label>Role (from Discord)</label>"
                 + _render_select_input("role_id_select", "", role_options, "Select role...")
-                + "<p class='muted'>You can optionally override with a manual Role ID below.</p>"
+                + "<p class='muted'>Select the target role from your current guild role list.</p>"
             )
         elif catalog_error:
             role_picker_html = f"<p class='muted'>Could not load role dropdown: {escape(catalog_error)}</p>"
+        else:
+            role_picker_html = "<p class='muted'>Role dropdown is unavailable. Use manual Role ID input.</p>"
 
         body = f"""
         <div class="card">
@@ -724,8 +814,7 @@ def create_web_app(
           <p class="muted">Current upload limit: {max_upload_bytes} bytes. Current per-section display limit: {report_list_limit} entries.</p>
           <form method="post" enctype="multipart/form-data">
             {role_picker_html}
-            <label>Role ID (or role mention like &lt;@&amp;123&gt;)</label>
-            <input type="text" name="role_id" placeholder="123456789012345678" />
+            {"<label>Role ID (or role mention like &lt;@&amp;123&gt;)</label><input type='text' name='role_id' placeholder='123456789012345678' />" if not role_options else ""}
             <label style="margin-top:10px;display:block;">CSV file</label>
             <input type="file" name="csv_file" accept=".csv,text/csv" required />
             <div style="margin-top:14px;">
@@ -906,6 +995,8 @@ def start_web_admin_interface(
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
     on_get_discord_catalog=None,
+    on_get_bot_profile=None,
+    on_update_bot_avatar=None,
     logger=None,
 ):
     app = create_web_app(
@@ -918,6 +1009,8 @@ def start_web_admin_interface(
         on_tag_responses_saved=on_tag_responses_saved,
         on_bulk_assign_role_csv=on_bulk_assign_role_csv,
         on_get_discord_catalog=on_get_discord_catalog,
+        on_get_bot_profile=on_get_bot_profile,
+        on_update_bot_avatar=on_update_bot_avatar,
         logger=logger,
     )
     if logger:

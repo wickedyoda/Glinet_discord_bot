@@ -105,6 +105,14 @@ try:
     WEB_BULK_ASSIGN_TIMEOUT_SECONDS = max(30, int(os.getenv("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "300")))
 except ValueError:
     WEB_BULK_ASSIGN_TIMEOUT_SECONDS = 300
+try:
+    WEB_BOT_PROFILE_TIMEOUT_SECONDS = max(5, int(os.getenv("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "20")))
+except ValueError:
+    WEB_BOT_PROFILE_TIMEOUT_SECONDS = 20
+try:
+    WEB_AVATAR_MAX_UPLOAD_BYTES = max(1024, int(os.getenv("WEB_AVATAR_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024))))
+except ValueError:
+    WEB_AVATAR_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
 COUNTRY_LEGACY_SUFFIX_PATTERN = re.compile(r"_[A-Z]{2}$")
 COUNTRY_FLAG_SUFFIX_PATTERN = re.compile(r"\s*-\s*[\U0001F1E6-\U0001F1FF]{2}$")
@@ -775,6 +783,77 @@ def run_web_get_discord_catalog():
     return data
 
 
+async def fetch_bot_profile_async():
+    current_user = bot.user
+    if current_user is None:
+        return {"ok": False, "error": "Bot user is not ready yet."}
+
+    avatar_url = str(current_user.display_avatar.url) if current_user.display_avatar else ""
+    return {
+        "ok": True,
+        "id": str(current_user.id),
+        "name": current_user.name,
+        "display_name": current_user.display_name,
+        "avatar_url": avatar_url,
+    }
+
+
+def run_web_get_bot_profile():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = asyncio.run_coroutine_threadsafe(fetch_bot_profile_async(), loop)
+    try:
+        return future.result(timeout=WEB_BOT_PROFILE_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while loading bot profile."}
+    except Exception:
+        logger.exception("Unexpected failure while loading bot profile")
+        return {"ok": False, "error": "Unexpected error while loading bot profile."}
+
+
+async def run_web_update_bot_avatar_async(payload: bytes, actor_email: str):
+    current_user = bot.user
+    if current_user is None:
+        return {"ok": False, "error": "Bot user is not ready yet."}
+    if not payload:
+        return {"ok": False, "error": "Avatar image payload was empty."}
+    if len(payload) > WEB_AVATAR_MAX_UPLOAD_BYTES:
+        return {
+            "ok": False,
+            "error": f"Avatar file too large ({len(payload)} bytes). Max is {WEB_AVATAR_MAX_UPLOAD_BYTES} bytes.",
+        }
+
+    try:
+        await current_user.edit(avatar=payload)
+    except discord.HTTPException:
+        logger.exception("Failed to update bot avatar via web admin by %s", actor_email)
+        return {"ok": False, "error": "Discord rejected the avatar image. Use a valid PNG/JPG/WEBP/GIF image."}
+
+    profile = await fetch_bot_profile_async()
+    if profile.get("ok"):
+        logger.info("Bot avatar updated via web admin by %s", actor_email)
+    return profile
+
+
+def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet. Try again in a few seconds."}
+
+    future = asyncio.run_coroutine_threadsafe(run_web_update_bot_avatar_async(payload, actor_email), loop)
+    try:
+        return future.result(timeout=WEB_BOT_PROFILE_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while updating bot avatar."}
+    except Exception:
+        logger.exception("Unexpected failure while updating bot avatar from %s (%s)", actor_email, filename)
+        return {"ok": False, "error": "Unexpected error while updating bot avatar."}
+
+
 def parse_timeout_duration(value: str):
     match = TIMEOUT_DURATION_PATTERN.fullmatch(value or "")
     if not match:
@@ -1259,6 +1338,8 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global WEB_DISCORD_CATALOG_TTL_SECONDS
     global WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS
     global WEB_BULK_ASSIGN_TIMEOUT_SECONDS
+    global WEB_BOT_PROFILE_TIMEOUT_SECONDS
+    global WEB_AVATAR_MAX_UPLOAD_BYTES
 
     LOG_LEVEL = os.getenv("LOG_LEVEL", LOG_LEVEL)
     logger.setLevel(LOG_LEVEL)
@@ -1337,6 +1418,16 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         WEB_BULK_ASSIGN_TIMEOUT_SECONDS,
         minimum=30,
     )
+    WEB_BOT_PROFILE_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("WEB_BOT_PROFILE_TIMEOUT_SECONDS", WEB_BOT_PROFILE_TIMEOUT_SECONDS),
+        WEB_BOT_PROFILE_TIMEOUT_SECONDS,
+        minimum=5,
+    )
+    WEB_AVATAR_MAX_UPLOAD_BYTES = parse_int_setting(
+        os.getenv("WEB_AVATAR_MAX_UPLOAD_BYTES", WEB_AVATAR_MAX_UPLOAD_BYTES),
+        WEB_AVATAR_MAX_UPLOAD_BYTES,
+        minimum=1024,
+    )
 
     docs_index_cache.clear()
     discord_catalog_cache["fetched_at"] = 0.0
@@ -1375,6 +1466,8 @@ def start_web_admin_server():
                 on_tag_responses_saved=refresh_tag_responses_from_web,
                 on_bulk_assign_role_csv=run_web_bulk_role_assignment,
                 on_get_discord_catalog=run_web_get_discord_catalog,
+                on_get_bot_profile=run_web_get_bot_profile,
+                on_update_bot_avatar=run_web_update_bot_avatar,
                 logger=logger,
             )
         except Exception:
