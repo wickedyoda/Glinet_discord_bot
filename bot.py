@@ -5,6 +5,7 @@ import logging
 import os
 import json
 import asyncio
+import concurrent.futures
 import re
 import time
 import csv
@@ -424,6 +425,208 @@ def unique_member_names(values: list[str]):
         seen.add(key)
         unique.append(value.strip())
     return unique
+
+
+def parse_role_id_input(value: str):
+    cleaned = (value or "").strip()
+    if cleaned.startswith("<@&") and cleaned.endswith(">"):
+        cleaned = cleaned[3:-1]
+    try:
+        role_id = int(cleaned)
+    except (TypeError, ValueError):
+        return None
+    return role_id if role_id > 0 else None
+
+
+def format_bulk_assignment_preview(title: str, values: list[str], limit: int = 20):
+    if not values:
+        return None
+    preview = ", ".join(f"`{clip_text(value, 40)}`" for value in values[:limit])
+    remaining = len(values) - limit
+    if remaining > 0:
+        preview = f"{preview} ... (+{remaining} more)"
+    return f"**{title}:** {preview}"
+
+
+def build_bulk_assignment_summary_lines(source_name: str, role_mention: str, result: dict):
+    summary_lines = [
+        f"✅ Finished processing `{source_name}` for role {role_mention}.",
+        f"- Unique names processed: `{result['unique_names_count']}`",
+        f"- Matched members: `{result['matched_members_count']}`",
+        f"- Assigned now: `{len(result['assigned'])}`",
+        f"- Already had role: `{len(result['already_had_role'])}`",
+        f"- Unmatched names: `{len(result['unmatched_names'])}`",
+        f"- Ambiguous names: `{len(result['ambiguous_names'])}`",
+        f"- Assignment failures: `{len(result['assignment_failures'])}`",
+    ]
+    for line in (
+        format_bulk_assignment_preview("Unmatched", result["unmatched_names"]),
+        format_bulk_assignment_preview("Ambiguous", result["ambiguous_names"]),
+        format_bulk_assignment_preview("Failed", result["assignment_failures"]),
+        format_bulk_assignment_preview("Duplicate member inputs", result["duplicate_member_inputs"]),
+    ):
+        if line:
+            summary_lines.append(line)
+    return summary_lines
+
+
+def build_bulk_assignment_report_text(role: discord.Role, requested_by: str, source_name: str, result: dict):
+    def section_block(title: str, values: list[str]):
+        lines = [f"{title}: {len(values)}"]
+        if values:
+            lines.extend(f"- {value}" for value in values)
+        return "\n".join(lines)
+
+    return "\n\n".join(
+        [
+            f"Bulk CSV Role Assignment Report\n"
+            f"Role: {role.name} ({role.id})\n"
+            f"Requested by: {requested_by}\n"
+            f"File: {source_name}\n"
+            f"Timestamp: {discord.utils.utcnow().isoformat()}",
+            section_block("Assigned", result["assigned"]),
+            section_block("Already had role", result["already_had_role"]),
+            section_block("Unmatched", result["unmatched_names"]),
+            section_block("Ambiguous", result["ambiguous_names"]),
+            section_block("Failed", result["assignment_failures"]),
+            section_block("Duplicate member inputs", result["duplicate_member_inputs"]),
+        ]
+    )
+
+
+async def process_bulk_role_assignment_payload(
+    guild: discord.Guild,
+    role: discord.Role,
+    payload: bytes,
+    requested_by: str,
+    reason_actor: str,
+):
+    raw_names = parse_member_names_from_csv_bytes(payload)
+    unique_names = unique_member_names(raw_names)
+    if not unique_names:
+        return None, "❌ The uploaded file did not contain any names."
+    if len(unique_names) > CSV_ROLE_ASSIGN_MAX_NAMES:
+        return None, f"❌ Too many names. Limit is `{CSV_ROLE_ASSIGN_MAX_NAMES}` unique names per file."
+
+    member_lookup = build_member_name_lookup(guild)
+    matched_members = {}
+    duplicate_member_inputs = []
+    ambiguous_names = []
+    unmatched_names = []
+    for raw_name in unique_names:
+        key = normalize_member_lookup_name(raw_name)
+        matches = member_lookup.get(key, [])
+        if len(matches) == 1:
+            member = matches[0]
+            if member.id in matched_members:
+                duplicate_member_inputs.append(raw_name)
+                continue
+            matched_members[member.id] = (member, raw_name)
+        elif len(matches) > 1:
+            ambiguous_names.append(f"{raw_name} ({len(matches)} matches)")
+        else:
+            unmatched_names.append(raw_name)
+
+    assigned = []
+    already_had_role = []
+    assignment_failures = []
+    for member, matched_name in matched_members.values():
+        if role in member.roles:
+            already_had_role.append(f"{matched_name} ({member})")
+            continue
+        try:
+            await member.add_roles(role, reason=reason_actor)
+            assigned.append(f"{matched_name} ({member})")
+        except discord.Forbidden:
+            assignment_failures.append(f"{matched_name} (permission denied)")
+        except discord.HTTPException:
+            assignment_failures.append(f"{matched_name} (Discord API error)")
+
+    result = {
+        "unique_names_count": len(unique_names),
+        "matched_members_count": len(matched_members),
+        "assigned": assigned,
+        "already_had_role": already_had_role,
+        "unmatched_names": unmatched_names,
+        "ambiguous_names": ambiguous_names,
+        "assignment_failures": assignment_failures,
+        "duplicate_member_inputs": duplicate_member_inputs,
+    }
+    logger.info(
+        "CSV role assignment by %s role=%s processed=%s assigned=%s already=%s unmatched=%s ambiguous=%s failed=%s",
+        requested_by,
+        role.id,
+        result["unique_names_count"],
+        len(assigned),
+        len(already_had_role),
+        len(unmatched_names),
+        len(ambiguous_names),
+        len(assignment_failures),
+    )
+    return result, None
+
+
+async def run_web_bulk_role_assignment_async(role_input: str, payload: bytes, filename: str, actor_email: str):
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return {"ok": False, "error": "Guild is not currently available to the bot."}
+
+    role_id = parse_role_id_input(role_input)
+    if role_id is None:
+        return {"ok": False, "error": "Role ID is invalid. Use a numeric role ID or role mention format."}
+    role = guild.get_role(role_id)
+    if role is None:
+        return {"ok": False, "error": f"Role `{role_id}` was not found in the configured guild."}
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = guild.me or (guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        return {"ok": False, "error": "Could not resolve bot member in this guild."}
+    if role == guild.default_role:
+        return {"ok": False, "error": "The @everyone role cannot be assigned this way."}
+    if role.managed:
+        return {"ok": False, "error": "That role is managed by an integration and cannot be assigned manually."}
+    if bot_member.top_role <= role:
+        return {"ok": False, "error": "I cannot assign that role because it is above my top role."}
+
+    result, error = await process_bulk_role_assignment_payload(
+        guild=guild,
+        role=role,
+        payload=payload,
+        requested_by=f"web_admin:{actor_email}",
+        reason_actor=f"Bulk CSV role assignment by web admin {actor_email}",
+    )
+    if error:
+        return {"ok": False, "error": error}
+
+    summary_lines = build_bulk_assignment_summary_lines(filename, role.mention, result)
+    report_text = build_bulk_assignment_report_text(role, f"web admin {actor_email}", filename, result)
+    return {
+        "ok": True,
+        "role_name": role.name,
+        "role_id": role.id,
+        "summary_lines": summary_lines,
+        "report_text": report_text,
+        "result": result,
+    }
+
+
+def run_web_bulk_role_assignment(role_input: str, payload: bytes, filename: str, actor_email: str):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet. Try again in a few seconds."}
+    future = asyncio.run_coroutine_threadsafe(
+        run_web_bulk_role_assignment_async(role_input, payload, filename, actor_email),
+        loop,
+    )
+    try:
+        return future.result(timeout=300)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while processing the CSV. Try a smaller file or retry."}
+    except Exception:
+        logger.exception("Unexpected failure in web bulk role assignment")
+        return {"ok": False, "error": "Unexpected error while assigning roles from CSV."}
 
 
 def parse_timeout_duration(value: str):
@@ -1001,6 +1204,7 @@ def start_web_admin_server():
                 default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
                 on_env_settings_saved=refresh_runtime_settings_from_env,
                 on_tag_responses_saved=refresh_tag_responses_from_web,
+                on_bulk_assign_role_csv=run_web_bulk_role_assignment,
                 logger=logger,
             )
         except Exception:
@@ -1481,179 +1685,89 @@ async def submitrole(interaction: discord.Interaction):
     description="Assign a role to members listed in an uploaded CSV file",
     guild=discord.Object(id=GUILD_ID),
 )
-async def bulk_assign_role_csv(interaction: discord.Interaction):
+@app_commands.describe(
+    role="Role to assign",
+    csv_file="Upload a .csv containing Discord names (comma-separated or one-per-line)",
+)
+async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment):
     logger.info("/bulk_assign_role_csv invoked by %s", interaction.user)
     if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
         await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
         return
 
-    if interaction.guild is None or interaction.channel is None:
+    if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
         return
 
-    await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
-
-    channel_id = interaction.channel.id
-
-    def role_message_check(message: discord.Message):
-        return message.author.id == interaction.user.id and message.channel.id == channel_id
-
-    try:
-        role_message = await bot.wait_for("message", timeout=60.0, check=role_message_check)
-    except asyncio.TimeoutError:
-        await interaction.followup.send("❌ Timed out waiting for role mention.", ephemeral=True)
-        return
-
-    if not role_message.role_mentions:
-        await interaction.followup.send("❌ No role mentioned. Run the command again and mention a role.", ephemeral=True)
-        return
-
-    role = role_message.role_mentions[0]
     bot_user_id = bot.user.id if bot.user else None
     bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
     actor = interaction.user if isinstance(interaction.user, discord.Member) else None
     if bot_member is None:
-        await interaction.followup.send("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
         return
     if role == interaction.guild.default_role:
-        await interaction.followup.send("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
+        await interaction.response.send_message("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
         return
     if role.managed:
-        await interaction.followup.send("❌ That role is managed by an integration and cannot be assigned manually.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ That role is managed by an integration and cannot be assigned manually.",
+            ephemeral=True,
+        )
         return
     if bot_member.top_role <= role:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             "❌ I can't assign that role because it's above my top role.",
             ephemeral=True,
         )
         return
     if actor and actor.id != interaction.guild.owner_id and actor.top_role <= role:
-        await interaction.followup.send(
+        await interaction.response.send_message(
             "❌ You can only bulk-assign roles below your top role.",
             ephemeral=True,
         )
         return
 
-    await interaction.followup.send(
-        "Upload a `.csv` file with Discord names separated by commas.",
-        ephemeral=True,
-    )
-
-    def attachment_message_check(message: discord.Message):
-        return (
-            message.author.id == interaction.user.id
-            and message.channel.id == channel_id
-            and len(message.attachments) > 0
+    if not csv_file.filename.lower().endswith(".csv"):
+        await interaction.response.send_message(
+            "❌ The uploaded file must be a `.csv` file.",
+            ephemeral=True,
         )
-
-    try:
-        csv_message = await bot.wait_for("message", timeout=120.0, check=attachment_message_check)
-    except asyncio.TimeoutError:
-        await interaction.followup.send("❌ Timed out waiting for CSV upload.", ephemeral=True)
         return
 
-    attachment = csv_message.attachments[0]
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
     try:
-        payload = await attachment.read()
+        payload = await csv_file.read()
     except Exception:
         logger.exception("Failed reading CSV attachment for /bulk_assign_role_csv")
         await interaction.followup.send("❌ Could not read that file. Please try again.", ephemeral=True)
         return
 
-    raw_names = parse_member_names_from_csv_bytes(payload)
-    unique_names = unique_member_names(raw_names)
-    if not unique_names:
-        await interaction.followup.send(
-            "❌ The uploaded file did not contain any names.",
-            ephemeral=True,
-        )
-        return
-    if len(unique_names) > CSV_ROLE_ASSIGN_MAX_NAMES:
-        await interaction.followup.send(
-            f"❌ Too many names. Limit is `{CSV_ROLE_ASSIGN_MAX_NAMES}` unique names per file.",
-            ephemeral=True,
-        )
-        return
-
-    member_lookup = build_member_name_lookup(interaction.guild)
-    matched_members = {}
-    duplicate_member_inputs = []
-    ambiguous_names = []
-    unmatched_names = []
-    for raw_name in unique_names:
-        key = normalize_member_lookup_name(raw_name)
-        matches = member_lookup.get(key, [])
-        if len(matches) == 1:
-            member = matches[0]
-            if member.id in matched_members:
-                duplicate_member_inputs.append(raw_name)
-                continue
-            matched_members[member.id] = (member, raw_name)
-        elif len(matches) > 1:
-            ambiguous_names.append(f"{raw_name} ({len(matches)} matches)")
-        else:
-            unmatched_names.append(raw_name)
-
-    assigned = []
-    already_had_role = []
-    assignment_failures = []
-    for member, matched_name in matched_members.values():
-        if role in member.roles:
-            already_had_role.append(f"{matched_name} ({member})")
-            continue
-        try:
-            await member.add_roles(
-                role,
-                reason=f"Bulk CSV role assignment by {interaction.user} ({interaction.user.id})",
-            )
-            assigned.append(f"{matched_name} ({member})")
-        except discord.Forbidden:
-            assignment_failures.append(f"{matched_name} (permission denied)")
-        except discord.HTTPException:
-            assignment_failures.append(f"{matched_name} (Discord API error)")
-
-    logger.info(
-        "CSV role assignment by %s role=%s processed=%s assigned=%s already=%s unmatched=%s ambiguous=%s failed=%s",
-        interaction.user,
-        role.id,
-        len(unique_names),
-        len(assigned),
-        len(already_had_role),
-        len(unmatched_names),
-        len(ambiguous_names),
-        len(assignment_failures),
+    result, error = await process_bulk_role_assignment_payload(
+        guild=interaction.guild,
+        role=role,
+        payload=payload,
+        requested_by=str(interaction.user),
+        reason_actor=f"Bulk CSV role assignment by {interaction.user} ({interaction.user.id})",
     )
+    if error:
+        await interaction.followup.send(error, ephemeral=True)
+        return
 
-    def format_preview(title: str, values: list[str], limit: int = 20):
-        if not values:
-            return None
-        preview = ", ".join(f"`{clip_text(value, 40)}`" for value in values[:limit])
-        remaining = len(values) - limit
-        if remaining > 0:
-            preview = f"{preview} ... (+{remaining} more)"
-        return f"**{title}:** {preview}"
+    summary_lines = build_bulk_assignment_summary_lines(csv_file.filename, role.mention, result)
+    report_text = build_bulk_assignment_report_text(
+        role=role,
+        requested_by=f"{interaction.user} ({interaction.user.id})",
+        source_name=csv_file.filename,
+        result=result,
+    )
+    report_filename = f"bulk_assign_report_{role.id}_{int(time.time())}.txt"
 
-    summary_lines = [
-        f"✅ Finished processing `{attachment.filename}` for role {role.mention}.",
-        f"- Unique names processed: `{len(unique_names)}`",
-        f"- Matched members: `{len(matched_members)}`",
-        f"- Assigned now: `{len(assigned)}`",
-        f"- Already had role: `{len(already_had_role)}`",
-        f"- Unmatched names: `{len(unmatched_names)}`",
-        f"- Ambiguous names: `{len(ambiguous_names)}`",
-        f"- Assignment failures: `{len(assignment_failures)}`",
-    ]
-
-    for line in (
-        format_preview("Unmatched", unmatched_names),
-        format_preview("Ambiguous", ambiguous_names),
-        format_preview("Failed", assignment_failures),
-        format_preview("Duplicate member inputs", duplicate_member_inputs),
-    ):
-        if line:
-            summary_lines.append(line)
-
-    await interaction.followup.send("\n".join(summary_lines), ephemeral=True)
+    await interaction.followup.send(
+        "\n".join(summary_lines),
+        ephemeral=True,
+        file=discord.File(io.BytesIO(report_text.encode("utf-8")), filename=report_filename),
+    )
 
 
 class CodeEntryModal(discord.ui.Modal):
