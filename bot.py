@@ -90,6 +90,21 @@ WEB_ADMIN_DEFAULT_EMAIL = os.getenv(
     os.getenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com"),
 ).strip()
 WEB_ADMIN_DEFAULT_PASSWORD = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
+try:
+    WEB_DISCORD_CATALOG_TTL_SECONDS = max(15, int(os.getenv("WEB_DISCORD_CATALOG_TTL_SECONDS", "120")))
+except ValueError:
+    WEB_DISCORD_CATALOG_TTL_SECONDS = 120
+try:
+    WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS = max(
+        5,
+        int(os.getenv("WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS", "20")),
+    )
+except ValueError:
+    WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS = 20
+try:
+    WEB_BULK_ASSIGN_TIMEOUT_SECONDS = max(30, int(os.getenv("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "300")))
+except ValueError:
+    WEB_BULK_ASSIGN_TIMEOUT_SECONDS = 300
 COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
 COUNTRY_LEGACY_SUFFIX_PATTERN = re.compile(r"_[A-Z]{2}$")
 COUNTRY_FLAG_SUFFIX_PATTERN = re.compile(r"\s*-\s*[\U0001F1E6-\U0001F1FF]{2}$")
@@ -137,6 +152,7 @@ tag_command_names = set()
 docs_index_cache = {}
 firmware_monitor_task = None
 web_admin_thread = None
+discord_catalog_cache = {"fetched_at": 0.0, "data": None}
 
 
 def normalize_tag(tag: str) -> str:
@@ -252,6 +268,43 @@ def register_tag_commands():
             logger.info("Tag slash command /%s already registered", command_name)
         except TypeError:
             logger.exception("Failed to register tag slash command /%s", command_name)
+
+
+async def reload_tag_commands_runtime():
+    global tag_command_names
+    try:
+        guild_obj = discord.Object(id=GUILD_ID)
+
+        removed_count = 0
+        for command_name in list(tag_command_names):
+            removed_command = tree.remove_command(command_name, guild=guild_obj)
+            if removed_command is not None:
+                removed_count += 1
+        tag_command_names.clear()
+
+        register_tag_commands()
+        synced = await tree.sync(guild=guild_obj)
+        logger.info(
+            "Tag commands reloaded: removed=%s registered=%s synced=%s",
+            removed_count,
+            len(tag_command_names),
+            len(synced),
+        )
+    except Exception:
+        logger.exception("Failed to reload tag slash commands")
+
+
+def schedule_tag_command_refresh():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        logger.warning("Cannot refresh tag slash commands yet: bot loop is not running")
+        return False
+
+    def _start_refresh():
+        asyncio.create_task(reload_tag_commands_runtime(), name="tag_commands_refresh")
+
+    loop.call_soon_threadsafe(_start_refresh)
+    return True
 
 
 def generate_code():
@@ -620,13 +673,106 @@ def run_web_bulk_role_assignment(role_input: str, payload: bytes, filename: str,
         loop,
     )
     try:
-        return future.result(timeout=300)
+        return future.result(timeout=WEB_BULK_ASSIGN_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
         future.cancel()
         return {"ok": False, "error": "Timed out while processing the CSV. Try a smaller file or retry."}
     except Exception:
         logger.exception("Unexpected failure in web bulk role assignment")
         return {"ok": False, "error": "Unexpected error while assigning roles from CSV."}
+
+
+async def fetch_discord_catalog_async():
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return {"ok": False, "error": "Configured guild is not available in bot cache."}
+
+    channels = []
+    source_channels = list(guild.channels)
+    try:
+        source_channels = await guild.fetch_channels()
+    except Exception:
+        logger.debug("Falling back to cached guild channels for web catalog", exc_info=True)
+
+    for channel in source_channels:
+        if isinstance(channel, discord.CategoryChannel):
+            channel_type = "category"
+            label = f"{channel.name} [category]"
+        elif isinstance(channel, discord.TextChannel):
+            channel_type = "text"
+            label = f"#{channel.name} [text]"
+        elif isinstance(channel, discord.ForumChannel):
+            channel_type = "forum"
+            label = f"#{channel.name} [forum]"
+        elif isinstance(channel, discord.VoiceChannel):
+            channel_type = "voice"
+            label = f"{channel.name} [voice]"
+        elif isinstance(channel, discord.StageChannel):
+            channel_type = "stage"
+            label = f"{channel.name} [stage]"
+        else:
+            channel_type = str(channel.type)
+            label = f"{channel.name} [{channel_type}]"
+
+        channels.append(
+            {
+                "id": str(channel.id),
+                "name": channel.name,
+                "type": channel_type,
+                "position": getattr(channel, "position", 0),
+                "label": label,
+            }
+        )
+
+    channels.sort(key=lambda item: (item["type"], item["position"], item["name"].casefold()))
+
+    roles = []
+    for role in guild.roles:
+        if role == guild.default_role:
+            continue
+        roles.append(
+            {
+                "id": str(role.id),
+                "name": role.name,
+                "position": role.position,
+                "label": f"@{role.name}",
+            }
+        )
+    roles.sort(key=lambda item: (-item["position"], item["name"].casefold()))
+
+    return {
+        "ok": True,
+        "guild": {"id": str(guild.id), "name": guild.name},
+        "channels": channels,
+        "roles": roles,
+        "fetched_at": time.time(),
+    }
+
+
+def run_web_get_discord_catalog():
+    now = time.time()
+    cached = discord_catalog_cache.get("data")
+    if cached and now - discord_catalog_cache.get("fetched_at", 0.0) < WEB_DISCORD_CATALOG_TTL_SECONDS:
+        return cached
+
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = asyncio.run_coroutine_threadsafe(fetch_discord_catalog_async(), loop)
+    try:
+        data = future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out fetching Discord channels/roles."}
+    except Exception:
+        logger.exception("Unexpected failure while fetching web Discord catalog")
+        return {"ok": False, "error": "Unexpected error while fetching Discord channels/roles."}
+
+    if isinstance(data, dict) and data.get("ok"):
+        discord_catalog_cache["fetched_at"] = now
+        discord_catalog_cache["data"] = data
+    return data
 
 
 def parse_timeout_duration(value: str):
@@ -1110,6 +1256,9 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global FIRMWARE_CHECK_SCHEDULE
     global FIRMWARE_REQUEST_TIMEOUT_SECONDS
     global FIRMWARE_RELEASE_NOTES_MAX_CHARS
+    global WEB_DISCORD_CATALOG_TTL_SECONDS
+    global WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS
+    global WEB_BULK_ASSIGN_TIMEOUT_SECONDS
 
     LOG_LEVEL = os.getenv("LOG_LEVEL", LOG_LEVEL)
     logger.setLevel(LOG_LEVEL)
@@ -1173,15 +1322,35 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         FIRMWARE_RELEASE_NOTES_MAX_CHARS,
         minimum=200,
     )
+    WEB_DISCORD_CATALOG_TTL_SECONDS = parse_int_setting(
+        os.getenv("WEB_DISCORD_CATALOG_TTL_SECONDS", WEB_DISCORD_CATALOG_TTL_SECONDS),
+        WEB_DISCORD_CATALOG_TTL_SECONDS,
+        minimum=15,
+    )
+    WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS", WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS),
+        WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS,
+        minimum=5,
+    )
+    WEB_BULK_ASSIGN_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", WEB_BULK_ASSIGN_TIMEOUT_SECONDS),
+        WEB_BULK_ASSIGN_TIMEOUT_SECONDS,
+        minimum=30,
+    )
 
     docs_index_cache.clear()
+    discord_catalog_cache["fetched_at"] = 0.0
+    discord_catalog_cache["data"] = None
     schedule_firmware_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
 def refresh_tag_responses_from_web():
     get_tag_responses()
-    logger.info("Tag responses refreshed from file")
+    if schedule_tag_command_refresh():
+        logger.info("Tag responses refreshed from file; slash command refresh scheduled")
+    else:
+        logger.info("Tag responses refreshed from file; slash command refresh deferred until bot loop is ready")
 
 
 def start_web_admin_server():
@@ -1205,6 +1374,7 @@ def start_web_admin_server():
                 on_env_settings_saved=refresh_runtime_settings_from_env,
                 on_tag_responses_saved=refresh_tag_responses_from_web,
                 on_bulk_assign_role_csv=run_web_bulk_role_assignment,
+                on_get_discord_catalog=run_web_get_discord_catalog,
                 logger=logger,
             )
         except Exception:
