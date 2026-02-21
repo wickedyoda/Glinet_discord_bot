@@ -28,6 +28,11 @@ INT_KEYS = {
     "FIRMWARE_RELEASE_NOTES_MAX_CHARS",
     "WEB_PORT",
     "WEB_HOST_PORT",
+    "WEB_DISCORD_CATALOG_TTL_SECONDS",
+    "WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS",
+    "WEB_BULK_ASSIGN_TIMEOUT_SECONDS",
+    "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES",
+    "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT",
 }
 SENSITIVE_KEYS = {"DISCORD_TOKEN", "WEB_ADMIN_DEFAULT_PASSWORD", "WEB_ADMIN_SESSION_SECRET"}
 ENV_FIELDS = [
@@ -55,6 +60,11 @@ ENV_FIELDS = [
     ("WEB_BIND_HOST", "Web Bind Host", "Host/IP bind for web admin service."),
     ("WEB_PORT", "Web Container Port", "Internal HTTP port in the container (default 8080)."),
     ("WEB_HOST_PORT", "Web Host Port", "Host port mapped to WEB_PORT in Docker compose."),
+    ("WEB_DISCORD_CATALOG_TTL_SECONDS", "Discord Catalog TTL", "Seconds to cache polled Discord channels/roles for dropdowns."),
+    ("WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS", "Discord Catalog Fetch Timeout", "Timeout in seconds when polling Discord for channels/roles."),
+    ("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "Web Bulk Assign Timeout", "Timeout in seconds for web-triggered CSV role assignment."),
+    ("WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", "Web Bulk Assign Max Upload", "Maximum CSV upload size in bytes for web bulk assignment."),
+    ("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", "Web Bulk Assign Report Limit", "Maximum items displayed per section in web bulk-assignment details."),
     ("WEB_ADMIN_DEFAULT_USERNAME", "Default Admin Email", "Default admin email used for first boot user creation."),
     ("WEB_ADMIN_DEFAULT_PASSWORD", "Default Admin Password", "Default admin password for first boot user creation."),
     ("WEB_ADMIN_SESSION_SECRET", "Web Session Secret", "Flask session signing secret."),
@@ -241,6 +251,44 @@ def _validate_env_updates(updated_values: dict):
     return errors
 
 
+def _get_int_env(name: str, default: int, minimum: int = 0):
+    raw = os.getenv(name, str(default))
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+    if parsed < minimum:
+        return default
+    return parsed
+
+
+def _render_select_input(name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."):
+    selected = str(selected_value or "")
+    rows = [f"<option value=''>{escape(placeholder)}</option>"]
+    seen = set()
+    for option in options:
+        option_id = str(option.get("id", "")).strip()
+        if not option_id:
+            continue
+        seen.add(option_id)
+        label = str(option.get("label") or option.get("name") or option_id)
+        selected_attr = " selected" if option_id == selected else ""
+        rows.append(
+            f"<option value='{escape(option_id, quote=True)}'{selected_attr}>"
+            f"{escape(label)} ({escape(option_id)})</option>"
+        )
+    if selected and selected not in seen:
+        rows.append(
+            f"<option value='{escape(selected, quote=True)}' selected>"
+            f"Current value (not found): {escape(selected)}</option>"
+        )
+    return (
+        f"<select name='{escape(name, quote=True)}'>"
+        + "".join(rows)
+        + "</select>"
+    )
+
+
 def _render_layout(title: str, body_html: str, current_email: str, is_admin: bool):
     return render_template_string(
         """
@@ -315,6 +363,7 @@ def create_web_app(
     on_env_settings_saved=None,
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
+    on_get_discord_catalog=None,
     logger=None,
 ):
     app = Flask(__name__)
@@ -433,6 +482,16 @@ def create_web_app(
     def settings():
         user = _current_user()
         file_values = _parse_env_file(env_file)
+        discord_catalog = on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        channel_options = []
+        role_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                channel_options = discord_catalog.get("channels", []) or []
+                role_options = discord_catalog.get("roles", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
 
         if request.method == "POST":
             updated_values = {}
@@ -463,24 +522,57 @@ def create_web_app(
                 flash("Settings saved to .env and applied where supported.", "success")
                 file_values = _parse_env_file(env_file)
 
+        select_field_options = {
+            "GENERAL_CHANNEL_ID": channel_options,
+            "MOD_LOG_CHANNEL_ID": channel_options,
+            "firmware_notification_channel": channel_options,
+            "MODERATOR_ROLE_ID": role_options,
+            "ADMIN_ROLE_ID": role_options,
+        }
+
         rows = []
         for key, label, description in ENV_FIELDS:
             value = file_values.get(key, os.getenv(key, ""))
             safe_value = "" if key in SENSITIVE_KEYS else value
             placeholder = "•••••• (unchanged if blank)" if key in SENSITIVE_KEYS else ""
             input_type = "password" if key in SENSITIVE_KEYS else "text"
+            if key in select_field_options and select_field_options[key]:
+                input_html = _render_select_input(
+                    name=key,
+                    selected_value=safe_value,
+                    options=select_field_options[key],
+                    placeholder="Select from Discord...",
+                )
+            else:
+                input_html = (
+                    f"<input type='{escape(input_type)}' name='{escape(key)}' "
+                    f"value='{escape(safe_value, quote=True)}' placeholder='{escape(placeholder, quote=True)}' />"
+                )
             rows.append(
                 f"""
                 <tr>
                   <td><strong>{escape(label)}</strong><div class="muted mono">{escape(key)}</div></td>
-                  <td><input type="{escape(input_type)}" name="{escape(key)}" value="{escape(safe_value, quote=True)}" placeholder="{escape(placeholder, quote=True)}" /></td>
+                  <td>{input_html}</td>
                   <td class="muted">{escape(description)}</td>
                 </tr>
                 """
             )
+        catalog_note = ""
+        if channel_options or role_options:
+            guild_info = discord_catalog.get("guild", {}) if isinstance(discord_catalog, dict) else {}
+            guild_name = str(guild_info.get("name") or "unknown")
+            guild_id = str(guild_info.get("id") or "unknown")
+            catalog_note = (
+                f"<p class='muted'>Loaded live Discord options from {escape(guild_name)} "
+                f"({escape(guild_id)}). Channels: {len(channel_options)}; Roles: {len(role_options)}.</p>"
+            )
+        elif catalog_error:
+            catalog_note = f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
+
         body = (
             "<div class='card'><h2>Environment Settings</h2>"
             "<p class='muted'>These map to runtime bot settings and persist in .env.</p>"
+            f"{catalog_note}"
             "<form method='post'><table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table><div style='margin-top:14px;'><button class='btn' type='submit'>Save Settings</button></div></form></div>"
         )
@@ -532,9 +624,21 @@ def create_web_app(
     def bulk_role_csv():
         user = _current_user()
         operation_result = None
+        max_upload_bytes = _get_int_env("WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
+        report_list_limit = _get_int_env("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", 50, minimum=1)
+        discord_catalog = on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        role_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                role_options = discord_catalog.get("roles", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
 
         if request.method == "POST":
-            role_input = request.form.get("role_id", "").strip()
+            selected_role_input = request.form.get("role_id_select", "").strip()
+            manual_role_input = request.form.get("role_id", "").strip()
+            role_input = manual_role_input or selected_role_input
             uploaded_file = request.files.get("csv_file")
             if not role_input:
                 flash("Role ID is required.", "error")
@@ -548,6 +652,11 @@ def create_web_app(
                 payload = uploaded_file.read()
                 if not payload:
                     flash("Uploaded CSV is empty.", "error")
+                elif len(payload) > max_upload_bytes:
+                    flash(
+                        f"CSV file is too large ({len(payload)} bytes). Max allowed is {max_upload_bytes} bytes.",
+                        "error",
+                    )
                 else:
                     response = on_bulk_assign_role_csv(role_input, payload, uploaded_file.filename, user["email"])
                     if not isinstance(response, dict):
@@ -573,7 +682,7 @@ def create_web_app(
 
             result_data = operation_result.get("result", {})
 
-            def build_list_section(title: str, key: str, limit: int = 50):
+            def build_list_section(title: str, key: str, limit: int):
                 values = result_data.get(key, []) or []
                 if not values:
                     return f"<div><h4>{escape(title)} (0)</h4><p class='muted'>None</p></div>"
@@ -585,9 +694,9 @@ def create_web_app(
             details_html = f"""
             <div class="card">
               <h3>Missing / Errors</h3>
-              {build_list_section("Unmatched", "unmatched_names")}
-              {build_list_section("Ambiguous", "ambiguous_names")}
-              {build_list_section("Failed", "assignment_failures")}
+              {build_list_section("Unmatched", "unmatched_names", report_list_limit)}
+              {build_list_section("Ambiguous", "ambiguous_names", report_list_limit)}
+              {build_list_section("Failed", "assignment_failures", report_list_limit)}
             </div>
             """
 
@@ -598,13 +707,25 @@ def create_web_app(
             </div>
             """
 
+        role_picker_html = ""
+        if role_options:
+            role_picker_html = (
+                "<label>Role (from Discord)</label>"
+                + _render_select_input("role_id_select", "", role_options, "Select role...")
+                + "<p class='muted'>You can optionally override with a manual Role ID below.</p>"
+            )
+        elif catalog_error:
+            role_picker_html = f"<p class='muted'>Could not load role dropdown: {escape(catalog_error)}</p>"
+
         body = f"""
         <div class="card">
           <h2>Bulk Assign Role from CSV</h2>
           <p class="muted">Upload a CSV of Discord names (comma-separated or one-per-line), and assign all matched members to the specified role.</p>
+          <p class="muted">Current upload limit: {max_upload_bytes} bytes. Current per-section display limit: {report_list_limit} entries.</p>
           <form method="post" enctype="multipart/form-data">
+            {role_picker_html}
             <label>Role ID (or role mention like &lt;@&amp;123&gt;)</label>
-            <input type="text" name="role_id" placeholder="123456789012345678" required />
+            <input type="text" name="role_id" placeholder="123456789012345678" />
             <label style="margin-top:10px;display:block;">CSV file</label>
             <input type="file" name="csv_file" accept=".csv,text/csv" required />
             <div style="margin-top:14px;">
@@ -784,6 +905,7 @@ def start_web_admin_interface(
     on_env_settings_saved=None,
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
+    on_get_discord_catalog=None,
     logger=None,
 ):
     app = create_web_app(
@@ -795,6 +917,7 @@ def start_web_admin_interface(
         on_env_settings_saved=on_env_settings_saved,
         on_tag_responses_saved=on_tag_responses_saved,
         on_bulk_assign_role_csv=on_bulk_assign_role_csv,
+        on_get_discord_catalog=on_get_discord_catalog,
         logger=logger,
     )
     if logger:
