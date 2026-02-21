@@ -11,7 +11,6 @@ from croniter import croniter
 from flask import Flask, flash, redirect, render_template_string, request, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
-EMAIL_PATTERN = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
 INT_KEYS = {
     "GUILD_ID",
@@ -64,6 +63,38 @@ ENV_FIELDS = [
 
 def _normalize_email(email: str) -> str:
     return (email or "").strip().lower()
+
+
+def _is_valid_email(email: str) -> bool:
+    candidate = _normalize_email(email)
+    if not candidate or len(candidate) > 254:
+        return False
+    if any(char.isspace() for char in candidate):
+        return False
+
+    local, separator, domain = candidate.partition("@")
+    if separator != "@" or not local or not domain:
+        return False
+    if "@" in domain or "." not in domain:
+        return False
+    if local.startswith(".") or local.endswith(".") or ".." in local:
+        return False
+
+    allowed_local = set("abcdefghijklmnopqrstuvwxyz0123456789!#$%&'*+/=?^_`{|}~.-")
+    if any(char not in allowed_local for char in local):
+        return False
+
+    labels = domain.split(".")
+    if len(labels) < 2:
+        return False
+    for label in labels:
+        if not label or label.startswith("-") or label.endswith("-"):
+            return False
+        if any(not (char.isascii() and (char.isalnum() or char == "-")) for char in label):
+            return False
+    if len(labels[-1]) < 2:
+        return False
+    return True
 
 
 def _password_policy_errors(password: str):
@@ -125,7 +156,7 @@ def _ensure_default_admin(users_file: Path, default_email: str, default_password
         return
 
     email = _normalize_email(default_email) or "admin@example.com"
-    if not EMAIL_PATTERN.fullmatch(email):
+    if not _is_valid_email(email):
         email = "admin@example.com"
 
     password = default_password or ""
@@ -203,7 +234,7 @@ def _validate_env_updates(updated_values: dict):
             errors.append("firmware_check_schedule must be a valid 5-field cron expression.")
         if key == "firmware_notification_channel" and value and not CHANNEL_ID_PATTERN.fullmatch(value):
             errors.append("firmware_notification_channel must be numeric ID or <#channel> format.")
-        if key == "WEB_ADMIN_DEFAULT_USERNAME" and value and not EMAIL_PATTERN.fullmatch(_normalize_email(value)):
+        if key == "WEB_ADMIN_DEFAULT_USERNAME" and value and not _is_valid_email(value):
             errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email.")
         if key == "WEB_ADMIN_DEFAULT_PASSWORD" and value:
             errors.extend(_password_policy_errors(value))
@@ -505,7 +536,7 @@ def create_web_app(
                 email = _normalize_email(request.form.get("email", ""))
                 password = request.form.get("password", "")
                 is_admin = bool(request.form.get("is_admin"))
-                if not EMAIL_PATTERN.fullmatch(email):
+                if not _is_valid_email(email):
                     flash("Enter a valid email.", "error")
                 elif any(entry["email"] == email for entry in users_data):
                     flash("A user with that email already exists.", "error")
