@@ -1,0 +1,15 @@
+## Bot Wiki
+
+- [Home](Home)
+- [Role Access and Invites](Role-Access-and-Invites)
+- [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment)
+- [Tag Responses](Tag-Responses)
+- [Search and Docs](Search-and-Docs)
+- [Country Code Commands](Country-Code-Commands)
+- [Moderation and Logs](Moderation-and-Logs)
+- [Firmware Monitor](Firmware-Monitor)
+- [Web Admin Interface](Web-Admin-Interface)
+- [Environment Variables](Environment-Variables)
+- [Docker and Portainer Deploy](Docker-and-Portainer-Deploy)
+- [Data Files](Data-Files)
+- [Command Reference](Command-Reference)

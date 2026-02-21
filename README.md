@@ -7,6 +7,11 @@ Discord bot for GL.iNet community operations:
 - Moderator actions (ban, kick+prune, timeout)
 - Moderation + server event logging to a dedicated logs channel
 
+## Wiki
+
+- Start here: [`wiki/Home.md`](./wiki/Home.md)
+- Feature pages and operational docs live under [`wiki/`](./wiki/)
+
 ## Features
 
 1. Role Invite/Code Access
