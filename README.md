@@ -147,6 +147,8 @@ Optional:
 - `WEB_BULK_ASSIGN_TIMEOUT_SECONDS` (default `300`, timeout for web CSV role assignment execution)
 - `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES` (default `2097152`, max CSV upload size in bytes for web bulk assignment)
 - `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT` (default `50`, max items shown per section in web bulk-assignment details)
+- `WEB_BOT_PROFILE_TIMEOUT_SECONDS` (default `20`, timeout for loading/updating bot profile actions from web UI)
+- `WEB_AVATAR_MAX_UPLOAD_BYTES` (default `2097152`, max avatar upload size in bytes for bot profile uploads)
 - `WEB_ENV_FILE` (default `.env`)
 - `WEB_ADMIN_DEFAULT_USERNAME` (default admin email used on first run)
 - `WEB_ADMIN_DEFAULT_PASSWORD` (default admin password used on first run)
@@ -182,6 +184,8 @@ WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS=20
 WEB_BULK_ASSIGN_TIMEOUT_SECONDS=300
 WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES=2097152
 WEB_BULK_ASSIGN_REPORT_LIST_LIMIT=50
+WEB_BOT_PROFILE_TIMEOUT_SECONDS=20
+WEB_AVATAR_MAX_UPLOAD_BYTES=2097152
 WEB_ENV_FILE=.env
 WEB_ADMIN_DEFAULT_USERNAME=admin@example.com
 WEB_ADMIN_DEFAULT_PASSWORD=AA!!123456
