@@ -69,6 +69,7 @@ ENV_FIELDS = [
     ("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", "Web Bulk Assign Report Limit", "Maximum items displayed per section in web bulk-assignment details."),
     ("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "Web Bot Profile Timeout", "Timeout in seconds for loading/updating bot profile from web UI."),
     ("WEB_AVATAR_MAX_UPLOAD_BYTES", "Web Avatar Max Upload", "Maximum avatar upload size in bytes for bot profile uploads."),
+    ("WEB_ENV_FILE", "Web Env File Path", "Environment file path used by the web settings editor."),
     ("WEB_ADMIN_DEFAULT_USERNAME", "Default Admin Email", "Default admin email used for first boot user creation."),
     ("WEB_ADMIN_DEFAULT_PASSWORD", "Default Admin Password", "Default admin password for first boot user creation."),
     ("WEB_ADMIN_SESSION_SECRET", "Web Session Secret", "Flask session signing secret."),
@@ -343,6 +344,7 @@ def _render_layout(title: str, body_html: str, current_email: str, is_admin: boo
         <a href="{{ url_for('dashboard') }}">Dashboard</a>
         {% if is_admin %}<a href="{{ url_for('bot_profile') }}">Bot Profile</a>{% endif %}
         <a href="{{ url_for('settings') }}">Settings</a>
+        <a href="{{ url_for('documentation') }}">Documentation</a>
         <a href="{{ url_for('tag_responses') }}">Tag Responses</a>
         {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
         {% if is_admin %}<a href="{{ url_for('users') }}">Users</a>{% endif %}
@@ -394,6 +396,7 @@ def create_web_app(
     env_file = Path(env_file_path)
 
     _ensure_default_admin(users_file, default_admin_email, default_admin_password, logger)
+    wiki_dir = Path(__file__).resolve().parent / "wiki"
 
     def _current_user():
         email = _normalize_email(session.get("auth_email", ""))
@@ -484,6 +487,7 @@ def create_web_app(
               <h2>Dashboard</h2>
               <p>Use <a href="/admin/bot-profile">Bot Profile</a> to view current bot identity and upload a new avatar.</p>
               <p>Use <a href="/admin/settings">Settings</a> to edit environment-driven bot settings.</p>
+              <p>Use <a href="/admin/documentation">Documentation</a> to browse the built-in wiki pages.</p>
               <p>Use <a href="/admin/tag-responses">Tag Responses</a> to manage dynamic tag commands.</p>
               <p>Use <a href="/admin/bulk-role-csv">Bulk Role CSV</a> to upload members and assign a role.</p>
               <p>Use <a href="/admin/users">Users</a> to create/manage login users (admin only).</p>
@@ -493,6 +497,72 @@ def create_web_app(
             user["email"],
             bool(user.get("is_admin")),
         )
+
+    @app.route("/admin/documentation", methods=["GET"])
+    @login_required
+    def documentation():
+        user = _current_user()
+        page_paths = []
+        if wiki_dir.exists():
+            page_paths = [path for path in wiki_dir.glob("*.md") if path.is_file() and not path.name.startswith("_")]
+
+        def sort_key(path: Path):
+            if path.stem.lower() == "home":
+                return (0, path.stem.casefold())
+            return (1, path.stem.casefold())
+
+        page_paths.sort(key=sort_key)
+        if not page_paths:
+            body = (
+                "<div class='card'><h2>Documentation</h2>"
+                "<p class='muted'>No wiki pages were found in the runtime image.</p></div>"
+            )
+            return _render_layout("Documentation", body, user["email"], bool(user.get("is_admin")))
+
+        page_rows = []
+        for path in page_paths:
+            slug = path.stem
+            label = slug.replace("-", " ")
+            page_rows.append(
+                f"<li><a href='{url_for('documentation_page', page_slug=slug)}'>{escape(label)}</a>"
+                f" <span class='muted mono'>({escape(path.name)})</span></li>"
+            )
+        body = (
+            "<div class='card'><h2>Documentation</h2>"
+            "<p class='muted'>Browse wiki pages packaged with this bot image.</p>"
+            f"<ul>{''.join(page_rows)}</ul></div>"
+        )
+        return _render_layout("Documentation", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/documentation/<page_slug>", methods=["GET"])
+    @login_required
+    def documentation_page(page_slug: str):
+        user = _current_user()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", page_slug or ""):
+            return {"ok": False, "error": "Invalid documentation page."}, 404
+
+        page_path = wiki_dir / f"{page_slug}.md"
+        if not page_path.exists():
+            for candidate in wiki_dir.glob("*.md"):
+                if candidate.stem.casefold() == page_slug.casefold():
+                    page_path = candidate
+                    break
+        if not page_path.exists() or not page_path.is_file() or page_path.name.startswith("_"):
+            return {"ok": False, "error": "Documentation page not found."}, 404
+
+        content = page_path.read_text(encoding="utf-8", errors="replace")
+        title = page_slug.replace("-", " ")
+        first_line = content.splitlines()[0].strip() if content else ""
+        if first_line.startswith("#"):
+            title = first_line.lstrip("#").strip() or title
+        body = (
+            "<div class='card'>"
+            f"<h2>{escape(title)}</h2>"
+            f"<p><a href='{url_for('documentation')}'>Back to documentation index</a></p>"
+            f"<pre class='mono' style='white-space:pre-wrap;line-height:1.45;'>{escape(content)}</pre>"
+            "</div>"
+        )
+        return _render_layout(title, body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/bot-profile", methods=["GET", "POST"])
     @admin_required
