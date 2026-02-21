@@ -9,13 +9,14 @@ import re
 import time
 import csv
 import io
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from html import unescape
 from urllib.parse import urljoin
 from dotenv import load_dotenv
 import random
 import requests
 from bs4 import BeautifulSoup
+from croniter import croniter
 
 load_dotenv()
 
@@ -47,8 +48,31 @@ DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
 FIRMWARE_FEED_URL = os.getenv("FIRMWARE_FEED_URL", "https://gl-fw.remotetohome.io/").strip()
-FIRMWARE_NOTIFY_CHANNEL_ID = int(os.getenv("FIRMWARE_NOTIFY_CHANNEL_ID", "0"))
-FIRMWARE_CHECK_INTERVAL_SECONDS = max(60, int(os.getenv("FIRMWARE_CHECK_INTERVAL_SECONDS", "1800")))
+FIRMWARE_NOTIFICATION_CHANNEL_RAW = os.getenv(
+    "firmware_notification_channel",
+    os.getenv("FIRMWARE_NOTIFY_CHANNEL_ID", ""),
+).strip()
+if FIRMWARE_NOTIFICATION_CHANNEL_RAW.startswith("<#") and FIRMWARE_NOTIFICATION_CHANNEL_RAW.endswith(">"):
+    FIRMWARE_NOTIFICATION_CHANNEL_RAW = FIRMWARE_NOTIFICATION_CHANNEL_RAW[2:-1]
+try:
+    FIRMWARE_NOTIFY_CHANNEL_ID = int(FIRMWARE_NOTIFICATION_CHANNEL_RAW) if FIRMWARE_NOTIFICATION_CHANNEL_RAW else 0
+except ValueError:
+    logger.warning("Invalid firmware_notification_channel value: %s", FIRMWARE_NOTIFICATION_CHANNEL_RAW)
+    FIRMWARE_NOTIFY_CHANNEL_ID = 0
+
+FIRMWARE_CHECK_SCHEDULE = os.getenv("firmware_check_schedule", "").strip()
+if not FIRMWARE_CHECK_SCHEDULE:
+    legacy_interval_raw = os.getenv("FIRMWARE_CHECK_INTERVAL_SECONDS", "").strip()
+    if legacy_interval_raw:
+        try:
+            interval_seconds = max(60, int(legacy_interval_raw))
+            interval_minutes = max(1, interval_seconds // 60)
+            FIRMWARE_CHECK_SCHEDULE = f"*/{interval_minutes} * * * *"
+        except ValueError:
+            logger.warning("Invalid FIRMWARE_CHECK_INTERVAL_SECONDS value: %s", legacy_interval_raw)
+if not FIRMWARE_CHECK_SCHEDULE:
+    FIRMWARE_CHECK_SCHEDULE = "*/30 * * * *"
+
 FIRMWARE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "30"))
 FIRMWARE_RELEASE_NOTES_MAX_CHARS = max(200, int(os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "900")))
 COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
@@ -758,17 +782,27 @@ async def check_firmware_updates_once():
 
 async def firmware_monitor_loop():
     if FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
-        logger.info("Firmware monitor disabled: set FIRMWARE_NOTIFY_CHANNEL_ID to enable it.")
+        logger.info("Firmware monitor disabled: set firmware_notification_channel to enable it.")
+        return
+
+    if not croniter.is_valid(FIRMWARE_CHECK_SCHEDULE):
+        logger.error("Firmware monitor disabled: invalid firmware_check_schedule '%s'", FIRMWARE_CHECK_SCHEDULE)
         return
 
     logger.info(
-        "Firmware monitor active: checking %s every %ss",
+        "Firmware monitor active: checking %s on cron '%s' (UTC)",
         FIRMWARE_FEED_URL,
-        FIRMWARE_CHECK_INTERVAL_SECONDS,
+        FIRMWARE_CHECK_SCHEDULE,
     )
+    await check_firmware_updates_once()
+
     while not bot.is_closed():
+        now_utc = datetime.now(timezone.utc)
+        next_run_utc = croniter(FIRMWARE_CHECK_SCHEDULE, now_utc).get_next(datetime)
+        wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
+        logger.debug("Next firmware check scheduled for %s UTC", next_run_utc.isoformat())
+        await asyncio.sleep(wait_seconds)
         await check_firmware_updates_once()
-        await asyncio.sleep(FIRMWARE_CHECK_INTERVAL_SECONDS)
 
 
 def search_forum_links(query: str):

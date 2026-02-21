@@ -61,7 +61,7 @@ Discord bot for GL.iNet community operations:
 7. Firmware Mirror Monitor
 - Polls `https://gl-fw.remotetohome.io/` (or custom URL) on a schedule.
 - Detects newly added firmware rows by model/track/version/files.
-- Posts a notification to `FIRMWARE_NOTIFY_CHANNEL_ID` with:
+- Posts a notification to `firmware_notification_channel` with:
   - Model, track, version, date
   - Download links + SHA256
   - Release notes excerpt
@@ -109,9 +109,9 @@ Optional:
 - `ADMIN_ROLE_ID` (default `1138302148292116551`)
 - `MOD_LOG_CHANNEL_ID` (default `1311820410269995009`)
 - `CSV_ROLE_ASSIGN_MAX_NAMES` (default `500`)
-- `FIRMWARE_NOTIFY_CHANNEL_ID` (required to enable firmware alerts)
+- `firmware_notification_channel` (required to enable firmware alerts; channel ID or `<#channel>` mention)
 - `FIRMWARE_FEED_URL` (default `https://gl-fw.remotetohome.io/`)
-- `FIRMWARE_CHECK_INTERVAL_SECONDS` (default `1800`)
+- `firmware_check_schedule` (cron, 5-field, UTC; default `*/30 * * * *`)
 - `FIRMWARE_REQUEST_TIMEOUT_SECONDS` (default `30`)
 - `FIRMWARE_RELEASE_NOTES_MAX_CHARS` (default `900`)
 
@@ -131,9 +131,9 @@ MODERATOR_ROLE_ID=1294957416294645771
 ADMIN_ROLE_ID=1138302148292116551
 MOD_LOG_CHANNEL_ID=1311820410269995009
 CSV_ROLE_ASSIGN_MAX_NAMES=500
-FIRMWARE_NOTIFY_CHANNEL_ID=123456789012345678
+firmware_notification_channel=123456789012345678
 FIRMWARE_FEED_URL=https://gl-fw.remotetohome.io/
-FIRMWARE_CHECK_INTERVAL_SECONDS=1800
+firmware_check_schedule=*/30 * * * *
 FIRMWARE_REQUEST_TIMEOUT_SECONDS=30
 FIRMWARE_RELEASE_NOTES_MAX_CHARS=900
 ```
