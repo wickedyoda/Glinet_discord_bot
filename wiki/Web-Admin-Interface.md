@@ -32,6 +32,7 @@ Password-protected admin UI for runtime bot management.
   - Create/delete users and promote/demote admin status
 - `/admin/bot-profile`
   - View bot identity
+  - Update bot username and server nickname (admin-only)
   - Upload bot avatar image
 
 ## Discord Catalog Dropdowns

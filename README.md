@@ -88,6 +88,7 @@ Discord bot for GL.iNet community operations:
 - Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
 - Admin can manage:
   - Bot environment settings (channels, firmware schedule, logging/mod settings, etc.)
+  - Bot profile identity (username + server nickname) and avatar
   - GitHub wiki docs link from the web header
   - Admin restart button in the web header (with confirmation)
   - Live Discord channel/role dropdowns (polled from guild) for channel/role settings

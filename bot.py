@@ -129,6 +129,9 @@ KICK_PRUNE_HOURS = int(os.getenv("KICK_PRUNE_HOURS", "72"))
 TIMEOUT_MAX_MINUTES = 28 * 24 * 60
 ROLE_NAME_MAX_LENGTH = 100
 CSV_ROLE_ASSIGN_MAX_NAMES = int(os.getenv("CSV_ROLE_ASSIGN_MAX_NAMES", "500"))
+BOT_USERNAME_MIN_LENGTH = 2
+BOT_USERNAME_MAX_LENGTH = 32
+BOT_NICKNAME_MAX_LENGTH = 32
 DOCS_SITE_MAP = {
     "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
@@ -162,6 +165,7 @@ docs_index_cache = {}
 firmware_monitor_task = None
 web_admin_thread = None
 discord_catalog_cache = {"fetched_at": 0.0, "data": None}
+BOT_SERVER_NICKNAME_UNSET = object()
 
 
 def normalize_tag(tag: str) -> str:
@@ -789,14 +793,175 @@ async def fetch_bot_profile_async():
     if current_user is None:
         return {"ok": False, "error": "Bot user is not ready yet."}
 
+    guild = bot.get_guild(GUILD_ID)
+    bot_member = None
+    if guild is not None:
+        bot_member = guild.me or guild.get_member(current_user.id)
+        if bot_member is None:
+            try:
+                bot_member = await guild.fetch_member(current_user.id)
+            except discord.HTTPException:
+                logger.exception("Failed to fetch bot member for guild %s", guild.id)
+
+    server_display_name = bot_member.display_name if bot_member is not None else current_user.display_name
+    server_nickname = bot_member.nick if bot_member is not None else ""
     avatar_url = str(current_user.display_avatar.url) if current_user.display_avatar else ""
     return {
         "ok": True,
         "id": str(current_user.id),
         "name": current_user.name,
         "display_name": current_user.display_name,
+        "global_name": current_user.global_name or "",
+        "guild_id": str(guild.id) if guild is not None else "",
+        "guild_name": guild.name if guild is not None else "",
+        "server_display_name": server_display_name,
+        "server_nickname": server_nickname or "",
         "avatar_url": avatar_url,
     }
+
+
+def normalize_optional_text(value: str | None):
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def validate_bot_profile_change_request(
+    username: str | None,
+    server_nickname: str | None,
+    clear_server_nickname: bool,
+):
+    normalized_username = normalize_optional_text(username)
+    normalized_nickname = normalize_optional_text(server_nickname)
+
+    if clear_server_nickname and normalized_nickname is not None:
+        return None, None, "Provide either `server_nickname` or `clear_server_nickname`, not both."
+    if normalized_username is not None and not (BOT_USERNAME_MIN_LENGTH <= len(normalized_username) <= BOT_USERNAME_MAX_LENGTH):
+        return (
+            None,
+            None,
+            f"Username must be between {BOT_USERNAME_MIN_LENGTH} and {BOT_USERNAME_MAX_LENGTH} characters.",
+        )
+    if normalized_nickname is not None and len(normalized_nickname) > BOT_NICKNAME_MAX_LENGTH:
+        return None, None, f"Server nickname must be {BOT_NICKNAME_MAX_LENGTH} characters or fewer."
+
+    nickname_target = BOT_SERVER_NICKNAME_UNSET
+    if clear_server_nickname:
+        nickname_target = None
+    elif normalized_nickname is not None:
+        nickname_target = normalized_nickname
+
+    if normalized_username is None and nickname_target is BOT_SERVER_NICKNAME_UNSET:
+        return None, None, "Provide at least one change: `username`, `server_nickname`, or `clear_server_nickname`."
+
+    return normalized_username, nickname_target, None
+
+
+async def resolve_configured_guild_bot_member():
+    current_user = bot.user
+    if current_user is None:
+        return None, None, "Bot user is not ready yet."
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return None, None, "Configured guild is not currently available to the bot."
+
+    bot_member = guild.me or guild.get_member(current_user.id)
+    if bot_member is None:
+        try:
+            bot_member = await guild.fetch_member(current_user.id)
+        except discord.HTTPException:
+            logger.exception("Failed to fetch bot member for configured guild %s", guild.id)
+            bot_member = None
+    if bot_member is None:
+        return guild, None, "Could not resolve the bot member in the configured guild."
+    return guild, bot_member, None
+
+
+async def apply_bot_profile_updates_async(username: str | None, server_nickname, actor_label: str):
+    current_user = bot.user
+    if current_user is None:
+        return {"ok": False, "error": "Bot user is not ready yet."}
+
+    updated_username = False
+    updated_server_nickname = False
+    notes = []
+    errors = []
+
+    if username is not None:
+        if username == current_user.name:
+            notes.append("Username was already set to that value.")
+        else:
+            try:
+                await current_user.edit(username=username)
+                updated_username = True
+            except discord.HTTPException:
+                logger.exception("Failed to update bot username (actor=%s)", actor_label)
+                errors.append("Failed to update username. Discord may enforce rename limits; try again later.")
+
+    if server_nickname is not BOT_SERVER_NICKNAME_UNSET:
+        _, bot_member, member_error = await resolve_configured_guild_bot_member()
+        if member_error:
+            errors.append(member_error)
+        else:
+            if bot_member.nick == server_nickname:
+                if server_nickname is None:
+                    notes.append("Server nickname was already cleared.")
+                else:
+                    notes.append("Server nickname was already set to that value.")
+            else:
+                try:
+                    await bot_member.edit(nick=server_nickname, reason=f"Bot profile updated by {actor_label}")
+                    updated_server_nickname = True
+                except discord.Forbidden:
+                    logger.exception("Missing permission to update bot server nickname (actor=%s)", actor_label)
+                    errors.append(
+                        "Missing permission to update server nickname. Check `Manage Nicknames` and role hierarchy."
+                    )
+                except discord.HTTPException:
+                    logger.exception("Failed to update bot server nickname (actor=%s)", actor_label)
+                    errors.append("Failed to update server nickname due to a Discord API error.")
+
+    profile = await fetch_bot_profile_async()
+    result = {
+        "ok": False,
+        "updated_username": updated_username,
+        "updated_server_nickname": updated_server_nickname,
+    }
+    if isinstance(profile, dict):
+        for key, value in profile.items():
+            if key != "ok":
+                result[key] = value
+        if not profile.get("ok"):
+            errors.append(str(profile.get("error") or "Unable to refresh bot profile details."))
+
+    updated_parts = []
+    if updated_username:
+        updated_parts.append("username")
+    if updated_server_nickname:
+        updated_parts.append("server nickname")
+
+    if updated_parts:
+        message = f"Updated {' and '.join(updated_parts)}."
+        if notes:
+            message = f"{message} {' '.join(notes)}"
+        if errors:
+            message = f"{message} {' '.join(errors)}"
+        result["ok"] = True
+        result["message"] = message
+        return result
+
+    if errors:
+        result["error"] = " ".join(errors)
+        return result
+
+    result["ok"] = True
+    if notes:
+        result["message"] = f"No changes were needed. {' '.join(notes)}"
+    else:
+        result["message"] = "No changes were needed."
+    return result
 
 
 def run_web_get_bot_profile():
@@ -837,6 +1002,59 @@ async def run_web_update_bot_avatar_async(payload: bytes, actor_email: str):
     if profile.get("ok"):
         logger.info("Bot avatar updated via web admin by %s", actor_email)
     return profile
+
+
+async def run_web_update_bot_profile_async(
+    username: str | None,
+    server_nickname: str | None,
+    clear_server_nickname: bool,
+    actor_email: str,
+):
+    normalized_username, nickname_target, validation_error = validate_bot_profile_change_request(
+        username=username,
+        server_nickname=server_nickname,
+        clear_server_nickname=clear_server_nickname,
+    )
+    if validation_error:
+        return {"ok": False, "error": validation_error}
+
+    result = await apply_bot_profile_updates_async(
+        username=normalized_username,
+        server_nickname=nickname_target,
+        actor_label=f"web admin {actor_email}",
+    )
+    if result.get("ok"):
+        logger.info(
+            "Bot profile update via web admin by %s (username=%s nickname_change=%s)",
+            actor_email,
+            bool(normalized_username),
+            nickname_target is not BOT_SERVER_NICKNAME_UNSET,
+        )
+    return result
+
+
+def run_web_update_bot_profile(
+    username: str | None,
+    server_nickname: str | None,
+    clear_server_nickname: bool,
+    actor_email: str,
+):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet. Try again in a few seconds."}
+
+    future = asyncio.run_coroutine_threadsafe(
+        run_web_update_bot_profile_async(username, server_nickname, clear_server_nickname, actor_email),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_BOT_PROFILE_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while updating bot profile."}
+    except Exception:
+        logger.exception("Unexpected failure while updating bot profile from %s", actor_email)
+        return {"ok": False, "error": "Unexpected error while updating bot profile."}
 
 
 def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
@@ -1481,6 +1699,7 @@ def start_web_admin_server():
                 on_bulk_assign_role_csv=run_web_bulk_role_assignment,
                 on_get_discord_catalog=run_web_get_discord_catalog,
                 on_get_bot_profile=run_web_get_bot_profile,
+                on_update_bot_profile=run_web_update_bot_profile,
                 on_update_bot_avatar=run_web_update_bot_avatar,
                 on_request_restart=run_web_request_restart,
                 logger=logger,

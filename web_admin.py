@@ -409,6 +409,7 @@ def create_web_app(
     on_bulk_assign_role_csv=None,
     on_get_discord_catalog=None,
     on_get_bot_profile=None,
+    on_update_bot_profile=None,
     on_update_bot_avatar=None,
     on_request_restart=None,
     logger=None,
@@ -660,37 +661,73 @@ def create_web_app(
         profile = on_get_bot_profile() if callable(on_get_bot_profile) else {"ok": False, "error": "Not configured"}
 
         if request.method == "POST":
-            uploaded_file = request.files.get("avatar_file")
-            if uploaded_file is None or not uploaded_file.filename:
-                flash("Avatar image file is required.", "error")
-            elif not callable(on_update_bot_avatar):
-                flash("Avatar update callback is not configured.", "error")
-            else:
-                payload = uploaded_file.read()
-                lowered_name = uploaded_file.filename.lower()
-                allowed_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-                if not payload:
-                    flash("Uploaded avatar file is empty.", "error")
-                elif len(payload) > max_avatar_upload_bytes:
-                    flash(
-                        f"Avatar file is too large ({len(payload)} bytes). Max allowed is {max_avatar_upload_bytes} bytes.",
-                        "error",
-                    )
-                elif not lowered_name.endswith(allowed_extensions):
-                    flash("Avatar must be PNG, JPG, JPEG, WEBP, or GIF.", "error")
+            action = str(request.form.get("action", "avatar")).strip().lower()
+            if action == "identity":
+                if not callable(on_update_bot_profile):
+                    flash("Bot profile update callback is not configured.", "error")
                 else:
-                    response = on_update_bot_avatar(payload, uploaded_file.filename, user["email"])
+                    username_input = str(request.form.get("bot_name", ""))
+                    server_nickname_input = str(request.form.get("server_nickname", ""))
+                    clear_server_nickname = str(request.form.get("clear_server_nickname", "")).strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
+                    username_value = username_input.strip() or None
+                    server_nickname_value = server_nickname_input.strip() or None
+                    response = on_update_bot_profile(
+                        username_value,
+                        server_nickname_value,
+                        clear_server_nickname,
+                        user["email"],
+                    )
                     if not isinstance(response, dict):
-                        flash("Invalid response from avatar update handler.", "error")
+                        flash("Invalid response from bot profile update handler.", "error")
                     elif not response.get("ok"):
-                        flash(response.get("error", "Failed to update bot avatar."), "error")
+                        flash(response.get("error", "Failed to update bot profile."), "error")
                     else:
                         profile = response
-                        flash("Bot avatar updated successfully.", "success")
+                        flash(str(response.get("message") or "Bot profile updated successfully."), "success")
+            elif action == "avatar":
+                uploaded_file = request.files.get("avatar_file")
+                if uploaded_file is None or not uploaded_file.filename:
+                    flash("Avatar image file is required.", "error")
+                elif not callable(on_update_bot_avatar):
+                    flash("Avatar update callback is not configured.", "error")
+                else:
+                    payload = uploaded_file.read()
+                    lowered_name = uploaded_file.filename.lower()
+                    allowed_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+                    if not payload:
+                        flash("Uploaded avatar file is empty.", "error")
+                    elif len(payload) > max_avatar_upload_bytes:
+                        flash(
+                            f"Avatar file is too large ({len(payload)} bytes). Max allowed is {max_avatar_upload_bytes} bytes.",
+                            "error",
+                        )
+                    elif not lowered_name.endswith(allowed_extensions):
+                        flash("Avatar must be PNG, JPG, JPEG, WEBP, or GIF.", "error")
+                    else:
+                        response = on_update_bot_avatar(payload, uploaded_file.filename, user["email"])
+                        if not isinstance(response, dict):
+                            flash("Invalid response from avatar update handler.", "error")
+                        elif not response.get("ok"):
+                            flash(response.get("error", "Failed to update bot avatar."), "error")
+                        else:
+                            profile = response
+                            flash("Bot avatar updated successfully.", "success")
+            else:
+                flash("Invalid bot profile action.", "error")
 
         profile_html = ""
         if isinstance(profile, dict) and profile.get("ok"):
             avatar_url = str(profile.get("avatar_url") or "").strip()
+            username = str(profile.get("name") or "unknown")
+            global_name = str(profile.get("global_name") or profile.get("display_name") or "Not set")
+            server_display_name = str(profile.get("server_display_name") or profile.get("display_name") or username)
+            server_nickname = str(profile.get("server_nickname") or "Not set")
+            guild_name = str(profile.get("guild_name") or "Configured guild unavailable")
             avatar_image = (
                 f"<img src='{escape(avatar_url, quote=True)}' alt='Bot avatar' "
                 "style='max-width:160px;max-height:160px;border-radius:12px;border:1px solid #d1d5db;' />"
@@ -700,7 +737,11 @@ def create_web_app(
             profile_html = f"""
             <div class="card">
               <h3>Current Bot Profile</h3>
-              <p><strong>Name:</strong> {escape(str(profile.get('name') or 'unknown'))}</p>
+              <p><strong>Username:</strong> {escape(username)}</p>
+              <p><strong>Global Display Name:</strong> {escape(global_name)}</p>
+              <p><strong>Server Display Name:</strong> {escape(server_display_name)}</p>
+              <p><strong>Server Nickname:</strong> {escape(server_nickname)}</p>
+              <p><strong>Guild:</strong> {escape(guild_name)}</p>
               <p><strong>ID:</strong> <span class="mono">{escape(str(profile.get('id') or 'unknown'))}</span></p>
               {avatar_image}
             </div>
@@ -710,18 +751,42 @@ def create_web_app(
             profile_html = f"<div class='card'><p class='muted'>Could not load bot profile: {escape(profile_error)}</p></div>"
 
         body = f"""
-        <div class="card">
-          <h2>Bot Profile</h2>
-          <p class="muted">Upload a new bot avatar. Max size is {max_avatar_upload_bytes} bytes.</p>
-          <form method="post" enctype="multipart/form-data">
-            <label>Avatar image (PNG/JPG/WEBP/GIF)</label>
-            <input type="file" name="avatar_file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" required />
-            <div style="margin-top:14px;">
-              <button class="btn" type="submit">Upload Avatar</button>
-            </div>
-          </form>
+        <div class="grid">
+          <div class="card">
+            <h2>Bot Identity</h2>
+            <p class="muted">Set bot username and server nickname for how the bot appears in Discord.</p>
+            <p class="muted">Discord may rate-limit username changes.</p>
+            <form method="post">
+              <input type="hidden" name="action" value="identity" />
+              <label>Bot username (global)</label>
+              <input type="text" name="bot_name" placeholder="Leave blank to keep current username" />
+              <label style="margin-top:10px;display:block;">Server nickname (this guild)</label>
+              <input type="text" name="server_nickname" placeholder="Leave blank to keep current nickname" />
+              <label style="margin-top:10px;display:block;">
+                <input type="checkbox" name="clear_server_nickname" value="1" />
+                Clear server nickname
+              </label>
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit">Update Identity</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Bot Avatar</h2>
+            <p class="muted">Upload a new bot avatar. Max size is {max_avatar_upload_bytes} bytes.</p>
+            <form method="post" enctype="multipart/form-data">
+              <input type="hidden" name="action" value="avatar" />
+              <label>Avatar image (PNG/JPG/WEBP/GIF)</label>
+              <input type="file" name="avatar_file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" required />
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit">Upload Avatar</button>
+              </div>
+            </form>
+          </div>
         </div>
-        {profile_html}
+        <div style="margin-top:16px;">
+          {profile_html}
+        </div>
         """
         return _render_page("Bot Profile", body, user["email"], bool(user.get("is_admin")))
 
@@ -1154,6 +1219,7 @@ def start_web_admin_interface(
     on_bulk_assign_role_csv=None,
     on_get_discord_catalog=None,
     on_get_bot_profile=None,
+    on_update_bot_profile=None,
     on_update_bot_avatar=None,
     on_request_restart=None,
     logger=None,
@@ -1169,6 +1235,7 @@ def start_web_admin_interface(
         on_bulk_assign_role_csv=on_bulk_assign_role_csv,
         on_get_discord_catalog=on_get_discord_catalog,
         on_get_bot_profile=on_get_bot_profile,
+        on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,
         on_request_restart=on_request_restart,
         logger=logger,
