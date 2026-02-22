@@ -369,9 +369,9 @@ def _render_layout(
         {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
         {% if is_admin %}<a href="{{ url_for('users') }}">Users</a>{% endif %}
         {% if is_admin and restart_enabled %}
-          <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('Restart the bot process now?');">
+          <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
             <input type="hidden" name="confirm" value="yes" />
-            <button class="btn danger" type="submit">Restart Bot</button>
+            <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
           </form>
         {% endif %}
         <a href="{{ url_for('logout') }}">Logout</a>
@@ -580,7 +580,7 @@ def create_web_app(
             if not isinstance(response, dict):
                 flash("Invalid response from restart handler.", "error")
             elif response.get("ok"):
-                flash(response.get("message", "Restart requested. The bot will restart shortly."), "success")
+                flash(response.get("message", "Restart requested. The container will restart shortly."), "success")
             else:
                 flash(response.get("error", "Failed to request restart."), "error")
         return redirect(url_for("dashboard"))
