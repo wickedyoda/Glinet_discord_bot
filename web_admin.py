@@ -69,6 +69,8 @@ ENV_FIELDS = [
     ("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", "Web Bulk Assign Report Limit", "Maximum items displayed per section in web bulk-assignment details."),
     ("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "Web Bot Profile Timeout", "Timeout in seconds for loading/updating bot profile from web UI."),
     ("WEB_AVATAR_MAX_UPLOAD_BYTES", "Web Avatar Max Upload", "Maximum avatar upload size in bytes for bot profile uploads."),
+    ("WEB_RESTART_ENABLED", "Web Restart Enabled", "Enable admin restart button in the web header."),
+    ("WEB_GITHUB_WIKI_URL", "Web GitHub Wiki URL", "External docs link shown in the web header."),
     ("WEB_ENV_FILE", "Web Env File Path", "Environment file path used by the web settings editor."),
     ("WEB_ADMIN_DEFAULT_USERNAME", "Default Admin Email", "Default admin email used for first boot user creation."),
     ("WEB_ADMIN_DEFAULT_PASSWORD", "Default Admin Password", "Default admin password for first boot user creation."),
@@ -253,6 +255,10 @@ def _validate_env_updates(updated_values: dict):
             errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email.")
         if key == "WEB_ADMIN_DEFAULT_PASSWORD" and value:
             errors.extend(_password_policy_errors(value))
+        if key == "WEB_RESTART_ENABLED" and value.lower() not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
+            errors.append("WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off).")
+        if key == "WEB_GITHUB_WIKI_URL" and value and not value.startswith(("http://", "https://")):
+            errors.append("WEB_GITHUB_WIKI_URL must start with http:// or https://.")
     return errors
 
 
@@ -265,6 +271,10 @@ def _get_int_env(name: str, default: int, minimum: int = 0):
     if parsed < minimum:
         return default
     return parsed
+
+
+def _is_truthy_env_value(value: str):
+    return str(value or "").strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _normalize_select_value(value: str):
@@ -303,7 +313,14 @@ def _render_select_input(name: str, selected_value: str, options: list[dict], pl
     )
 
 
-def _render_layout(title: str, body_html: str, current_email: str, is_admin: bool):
+def _render_layout(
+    title: str,
+    body_html: str,
+    current_email: str,
+    is_admin: bool,
+    github_wiki_url: str = "",
+    restart_enabled: bool = False,
+):
     return render_template_string(
         """
 <!doctype html>
@@ -329,6 +346,8 @@ def _render_layout(title: str, body_html: str, current_email: str, is_admin: boo
     textarea { min-height:220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .btn { background:#2563eb; border:0; color:#fff; padding:9px 14px; border-radius:8px; cursor:pointer; }
     .btn.secondary { background:#4b5563; }
+    .btn.danger { background:#dc2626; }
+    .inline-form { display:inline; margin-left:12px; }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
     .muted { color:#6b7280; font-size:0.9rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -345,9 +364,16 @@ def _render_layout(title: str, body_html: str, current_email: str, is_admin: boo
         {% if is_admin %}<a href="{{ url_for('bot_profile') }}">Bot Profile</a>{% endif %}
         <a href="{{ url_for('settings') }}">Settings</a>
         <a href="{{ url_for('documentation') }}">Documentation</a>
+        {% if github_wiki_url %}<a href="{{ github_wiki_url }}" target="_blank" rel="noopener noreferrer">GitHub Wiki</a>{% endif %}
         <a href="{{ url_for('tag_responses') }}">Tag Responses</a>
         {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
         {% if is_admin %}<a href="{{ url_for('users') }}">Users</a>{% endif %}
+        {% if is_admin and restart_enabled %}
+          <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('Restart the bot process now?');">
+            <input type="hidden" name="confirm" value="yes" />
+            <button class="btn danger" type="submit">Restart Bot</button>
+          </form>
+        {% endif %}
         <a href="{{ url_for('logout') }}">Logout</a>
       {% endif %}
     </div>
@@ -367,6 +393,8 @@ def _render_layout(title: str, body_html: str, current_email: str, is_admin: boo
         body_html=body_html,
         current_email=current_email,
         is_admin=is_admin,
+        github_wiki_url=github_wiki_url,
+        restart_enabled=restart_enabled,
     )
 
 
@@ -382,6 +410,7 @@ def create_web_app(
     on_get_discord_catalog=None,
     on_get_bot_profile=None,
     on_update_bot_avatar=None,
+    on_request_restart=None,
     logger=None,
 ):
     app = Flask(__name__)
@@ -428,6 +457,23 @@ def create_web_app(
                 return user
         return None
 
+    def _github_wiki_url():
+        value = os.getenv("WEB_GITHUB_WIKI_URL", "https://github.com/wickedyoda/Glinet_discord_bot/wiki")
+        return str(value or "").strip()
+
+    def _restart_enabled():
+        return _is_truthy_env_value(os.getenv("WEB_RESTART_ENABLED", "true"))
+
+    def _render_page(title: str, body_html: str, current_email: str, is_admin: bool):
+        return _render_layout(
+            title,
+            body_html,
+            current_email,
+            is_admin,
+            github_wiki_url=_github_wiki_url(),
+            restart_enabled=_restart_enabled(),
+        )
+
     def login_required(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
@@ -471,7 +517,7 @@ def create_web_app(
                 return redirect(url_for("dashboard"))
             flash("Invalid email or password.", "error")
 
-        return _render_layout(
+        return _render_page(
             "Login",
             """
             <div class="card" style="max-width:520px;margin:30px auto;">
@@ -501,7 +547,7 @@ def create_web_app(
     @login_required
     def dashboard():
         user = _current_user()
-        return _render_layout(
+        return _render_page(
             "Dashboard",
             """
             <div class="card">
@@ -518,6 +564,26 @@ def create_web_app(
             user["email"],
             bool(user.get("is_admin")),
         )
+
+    @app.route("/admin/restart", methods=["POST"])
+    @admin_required
+    def restart_service():
+        user = _current_user()
+        if request.form.get("confirm", "").strip().lower() != "yes":
+            flash("Restart confirmation is required.", "error")
+        elif not _restart_enabled():
+            flash("Restart is disabled via WEB_RESTART_ENABLED.", "error")
+        elif not callable(on_request_restart):
+            flash("Restart callback is not configured in this runtime.", "error")
+        else:
+            response = on_request_restart(user["email"])
+            if not isinstance(response, dict):
+                flash("Invalid response from restart handler.", "error")
+            elif response.get("ok"):
+                flash(response.get("message", "Restart requested. The bot will restart shortly."), "success")
+            else:
+                flash(response.get("error", "Failed to request restart."), "error")
+        return redirect(url_for("dashboard"))
 
     @app.route("/admin/documentation", methods=["GET"])
     @login_required
@@ -536,7 +602,7 @@ def create_web_app(
                 "<div class='card'><h2>Documentation</h2>"
                 "<p class='muted'>No wiki pages were found in the runtime image.</p></div>"
             )
-            return _render_layout("Documentation", body, user["email"], bool(user.get("is_admin")))
+            return _render_page("Documentation", body, user["email"], bool(user.get("is_admin")))
 
         page_rows = []
         for path in page_paths:
@@ -551,7 +617,7 @@ def create_web_app(
             "<p class='muted'>Browse wiki pages packaged with this bot image.</p>"
             f"<ul>{''.join(page_rows)}</ul></div>"
         )
-        return _render_layout("Documentation", body, user["email"], bool(user.get("is_admin")))
+        return _render_page("Documentation", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/documentation/<page_slug>", methods=["GET"])
     @login_required
@@ -584,7 +650,7 @@ def create_web_app(
             f"<pre class='mono' style='white-space:pre-wrap;line-height:1.45;'>{escape(content)}</pre>"
             "</div>"
         )
-        return _render_layout(title, body, user["email"], bool(user.get("is_admin")))
+        return _render_page(title, body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/bot-profile", methods=["GET", "POST"])
     @admin_required
@@ -657,7 +723,7 @@ def create_web_app(
         </div>
         {profile_html}
         """
-        return _render_layout("Bot Profile", body, user["email"], bool(user.get("is_admin")))
+        return _render_page("Bot Profile", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/settings", methods=["GET", "POST"])
     @admin_required
@@ -756,7 +822,7 @@ def create_web_app(
             "<form method='post'><table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table><div style='margin-top:14px;'><button class='btn' type='submit'>Save Settings</button></div></form></div>"
         )
-        return _render_layout("Settings", body, user["email"], bool(user.get("is_admin")))
+        return _render_page("Settings", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/tag-responses", methods=["GET", "POST"])
     @admin_required
@@ -797,7 +863,7 @@ def create_web_app(
           </form>
         </div>
         """
-        return _render_layout("Tag Responses", body, user["email"], bool(user.get("is_admin")))
+        return _render_page("Tag Responses", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/bulk-role-csv", methods=["GET", "POST"])
     @admin_required
@@ -918,7 +984,7 @@ def create_web_app(
         {details_html}
         {report_html}
         """
-        return _render_layout("Bulk Role CSV", body, user["email"], bool(user.get("is_admin")))
+        return _render_page("Bulk Role CSV", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/users", methods=["GET", "POST"])
     @admin_required
@@ -1070,7 +1136,7 @@ def create_web_app(
           </table>
         </div>
         """
-        return _render_layout("Users", body, user["email"], bool(user.get("is_admin")))
+        return _render_page("Users", body, user["email"], bool(user.get("is_admin")))
 
     return app
 
@@ -1089,6 +1155,7 @@ def start_web_admin_interface(
     on_get_discord_catalog=None,
     on_get_bot_profile=None,
     on_update_bot_avatar=None,
+    on_request_restart=None,
     logger=None,
 ):
     app = create_web_app(
@@ -1103,6 +1170,7 @@ def start_web_admin_interface(
         on_get_discord_catalog=on_get_discord_catalog,
         on_get_bot_profile=on_get_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,
+        on_request_restart=on_request_restart,
         logger=logger,
     )
     if logger:
