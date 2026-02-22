@@ -88,6 +88,8 @@ Discord bot for GL.iNet community operations:
 - Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
 - Admin can manage:
   - Bot environment settings (channels, firmware schedule, logging/mod settings, etc.)
+  - GitHub wiki docs link from the web header
+  - Admin restart button in the web header (with confirmation)
   - Live Discord channel/role dropdowns (polled from guild) for channel/role settings
   - Tag response mappings (saved changes refresh tag slash commands without container reload)
   - Bulk role assignment from uploaded CSV (with missing/error report)
@@ -147,6 +149,8 @@ Optional:
 - `WEB_BIND_HOST` (default `0.0.0.0`)
 - `WEB_PORT` (default `8080`, internal container port)
 - `WEB_HOST_PORT` (default `8080`, host mapping used by docker-compose)
+- `WEB_RESTART_ENABLED` (default `true`, enables/disables admin restart button in web header)
+- `WEB_GITHUB_WIKI_URL` (default `https://github.com/wickedyoda/Glinet_discord_bot/wiki`, external docs link in web header)
 - `WEB_DISCORD_CATALOG_TTL_SECONDS` (default `120`, cache TTL for polled channel/role dropdown data)
 - `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS` (default `20`, timeout for Discord channel/role catalog fetch)
 - `WEB_BULK_ASSIGN_TIMEOUT_SECONDS` (default `300`, timeout for web CSV role assignment execution)
@@ -184,6 +188,8 @@ WEB_ENABLED=true
 WEB_BIND_HOST=0.0.0.0
 WEB_PORT=8080
 WEB_HOST_PORT=8080
+WEB_RESTART_ENABLED=true
+WEB_GITHUB_WIKI_URL=https://github.com/wickedyoda/Glinet_discord_bot/wiki
 WEB_DISCORD_CATALOG_TTL_SECONDS=120
 WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS=20
 WEB_BULK_ASSIGN_TIMEOUT_SECONDS=300

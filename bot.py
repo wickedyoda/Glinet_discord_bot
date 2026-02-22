@@ -855,6 +855,19 @@ def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
         return {"ok": False, "error": "Unexpected error while updating bot avatar."}
 
 
+def run_web_request_restart(actor_email: str):
+    logger.warning("Web admin restart requested by %s", actor_email)
+
+    def _exit_process():
+        logger.warning("Exiting bot process due to web admin restart request")
+        os._exit(0)
+
+    restart_timer = threading.Timer(1.0, _exit_process)
+    restart_timer.daemon = True
+    restart_timer.start()
+    return {"ok": True, "message": "Restart requested. The bot process will exit and restart shortly."}
+
+
 def parse_timeout_duration(value: str):
     match = TIMEOUT_DURATION_PATTERN.fullmatch(value or "")
     if not match:
@@ -1469,6 +1482,7 @@ def start_web_admin_server():
                 on_get_discord_catalog=run_web_get_discord_catalog,
                 on_get_bot_profile=run_web_get_bot_profile,
                 on_update_bot_avatar=run_web_update_bot_avatar,
+                on_request_restart=run_web_request_restart,
                 logger=logger,
             )
         except Exception:
