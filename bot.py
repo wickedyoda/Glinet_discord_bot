@@ -856,16 +856,16 @@ def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
 
 
 def run_web_request_restart(actor_email: str):
-    logger.warning("Web admin restart requested by %s", actor_email)
+    logger.warning("Web admin container restart requested by %s", actor_email)
 
     def _exit_process():
-        logger.warning("Exiting bot process due to web admin restart request")
+        logger.warning("Exiting bot process due to web admin container restart request")
         os._exit(0)
 
     restart_timer = threading.Timer(1.0, _exit_process)
     restart_timer.daemon = True
     restart_timer.start()
-    return {"ok": True, "message": "Restart requested. The bot process will exit and restart shortly."}
+    return {"ok": True, "message": "Restart requested. The container process will exit and restart shortly."}
 
 
 def parse_timeout_duration(value: str):
