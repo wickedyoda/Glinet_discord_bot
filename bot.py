@@ -11,6 +11,7 @@ import time
 import csv
 import io
 import threading
+from difflib import SequenceMatcher
 from datetime import timedelta, datetime, timezone
 from html import unescape
 from urllib.parse import urljoin
@@ -1479,10 +1480,56 @@ def start_web_admin_server():
 
 def search_forum_links(query: str):
     search_url = f"{FORUM_BASE_URL}/search.json"
+    request_headers = {
+        "Accept": "application/json,text/plain,*/*",
+        "User-Agent": "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)",
+    }
+
+    def extract_topic_links(payload: dict):
+        links = []
+        seen_topic_ids = set()
+
+        topics = payload.get("topics", [])
+        if not isinstance(topics, list):
+            topics = []
+        for topic in topics:
+            topic_id = topic.get("id")
+            if not topic_id or topic_id in seen_topic_ids:
+                continue
+            slug = topic.get("slug")
+            if slug:
+                links.append(f"{FORUM_BASE_URL}/t/{slug}/{topic_id}")
+            else:
+                links.append(f"{FORUM_BASE_URL}/t/{topic_id}")
+            seen_topic_ids.add(topic_id)
+            if len(links) >= FORUM_MAX_RESULTS:
+                return links
+
+        # Some responses may include posts but omit topic metadata.
+        posts = payload.get("posts", [])
+        if not isinstance(posts, list):
+            posts = []
+        for post in posts:
+            topic_id = post.get("topic_id")
+            if not topic_id or topic_id in seen_topic_ids:
+                continue
+            links.append(f"{FORUM_BASE_URL}/t/{topic_id}")
+            seen_topic_ids.add(topic_id)
+            if len(links) >= FORUM_MAX_RESULTS:
+                break
+        return links
+
     try:
-        response = requests.get(search_url, params={"q": query}, timeout=10)
+        response = requests.get(search_url, params={"q": query}, timeout=10, headers=request_headers)
         response.raise_for_status()
         data = response.json()
+    except requests.HTTPError as exc:
+        status_code = getattr(exc.response, "status_code", None)
+        if status_code == 429:
+            logger.warning("Forum search rate limited for query: %s", query)
+            return ["❌ Forum search is rate-limited right now. Please try again in a minute."]
+        logger.exception("Forum search HTTP failure for query: %s", query)
+        return ["❌ Failed to fetch forum results."]
     except requests.RequestException:
         logger.exception("Forum search request failed for query: %s", query)
         return ["❌ Failed to fetch forum results."]
@@ -1490,20 +1537,38 @@ def search_forum_links(query: str):
         logger.exception("Forum search returned invalid JSON for query: %s", query)
         return ["❌ Forum returned an invalid response."]
 
-    topics = data.get("topics", [])
-    links = []
-    for topic in topics[:FORUM_MAX_RESULTS]:
-        topic_id = topic.get("id")
-        slug = topic.get("slug")
-        if topic_id and slug:
-            links.append(f"{FORUM_BASE_URL}/t/{slug}/{topic_id}")
+    links = extract_topic_links(data)
 
     return links if links else ["No results found."]
 
 
 def normalize_search_terms(query: str):
-    terms = [term.lower() for term in re.findall(r"[a-zA-Z0-9]+", query)]
-    return list(dict.fromkeys(terms))
+    raw_terms = [term.lower() for term in re.findall(r"[a-zA-Z0-9]+", query)]
+    expanded_terms = []
+    for term in raw_terms:
+        if not term:
+            continue
+        expanded_terms.append(term)
+        # Handle compact alpha+numeric queries like "flint3" by also indexing
+        # split components ("flint", "3") for better document matches.
+        if re.search(r"[a-z]", term) and re.search(r"\d", term):
+            for piece in re.findall(r"[a-z]+|\d+", term):
+                if not piece:
+                    continue
+                # Avoid overly-broad fragments like "mt" from "mt6000".
+                if piece.isalpha() and len(piece) < 3:
+                    continue
+                expanded_terms.append(piece)
+
+    normalized = []
+    for term in expanded_terms:
+        # Ignore single-digit tokens because they cause broad false positives
+        # (for example "step 3" pages) in docs search scoring.
+        if len(term) == 1 and term.isdigit():
+            continue
+        normalized.append(term)
+
+    return list(dict.fromkeys(normalized))
 
 
 def clean_search_text(value: str):
@@ -1535,20 +1600,52 @@ def load_docs_index(base_url: str):
         return []
 
 
-def score_document(title: str, text: str, terms):
+def score_document(title: str, text: str, terms, query: str):
     title_lc = title.lower()
     text_lc = text.lower()
+    query_lc = clean_search_text(query).lower()
+    title_tokens = re.findall(r"[a-z0-9]+", title_lc)
+
     score = 0
-    for term in terms:
+    if query_lc:
+        if query_lc in title_lc:
+            score += 24
+        elif query_lc in text_lc:
+            score += 10
+
+    significant_terms = [term for term in terms if term]
+    for idx, term in enumerate(significant_terms):
+        direct_match = False
         if term in title_lc:
-            score += 8
+            score += 10
+            direct_match = True
         if term in text_lc:
-            score += min(4, text_lc.count(term))
+            score += min(5, text_lc.count(term))
+            direct_match = True
+
+        # Catch small typos like "flitn" => "flint" using title-token fuzziness.
+        if not direct_match and len(term) >= 4 and title_tokens:
+            for token in title_tokens:
+                if abs(len(token) - len(term)) > 2:
+                    continue
+                if SequenceMatcher(None, token, term).ratio() >= 0.80:
+                    score += 5
+                    break
+
+        if idx < len(significant_terms) - 1:
+            phrase = f"{term} {significant_terms[idx + 1]}"
+            if phrase in title_lc:
+                score += 6
+            elif phrase in text_lc:
+                score += 2
+
     return score
 
 
 def search_docs_site_links(query: str, base_url: str):
     terms = normalize_search_terms(query)
+    if not terms:
+        return []
     docs = load_docs_index(base_url)
     ranked = []
     for doc in docs:
@@ -1557,7 +1654,7 @@ def search_docs_site_links(query: str, base_url: str):
             continue
         title = clean_search_text(str(doc.get("title", "")))
         text = clean_search_text(str(doc.get("text", "")))
-        score = score_document(title, text, terms)
+        score = score_document(title, text, terms, query)
         if score <= 0:
             continue
         resolved_url = urljoin(f"{base_url}/", location)
