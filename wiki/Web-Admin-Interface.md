@@ -24,6 +24,9 @@ Password-protected admin UI for runtime bot management.
   - Environment-backed settings editor
   - Channel dropdowns for channel fields
   - Role dropdowns for role fields
+- `/admin/command-permissions`
+  - Configure per-command access mode
+  - Default/public/custom role permission support
 - `/admin/tag-responses`
   - Edit JSON tag map and refresh runtime tag commands
 - `/admin/bulk-role-csv`

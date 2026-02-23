@@ -33,8 +33,12 @@
 - `/edit_role`
 - `/delete_role`
 - `/ban_member`, `!banmember`
+- `/unban_member`, `!unbanmember`
 - `/kick_member`, `!kickmember`
 - `/timeout_member`, `!timeoutmember`
+- `/untimeout_member`, `!untimeoutmember`
+- `/add_role_member`, `!addrolemember`
+- `/remove_role_member`, `!removerolemember`
 - `/modlog_test`, `!modlogtest`
 
 ## Access Rules

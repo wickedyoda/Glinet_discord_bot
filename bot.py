@@ -145,10 +145,147 @@ CODES_FILE = os.path.join(DATA_DIR, "role_codes.txt")
 INVITE_ROLE_FILE = os.path.join(DATA_DIR, "invite_roles.json")
 TAG_RESPONSES_FILE = os.path.join(DATA_DIR, "tag_responses.json")
 FIRMWARE_STATE_FILE = os.path.join(DATA_DIR, "firmware_seen.json")
+COMMAND_PERMISSIONS_FILE = os.path.join(DATA_DIR, "command_permissions.json")
 
 DEFAULT_TAG_RESPONSES = {
     "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
     "!support": "🛠️ Need help? Please open a ticket or message a moderator.",
+}
+DEFAULT_ALLOWED_ROLE_NAMES = {"Employee", "Admin", "Gl.iNet Moderator"}
+COMMAND_PERMISSION_MODE_DEFAULT = "default"
+COMMAND_PERMISSION_MODE_PUBLIC = "public"
+COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
+COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
+COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES = "allowed_role_names"
+COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS = "moderator_role_ids"
+COMMAND_PERMISSION_DEFAULTS = {
+    "list": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "tag_commands": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "submitrole": COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
+    "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "enter_role": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "getaccess": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "clear_country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "create_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "delete_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "edit_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "modlog_test": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "ban_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "kick_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "timeout_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "untimeout_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "unban_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "add_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "remove_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "search": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_forum": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_kvm": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+}
+COMMAND_PERMISSION_METADATA = {
+    "list": {
+        "label": "!list",
+        "description": "Show available tag commands.",
+    },
+    "tag_commands": {
+        "label": "Dynamic Tag Commands",
+        "description": "Slash/message tag responses loaded from tag_responses.json.",
+    },
+    "submitrole": {
+        "label": "/submitrole",
+        "description": "Create role invite + code mapping.",
+    },
+    "bulk_assign_role_csv": {
+        "label": "/bulk_assign_role_csv",
+        "description": "Bulk-assign a role from CSV.",
+    },
+    "enter_role": {
+        "label": "/enter_role",
+        "description": "Enter a code to receive a role.",
+    },
+    "getaccess": {
+        "label": "/getaccess",
+        "description": "Assign the configured default access role.",
+    },
+    "country": {
+        "label": "/country, !country",
+        "description": "Set country suffix on nickname.",
+    },
+    "clear_country": {
+        "label": "/clear_country, !clearcountry",
+        "description": "Remove country suffix from nickname.",
+    },
+    "create_role": {
+        "label": "/create_role",
+        "description": "Create a guild role.",
+    },
+    "delete_role": {
+        "label": "/delete_role",
+        "description": "Delete a guild role.",
+    },
+    "edit_role": {
+        "label": "/edit_role",
+        "description": "Edit role name/color/flags.",
+    },
+    "modlog_test": {
+        "label": "/modlog_test, !modlogtest",
+        "description": "Send a moderation log test event.",
+    },
+    "ban_member": {
+        "label": "/ban_member, !banmember",
+        "description": "Ban a member.",
+    },
+    "kick_member": {
+        "label": "/kick_member, !kickmember",
+        "description": "Kick a member and prune recent messages.",
+    },
+    "timeout_member": {
+        "label": "/timeout_member, !timeoutmember",
+        "description": "Apply a timeout to a member.",
+    },
+    "untimeout_member": {
+        "label": "/untimeout_member, !untimeoutmember",
+        "description": "Remove timeout from a member.",
+    },
+    "unban_member": {
+        "label": "/unban_member, !unbanmember",
+        "description": "Unban a user by ID.",
+    },
+    "add_role_member": {
+        "label": "/add_role_member, !addrolemember",
+        "description": "Assign a role to a member.",
+    },
+    "remove_role_member": {
+        "label": "/remove_role_member, !removerolemember",
+        "description": "Remove a role from a member.",
+    },
+    "search": {
+        "label": "/search, !search",
+        "description": "Search forum + docs.",
+    },
+    "search_forum": {
+        "label": "/search_forum, !searchforum",
+        "description": "Search forum only.",
+    },
+    "search_kvm": {
+        "label": "/search_kvm, !searchkvm",
+        "description": "Search KVM docs only.",
+    },
+    "search_iot": {
+        "label": "/search_iot, !searchiot",
+        "description": "Search IoT docs only.",
+    },
+    "search_router": {
+        "label": "/search_router, !searchrouter",
+        "description": "Search Router docs only.",
+    },
+}
+COMMAND_PERMISSION_POLICY_LABELS = {
+    COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC: "Public (any member)",
+    COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES: "Named roles: Employee/Admin/Gl.iNet Moderator",
+    COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS: "Moderator/Admin role IDs (env)",
 }
 
 intents = discord.Intents.default()
@@ -166,6 +303,8 @@ firmware_monitor_task = None
 web_admin_thread = None
 discord_catalog_cache = {"fetched_at": 0.0, "data": None}
 BOT_SERVER_NICKNAME_UNSET = object()
+command_permissions_lock = threading.Lock()
+command_permissions_cache = {"mtime": None, "rules": {}}
 
 
 def normalize_tag(tag: str) -> str:
@@ -263,6 +402,12 @@ def register_tag_commands():
 
         def make_tag_reply(tag_response: str):
             async def tag_reply(interaction: discord.Interaction):
+                if not can_use_command(interaction.user, "tag_commands"):
+                    await interaction.response.send_message(
+                        build_command_permission_denied_message("tag_commands", interaction.guild),
+                        ephemeral=True,
+                    )
+                    return
                 await interaction.response.send_message(tag_response)
 
             return tag_reply
@@ -375,14 +520,263 @@ def save_invite_role(invite_code, role_id):
     logger.info("Saved invite %s for role %s", invite_code, role_id)
 
 def has_allowed_role(member: discord.Member):
-    allowed = {"Employee", "Admin", "Gl.iNet Moderator"}
-    has_role = any(role.name in allowed for role in member.roles)
+    has_role = any(role.name in DEFAULT_ALLOWED_ROLE_NAMES for role in member.roles)
     logger.debug("User %s allowed: %s", member, has_role)
     return has_role
 
 
 def has_moderator_access(member: discord.Member):
     return any(role.id in MODERATOR_ROLE_IDS for role in member.roles)
+
+
+def normalize_permission_mode(value: str | None):
+    raw = (value or "").strip().lower()
+    if raw in {COMMAND_PERMISSION_MODE_DEFAULT, COMMAND_PERMISSION_MODE_PUBLIC, COMMAND_PERMISSION_MODE_CUSTOM_ROLES}:
+        return raw
+    return COMMAND_PERMISSION_MODE_DEFAULT
+
+
+def normalize_role_ids(values):
+    normalized = []
+    seen = set()
+    if isinstance(values, str):
+        values = re.split(r"[\s,]+", values.strip()) if values.strip() else []
+    if not isinstance(values, list):
+        values = []
+    for value in values:
+        cleaned = str(value or "").strip()
+        if cleaned.startswith("<@&") and cleaned.endswith(">"):
+            cleaned = cleaned[3:-1]
+        try:
+            role_id = int(cleaned)
+        except (TypeError, ValueError):
+            continue
+        if role_id <= 0 or role_id in seen:
+            continue
+        seen.add(role_id)
+        normalized.append(role_id)
+    return normalized
+
+
+def normalize_command_permission_rule(raw_rule):
+    if not isinstance(raw_rule, dict):
+        return {
+            "mode": COMMAND_PERMISSION_MODE_DEFAULT,
+            "role_ids": [],
+        }
+    mode = normalize_permission_mode(raw_rule.get("mode"))
+    role_ids = normalize_role_ids(raw_rule.get("role_ids", []))
+    if mode != COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
+        role_ids = []
+    return {
+        "mode": mode,
+        "role_ids": role_ids,
+    }
+
+
+def load_command_permission_rules():
+    global command_permissions_cache
+    with command_permissions_lock:
+        try:
+            mtime = os.path.getmtime(COMMAND_PERMISSIONS_FILE)
+        except FileNotFoundError:
+            command_permissions_cache = {"mtime": None, "rules": {}}
+            return {}
+        except OSError:
+            logger.exception("Unable to read command permissions file metadata")
+            return command_permissions_cache.get("rules", {})
+
+        if command_permissions_cache.get("mtime") == mtime:
+            return command_permissions_cache.get("rules", {})
+
+        try:
+            with open(COMMAND_PERMISSIONS_FILE, "r") as f:
+                payload = json.load(f)
+        except Exception:
+            logger.exception("Failed to load command permissions from %s", COMMAND_PERMISSIONS_FILE)
+            command_permissions_cache = {"mtime": mtime, "rules": {}}
+            return {}
+
+        raw_rules = payload.get("rules", {}) if isinstance(payload, dict) else {}
+        normalized_rules = {}
+        if isinstance(raw_rules, dict):
+            for command_key, raw_rule in raw_rules.items():
+                if command_key not in COMMAND_PERMISSION_DEFAULTS:
+                    continue
+                normalized_rules[command_key] = normalize_command_permission_rule(raw_rule)
+
+        command_permissions_cache = {"mtime": mtime, "rules": normalized_rules}
+        return normalized_rules
+
+
+def save_command_permission_rules(rules: dict, actor_email: str = ""):
+    safe_rules = {}
+    for command_key, raw_rule in (rules or {}).items():
+        if command_key not in COMMAND_PERMISSION_DEFAULTS:
+            continue
+        normalized_rule = normalize_command_permission_rule(raw_rule)
+        if normalized_rule["mode"] == COMMAND_PERMISSION_MODE_DEFAULT:
+            continue
+        safe_rules[command_key] = normalized_rule
+
+    payload = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "updated_by": actor_email,
+        "rules": safe_rules,
+    }
+    with command_permissions_lock:
+        with open(COMMAND_PERMISSIONS_FILE, "w") as f:
+            json.dump(payload, f, indent=2)
+        try:
+            mtime = os.path.getmtime(COMMAND_PERMISSIONS_FILE)
+        except OSError:
+            mtime = None
+        command_permissions_cache["mtime"] = mtime
+        command_permissions_cache["rules"] = safe_rules
+    return safe_rules
+
+
+def resolve_command_permission_state(command_key: str):
+    default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
+    rule = load_command_permission_rules().get(
+        command_key,
+        {"mode": COMMAND_PERMISSION_MODE_DEFAULT, "role_ids": []},
+    )
+    mode = rule.get("mode", COMMAND_PERMISSION_MODE_DEFAULT)
+    role_ids = normalize_role_ids(rule.get("role_ids", []))
+    return default_policy, mode, role_ids
+
+
+def member_has_any_role_id(member: discord.Member | discord.User, role_ids: list[int]):
+    if not isinstance(member, discord.Member):
+        return False
+    if not role_ids:
+        return False
+    member_role_ids = {role.id for role in member.roles}
+    return any(role_id in member_role_ids for role_id in role_ids)
+
+
+def can_use_command(member: discord.Member | discord.User, command_key: str):
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key)
+
+    if mode == COMMAND_PERMISSION_MODE_PUBLIC:
+        return True
+    if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
+        return member_has_any_role_id(member, role_ids)
+
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC:
+        return True
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES:
+        return isinstance(member, discord.Member) and has_allowed_role(member)
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS:
+        return isinstance(member, discord.Member) and has_moderator_access(member)
+    return False
+
+
+def build_command_permission_denied_message(command_key: str, guild: discord.Guild | None = None):
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key)
+    if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
+        if guild is None or not role_ids:
+            return "❌ You do not have one of the roles allowed to use this command."
+        mentions = []
+        for role_id in role_ids:
+            role = guild.get_role(role_id)
+            mentions.append(role.mention if role else f"`{role_id}`")
+        return f"❌ You need one of these roles: {', '.join(mentions)}."
+
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES:
+        names = ", ".join(sorted(DEFAULT_ALLOWED_ROLE_NAMES))
+        return f"❌ You need one of these roles: `{names}`."
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS:
+        return "❌ Only moderators can use this command."
+    return "❌ You do not have permission to use this command."
+
+
+async def ensure_interaction_command_access(interaction: discord.Interaction, command_key: str):
+    if can_use_command(interaction.user, command_key):
+        return True
+    await interaction.response.send_message(
+        build_command_permission_denied_message(command_key, interaction.guild),
+        ephemeral=True,
+    )
+    return False
+
+
+async def ensure_prefix_command_access(ctx: commands.Context, command_key: str):
+    if can_use_command(ctx.author, command_key):
+        return True
+    await ctx.send(build_command_permission_denied_message(command_key, ctx.guild))
+    return False
+
+
+def build_command_permissions_web_payload():
+    rules = load_command_permission_rules()
+    commands_payload = []
+    for command_key, metadata in COMMAND_PERMISSION_METADATA.items():
+        default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
+        rule = normalize_command_permission_rule(rules.get(command_key, {}))
+        commands_payload.append(
+            {
+                "key": command_key,
+                "label": metadata.get("label", command_key),
+                "description": metadata.get("description", ""),
+                "default_policy": default_policy,
+                "default_policy_label": COMMAND_PERMISSION_POLICY_LABELS.get(default_policy, default_policy),
+                "mode": rule["mode"],
+                "role_ids": rule["role_ids"],
+            }
+        )
+    return {
+        "ok": True,
+        "commands": commands_payload,
+        "allowed_role_names": sorted(DEFAULT_ALLOWED_ROLE_NAMES),
+        "moderator_role_ids": sorted(MODERATOR_ROLE_IDS),
+    }
+
+
+def run_web_get_command_permissions():
+    try:
+        return build_command_permissions_web_payload()
+    except Exception:
+        logger.exception("Failed to build command permissions payload for web admin")
+        return {"ok": False, "error": "Unexpected error while loading command permissions."}
+
+
+def run_web_update_command_permissions(payload: dict, actor_email: str):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid payload type for command permissions update."}
+    commands_payload = payload.get("commands", {})
+    if not isinstance(commands_payload, dict):
+        return {"ok": False, "error": "Payload is missing a commands object."}
+
+    updated_rules = {}
+    validation_errors = []
+    for command_key in COMMAND_PERMISSION_METADATA.keys():
+        raw_rule = commands_payload.get(command_key, {})
+        if not isinstance(raw_rule, dict):
+            raw_rule = {}
+
+        mode = normalize_permission_mode(raw_rule.get("mode"))
+        role_ids = normalize_role_ids(raw_rule.get("role_ids", []))
+        if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES and not role_ids:
+            validation_errors.append(
+                f"{command_key}: mode `custom_roles` requires at least one role ID."
+            )
+        updated_rules[command_key] = {"mode": mode, "role_ids": role_ids}
+
+    if validation_errors:
+        return {"ok": False, "error": " ".join(validation_errors)}
+
+    try:
+        save_command_permission_rules(updated_rules, actor_email=actor_email)
+    except Exception:
+        logger.exception("Failed to save command permissions from web admin by %s", actor_email)
+        return {"ok": False, "error": "Failed to save command permissions."}
+
+    response = build_command_permissions_web_payload()
+    response["message"] = "Command permissions updated."
+    logger.info("Command permissions updated via web admin by %s", actor_email)
+    return response
 
 
 def validate_moderation_target(actor: discord.Member, target: discord.Member, bot_member: discord.Member):
@@ -502,6 +896,19 @@ def parse_role_id_input(value: str):
     except (TypeError, ValueError):
         return None
     return role_id if role_id > 0 else None
+
+
+def parse_user_id_input(value: str):
+    cleaned = (value or "").strip()
+    if cleaned.startswith("<@") and cleaned.endswith(">"):
+        cleaned = cleaned[2:-1]
+        if cleaned.startswith("!"):
+            cleaned = cleaned[1:]
+    try:
+        user_id = int(cleaned)
+    except (TypeError, ValueError):
+        return None
+    return user_id if user_id > 0 else None
 
 
 def format_bulk_assignment_preview(title: str, values: list[str], limit: int = 20):
@@ -1698,6 +2105,8 @@ def start_web_admin_server():
                 on_tag_responses_saved=refresh_tag_responses_from_web,
                 on_bulk_assign_role_csv=run_web_bulk_role_assignment,
                 on_get_discord_catalog=run_web_get_discord_catalog,
+                on_get_command_permissions=run_web_get_command_permissions,
+                on_save_command_permissions=run_web_update_command_permissions,
                 on_get_bot_profile=run_web_get_bot_profile,
                 on_update_bot_profile=run_web_update_bot_profile,
                 on_update_bot_avatar=run_web_update_bot_avatar,
@@ -2222,19 +2631,21 @@ async def on_message(message: discord.Message):
             return
         response = get_tag_responses().get(tag)
         if response:
-            await message.channel.send(response)
+            if can_use_command(message.author, "tag_commands"):
+                await message.channel.send(response)
     await bot.process_commands(message)
 
 
 @bot.command(name="list")
 async def list_commands(ctx: commands.Context):
+    if not await ensure_prefix_command_access(ctx, "list"):
+        return
     await ctx.send(build_command_list())
 
 @tree.command(name="submitrole", description="Submit a role for invite/code linking", guild=discord.Object(id=GUILD_ID))
 async def submitrole(interaction: discord.Interaction):
     logger.info("/submitrole invoked by %s", interaction.user)
-    if not has_allowed_role(interaction.user):
-        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
 
     await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
@@ -2284,8 +2695,7 @@ async def submitrole(interaction: discord.Interaction):
 )
 async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment):
     logger.info("/bulk_assign_role_csv invoked by %s", interaction.user)
-    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "bulk_assign_role_csv"):
         return
 
     if interaction.guild is None:
@@ -2395,12 +2805,16 @@ class CodeEntryModal(discord.ui.Modal):
 async def enter_role(interaction: discord.Interaction):
     """Prompt the user to enter their code via a modal."""
     logger.info("/enter_role invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "enter_role"):
+        return
     await interaction.response.send_modal(CodeEntryModal())
 
 
 @tree.command(name="getaccess", description="Assign yourself the protected role", guild=discord.Object(id=GUILD_ID))
 async def getaccess(interaction: discord.Interaction):
     logger.info("/getaccess invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "getaccess"):
+        return
     try:
         with open(ROLE_FILE, "r") as f:
             role_id = int(f.read().strip())
@@ -2419,6 +2833,8 @@ async def getaccess(interaction: discord.Interaction):
 @app_commands.describe(code="2-letter country code (e.g. US, CA, DE)")
 async def country_slash(interaction: discord.Interaction, code: str):
     logger.info("/country invoked by %s with code %s", interaction.user, code)
+    if not await ensure_interaction_command_access(interaction, "country"):
+        return
     normalized = normalize_country_code(code)
     if not normalized:
         await interaction.response.send_message(
@@ -2448,6 +2864,8 @@ async def country_slash(interaction: discord.Interaction, code: str):
 @bot.command(name="country")
 async def country_prefix(ctx: commands.Context, code: str):
     logger.info("!country invoked by %s with code %s", ctx.author, code)
+    if not await ensure_prefix_command_access(ctx, "country"):
+        return
     normalized = normalize_country_code(code)
     if not normalized:
         await ctx.send("❌ Please provide a valid 2-letter country code (A-Z).")
@@ -2467,6 +2885,8 @@ async def country_prefix(ctx: commands.Context, code: str):
 @tree.command(name="clear_country", description="Remove country code suffix from your nickname", guild=discord.Object(id=GUILD_ID))
 async def clear_country_slash(interaction: discord.Interaction):
     logger.info("/clear_country invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "clear_country"):
+        return
     try:
         _, message = await clear_member_country(interaction.user)
         await interaction.response.send_message(message, ephemeral=True)
@@ -2487,6 +2907,8 @@ async def clear_country_slash(interaction: discord.Interaction):
 @bot.command(name="clearcountry")
 async def clear_country_prefix(ctx: commands.Context):
     logger.info("!clearcountry invoked by %s", ctx.author)
+    if not await ensure_prefix_command_access(ctx, "clear_country"):
+        return
     try:
         _, message = await clear_member_country(ctx.author)
         await ctx.send(message)
@@ -2517,8 +2939,7 @@ async def create_role_slash(
     mentionable: bool = False,
 ):
     logger.info("/create_role invoked by %s for role name %s", interaction.user, name)
-    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "create_role"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -2616,8 +3037,7 @@ async def delete_role_slash(
     reason: str | None = None,
 ):
     logger.info("/delete_role invoked by %s for role %s", interaction.user, role)
-    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "delete_role"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -2717,8 +3137,7 @@ async def edit_role_slash(
     reason: str | None = None,
 ):
     logger.info("/edit_role invoked by %s for role %s", interaction.user, role)
-    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "edit_role"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -2840,8 +3259,7 @@ async def edit_role_slash(
 )
 async def modlog_test_slash(interaction: discord.Interaction):
     logger.info("/modlog_test invoked by %s", interaction.user)
-    if not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "modlog_test"):
         return
 
     sent = await send_moderation_log(
@@ -2869,8 +3287,7 @@ async def modlog_test_slash(interaction: discord.Interaction):
 @bot.command(name="modlogtest")
 async def modlog_test_prefix(ctx: commands.Context):
     logger.info("!modlogtest invoked by %s", ctx.author)
-    if not has_moderator_access(ctx.author):
-        await ctx.send("❌ Only moderators can use this command.")
+    if not await ensure_prefix_command_access(ctx, "modlog_test"):
         return
 
     sent = await send_moderation_log(
@@ -2899,8 +3316,7 @@ async def modlog_test_prefix(ctx: commands.Context):
 @app_commands.describe(member="Member to ban", reason="Reason for ban")
 async def ban_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
     logger.info("/ban_member invoked by %s targeting %s", interaction.user, member)
-    if not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "ban_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
@@ -2964,8 +3380,7 @@ async def ban_member_slash(interaction: discord.Interaction, member: discord.Mem
 @bot.command(name="banmember")
 async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
     logger.info("!banmember invoked by %s targeting %s", ctx.author, member)
-    if not has_moderator_access(ctx.author):
-        await ctx.send("❌ Only moderators can use this command.")
+    if not await ensure_prefix_command_access(ctx, "ban_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
@@ -3031,11 +3446,7 @@ async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, re
 @app_commands.describe(member="Member to kick", reason="Reason for kicking")
 async def kick_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
     logger.info("/kick_member invoked by %s targeting %s", interaction.user, member)
-    if not has_moderator_access(interaction.user):
-        await interaction.response.send_message(
-            "❌ Only moderators can use this command.",
-            ephemeral=True,
-        )
+    if not await ensure_interaction_command_access(interaction, "kick_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
@@ -3111,8 +3522,7 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
 @bot.command(name="kickmember")
 async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
     logger.info("!kickmember invoked by %s targeting %s", ctx.author, member)
-    if not has_moderator_access(ctx.author):
-        await ctx.send("❌ Only moderators can use this command.")
+    if not await ensure_prefix_command_access(ctx, "kick_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
@@ -3196,8 +3606,7 @@ async def timeout_member_slash(
     reason: str | None = None,
 ):
     logger.info("/timeout_member invoked by %s targeting %s for %s", interaction.user, member, duration)
-    if not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "timeout_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
@@ -3280,8 +3689,7 @@ async def timeout_member_slash(
 @bot.command(name="timeoutmember")
 async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""):
     logger.info("!timeoutmember invoked by %s targeting %s for %s", ctx.author, member, duration)
-    if not has_moderator_access(ctx.author):
-        await ctx.send("❌ Only moderators can use this command.")
+    if not await ensure_prefix_command_access(ctx, "timeout_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
@@ -3355,10 +3763,689 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
     await ctx.send(f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>).")
 
 
+@tree.command(
+    name="untimeout_member",
+    description="Remove timeout from a member",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to remove timeout from", reason="Reason for removing timeout")
+async def untimeout_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+    logger.info("/untimeout_member invoked by %s targeting %s", interaction.user, member)
+    if not await ensure_interaction_command_access(interaction, "untimeout_member"):
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "untimeout_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    timed_out_until = member.timed_out_until
+    if timed_out_until is None or timed_out_until <= discord.utils.utcnow():
+        await interaction.response.send_message("ℹ️ That member is not currently timed out.", ephemeral=True)
+        return
+
+    action_reason = (reason or "").strip() or f"Timeout removed by {interaction.user} via bot"
+    try:
+        await member.timeout(None, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove timeout for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "untimeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Moderate Members` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't remove timeout from that member. Check role hierarchy and `Moderate Members` permission.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to remove timeout for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "untimeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while removing timeout.",
+        )
+        await interaction.response.send_message("❌ Failed to remove timeout. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "untimeout_member",
+        target=member,
+        reason=action_reason,
+        details="Timeout removed successfully.",
+    )
+    await interaction.response.send_message(f"✅ Removed timeout for **{member}**.", ephemeral=True)
+
+
+@bot.command(name="untimeoutmember")
+async def untimeout_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+    logger.info("!untimeoutmember invoked by %s targeting %s", ctx.author, member)
+    if not await ensure_prefix_command_access(ctx, "untimeout_member"):
+        return
+
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "untimeout_member",
+            member,
+            reason.strip() or None,
+            outcome="blocked",
+            details=error_message,
+        )
+        await ctx.send(error_message)
+        return
+
+    timed_out_until = member.timed_out_until
+    if timed_out_until is None or timed_out_until <= discord.utils.utcnow():
+        await ctx.send("ℹ️ That member is not currently timed out.")
+        return
+
+    action_reason = reason.strip() or f"Timeout removed by {ctx.author} via bot"
+    try:
+        await member.timeout(None, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove timeout for member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "untimeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Moderate Members` permission or role hierarchy block.",
+        )
+        await ctx.send(
+            "❌ I can't remove timeout from that member. Check role hierarchy and `Moderate Members` permission."
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to remove timeout for member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "untimeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while removing timeout.",
+        )
+        await ctx.send("❌ Failed to remove timeout. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "untimeout_member",
+        target=member,
+        reason=action_reason,
+        details="Timeout removed successfully.",
+    )
+    await ctx.send(f"✅ Removed timeout for **{member}**.")
+
+
+@tree.command(
+    name="add_role_member",
+    description="Assign a role to a member",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to update", role="Role to add", reason="Reason for role assignment")
+async def add_role_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    role: discord.Role,
+    reason: str | None = None,
+):
+    logger.info("/add_role_member invoked by %s target=%s role=%s", interaction.user, member, role)
+    if not await ensure_interaction_command_access(interaction, "add_role_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Roles` permission to manage member roles.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, member_error = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "add_role_member",
+            target=member,
+            reason=reason,
+            outcome="blocked",
+            details=member_error,
+        )
+        await interaction.response.send_message(member_error, ephemeral=True)
+        return
+
+    can_manage_role, role_error = validate_manageable_role(interaction.user, role, bot_member)
+    if not can_manage_role:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "add_role_member",
+            target=member,
+            reason=reason,
+            outcome="blocked",
+            details=role_error,
+        )
+        await interaction.response.send_message(role_error, ephemeral=True)
+        return
+
+    if role in member.roles:
+        await interaction.response.send_message(
+            f"ℹ️ {member.mention} already has {role.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    action_reason = (reason or "").strip() or f"Role assigned by {interaction.user} via bot"
+    try:
+        await member.add_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to add role %s to member %s", role, member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "add_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't assign that role. Check `Manage Roles` permission and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to add role %s to member %s", role, member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "add_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while assigning role.",
+        )
+        await interaction.response.send_message("❌ Failed to assign role. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "add_role_member",
+        target=member,
+        reason=action_reason,
+        details=f"Assigned role {role.mention} (`{role.id}`).",
+    )
+    await interaction.response.send_message(
+        f"✅ Assigned {role.mention} to {member.mention}.",
+        ephemeral=True,
+    )
+
+
+@bot.command(name="addrolemember")
+async def add_role_member_prefix(ctx: commands.Context, member: discord.Member, role: discord.Role, *, reason: str = ""):
+    logger.info("!addrolemember invoked by %s target=%s role=%s", ctx.author, member, role)
+    if not await ensure_prefix_command_access(ctx, "add_role_member"):
+        return
+    if ctx.guild is None:
+        await ctx.send("❌ This command can only be used in a server.")
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await ctx.send("❌ Could not resolve bot member in this guild.")
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await ctx.send("❌ I need the `Manage Roles` permission to manage member roles.")
+        return
+
+    can_moderate, member_error = validate_moderation_target(ctx.author, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "add_role_member",
+            target=member,
+            reason=reason.strip() or None,
+            outcome="blocked",
+            details=member_error,
+        )
+        await ctx.send(member_error)
+        return
+
+    can_manage_role, role_error = validate_manageable_role(ctx.author, role, bot_member)
+    if not can_manage_role:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "add_role_member",
+            target=member,
+            reason=reason.strip() or None,
+            outcome="blocked",
+            details=role_error,
+        )
+        await ctx.send(role_error)
+        return
+
+    if role in member.roles:
+        await ctx.send(f"ℹ️ {member} already has {role}.")
+        return
+
+    action_reason = reason.strip() or f"Role assigned by {ctx.author} via bot"
+    try:
+        await member.add_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to add role %s to member %s", role, member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "add_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await ctx.send("❌ I can't assign that role. Check `Manage Roles` permission and role hierarchy.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to add role %s to member %s", role, member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "add_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while assigning role.",
+        )
+        await ctx.send("❌ Failed to assign role. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "add_role_member",
+        target=member,
+        reason=action_reason,
+        details=f"Assigned role {role.mention} (`{role.id}`).",
+    )
+    await ctx.send(f"✅ Assigned {role.mention} to {member.mention}.")
+
+
+@tree.command(
+    name="remove_role_member",
+    description="Remove a role from a member",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to update", role="Role to remove", reason="Reason for role removal")
+async def remove_role_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    role: discord.Role,
+    reason: str | None = None,
+):
+    logger.info("/remove_role_member invoked by %s target=%s role=%s", interaction.user, member, role)
+    if not await ensure_interaction_command_access(interaction, "remove_role_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Roles` permission to manage member roles.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, member_error = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "remove_role_member",
+            target=member,
+            reason=reason,
+            outcome="blocked",
+            details=member_error,
+        )
+        await interaction.response.send_message(member_error, ephemeral=True)
+        return
+
+    can_manage_role, role_error = validate_manageable_role(interaction.user, role, bot_member)
+    if not can_manage_role:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "remove_role_member",
+            target=member,
+            reason=reason,
+            outcome="blocked",
+            details=role_error,
+        )
+        await interaction.response.send_message(role_error, ephemeral=True)
+        return
+
+    if role not in member.roles:
+        await interaction.response.send_message(
+            f"ℹ️ {member.mention} does not currently have {role.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    action_reason = (reason or "").strip() or f"Role removed by {interaction.user} via bot"
+    try:
+        await member.remove_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove role %s from member %s", role, member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "remove_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't remove that role. Check `Manage Roles` permission and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to remove role %s from member %s", role, member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "remove_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while removing role.",
+        )
+        await interaction.response.send_message("❌ Failed to remove role. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "remove_role_member",
+        target=member,
+        reason=action_reason,
+        details=f"Removed role {role.mention} (`{role.id}`).",
+    )
+    await interaction.response.send_message(
+        f"✅ Removed {role.mention} from {member.mention}.",
+        ephemeral=True,
+    )
+
+
+@bot.command(name="removerolemember")
+async def remove_role_member_prefix(
+    ctx: commands.Context,
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: str = "",
+):
+    logger.info("!removerolemember invoked by %s target=%s role=%s", ctx.author, member, role)
+    if not await ensure_prefix_command_access(ctx, "remove_role_member"):
+        return
+    if ctx.guild is None:
+        await ctx.send("❌ This command can only be used in a server.")
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await ctx.send("❌ Could not resolve bot member in this guild.")
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await ctx.send("❌ I need the `Manage Roles` permission to manage member roles.")
+        return
+
+    can_moderate, member_error = validate_moderation_target(ctx.author, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "remove_role_member",
+            target=member,
+            reason=reason.strip() or None,
+            outcome="blocked",
+            details=member_error,
+        )
+        await ctx.send(member_error)
+        return
+
+    can_manage_role, role_error = validate_manageable_role(ctx.author, role, bot_member)
+    if not can_manage_role:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "remove_role_member",
+            target=member,
+            reason=reason.strip() or None,
+            outcome="blocked",
+            details=role_error,
+        )
+        await ctx.send(role_error)
+        return
+
+    if role not in member.roles:
+        await ctx.send(f"ℹ️ {member} does not currently have {role}.")
+        return
+
+    action_reason = reason.strip() or f"Role removed by {ctx.author} via bot"
+    try:
+        await member.remove_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove role %s from member %s", role, member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "remove_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await ctx.send("❌ I can't remove that role. Check `Manage Roles` permission and role hierarchy.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to remove role %s from member %s", role, member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "remove_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while removing role.",
+        )
+        await ctx.send("❌ Failed to remove role. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "remove_role_member",
+        target=member,
+        reason=action_reason,
+        details=f"Removed role {role.mention} (`{role.id}`).",
+    )
+    await ctx.send(f"✅ Removed {role.mention} from {member.mention}.")
+
+
+@tree.command(
+    name="unban_member",
+    description="Unban a user by ID",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(user_id="User ID to unban", reason="Reason for unban")
+async def unban_member_slash(interaction: discord.Interaction, user_id: str, reason: str | None = None):
+    logger.info("/unban_member invoked by %s target=%s", interaction.user, user_id)
+    if not await ensure_interaction_command_access(interaction, "unban_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    target_user_id = parse_user_id_input(user_id)
+    if target_user_id is None:
+        await interaction.response.send_message("❌ Invalid user ID.", ephemeral=True)
+        return
+
+    action_reason = (reason or "").strip() or f"Unbanned by {interaction.user} via bot"
+    try:
+        await interaction.guild.unban(discord.Object(id=target_user_id), reason=action_reason)
+    except discord.NotFound:
+        await interaction.response.send_message(
+            f"❌ User `{target_user_id}` is not currently banned.",
+            ephemeral=True,
+        )
+        return
+    except discord.Forbidden:
+        logger.exception("Missing permission to unban user %s", target_user_id)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "unban_member",
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Ban Members` permission.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't unban users. Check `Ban Members` permission.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to unban user %s", target_user_id)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "unban_member",
+            reason=action_reason,
+            outcome="failed",
+            details=f"Discord API error while unbanning user `{target_user_id}`.",
+        )
+        await interaction.response.send_message("❌ Failed to unban that user. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "unban_member",
+        reason=action_reason,
+        details=f"Unbanned user ID `{target_user_id}`.",
+    )
+    await interaction.response.send_message(f"✅ Unbanned user ID `{target_user_id}`.", ephemeral=True)
+
+
+@bot.command(name="unbanmember")
+async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: str = ""):
+    logger.info("!unbanmember invoked by %s target=%s", ctx.author, user_id)
+    if not await ensure_prefix_command_access(ctx, "unban_member"):
+        return
+    if ctx.guild is None:
+        await ctx.send("❌ This command can only be used in a server.")
+        return
+
+    target_user_id = parse_user_id_input(user_id)
+    if target_user_id is None:
+        await ctx.send("❌ Invalid user ID.")
+        return
+
+    action_reason = reason.strip() or f"Unbanned by {ctx.author} via bot"
+    try:
+        await ctx.guild.unban(discord.Object(id=target_user_id), reason=action_reason)
+    except discord.NotFound:
+        await ctx.send(f"❌ User `{target_user_id}` is not currently banned.")
+        return
+    except discord.Forbidden:
+        logger.exception("Missing permission to unban user %s", target_user_id)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "unban_member",
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Ban Members` permission.",
+        )
+        await ctx.send("❌ I can't unban users. Check `Ban Members` permission.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to unban user %s", target_user_id)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "unban_member",
+            reason=action_reason,
+            outcome="failed",
+            details=f"Discord API error while unbanning user `{target_user_id}`.",
+        )
+        await ctx.send("❌ Failed to unban that user. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "unban_member",
+        reason=action_reason,
+        details=f"Unbanned user ID `{target_user_id}`.",
+    )
+    await ctx.send(f"✅ Unbanned user ID `{target_user_id}`.")
+
+
 @tree.command(name="search", description="Search GL.iNet forum and docs", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(query="Enter search keywords")
 async def search_slash(interaction: discord.Interaction, query: str):
     logger.info("/search invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3371,6 +4458,8 @@ async def search_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="search")
 async def search_prefix(ctx: commands.Context, *, query: str):
     logger.info("!search invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
@@ -3384,6 +4473,8 @@ async def search_prefix(ctx: commands.Context, *, query: str):
 @app_commands.describe(query="Enter search keywords")
 async def search_forum_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_forum invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_forum"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3396,6 +4487,8 @@ async def search_forum_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="searchforum")
 async def search_forum_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchforum invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_forum"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
@@ -3409,6 +4502,8 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
 @app_commands.describe(query="Enter search keywords")
 async def search_kvm_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_kvm invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_kvm"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3421,6 +4516,8 @@ async def search_kvm_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="searchkvm")
 async def search_kvm_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchkvm invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_kvm"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
@@ -3434,6 +4531,8 @@ async def search_kvm_prefix(ctx: commands.Context, *, query: str):
 @app_commands.describe(query="Enter search keywords")
 async def search_iot_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_iot invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_iot"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3446,6 +4545,8 @@ async def search_iot_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="searchiot")
 async def search_iot_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchiot invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_iot"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
@@ -3459,6 +4560,8 @@ async def search_iot_prefix(ctx: commands.Context, *, query: str):
 @app_commands.describe(query="Enter search keywords")
 async def search_router_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_router invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_router"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3471,6 +4574,8 @@ async def search_router_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="searchrouter")
 async def search_router_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchrouter invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_router"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
