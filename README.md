@@ -79,11 +79,13 @@ Discord bot for GL.iNet community operations:
   - Model, track, version, date
   - Download links + SHA256
   - Release notes excerpt
-- Uses `data/firmware_seen.json` to persist seen entries across restarts.
+- Uses SQLite-backed firmware state in `data/bot_data.db` to persist seen entries across restarts.
+- Legacy `firmware_seen.json` is imported on boot (merge-only; existing DB state is preserved).
 
 8. Web Admin Interface
 - Built-in password-protected web panel for bot management.
 - Login uses email + password.
+- There is no Discord `/login` or `!login` command for creating web users.
 - Password policy is enforced for created/updated users:
   - At least 6 digits
   - At least 2 uppercase letters
@@ -92,15 +94,18 @@ Discord bot for GL.iNet community operations:
 - Supports multiple users (admin and non-admin accounts).
 - Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
 - Admin can manage:
+  - Dashboard quick-action cards with direct buttons to all web-admin tools
+  - Light/Black theme toggle in the web header (persisted in browser local storage)
   - Bot environment settings (channels, firmware schedule, logging/mod settings, etc.)
   - Per-command access rules (default/public/custom roles) in web GUI
+  - Multi-role command restrictions using Discord role-name dropdowns (with multi-select)
   - Bot profile identity (username + server nickname) and avatar
   - GitHub wiki docs link from the web header
   - Admin restart button in the web header (with confirmation)
   - Live Discord channel/role dropdowns (polled from guild) for channel/role settings
   - Tag response mappings (saved changes refresh tag slash commands without container reload)
   - Bulk role assignment from uploaded CSV (with missing/error report)
-  - Web users
+  - Web users (create/delete, admin toggle, password reset, show-password toggle on create/reset forms)
 
 ## Command Reference
 
@@ -110,7 +115,7 @@ Discord bot for GL.iNet community operations:
 | `/bulk_assign_role_csv` | N/A | Moderator role IDs only (see env vars) |
 | `/enter_role` | N/A | Any member |
 | `/getaccess` | N/A | Any member |
-| Dynamic tag commands (from JSON) | Tag text (e.g. `!betatest`) | Any member |
+| Dynamic tag commands (from persistent storage) | Tag text (e.g. `!betatest`) | Any member |
 | N/A | `!list` | Any member |
 | `/search` | `!search` | Any member |
 | `/search_forum` | `!searchforum` | Any member |

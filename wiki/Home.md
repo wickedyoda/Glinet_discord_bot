@@ -10,9 +10,10 @@ The content mirrors the core `README.md` and splits features into focused pages.
 - Tag auto-replies and dynamic tag slash commands
 - GL.iNet forum/docs search commands
 - Country code nickname management (`- CC`)
-- Moderation actions (ban, kick + prune, timeout) and event logging
+- Moderation actions (ban/unban, kick + prune, timeout/untimeout, member role add/remove) and event logging
 - Firmware mirror monitoring with scheduled notifications
-- Password-protected web admin panel
+- Password-protected web admin panel (bot rename/profile, per-command permissions, user management)
+- SQLite-backed persistent storage with boot-time merge import from legacy data files
 
 ## Main Feature Pages
 
