@@ -53,6 +53,20 @@ def to_logging_level(level_name: str):
     return getattr(logging, str(level_name or "INFO").upper(), logging.INFO)
 
 
+def normalize_http_url_setting(raw_value: str, fallback_value: str, setting_name: str):
+    candidate = str(raw_value or "").strip()
+    fallback = str(fallback_value or "").strip()
+    if not candidate:
+        return fallback
+    if candidate.startswith(("http://", "https://")):
+        return candidate
+    normalized = f"https://{candidate.lstrip('/')}"
+    logger.warning(
+        "%s is missing URL scheme; normalizing to %s", setting_name, normalized
+    )
+    return normalized
+
+
 def resolve_log_dir(preferred_value: str):
     preferred = str(preferred_value or "").strip()
     candidates = [preferred, os.path.join(DATA_DIR, "logs"), DATA_DIR]
@@ -152,12 +166,17 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
-FIRMWARE_FEED_URL = os.getenv(
-    "FIRMWARE_FEED_URL", "https://gl-fw.remotetohome.io/"
-).strip()
+FIRMWARE_FEED_URL = normalize_http_url_setting(
+    os.getenv("FIRMWARE_FEED_URL", ""),
+    "https://gl-fw.remotetohome.io/",
+    "FIRMWARE_FEED_URL",
+)
 FIRMWARE_NOTIFICATION_CHANNEL_RAW = os.getenv(
     "firmware_notification_channel",
-    os.getenv("FIRMWARE_NOTIFY_CHANNEL_ID", ""),
+    os.getenv(
+        "FIRMWARE_NOTIFICATION_CHANNEL",
+        os.getenv("FIRMWARE_NOTIFY_CHANNEL_ID", ""),
+    ),
 ).strip()
 if FIRMWARE_NOTIFICATION_CHANNEL_RAW.startswith(
     "<#"
@@ -176,7 +195,10 @@ except ValueError:
     )
     FIRMWARE_NOTIFY_CHANNEL_ID = 0
 
-FIRMWARE_CHECK_SCHEDULE = os.getenv("firmware_check_schedule", "").strip()
+FIRMWARE_CHECK_SCHEDULE = os.getenv(
+    "firmware_check_schedule",
+    os.getenv("FIRMWARE_CHECK_SCHEDULE", ""),
+).strip()
 if not FIRMWARE_CHECK_SCHEDULE:
     legacy_interval_raw = os.getenv("FIRMWARE_CHECK_INTERVAL_SECONDS", "").strip()
     if legacy_interval_raw:
@@ -2886,15 +2908,23 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         minimum=1,
     )
 
-    FIRMWARE_FEED_URL = (
-        os.getenv("FIRMWARE_FEED_URL", FIRMWARE_FEED_URL).strip() or FIRMWARE_FEED_URL
+    FIRMWARE_FEED_URL = normalize_http_url_setting(
+        os.getenv("FIRMWARE_FEED_URL", FIRMWARE_FEED_URL),
+        FIRMWARE_FEED_URL,
+        "FIRMWARE_FEED_URL",
     )
     FIRMWARE_NOTIFY_CHANNEL_ID = parse_firmware_channel_id(
-        os.getenv("firmware_notification_channel", FIRMWARE_NOTIFY_CHANNEL_ID),
+        os.getenv(
+            "firmware_notification_channel",
+            os.getenv("FIRMWARE_NOTIFICATION_CHANNEL", FIRMWARE_NOTIFY_CHANNEL_ID),
+        ),
         FIRMWARE_NOTIFY_CHANNEL_ID,
     )
     candidate_schedule = (
-        os.getenv("firmware_check_schedule", FIRMWARE_CHECK_SCHEDULE).strip()
+        os.getenv(
+            "firmware_check_schedule",
+            os.getenv("FIRMWARE_CHECK_SCHEDULE", FIRMWARE_CHECK_SCHEDULE),
+        ).strip()
         or FIRMWARE_CHECK_SCHEDULE
     )
     if croniter.is_valid(candidate_schedule):
