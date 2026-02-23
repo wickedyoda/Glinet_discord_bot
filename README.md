@@ -306,11 +306,13 @@ Migration is merge-only: existing SQLite rows are not overwritten.
 
 - Never commit `.env`.
 - Rotate credentials immediately if exposed.
+- Vulnerability reporting process: [`SECURITY.md`](./SECURITY.md)
 
 ## License
 
 This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 See [`LICENSE`](./LICENSE) for the full text.
+Additional rights/policy summary: [`LICENSE.md`](./LICENSE.md)
 
 ## Maintainer
 
