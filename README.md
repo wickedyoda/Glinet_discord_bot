@@ -92,8 +92,9 @@ Discord bot for GL.iNet community operations:
 - Login uses email + password.
 - There is no Discord `/login` or `!login` command for creating web users.
 - Password policy is enforced for created/updated users:
-  - At least 6 digits
-  - At least 2 uppercase letters
+  - Minimum 6 characters, maximum 16 characters
+  - At least 2 numbers
+  - At least 1 uppercase letter
   - At least 1 symbol
 - No self-signup route; users can only be created by an admin.
 - Supports multiple users (admin and non-admin accounts).
@@ -182,7 +183,7 @@ Optional:
 - `WEB_AVATAR_MAX_UPLOAD_BYTES` (default `2097152`, max avatar upload size in bytes for bot profile uploads)
 - `WEB_ENV_FILE` (default `.env`)
 - `WEB_ADMIN_DEFAULT_USERNAME` (default admin email used on first run)
-- `WEB_ADMIN_DEFAULT_PASSWORD` (default admin password used on first run)
+- `WEB_ADMIN_DEFAULT_PASSWORD` (default admin password used on first run; must satisfy password policy)
 - `WEB_ADMIN_SESSION_SECRET` (optional explicit session signing secret)
 
 Example `.env`:
