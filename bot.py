@@ -13,6 +13,8 @@ import io
 import threading
 import sqlite3
 import secrets
+import sys
+from collections import deque
 from difflib import SequenceMatcher
 from datetime import timedelta, datetime, timezone
 from html import unescape
@@ -30,19 +32,100 @@ load_dotenv()
 DATA_DIR = os.getenv("DATA_DIR", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
+SENSITIVE_LOG_VALUE_PATTERN = re.compile(
+    r"(?i)\b(password|token|secret|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)"
+)
+
+
+def normalize_log_level(raw_value: str, fallback: str = "INFO"):
+    candidate = str(raw_value or "").strip().upper()
+    fallback_level = str(fallback or "INFO").strip().upper()
+    if fallback_level not in VALID_LOG_LEVELS:
+        fallback_level = "INFO"
+    if candidate in VALID_LOG_LEVELS:
+        return candidate
+    return fallback_level
+
+
+def to_logging_level(level_name: str):
+    return getattr(logging, str(level_name or "INFO").upper(), logging.INFO)
+
+
 # Set up logging to console and persistent file
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", "INFO"))
+CONTAINER_LOG_LEVEL = normalize_log_level(
+    os.getenv("CONTAINER_LOG_LEVEL", "ERROR"), fallback="ERROR"
+)
+BOT_LOG_FILE = os.path.join(DATA_DIR, "bot.log")
+CONTAINER_ERROR_LOG_FILE = os.path.join(DATA_DIR, "container_errors.log")
 logger = logging.getLogger("invite_bot")
-logger.setLevel(LOG_LEVEL)
+logger.setLevel(to_logging_level(LOG_LEVEL))
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 console_handler = logging.StreamHandler()
+console_handler.setLevel(to_logging_level(LOG_LEVEL))
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-file_handler = logging.FileHandler(os.path.join(DATA_DIR, "bot.log"))
+file_handler = logging.FileHandler(BOT_LOG_FILE, encoding="utf-8")
+file_handler.setLevel(to_logging_level(LOG_LEVEL))
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
+
+container_error_handler = logging.FileHandler(CONTAINER_ERROR_LOG_FILE, encoding="utf-8")
+container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
+container_error_handler.setFormatter(formatter)
+root_logger = logging.getLogger()
+root_logger.addHandler(container_error_handler)
+logging.getLogger("discord").setLevel(to_logging_level(LOG_LEVEL))
+logging.getLogger("werkzeug").setLevel(to_logging_level(LOG_LEVEL))
+
+
+def install_global_exception_logging():
+    def _sys_excepthook(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            return
+        logger.critical(
+            "Unhandled exception reached sys.excepthook",
+            exc_info=(exc_type, exc_value, exc_traceback),
+        )
+
+    def _thread_excepthook(args):
+        if args.exc_type and issubclass(args.exc_type, KeyboardInterrupt):
+            return
+        thread_name = args.thread.name if args.thread else "unknown"
+        logger.critical(
+            "Unhandled exception in thread %s",
+            thread_name,
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = _sys_excepthook
+    threading.excepthook = _thread_excepthook
+
+
+install_global_exception_logging()
+
+
+def install_asyncio_exception_logging(loop: asyncio.AbstractEventLoop):
+    if loop is None or getattr(loop, "_invite_bot_exception_logging", False):
+        return
+
+    def _asyncio_exception_handler(active_loop, context):
+        message = str(context.get("message") or "Unhandled asyncio exception")
+        exception = context.get("exception")
+        if exception is not None:
+            logger.error(
+                "Asyncio exception: %s",
+                message,
+                exc_info=(type(exception), exception, exception.__traceback__),
+            )
+        else:
+            logger.error("Asyncio exception: %s | context=%s", message, context)
+
+    loop.set_exception_handler(_asyncio_exception_handler)
+    setattr(loop, "_invite_bot_exception_logging", True)
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 GUILD_ID = int(os.getenv("GUILD_ID"))
@@ -211,6 +294,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "unban_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "add_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "remove_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "logs": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "search": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_forum": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_kvm": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -293,6 +377,10 @@ COMMAND_PERMISSION_METADATA = {
     "remove_role_member": {
         "label": "/remove_role_member, !removerolemember",
         "description": "Remove a role from a member.",
+    },
+    "logs": {
+        "label": "/logs",
+        "description": "View recent container error log entries.",
     },
     "search": {
         "label": "/search, !search",
@@ -2224,6 +2312,24 @@ def clip_text(value: str, max_chars: int = 250):
     return f"{cleaned[: max_chars - 3]}..."
 
 
+def sanitize_log_text(value: str):
+    text = str(value or "")
+    if not text:
+        return ""
+    return SENSITIVE_LOG_VALUE_PATTERN.sub(r"\1=[REDACTED]", text)
+
+
+def read_recent_log_lines(path: str, max_lines: int):
+    try:
+        line_limit = max(10, min(400, int(max_lines)))
+    except (TypeError, ValueError):
+        line_limit = 100
+
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        buffer = deque(handle, maxlen=line_limit)
+    return sanitize_log_text("".join(buffer))
+
+
 async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
     channel = await resolve_mod_log_channel(guild)
     if channel is None:
@@ -2603,6 +2709,7 @@ def schedule_firmware_monitor_restart():
 
 def refresh_runtime_settings_from_env(_updated_values=None):
     global LOG_LEVEL
+    global CONTAINER_LOG_LEVEL
     global GENERAL_CHANNEL_ID
     global FORUM_BASE_URL
     global FORUM_MAX_RESULTS
@@ -2624,8 +2731,17 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global WEB_BOT_PROFILE_TIMEOUT_SECONDS
     global WEB_AVATAR_MAX_UPLOAD_BYTES
 
-    LOG_LEVEL = os.getenv("LOG_LEVEL", LOG_LEVEL)
-    logger.setLevel(LOG_LEVEL)
+    LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", LOG_LEVEL), fallback=LOG_LEVEL)
+    CONTAINER_LOG_LEVEL = normalize_log_level(
+        os.getenv("CONTAINER_LOG_LEVEL", CONTAINER_LOG_LEVEL),
+        fallback=CONTAINER_LOG_LEVEL,
+    )
+    logger.setLevel(to_logging_level(LOG_LEVEL))
+    console_handler.setLevel(to_logging_level(LOG_LEVEL))
+    file_handler.setLevel(to_logging_level(LOG_LEVEL))
+    container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
+    logging.getLogger("discord").setLevel(to_logging_level(LOG_LEVEL))
+    logging.getLogger("werkzeug").setLevel(to_logging_level(LOG_LEVEL))
 
     GENERAL_CHANNEL_ID = parse_int_setting(
         os.getenv("GENERAL_CHANNEL_ID", GENERAL_CHANNEL_ID),
@@ -3062,6 +3178,7 @@ invite_uses = {}
 @bot.event
 async def on_ready():
     global firmware_monitor_task
+    install_asyncio_exception_logging(asyncio.get_running_loop())
     logger.info("Logged in as %s", bot.user.name)
     guild = bot.get_guild(GUILD_ID)
     if callable(globals().get("register_tag_commands")):
@@ -3085,6 +3202,32 @@ async def on_ready():
     if firmware_monitor_task is None or firmware_monitor_task.done():
         firmware_monitor_task = asyncio.create_task(
             firmware_monitor_loop(), name="firmware_monitor"
+        )
+
+
+@bot.event
+async def on_error(event_method: str, *args, **kwargs):
+    logger.exception("Unhandled exception in event '%s'", event_method)
+
+
+@tree.error
+async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
+    command_name = interaction.command.name if interaction.command else "unknown"
+    logger.error(
+        "Unhandled app command error in /%s invoked by %s",
+        command_name,
+        interaction.user,
+        exc_info=(type(error), error, error.__traceback__),
+    )
+    if interaction.response.is_done():
+        await interaction.followup.send(
+            "❌ An unexpected error occurred while processing that command.",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message(
+            "❌ An unexpected error occurred while processing that command.",
+            ephemeral=True,
         )
 
 
@@ -4092,6 +4235,62 @@ async def modlog_test_prefix(ctx: commands.Context):
             f"❌ Could not send test log to channel ID `{MOD_LOG_CHANNEL_ID}`. "
             "Check channel ID and bot permissions."
         )
+
+
+@tree.command(
+    name="logs",
+    description="View recent container error log entries",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(lines="How many recent lines to return (10-400)")
+async def logs_slash(
+    interaction: discord.Interaction,
+    lines: app_commands.Range[int, 10, 400] = 120,
+):
+    logger.info("/logs invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "logs"):
+        return
+
+    if not os.path.exists(CONTAINER_ERROR_LOG_FILE):
+        await interaction.response.send_message(
+            "ℹ️ No container error logs have been written yet.",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        log_tail = read_recent_log_lines(CONTAINER_ERROR_LOG_FILE, lines)
+    except Exception:
+        logger.exception("Failed reading container error logs for /logs")
+        await interaction.response.send_message(
+            "❌ Could not read container logs right now. Try again.",
+            ephemeral=True,
+        )
+        return
+
+    if not log_tail.strip():
+        await interaction.response.send_message(
+            "ℹ️ No container error logs have been written yet.",
+            ephemeral=True,
+        )
+        return
+
+    response_header = (
+        f"Showing last `{int(lines)}` lines from `{os.path.basename(CONTAINER_ERROR_LOG_FILE)}`."
+    )
+    if len(log_tail) <= 1700:
+        await interaction.response.send_message(
+            f"{response_header}\n```log\n{log_tail}\n```",
+            ephemeral=True,
+        )
+        return
+
+    report_name = f"container_errors_last_{int(lines)}.log"
+    await interaction.response.send_message(
+        response_header,
+        ephemeral=True,
+        file=discord.File(io.BytesIO(log_tail.encode("utf-8")), filename=report_name),
+    )
 
 
 @tree.command(
@@ -5551,4 +5750,4 @@ async def search_router_prefix(ctx: commands.Context, *, query: str):
 
 
 start_web_admin_server()
-bot.run(TOKEN)
+bot.run(TOKEN, log_handler=None)

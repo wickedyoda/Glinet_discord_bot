@@ -17,6 +17,7 @@ Password-protected admin UI for runtime bot management.
 - Theme selector supports `Light` and `Black` modes in the web header
 - Login endpoint includes basic rate limiting to reduce brute-force attempts
 - Security headers are applied (CSP, frame deny, no-sniff, referrer policy)
+- `Cross-Origin-Opener-Policy` is only sent for HTTPS or localhost/loopback requests
 - Reverse proxy deployment guide: [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
 
 ## User Model
@@ -71,10 +72,20 @@ Password-protected admin UI for runtime bot management.
 - `WEB_SESSION_TIMEOUT_MINUTES`
 - `WEB_PUBLIC_BASE_URL`
 - `WEB_ENV_FILE`
+- `WEB_RESTART_ENABLED`
+- `WEB_GITHUB_WIKI_URL`
 - `WEB_ADMIN_DEFAULT_USERNAME`
 - `WEB_ADMIN_DEFAULT_PASSWORD`
 - `WEB_ADMIN_SESSION_SECRET`
+- `WEB_SESSION_COOKIE_SECURE`
+- `WEB_TRUST_PROXY_HEADERS`
+- `WEB_ENFORCE_CSRF`
+- `WEB_ENFORCE_SAME_ORIGIN_POSTS`
+- `WEB_HARDEN_FILE_PERMISSIONS`
 - `WEB_DISCORD_CATALOG_TTL_SECONDS`
 - `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS`
+- `WEB_BULK_ASSIGN_TIMEOUT_SECONDS`
+- `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES`
+- `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT`
 - `WEB_BOT_PROFILE_TIMEOUT_SECONDS`
 - `WEB_AVATAR_MAX_UPLOAD_BYTES`

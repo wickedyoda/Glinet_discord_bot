@@ -68,6 +68,7 @@ Discord bot for GL.iNet community operations:
 - `/add_role_member`, `!addrolemember`
 - `/remove_role_member`, `!removerolemember`
 - `/modlog_test`, `!modlogtest` to verify logs channel delivery
+- `/logs` to view recent container error logs (moderator-only, ephemeral)
 
 6. Logging
 - Moderation actions are logged to `MOD_LOG_CHANNEL_ID`.
@@ -161,6 +162,7 @@ Discord bot for GL.iNet community operations:
 | `/add_role_member` | `!addrolemember` | Moderator role IDs only (see env vars) |
 | `/remove_role_member` | `!removerolemember` | Moderator role IDs only (see env vars) |
 | `/modlog_test` | `!modlogtest` | Moderator role IDs only (see env vars) |
+| `/logs` | N/A | Moderator role IDs only (see env vars) |
 
 ## Environment Variables
 
@@ -172,6 +174,7 @@ Optional:
 - `GENERAL_CHANNEL_ID` (used for invite generation; defaults to command channel)
 - `DATA_DIR` (default `data`)
 - `LOG_LEVEL` (default `INFO`)
+- `CONTAINER_LOG_LEVEL` (default `ERROR`, level used for container-wide error log capture)
 - `FORUM_BASE_URL` (default `https://forum.gl-inet.com`)
 - `FORUM_MAX_RESULTS` (default `5`)
 - `DOCS_MAX_RESULTS_PER_SITE` (default `2`)
@@ -218,6 +221,7 @@ DISCORD_TOKEN=your_bot_token
 GUILD_ID=your_guild_id
 GENERAL_CHANNEL_ID=your_general_channel_id
 LOG_LEVEL=INFO
+CONTAINER_LOG_LEVEL=ERROR
 FORUM_BASE_URL=https://forum.gl-inet.com
 FORUM_MAX_RESULTS=5
 DOCS_MAX_RESULTS_PER_SITE=2
@@ -272,6 +276,15 @@ services:
       - .env
     environment:
       - WEB_BIND_HOST=0.0.0.0
+      - WEB_ENABLED=${WEB_ENABLED:-true}
+      - WEB_PORT=${WEB_PORT:-8080}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - CONTAINER_LOG_LEVEL=${CONTAINER_LOG_LEVEL:-ERROR}
+      - WEB_PUBLIC_BASE_URL=${WEB_PUBLIC_BASE_URL:-}
+      - WEB_TRUST_PROXY_HEADERS=${WEB_TRUST_PROXY_HEADERS:-true}
+      - WEB_SESSION_COOKIE_SECURE=${WEB_SESSION_COOKIE_SECURE:-true}
+      - WEB_ENFORCE_CSRF=${WEB_ENFORCE_CSRF:-true}
+      - WEB_ENFORCE_SAME_ORIGIN_POSTS=${WEB_ENFORCE_SAME_ORIGIN_POSTS:-true}
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
@@ -323,6 +336,7 @@ Bot permissions:
 Stored under `data/` (or `DATA_DIR`):
 - `bot_data.db` (primary SQLite database)
 - `bot.log`
+- `container_errors.log` (container-wide error log used by `/logs`)
 
 Legacy files are auto-migrated into SQLite on startup if present:
 - `access_role.txt`

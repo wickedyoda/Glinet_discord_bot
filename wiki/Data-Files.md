@@ -6,6 +6,7 @@ Persistent runtime data is stored under `DATA_DIR` (default `data/`).
 
 - `bot_data.db` (primary SQLite database)
 - `bot.log`
+- `container_errors.log`
 
 ## Legacy Migration
 
@@ -29,3 +30,4 @@ Migration is merge-only: existing SQLite records remain unchanged.
 - Web admin user accounts
 - Command permission policy overrides
 - Runtime logging output
+- Container-wide error logging output (used by `/logs`)

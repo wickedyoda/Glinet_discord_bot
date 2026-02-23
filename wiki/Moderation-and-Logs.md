@@ -18,6 +18,8 @@ Moderator-only actions with structured mod-log delivery.
   - `/untimeout_member`, `!untimeoutmember`
 - Log channel test:
   - `/modlog_test`, `!modlogtest`
+- Runtime error inspection:
+  - `/logs` (ephemeral, moderator-only)
 
 ## Access Control
 
@@ -45,3 +47,5 @@ Moderator-only actions with structured mod-log delivery.
 - `ADMIN_ROLE_ID`
 - `MOD_LOG_CHANNEL_ID`
 - `KICK_PRUNE_HOURS`
+- `LOG_LEVEL`
+- `CONTAINER_LOG_LEVEL`
