@@ -1,101 +1,119 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in this file.
 
-
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-## [Unreleased]
-- Implement admin-only invite cleanup feature (planned)
-- Add web dashboard for role/code management (planned)
+## [2026-02-23] - Web Admin, Security, and Storage Overhaul
 
 ### Added
-- Tag-based auto-replies configurable via `data/tag_responses.json`.
-- `!list` command to list configured tag commands (one per line).
-- Tag commands are case-insensitive.
-- Tag responses are also available as slash commands (e.g., `/betatest`).
+- Full web-admin account model with admin-created users only (no Discord `/login` flow).
+- User profile fields for web accounts:
+  - first name
+  - last name
+  - display name
+  - email management with current-password verification
+- Self-service password change flow for existing users.
+- Password visibility toggles in user-create/reset/account forms.
+- Optional "keep me signed in" login mode for 5 days.
+- Admin web controls for bot profile:
+  - bot username
+  - server nickname
+  - avatar upload
+- Admin web controls for command permissions with per-command modes:
+  - default policy
+  - public
+  - custom roles (multi-role selection)
+- Moderator slash command `/logs` for recent container error log retrieval (ephemeral).
+- Container-wide error log file `data/container_errors.log`.
+- Runtime log-level separation:
+  - `LOG_LEVEL` for general runtime logging
+  - `CONTAINER_LOG_LEVEL` for container error capture
+- Reverse-proxy documentation page with common proxy examples:
+  - Nginx
+  - Caddy
+  - Traefik
+  - Apache
+  - HAProxy
 
 ### Changed
-- Tag slash command registration is guarded against duplicate registrations and registration errors.
+- Migrated persistent runtime data to SQLite (`data/bot_data.db`) with WAL mode and tuned pragmas.
+- Implemented merge-only legacy import on startup from old `/app/data` files (no overwrite of existing DB rows).
+- Expanded moderation capability coverage for member/role operations and web-driven controls.
+- Enforced stronger password policy globally:
+  - minimum 6 characters
+  - maximum 16 characters
+  - at least 2 numbers
+  - at least 1 uppercase character
+  - at least 1 symbol
+- Enforced password rotation every 90 days.
+- Made session timeout configurable in the web GUI (5-minute steps, 5-30 minutes).
+- Updated session handling to support inactivity timeout and remember-login mode together.
+- Hardened web request validation for reverse proxies using:
+  - `WEB_PUBLIC_BASE_URL`
+  - forwarded host handling (`X-Forwarded-Host`, `X-Original-Host`, `Forwarded`)
+- Improved local (non-HTTPS localhost) login behavior when secure cookies are enabled.
+- Improved login page form semantics and field consistency:
+  - associated labels (`for`/`id`)
+  - password/email autocomplete attributes
+  - consistent field sizing and styling
 
+### Security
+- CSRF protection enabled for state-changing requests.
+- Same-origin enforcement for state-changing requests with proxy-aware host checks.
+- Secure cookie support and strict cookie settings.
+- Browser security headers hardened; COOP applied only for trustworthy origins (HTTPS/loopback).
+- File permission hardening for sensitive files/directories where supported.
+- Removed/blocked clear-text password logging patterns flagged by scanning.
+
+### Ops and Deployment
+- Updated `docker-compose.yml` to reflect current runtime/security variables.
+- Added/updated environment examples for new and compatibility variables:
+  - `CONTAINER_LOG_LEVEL`
+  - `WEB_PUBLIC_BASE_URL`
+  - `WEB_TRUST_PROXY_HEADERS`
+  - `WEB_SESSION_COOKIE_SECURE`
+  - `WEB_ENFORCE_CSRF`
+  - `WEB_ENFORCE_SAME_ORIGIN_POSTS`
+  - compatibility aliases documented in `.env.example`
+- Updated docs for proxy deployment, security posture, command access, and logging paths.
 
 ## [2025-07-24] - Invite Tracking Enhancements
+
 ### Added
-- `/enter_role` now opens a private modal for the 6-digit code
-- Docker publish workflow for the `beta` branch
-- Invite data persists via the `data/` Docker volume
-- Automatic role assignment when members join via tracked invites
+- `/enter_role` modal flow for 6-digit access code entry.
+- Docker publish workflow for the `beta` branch.
+- Persistent invite data via mounted `data/` volume.
+- Automatic role assignment on invite-based joins.
 
 ### Changed
-- Improved logging and Docker output
-- Fixed syntax errors in `bot.py`
----
+- Improved runtime logging and container output handling.
+- Fixed syntax/runtime issues in `bot.py`.
 
 ## [2025-07-06] - Role Invite Bot Restructure
-### Changed
-- Rewrote logic to operate in a multi-step interaction flow:
-  1. Slash command `/submitrole` starts interaction
-  2. Bot prompts for role
-  3. Generates invite link and 6-digit code
-  4. Assigns role to new members using the invite
-  5. Existing members use `/enter_role` + code to gain access
-
-### Added
-- Role-code pairing stored in `role_codes.txt`
-- Code generation ensures no more than 2 consecutive digits
-
-
-## [Unreleased]
-- Implement admin-only invite cleanup feature (planned)
-- Add web dashboard for role/code management (planned)
-
-
-## [2025-07-24] - Invite Tracking Enhancements
-### Added
-- `/enter_role` now opens a private modal for the 6-digit code
-- Docker publish workflow for the `beta` branch
-- Invite data persists via the `data/` Docker volume
-- Automatic role assignment when members join via tracked invites
 
 ### Changed
-- Improved logging and Docker output
-- Fixed syntax errors in `bot.py`
----
-
-## [2025-07-06] - Role Invite Bot Restructure
-### Changed
-- Rewrote logic to operate in a multi-step interaction flow:
-  1. Slash command `/submitrole` starts interaction
-  2. Bot prompts for role
-  3. Generates invite link and 6-digit code
-  4. Assigns role to new members using the invite
-  5. Existing members use `/enter_role` + code to gain access
+- Reworked invite + code flow to multi-step interaction:
+  1. `/submitrole`
+  2. role capture
+  3. invite/code generation
+  4. join-time role assignment via invite mapping
+  5. `/enter_role` for existing members
 
 ### Added
-- Role-code pairing stored in `role_codes.txt`
-- Code generation ensures no more than 2 consecutive digits
-- Restricted `/submitrole` and `/enter_role` to `Employee` role
-- Added `/getaccess` command for general members using `access_role.txt`
-
----
+- Persistent role-code pairing.
+- Code generation constraints to avoid long repeated-digit patterns.
+- `/getaccess` for default access role assignment.
 
 ## [2025-07-05] - Core Functional Bot Build
-### Added
-- Dockerized deployment using `docker-compose.yml` and GitHub Container Registry
-- Initial slash commands: `/setaccessrole`, `/generateinvite`, `/getaccess`
-- Role and invite tracking via `access_role.txt` and `permanent_invite.txt`
-- Auto-role assignment to new members using invite join tracking
-- Slash command synchronization per guild on startup
 
----
+### Added
+- Dockerized deployment model.
+- Initial slash-command access tooling.
+- Persistent invite/role tracking files.
+- Guild slash-command sync on startup.
 
 ## [2025-07-04] - Initial Commit
+
 ### Added
-- Basic Discord bot skeleton using `discord.py`
-- `.env` configuration for `DISCORD_TOKEN` and `GUILD_ID`
-- Dockerfile and GitHub Actions workflow to build and push image
-- Invite generation and persistent invite code storage
-
-
+- Base Discord bot scaffold.
+- `.env` token/guild configuration.
+- Initial Dockerfile and CI pipeline.
