@@ -1,16 +1,29 @@
 # Data Files
 
-Persistent runtime data is stored under `DATA_DIR` (default `data/`).
+Persistent runtime data is stored in `DATA_DIR` (default `data/`).
 
-## Files
+## File Inventory
 
-- `bot_data.db` (primary SQLite database)
-- `bot.log`
-- `container_errors.log`
+| File | Purpose |
+|---|---|
+| `bot_data.db` | Primary SQLite database for runtime and config state |
+| `bot.log` | Application/runtime logs |
+| `container_errors.log` | Error-focused log file used by `/logs` command |
 
-## Legacy Migration
+## SQLite Scope
 
-If these legacy files exist, they are migrated into SQLite at startup:
+`bot_data.db` stores core persistent entities, including:
+
+- Invite/role mapping state
+- Tag responses
+- Firmware seen entries
+- Web users and metadata
+- Command permission overrides
+- Additional runtime-managed configuration state
+
+## Legacy Import on Boot
+
+Legacy files are imported at startup if present:
 
 - `access_role.txt`
 - `role_codes.txt`
@@ -20,14 +33,43 @@ If these legacy files exist, they are migrated into SQLite at startup:
 - `web_users.json`
 - `command_permissions.json`
 
-Migration is merge-only: existing SQLite records remain unchanged.
+Import strategy:
 
-## Purpose
+- Merge-only
+- Never overwrites existing SQLite records
+- Allows migration continuity while preserving newer DB data
 
-- Invite/code role mapping state
-- Tag response map
-- Firmware seen-entry cache
-- Web admin user accounts
-- Command permission policy overrides
-- Runtime logging output
-- Container-wide error logging output (used by `/logs`)
+## File and Permission Hardening
+
+When enabled (`WEB_HARDEN_FILE_PERMISSIONS=true`), application attempts:
+
+- `.env` -> `0600`
+- `data/` directory -> `0700`
+- `bot_data.db` -> `0600`
+
+## Backup Guidance
+
+Minimum backup set:
+
+- `data/bot_data.db`
+- `data/bot.log` (optional for auditing)
+- `data/container_errors.log` (optional for incident traces)
+
+For reliable restore:
+
+1. Stop container.
+2. Restore DB and required files.
+3. Start container.
+4. Validate key workflows (login, command permissions, tag replies).
+
+## Performance Notes
+
+- SQLite provides low-overhead persistence suitable for single-container deployments.
+- WAL mode is used for better concurrency and durability tradeoff.
+- Keep data volume on reliable storage to reduce corruption risk.
+
+## Related Pages
+
+- [Environment Variables](Environment-Variables)
+- [Docker and Portainer Deploy](Docker-and-Portainer-Deploy)
+- [Security Hardening](Security-Hardening)

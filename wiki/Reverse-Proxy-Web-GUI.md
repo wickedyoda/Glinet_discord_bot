@@ -9,6 +9,13 @@ Use this guide when exposing the web admin UI through a reverse proxy.
 - Keep CSRF and same-origin protections enabled.
 - Avoid direct public exposure of the container port.
 
+## Supported Proxy Patterns
+
+- Single-host local reverse proxy (Nginx/Caddy/Apache/HAProxy)
+- Container-native edge routing (Traefik)
+- Nginx Proxy Manager UI-based configuration
+- DNS-proxied frontends (for example Cloudflare DNS/proxy) in front of your reverse proxy
+
 ## Required Environment Settings
 
 Set these values in `.env`:
@@ -76,6 +83,22 @@ server {
 }
 ```
 
+## Nginx Proxy Manager (NPM) Variation
+
+Minimum NPM settings:
+
+1. Domain Names: `discord-admin.example.com`
+2. Scheme/Forward Hostname: `http` -> upstream host running bot web service
+3. Forward Port: `8080` (or your mapped local port)
+4. Enable Websockets Support
+5. Enable Block Common Exploits
+6. SSL tab: Force SSL + HTTP/2 + HSTS (and include subdomains only if appropriate for your domain design)
+
+Advanced header requirement:
+
+- Preserve `Host` and forward `X-Forwarded-*` headers.
+- Most NPM defaults handle this; custom advanced config can be used if needed.
+
 ## Caddy Example
 
 ```caddy
@@ -106,6 +129,15 @@ services:
 ```
 
 If you terminate TLS at Traefik, keep router entrypoint on your HTTPS entrypoint (commonly `websecure`).
+
+## Cloudflare-Fronted Variation (Optional)
+
+If DNS is proxied by Cloudflare (or similar CDN proxy):
+
+- Keep origin proxy to app over trusted private path where possible.
+- Ensure final browser origin still matches `WEB_PUBLIC_BASE_URL`.
+- Keep `X-Forwarded-Proto=https` at the app boundary.
+- Avoid mixing multiple public hostnames unless each is explicitly allowed by configuration.
 
 ## Apache HTTPD Example
 

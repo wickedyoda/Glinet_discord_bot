@@ -1,40 +1,74 @@
 # Firmware Monitor
 
-Scheduled monitor for new firmware mirrored on GL.iNet firmware feed pages.
+Scheduled monitor for new firmware entries from GL.iNet firmware feed pages.
 
-## Source
+## Overview
 
-- Default feed: `https://gl-fw.remotetohome.io/`
+- Polls feed on cron schedule.
+- Detects unseen firmware entries.
+- Posts structured notifications to configured Discord channel.
+- Stores seen-item fingerprints in SQLite to avoid repeat alerts.
 
-## Schedule
+## Source and Schedule
 
-- Uses cron-format env var: `firmware_check_schedule`
-- Default: `*/30 * * * *` (UTC)
+| Variable | Default | Purpose |
+|---|---|---|
+| `FIRMWARE_FEED_URL` | `https://gl-fw.remotetohome.io/` | Source URL to poll |
+| `firmware_check_schedule` | `*/30 * * * *` | UTC cron schedule |
+| `FIRMWARE_REQUEST_TIMEOUT_SECONDS` | `30` | HTTP timeout |
+| `FIRMWARE_RELEASE_NOTES_MAX_CHARS` | `900` | Excerpt length cap |
+| `firmware_notification_channel` | none | Target Discord channel |
 
-## Notification Target
+## Channel Target Formats
 
-- `firmware_notification_channel`
-- Accepts numeric channel ID or `<#channel>` format
+Accepted formats:
 
-## Notification Content
+- Numeric channel ID: `123456789012345678`
+- Mention format: `<#123456789012345678>`
 
-- Model
+If channel cannot be resolved:
+
+- Monitor still records entries as pending/seen state behavior defined by implementation.
+- Warnings are logged, and next schedule tick retries channel resolution.
+
+## Notification Payload
+
+Typical fields:
+
+- Device/model
 - Track/stage (stable/testing)
 - Version
-- Published date
-- Download links and SHA256 values
-- Release notes excerpt
+- Publish date
+- Download URLs and SHA256 checksums
+- Release note excerpt (clipped)
 
-## Persistence
+## Persistence and Migration
 
-- Seen entries are stored in SQLite (`data/bot_data.db`)
-- Legacy `data/firmware_seen.json` is imported on startup (merge-only)
-- Prevents repeat alerts after restart
+- Primary storage: SQLite (`data/bot_data.db`)
+- Legacy import source: `data/firmware_seen.json` on startup
+- Import mode: merge-only, no overwrite of existing DB state
 
-## Env Variables
+## Schedule Variations
 
-- `FIRMWARE_FEED_URL`
-- `firmware_check_schedule`
-- `firmware_notification_channel`
-- `FIRMWARE_REQUEST_TIMEOUT_SECONDS`
-- `FIRMWARE_RELEASE_NOTES_MAX_CHARS`
+Example cron values (UTC):
+
+- Every 15 minutes: `*/15 * * * *`
+- Hourly: `0 * * * *`
+- Twice daily: `0 0,12 * * *`
+
+## Troubleshooting
+
+- Warning: notify channel not found:
+  - Verify channel ID and guild/channel availability.
+  - Verify bot has access to target channel.
+- Too many first-run notifications:
+  - Expected when feed history is unseen; confirm desired behavior and seen-cache state.
+- No notifications:
+  - Validate schedule syntax and monitor startup logs.
+  - Validate outbound HTTP access to feed URL.
+
+## Related Pages
+
+- [Environment Variables](Environment-Variables)
+- [Moderation and Logs](Moderation-and-Logs)
+- [Data Files](Data-Files)
