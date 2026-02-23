@@ -12,4 +12,5 @@
 - [Environment Variables](Environment-Variables)
 - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy)
 - [Data Files](Data-Files)
+- [Security Hardening](Security-Hardening)
 - [Command Reference](Command-Reference)

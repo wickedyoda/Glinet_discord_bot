@@ -12,6 +12,7 @@ Password-protected admin UI for runtime bot management.
 - Exposed via mapped host port (`WEB_HOST_PORT`)
 - Login is email/password
 - Login is web-only (`/login` route in the web UI)
+- Auto-logout timeout is configurable in settings (`WEB_SESSION_TIMEOUT_MINUTES`) with 5-minute steps from 5 to 30 minutes
 - Theme selector supports `Light` and `Black` modes in the web header
 - Login endpoint includes basic rate limiting to reduce brute-force attempts
 - Security headers are applied (CSP, frame deny, no-sniff, referrer policy)
@@ -65,6 +66,7 @@ Password-protected admin UI for runtime bot management.
 - `WEB_BIND_HOST`
 - `WEB_PORT`
 - `WEB_HOST_PORT`
+- `WEB_SESSION_TIMEOUT_MINUTES`
 - `WEB_ENV_FILE`
 - `WEB_ADMIN_DEFAULT_USERNAME`
 - `WEB_ADMIN_DEFAULT_PASSWORD`

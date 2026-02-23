@@ -17,6 +17,9 @@ Discord bot for GL.iNet community operations:
 
 - Start here: [`wiki/Home.md`](./wiki/Home.md)
 - Feature pages and operational docs live under [`wiki/`](./wiki/)
+- Public landing URL: [http://discord.glinet.wickedyoda.com/](http://discord.glinet.wickedyoda.com/)
+- Public wiki URL: [http://discord.glinet.wickedyoda.com/wiki](http://discord.glinet.wickedyoda.com/wiki)
+- Direct GitHub wiki URL: [https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md](https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md)
 
 ## Features
 
@@ -99,7 +102,20 @@ Discord bot for GL.iNet community operations:
 - No self-signup route; users can only be created by an admin.
 - Supports multiple users (admin and non-admin accounts).
 - On first boot (when no users exist), `WEB_ADMIN_DEFAULT_PASSWORD` must satisfy password policy; startup does not use insecure fallback passwords.
+- Password changes are forced every 90 days for all web users.
+- Users can self-manage account details in **My Account**:
+  - Change password
+  - Change email (with current-password verification)
+  - Update first name, last name, and display name
+- Header identity uses stored display name while keeping email visible.
 - Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
+- Auto-logout timeout is configurable in web settings (`WEB_SESSION_TIMEOUT_MINUTES`) with allowed values 5, 10, 15, 20, 25, or 30 minutes.
+- Security controls include:
+  - CSRF token enforcement on state-changing web requests
+  - Same-origin POST policy checks
+  - Secure session cookie support for HTTPS proxy deployments
+  - Automatic password-hash upgrades on successful login
+  - Best-effort restrictive file permissions for `.env` and SQLite data
 - Admin can manage:
   - Dashboard quick-action cards with direct buttons to all web-admin tools
   - Light/Black theme toggle in the web header (persisted in browser local storage)
@@ -112,7 +128,7 @@ Discord bot for GL.iNet community operations:
   - Live Discord channel/role dropdowns (polled from guild) for channel/role settings
   - Tag response mappings (saved changes refresh tag slash commands without container reload)
   - Bulk role assignment from uploaded CSV (with missing/error report)
-  - Web users (create/delete, admin toggle, password reset, show-password toggle on create/reset forms)
+  - Web users (create/delete, admin toggle, password reset, and capture first/last/display names)
 
 ## Command Reference
 
@@ -172,8 +188,9 @@ Optional:
 - `WEB_BIND_HOST` (default `127.0.0.1` for local non-container runs)
 - `WEB_PORT` (default `8080`, internal container port)
 - `WEB_HOST_PORT` (default `8080`, host mapping used by docker-compose)
+- `WEB_SESSION_TIMEOUT_MINUTES` (default `5`, web GUI auto-logout timeout in minutes; allowed: `5,10,15,20,25,30`)
 - `WEB_RESTART_ENABLED` (default `true`, enables/disables admin restart button in web header)
-- `WEB_GITHUB_WIKI_URL` (default `https://github.com/wickedyoda/Glinet_discord_bot/wiki`, external docs link in web header)
+- `WEB_GITHUB_WIKI_URL` (default `http://discord.glinet.wickedyoda.com/wiki`, external docs link in web header)
 - `WEB_DISCORD_CATALOG_TTL_SECONDS` (default `120`, cache TTL for polled channel/role dropdown data)
 - `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS` (default `20`, timeout for Discord channel/role catalog fetch)
 - `WEB_BULK_ASSIGN_TIMEOUT_SECONDS` (default `300`, timeout for web CSV role assignment execution)
@@ -185,6 +202,11 @@ Optional:
 - `WEB_ADMIN_DEFAULT_USERNAME` (default admin email used on first run)
 - `WEB_ADMIN_DEFAULT_PASSWORD` (default admin password used on first run; must satisfy password policy)
 - `WEB_ADMIN_SESSION_SECRET` (optional explicit session signing secret)
+- `WEB_SESSION_COOKIE_SECURE` (default `true`, requires HTTPS for session cookies; set `false` only for local HTTP testing)
+- `WEB_TRUST_PROXY_HEADERS` (default `true`, trust forwarded host/proto/IP headers from a trusted reverse proxy)
+- `WEB_ENFORCE_CSRF` (default `true`, enforce CSRF token validation for state-changing requests)
+- `WEB_ENFORCE_SAME_ORIGIN_POSTS` (default `true`, require same-origin POST/PUT/PATCH/DELETE requests)
+- `WEB_HARDEN_FILE_PERMISSIONS` (default `true`, attempt restrictive permissions for `.env`, `data/`, and SQLite files)
 
 Example `.env`:
 ```env
@@ -211,8 +233,9 @@ WEB_ENABLED=true
 WEB_BIND_HOST=0.0.0.0
 WEB_PORT=8080
 WEB_HOST_PORT=8080
+WEB_SESSION_TIMEOUT_MINUTES=5
 WEB_RESTART_ENABLED=true
-WEB_GITHUB_WIKI_URL=https://github.com/wickedyoda/Glinet_discord_bot/wiki
+WEB_GITHUB_WIKI_URL=http://discord.glinet.wickedyoda.com/wiki
 WEB_DISCORD_CATALOG_TTL_SECONDS=120
 WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS=20
 WEB_BULK_ASSIGN_TIMEOUT_SECONDS=300
@@ -224,6 +247,11 @@ WEB_ENV_FILE=.env
 WEB_ADMIN_DEFAULT_USERNAME=admin@example.com
 WEB_ADMIN_DEFAULT_PASSWORD=use_a_strong_unique_password
 WEB_ADMIN_SESSION_SECRET=replace_with_random_secret
+WEB_SESSION_COOKIE_SECURE=true
+WEB_TRUST_PROXY_HEADERS=true
+WEB_ENFORCE_CSRF=true
+WEB_ENFORCE_SAME_ORIGIN_POSTS=true
+WEB_HARDEN_FILE_PERMISSIONS=true
 ```
 
 ## Docker
@@ -307,6 +335,8 @@ Migration is merge-only: existing SQLite rows are not overwritten.
 - Never commit `.env`.
 - Rotate credentials immediately if exposed.
 - Vulnerability reporting process: [`SECURITY.md`](./SECURITY.md)
+- Discord developer requirements reference: [Discord Developer Terms of Service](https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service)
+- Web/bot hardening actions implemented in this project: [`wiki/Security-Hardening.md`](./wiki/Security-Hardening.md)
 
 ## License
 
