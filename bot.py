@@ -311,9 +311,19 @@ COMMAND_PERMISSIONS_FILE = os.path.join(DATA_DIR, "command_permissions.json")
 DB_FILE = os.path.join(DATA_DIR, "bot_data.db")
 WEB_USERS_FILE = os.path.join(DATA_DIR, "web_users.json")
 
-DEFAULT_TAG_RESPONSES = {
+OLD_DEFAULT_TAG_RESPONSES = {
     "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
     "!support": "🛠️ Need help? Please open a ticket or message a moderator.",
+}
+DEFAULT_TAG_RESPONSES = {
+    "!betatest": (
+        "✅ Thanks for your interest in the beta! We'll share more details soon.\n"
+        "🔗 Beta updates: https://forum.gl-inet.com/"
+    ),
+    "!support": (
+        "🛠️ Need help? Please open a ticket or message a moderator.\n"
+        "🔗 Support Discord: https://discord.gg/m6UjX6UhKe"
+    ),
 }
 DEFAULT_ALLOWED_ROLE_NAMES = {"Employee", "Admin", "Gl.iNet Moderator"}
 COMMAND_PERMISSION_MODE_DEFAULT = "default"
@@ -882,6 +892,23 @@ def get_tag_responses():
     return tag_responses
 
 
+def upgrade_legacy_default_tag_responses():
+    current = dict(get_tag_responses())
+    changed = False
+    for raw_tag, old_response in OLD_DEFAULT_TAG_RESPONSES.items():
+        tag = normalize_tag(raw_tag)
+        new_response = DEFAULT_TAG_RESPONSES.get(tag)
+        if not tag or not new_response:
+            continue
+        if str(current.get(tag, "")) == str(old_response):
+            current[tag] = new_response
+            changed = True
+    if not changed:
+        return
+    save_tag_responses(current)
+    logger.info("Upgraded default tag responses to include support links.")
+
+
 def build_command_list():
     tags = sorted(get_tag_responses().keys())
     if not tags:
@@ -892,21 +919,21 @@ def build_command_list():
 def register_tag_commands():
     global tag_command_names
     tag_commands = {}
-    for tag, response in get_tag_responses().items():
+    for tag in get_tag_responses().keys():
         command_name = tag_to_command_name(tag)
         if not command_name:
             continue
-        tag_commands[command_name] = response
+        tag_commands[command_name] = tag
 
     existing_names = {cmd.name for cmd in tree.get_commands()}
-    for command_name, response in tag_commands.items():
+    for command_name, tag in tag_commands.items():
         if command_name in existing_names:
             logger.warning(
                 "Skipping tag slash command /%s due to name conflict", command_name
             )
             continue
 
-        def make_tag_reply(tag_response: str):
+        def make_tag_reply(tag_key: str):
             async def tag_reply(interaction: discord.Interaction):
                 if not can_use_command(interaction.user, "tag_commands"):
                     await interaction.response.send_message(
@@ -914,6 +941,12 @@ def register_tag_commands():
                             "tag_commands", interaction.guild
                         ),
                         ephemeral=True,
+                    )
+                    return
+                tag_response = str(get_tag_responses().get(tag_key, "")).strip()
+                if not tag_response:
+                    await interaction.response.send_message(
+                        "❌ This tag response is not configured.", ephemeral=True
                     )
                     return
                 await interaction.response.send_message(tag_response)
@@ -925,7 +958,7 @@ def register_tag_commands():
                 app_commands.Command(
                     name=command_name,
                     description=f"Tag response for {command_name}",
-                    callback=make_tag_reply(response),
+                    callback=make_tag_reply(tag),
                 ),
                 guild=discord.Object(id=GUILD_ID),
             )
@@ -3304,6 +3337,7 @@ def build_docs_site_search_message(query: str, site_key: str):
 
 # Initialize SQLite storage before any runtime cache is loaded.
 initialize_storage()
+upgrade_legacy_default_tag_responses()
 
 # Runtime caches for invite tracking
 invite_roles = load_invite_roles()
