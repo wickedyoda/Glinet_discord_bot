@@ -882,7 +882,10 @@ def create_web_app(
     @app.errorhandler(413)
     def payload_too_large(_exc):
         flash("Upload exceeds maximum allowed request size.", "error")
-        return redirect(request.url)
+        user = _current_user()
+        if user and user.get("is_admin"):
+            return redirect(url_for("dashboard"))
+        return redirect(url_for("login"))
 
     def _render_page(title: str, body_html: str, current_email: str, is_admin: bool):
         return _render_layout(
