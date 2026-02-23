@@ -4,9 +4,6 @@
   <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="200" />
 </p>
 
-<p align="center">
-  <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Full Logo" width="420" />
-</p>
 
 Discord bot for GL.iNet community operations:
 - Role-bound invite links and 6-digit access codes
