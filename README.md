@@ -6,6 +6,7 @@ Discord bot for GL.iNet community operations:
 - Country code nickname suffix (` - CC`)
 - Moderator actions (ban, unban, kick+prune, timeout, role/member management)
 - Moderation + server event logging to a dedicated logs channel
+- SQLite-backed persistent storage (WAL mode) for runtime data
 
 ## Wiki
 
@@ -27,7 +28,7 @@ Discord bot for GL.iNet community operations:
   - Returns a downloadable detailed report file
 
 2. Tag Auto-Replies
-- Message-based tags from `data/tag_responses.json` (example: `!betatest`).
+- Message-based tags from persistent storage (example: `!betatest`).
 - Tags are also exposed as slash commands at startup (dynamic registration).
 - `!list` shows available tag commands.
 
@@ -269,13 +270,19 @@ Bot permissions:
 ## Data Files
 
 Stored under `data/` (or `DATA_DIR`):
+- `bot_data.db` (primary SQLite database)
+- `bot.log`
+
+Legacy files are auto-migrated into SQLite on startup if present:
 - `access_role.txt`
 - `role_codes.txt`
 - `invite_roles.json`
 - `tag_responses.json`
-- `bot.log`
 - `firmware_seen.json`
 - `web_users.json`
+- `command_permissions.json`
+
+Migration is merge-only: existing SQLite rows are not overwritten.
 
 ## Security
 

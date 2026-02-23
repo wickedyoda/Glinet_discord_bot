@@ -9,7 +9,7 @@
 
 ## Tag Commands
 
-- Dynamic slash commands from `data/tag_responses.json`
+- Dynamic slash commands from persistent storage (SQLite-backed)
 - `!list`
 
 ## Search Commands

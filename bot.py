@@ -11,6 +11,7 @@ import time
 import csv
 import io
 import threading
+import sqlite3
 from difflib import SequenceMatcher
 from datetime import timedelta, datetime, timezone
 from html import unescape
@@ -146,6 +147,8 @@ INVITE_ROLE_FILE = os.path.join(DATA_DIR, "invite_roles.json")
 TAG_RESPONSES_FILE = os.path.join(DATA_DIR, "tag_responses.json")
 FIRMWARE_STATE_FILE = os.path.join(DATA_DIR, "firmware_seen.json")
 COMMAND_PERMISSIONS_FILE = os.path.join(DATA_DIR, "command_permissions.json")
+DB_FILE = os.path.join(DATA_DIR, "bot_data.db")
+WEB_USERS_FILE = os.path.join(DATA_DIR, "web_users.json")
 
 DEFAULT_TAG_RESPONSES = {
     "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
@@ -191,7 +194,7 @@ COMMAND_PERMISSION_METADATA = {
     },
     "tag_commands": {
         "label": "Dynamic Tag Commands",
-        "description": "Slash/message tag responses loaded from tag_responses.json.",
+        "description": "Slash/message tag responses loaded from persistent storage.",
     },
     "submitrole": {
         "label": "/submitrole",
@@ -305,6 +308,8 @@ discord_catalog_cache = {"fetched_at": 0.0, "data": None}
 BOT_SERVER_NICKNAME_UNSET = object()
 command_permissions_lock = threading.Lock()
 command_permissions_cache = {"mtime": None, "rules": {}}
+db_lock = threading.RLock()
+db_connection = None
 
 
 def normalize_tag(tag: str) -> str:
@@ -331,6 +336,309 @@ def parse_firmware_channel_id(raw_value, default_value):
         return default_value
 
 
+def get_db_connection():
+    global db_connection
+    with db_lock:
+        if db_connection is not None:
+            return db_connection
+
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA cache_size=-20000;")
+        db_connection = conn
+        return conn
+
+
+def ensure_db_schema():
+    conn = get_db_connection()
+    with db_lock:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS role_codes (
+                code TEXT PRIMARY KEY,
+                role_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS invite_roles (
+                invite_code TEXT PRIMARY KEY,
+                role_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tag_responses (
+                tag TEXT PRIMARY KEY,
+                response TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS firmware_seen (
+                entry_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS command_permissions (
+                command_key TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                role_ids_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS web_users (
+                email TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
+            CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
+            """
+        )
+        conn.commit()
+
+
+def db_kv_get(key: str):
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            "SELECT value FROM kv_store WHERE key = ?",
+            (key,),
+        ).fetchone()
+    return row["value"] if row else None
+
+
+def db_kv_set(key: str, value: str):
+    conn = get_db_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO kv_store (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (key, value, now_iso),
+        )
+        conn.commit()
+
+
+def db_kv_delete(key: str):
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
+        conn.commit()
+
+
+def migrate_legacy_files_to_db():
+    conn = get_db_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    with db_lock:
+        def kv_exists(key: str):
+            row = conn.execute("SELECT 1 FROM kv_store WHERE key = ?", (key,)).fetchone()
+            return row is not None
+
+        def kv_insert_if_missing(key: str, value: str):
+            if kv_exists(key):
+                return
+            conn.execute(
+                """
+                INSERT INTO kv_store (key, value, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (key, str(value), now_iso),
+            )
+
+        if os.path.exists(CODES_FILE):
+            try:
+                with open(CODES_FILE, "r") as f:
+                    for raw_line in f:
+                        line = raw_line.strip()
+                        if ":" not in line:
+                            continue
+                        code, raw_role_id = line.split(":", 1)
+                        code = code.strip()
+                        try:
+                            role_id = int(raw_role_id.strip())
+                        except ValueError:
+                            continue
+                        if code and role_id > 0:
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO role_codes (code, role_id, created_at)
+                                VALUES (?, ?, ?)
+                                """,
+                                (code, role_id, now_iso),
+                            )
+            except Exception:
+                logger.exception("Failed migrating legacy role codes from %s", CODES_FILE)
+
+        if os.path.exists(INVITE_ROLE_FILE):
+            try:
+                with open(INVITE_ROLE_FILE, "r") as f:
+                    mapping = json.load(f)
+                if isinstance(mapping, dict):
+                    for invite_code, raw_role_id in mapping.items():
+                        try:
+                            role_id = int(raw_role_id)
+                        except (TypeError, ValueError):
+                            continue
+                        code = str(invite_code or "").strip()
+                        if code and role_id > 0:
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO invite_roles (invite_code, role_id, created_at)
+                                VALUES (?, ?, ?)
+                                """,
+                                (code, role_id, now_iso),
+                            )
+            except Exception:
+                logger.exception("Failed migrating legacy invite-role mapping from %s", INVITE_ROLE_FILE)
+
+        tag_mapping_loaded = False
+        if os.path.exists(TAG_RESPONSES_FILE):
+            try:
+                with open(TAG_RESPONSES_FILE, "r") as f:
+                    payload = json.load(f)
+                if isinstance(payload, dict):
+                    tag_mapping_loaded = True
+                    for raw_tag, raw_response in payload.items():
+                        tag = normalize_tag(str(raw_tag))
+                        if not tag:
+                            continue
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO tag_responses (tag, response, updated_at)
+                            VALUES (?, ?, ?)
+                            """,
+                            (tag, str(raw_response), now_iso),
+                        )
+            except Exception:
+                logger.exception("Failed migrating legacy tag responses from %s", TAG_RESPONSES_FILE)
+
+        tag_count = conn.execute("SELECT COUNT(*) AS c FROM tag_responses").fetchone()["c"]
+        if tag_count == 0 and not tag_mapping_loaded:
+            for raw_tag, raw_response in DEFAULT_TAG_RESPONSES.items():
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO tag_responses (tag, response, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (normalize_tag(raw_tag), str(raw_response), now_iso),
+                )
+
+        if os.path.exists(FIRMWARE_STATE_FILE):
+            try:
+                with open(FIRMWARE_STATE_FILE, "r") as f:
+                    payload = json.load(f)
+                seen_ids = payload.get("seen_ids", [])
+                if isinstance(seen_ids, list):
+                    for item in seen_ids:
+                        entry_id = str(item or "").strip()
+                        if not entry_id:
+                            continue
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO firmware_seen (entry_id, created_at)
+                            VALUES (?, ?)
+                            """,
+                            (entry_id, now_iso),
+                        )
+                    kv_insert_if_missing("firmware_seen_initialized", "1")
+                    kv_insert_if_missing("firmware_source_url", FIRMWARE_FEED_URL)
+                    sync_value = str(payload.get("last_synced") or "").strip()
+                    if sync_value:
+                        kv_insert_if_missing("firmware_last_synced", sync_value)
+            except Exception:
+                logger.exception("Failed migrating legacy firmware state from %s", FIRMWARE_STATE_FILE)
+
+        firmware_seen_count = conn.execute("SELECT COUNT(*) AS c FROM firmware_seen").fetchone()["c"]
+        if firmware_seen_count > 0:
+            kv_insert_if_missing("firmware_seen_initialized", "1")
+            kv_insert_if_missing("firmware_source_url", FIRMWARE_FEED_URL)
+
+        if os.path.exists(COMMAND_PERMISSIONS_FILE):
+            try:
+                with open(COMMAND_PERMISSIONS_FILE, "r") as f:
+                    payload = json.load(f)
+                raw_rules = payload.get("rules", {}) if isinstance(payload, dict) else {}
+                if isinstance(raw_rules, dict):
+                    for command_key, raw_rule in raw_rules.items():
+                        if command_key not in COMMAND_PERMISSION_DEFAULTS:
+                            continue
+                        normalized_rule = normalize_command_permission_rule(raw_rule)
+                        if normalized_rule["mode"] == COMMAND_PERMISSION_MODE_DEFAULT:
+                            continue
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO command_permissions (command_key, mode, role_ids_json, updated_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (
+                                command_key,
+                                normalized_rule["mode"],
+                                json.dumps(normalized_rule["role_ids"]),
+                                now_iso,
+                            ),
+                        )
+            except Exception:
+                logger.exception("Failed migrating legacy command permissions from %s", COMMAND_PERMISSIONS_FILE)
+
+        if os.path.exists(WEB_USERS_FILE):
+            try:
+                with open(WEB_USERS_FILE, "r") as f:
+                    payload = json.load(f)
+                users = payload.get("users", []) if isinstance(payload, dict) else []
+                if isinstance(users, list):
+                    for entry in users:
+                        if not isinstance(entry, dict):
+                            continue
+                        email = str(entry.get("email", "")).strip().lower()
+                        password_hash = str(entry.get("password_hash", "")).strip()
+                        if not email or not password_hash:
+                            continue
+                        is_admin = 1 if bool(entry.get("is_admin", False)) else 0
+                        created_at = str(entry.get("created_at") or now_iso)
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO web_users (email, password_hash, is_admin, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (email, password_hash, is_admin, created_at, now_iso),
+                        )
+            except Exception:
+                logger.exception("Failed migrating legacy web users from %s", WEB_USERS_FILE)
+
+        if not kv_exists("access_role_id") and os.path.exists(ROLE_FILE):
+            try:
+                with open(ROLE_FILE, "r") as f:
+                    raw_value = f.read().strip()
+                role_id = int(raw_value)
+                if role_id > 0:
+                    kv_insert_if_missing("access_role_id", str(role_id))
+            except Exception:
+                logger.exception("Failed migrating legacy access role from %s", ROLE_FILE)
+
+        conn.commit()
+
+
+def initialize_storage():
+    ensure_db_schema()
+    migrate_legacy_files_to_db()
+
+
 def tag_to_command_name(tag: str) -> str:
     normalized = normalize_tag(tag)
     if normalized.startswith("!"):
@@ -341,40 +649,39 @@ def tag_to_command_name(tag: str) -> str:
 
 
 def load_tag_responses():
-    if not os.path.exists(TAG_RESPONSES_FILE):
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute("SELECT tag, response FROM tag_responses").fetchall()
+    if not rows:
         save_tag_responses(DEFAULT_TAG_RESPONSES)
         return {normalize_tag(k): str(v) for k, v in DEFAULT_TAG_RESPONSES.items()}
-    try:
-        with open(TAG_RESPONSES_FILE, "r") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            logger.warning("Tag responses file does not contain an object. Using empty mapping.")
-            return {}
-        return {normalize_tag(k): str(v) for k, v in data.items()}
-    except Exception:
-        logger.exception("Failed to load tag responses")
-        return {}
+    return {normalize_tag(row["tag"]): str(row["response"]) for row in rows}
 
 
 def save_tag_responses(mapping):
-    with open(TAG_RESPONSES_FILE, "w") as f:
-        json.dump(mapping, f, indent=2)
+    conn = get_db_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    normalized = {normalize_tag(k): str(v) for k, v in (mapping or {}).items() if normalize_tag(k)}
+    with db_lock:
+        conn.execute("DELETE FROM tag_responses")
+        for tag, response in normalized.items():
+            conn.execute(
+                """
+                INSERT INTO tag_responses (tag, response, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (tag, response, now_iso),
+            )
+        conn.commit()
+    db_kv_set("tag_responses_updated_at", now_iso)
 
 
 def get_tag_responses():
     global tag_responses, tag_responses_mtime
-    try:
-        current_mtime = os.path.getmtime(TAG_RESPONSES_FILE)
-    except FileNotFoundError:
+    current_version = db_kv_get("tag_responses_updated_at") or "bootstrap"
+    if tag_responses_mtime != current_version:
         tag_responses = load_tag_responses()
-        try:
-            tag_responses_mtime = os.path.getmtime(TAG_RESPONSES_FILE)
-        except FileNotFoundError:
-            tag_responses_mtime = None
-        return tag_responses
-    if tag_responses_mtime != current_mtime:
-        tag_responses = load_tag_responses()
-        tag_responses_mtime = current_mtime
+        tag_responses_mtime = current_version
     return tag_responses
 
 
@@ -485,38 +792,50 @@ def generate_code():
             return code
 
 def save_role_code(code, role_id):
-    with open(CODES_FILE, 'a') as f:
-        f.write(f"{code}:{role_id}\n")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO role_codes (code, role_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (str(code), int(role_id), now_iso),
+        )
+        conn.commit()
     logger.info("Saved code %s for role %s", code, role_id)
 
 def get_role_id_by_code(code):
-    if not os.path.exists(CODES_FILE):
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            "SELECT role_id FROM role_codes WHERE code = ?",
+            (str(code),),
+        ).fetchone()
+    if row is None:
         return None
-    with open(CODES_FILE, 'r') as f:
-        for line in f:
-            if line.startswith(code + ":"):
-                role_id = int(line.strip().split(":")[1])
-                logger.info("Code %s matched role %s", code, role_id)
-                return role_id
-    return None
+    role_id = int(row["role_id"])
+    logger.info("Code %s matched role %s", code, role_id)
+    return role_id
 
 def load_invite_roles():
-    if not os.path.exists(INVITE_ROLE_FILE):
-        return {}
-    try:
-        with open(INVITE_ROLE_FILE, "r") as f:
-            import json
-            return json.load(f)
-    except Exception:
-        logger.exception("Failed to load invite-role mappings")
-        return {}
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute("SELECT invite_code, role_id FROM invite_roles").fetchall()
+    return {row["invite_code"]: int(row["role_id"]) for row in rows}
 
 def save_invite_role(invite_code, role_id):
-    mapping = load_invite_roles()
-    mapping[invite_code] = role_id
-    with open(INVITE_ROLE_FILE, "w") as f:
-        import json
-        json.dump(mapping, f)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO invite_roles (invite_code, role_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (str(invite_code), int(role_id), now_iso),
+        )
+        conn.commit()
     logger.info("Saved invite %s for role %s", invite_code, role_id)
 
 def has_allowed_role(member: discord.Member):
@@ -577,35 +896,29 @@ def normalize_command_permission_rule(raw_rule):
 def load_command_permission_rules():
     global command_permissions_cache
     with command_permissions_lock:
-        try:
-            mtime = os.path.getmtime(COMMAND_PERMISSIONS_FILE)
-        except FileNotFoundError:
-            command_permissions_cache = {"mtime": None, "rules": {}}
-            return {}
-        except OSError:
-            logger.exception("Unable to read command permissions file metadata")
+        version = db_kv_get("command_permissions_updated_at") or "bootstrap"
+        if command_permissions_cache.get("mtime") == version:
             return command_permissions_cache.get("rules", {})
 
-        if command_permissions_cache.get("mtime") == mtime:
-            return command_permissions_cache.get("rules", {})
-
-        try:
-            with open(COMMAND_PERMISSIONS_FILE, "r") as f:
-                payload = json.load(f)
-        except Exception:
-            logger.exception("Failed to load command permissions from %s", COMMAND_PERMISSIONS_FILE)
-            command_permissions_cache = {"mtime": mtime, "rules": {}}
-            return {}
-
-        raw_rules = payload.get("rules", {}) if isinstance(payload, dict) else {}
+        conn = get_db_connection()
+        with db_lock:
+            rows = conn.execute(
+                "SELECT command_key, mode, role_ids_json FROM command_permissions"
+            ).fetchall()
         normalized_rules = {}
-        if isinstance(raw_rules, dict):
-            for command_key, raw_rule in raw_rules.items():
-                if command_key not in COMMAND_PERMISSION_DEFAULTS:
-                    continue
-                normalized_rules[command_key] = normalize_command_permission_rule(raw_rule)
+        for row in rows:
+            command_key = str(row["command_key"])
+            if command_key not in COMMAND_PERMISSION_DEFAULTS:
+                continue
+            try:
+                role_ids_payload = json.loads(row["role_ids_json"] or "[]")
+            except Exception:
+                role_ids_payload = []
+            normalized_rules[command_key] = normalize_command_permission_rule(
+                {"mode": row["mode"], "role_ids": role_ids_payload}
+            )
 
-        command_permissions_cache = {"mtime": mtime, "rules": normalized_rules}
+        command_permissions_cache = {"mtime": version, "rules": normalized_rules}
         return normalized_rules
 
 
@@ -619,19 +932,28 @@ def save_command_permission_rules(rules: dict, actor_email: str = ""):
             continue
         safe_rules[command_key] = normalized_rule
 
-    payload = {
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "updated_by": actor_email,
-        "rules": safe_rules,
-    }
+    updated_at = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
     with command_permissions_lock:
-        with open(COMMAND_PERMISSIONS_FILE, "w") as f:
-            json.dump(payload, f, indent=2)
-        try:
-            mtime = os.path.getmtime(COMMAND_PERMISSIONS_FILE)
-        except OSError:
-            mtime = None
-        command_permissions_cache["mtime"] = mtime
+        with db_lock:
+            conn.execute("DELETE FROM command_permissions")
+            for command_key, normalized_rule in safe_rules.items():
+                conn.execute(
+                    """
+                    INSERT INTO command_permissions (command_key, mode, role_ids_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        command_key,
+                        normalized_rule["mode"],
+                        json.dumps(normalized_rule["role_ids"]),
+                        updated_at,
+                    ),
+                )
+            conn.commit()
+        db_kv_set("command_permissions_updated_at", updated_at)
+        db_kv_set("command_permissions_updated_by", actor_email or "unknown")
+        command_permissions_cache["mtime"] = updated_at
         command_permissions_cache["rules"] = safe_rules
     return safe_rules
 
@@ -777,6 +1099,38 @@ def run_web_update_command_permissions(payload: dict, actor_email: str):
     response["message"] = "Command permissions updated."
     logger.info("Command permissions updated via web admin by %s", actor_email)
     return response
+
+
+def run_web_get_tag_responses():
+    try:
+        mapping = get_tag_responses()
+    except Exception:
+        logger.exception("Failed loading tag responses for web admin")
+        return {"ok": False, "error": "Unexpected error while loading tag responses."}
+    return {"ok": True, "mapping": mapping}
+
+
+def run_web_save_tag_responses(mapping: dict, actor_email: str):
+    if not isinstance(mapping, dict):
+        return {"ok": False, "error": "Tag responses payload must be a JSON object."}
+
+    normalized = {}
+    for raw_tag, raw_response in mapping.items():
+        if not isinstance(raw_tag, str) or not isinstance(raw_response, str):
+            return {"ok": False, "error": "All tag keys and values must be strings."}
+        tag = normalize_tag(raw_tag)
+        if not tag:
+            continue
+        normalized[tag] = raw_response
+
+    try:
+        save_tag_responses(normalized)
+    except Exception:
+        logger.exception("Failed saving tag responses from web admin by %s", actor_email)
+        return {"ok": False, "error": "Unexpected error while saving tag responses."}
+
+    logger.info("Tag responses updated via web admin by %s (%s entries)", actor_email, len(normalized))
+    return {"ok": True, "mapping": normalized, "message": "Tag responses updated."}
 
 
 def validate_moderation_target(actor: discord.Member, target: discord.Member, bot_member: discord.Member):
@@ -1690,30 +2044,38 @@ def normalize_release_notes_text(value: str):
 
 
 def load_firmware_seen_ids():
-    if not os.path.exists(FIRMWARE_STATE_FILE):
+    initialized = db_kv_get("firmware_seen_initialized")
+    if initialized != "1":
         return None
-    try:
-        with open(FIRMWARE_STATE_FILE, "r") as f:
-            data = json.load(f)
-        seen_ids = data.get("seen_ids", [])
-        if not isinstance(seen_ids, list):
-            return None
-        return {str(item) for item in seen_ids if item}
-    except Exception:
-        logger.exception("Failed to load firmware state from %s", FIRMWARE_STATE_FILE)
-        return None
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute("SELECT entry_id FROM firmware_seen").fetchall()
+    return {str(row["entry_id"]) for row in rows if row["entry_id"]}
 
 
 def save_firmware_state(seen_ids: set[str], sync_label: str = ""):
-    payload = {
-        "source_url": FIRMWARE_FEED_URL,
-        "updated_at": int(time.time()),
-        "seen_ids": sorted(seen_ids),
-    }
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute("DELETE FROM firmware_seen")
+        for entry_id in sorted(seen_ids):
+            cleaned = str(entry_id or "").strip()
+            if not cleaned:
+                continue
+            conn.execute(
+                """
+                INSERT INTO firmware_seen (entry_id, created_at)
+                VALUES (?, ?)
+                """,
+                (cleaned, now_iso),
+            )
+        conn.commit()
+    db_kv_set("firmware_seen_initialized", "1")
+    db_kv_set("firmware_source_url", FIRMWARE_FEED_URL)
     if sync_label:
-        payload["last_synced"] = sync_label
-    with open(FIRMWARE_STATE_FILE, "w") as f:
-        json.dump(payload, f, indent=2)
+        db_kv_set("firmware_last_synced", sync_label)
+    else:
+        db_kv_delete("firmware_last_synced")
 
 
 def parse_firmware_entries(page_html: str):
@@ -2078,9 +2440,9 @@ def refresh_runtime_settings_from_env(_updated_values=None):
 def refresh_tag_responses_from_web():
     get_tag_responses()
     if schedule_tag_command_refresh():
-        logger.info("Tag responses refreshed from file; slash command refresh scheduled")
+        logger.info("Tag responses refreshed from storage; slash command refresh scheduled")
     else:
-        logger.info("Tag responses refreshed from file; slash command refresh deferred until bot loop is ready")
+        logger.info("Tag responses refreshed from storage; slash command refresh deferred until bot loop is ready")
 
 
 def start_web_admin_server():
@@ -2103,6 +2465,8 @@ def start_web_admin_server():
                 default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
                 on_env_settings_saved=refresh_runtime_settings_from_env,
                 on_tag_responses_saved=refresh_tag_responses_from_web,
+                on_get_tag_responses=run_web_get_tag_responses,
+                on_save_tag_responses=run_web_save_tag_responses,
                 on_bulk_assign_role_csv=run_web_bulk_role_assignment,
                 on_get_discord_catalog=run_web_get_discord_catalog,
                 on_get_command_permissions=run_web_get_command_permissions,
@@ -2373,6 +2737,9 @@ def build_docs_site_search_message(query: str, site_key: str):
     else:
         lines.append("- No matching docs results found.")
     return trim_search_message("\n".join(lines))
+
+# Initialize SQLite storage before any runtime cache is loaded.
+initialize_storage()
 
 # Runtime caches for invite tracking
 invite_roles = load_invite_roles()
@@ -2816,8 +3183,11 @@ async def getaccess(interaction: discord.Interaction):
     if not await ensure_interaction_command_access(interaction, "getaccess"):
         return
     try:
-        with open(ROLE_FILE, "r") as f:
-            role_id = int(f.read().strip())
+        role_id_raw = db_kv_get("access_role_id")
+        if role_id_raw is None and os.path.exists(ROLE_FILE):
+            with open(ROLE_FILE, "r") as f:
+                role_id_raw = f.read().strip()
+        role_id = int(str(role_id_raw).strip())
         role = interaction.guild.get_role(role_id)
         await interaction.user.add_roles(role)
         logger.info("Assigned default role %s to user %s", role.id, interaction.user)

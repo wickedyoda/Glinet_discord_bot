@@ -2,6 +2,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 from datetime import datetime, timezone
 from functools import wraps
 from html import escape
@@ -133,42 +134,73 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _read_users(users_file: Path):
-    if not users_file.exists():
-        return []
-    try:
-        payload = json.loads(users_file.read_text())
-    except Exception:
-        return []
-    users = payload.get("users", [])
-    if not isinstance(users, list):
-        return []
-    normalized = []
-    for user in users:
-        if not isinstance(user, dict):
-            continue
-        email = _normalize_email(user.get("email", ""))
-        password_hash = user.get("password_hash", "")
-        if not email or not password_hash:
-            continue
-        normalized.append(
-            {
-                "email": email,
-                "password_hash": password_hash,
-                "is_admin": bool(user.get("is_admin", False)),
-                "created_at": str(user.get("created_at", _now_iso())),
-            }
+def _open_users_db(users_db_file: Path):
+    conn = sqlite3.connect(str(users_db_file), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS web_users (
+            email TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            is_admin INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
-    return normalized
+        """
+    )
+    return conn
 
 
-def _save_users(users_file: Path, users):
-    payload = {"updated_at": _now_iso(), "users": users}
-    users_file.write_text(json.dumps(payload, indent=2))
+def _read_users(users_db_file: Path):
+    conn = _open_users_db(users_db_file)
+    try:
+        rows = conn.execute(
+            "SELECT email, password_hash, is_admin, created_at FROM web_users ORDER BY created_at ASC, email ASC"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    return [
+        {
+            "email": str(row["email"]).strip().lower(),
+            "password_hash": str(row["password_hash"]),
+            "is_admin": bool(row["is_admin"]),
+            "created_at": str(row["created_at"] or _now_iso()),
+        }
+        for row in rows
+        if str(row["email"]).strip() and str(row["password_hash"]).strip()
+    ]
 
 
-def _ensure_default_admin(users_file: Path, default_email: str, default_password: str, logger):
-    users = _read_users(users_file)
+def _save_users(users_db_file: Path, users):
+    now_iso = _now_iso()
+    conn = _open_users_db(users_db_file)
+    try:
+        with conn:
+            conn.execute("DELETE FROM web_users")
+            for entry in users:
+                email = _normalize_email(entry.get("email", ""))
+                password_hash = str(entry.get("password_hash", "")).strip()
+                if not email or not password_hash:
+                    continue
+                is_admin = 1 if bool(entry.get("is_admin", False)) else 0
+                created_at = str(entry.get("created_at") or now_iso)
+                conn.execute(
+                    """
+                    INSERT INTO web_users (email, password_hash, is_admin, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (email, password_hash, is_admin, created_at, now_iso),
+                )
+    finally:
+        conn.close()
+
+
+def _ensure_default_admin(users_db_file: Path, default_email: str, default_password: str, logger):
+    users = _read_users(users_db_file)
     if users:
         return
 
@@ -185,15 +217,19 @@ def _ensure_default_admin(users_file: Path, default_email: str, default_password
                 "Using fallback default password for first login; change it immediately."
             )
 
-    users = [
-        {
-            "email": email,
-            "password_hash": generate_password_hash(password),
-            "is_admin": True,
-            "created_at": _now_iso(),
-        }
-    ]
-    _save_users(users_file, users)
+    now_iso = _now_iso()
+    conn = _open_users_db(users_db_file)
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO web_users (email, password_hash, is_admin, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (email, generate_password_hash(password), 1, now_iso, now_iso),
+            )
+    finally:
+        conn.close()
     if logger:
         logger.info("Created default web admin user: %s", email)
 
@@ -406,6 +442,8 @@ def create_web_app(
     default_admin_email: str,
     default_admin_password: str,
     on_env_settings_saved=None,
+    on_get_tag_responses=None,
+    on_save_tag_responses=None,
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
     on_get_discord_catalog=None,
@@ -424,7 +462,7 @@ def create_web_app(
         SESSION_COOKIE_SAMESITE="Lax",
     )
 
-    users_file = Path(data_dir) / "web_users.json"
+    users_file = Path(data_dir) / "bot_data.db"
     users_file.parent.mkdir(parents=True, exist_ok=True)
     env_file = Path(env_file_path)
 
@@ -1027,8 +1065,6 @@ def create_web_app(
         user = _current_user()
         path = Path(tag_responses_file)
         path.parent.mkdir(parents=True, exist_ok=True)
-        if not path.exists():
-            path.write_text("{}\n")
 
         if request.method == "POST":
             raw = request.form.get("tag_json", "")
@@ -1039,19 +1075,39 @@ def create_web_app(
                 for key, value in parsed.items():
                     if not isinstance(key, str) or not isinstance(value, str):
                         raise ValueError("All tag keys/values must be strings")
-                path.write_text(json.dumps(parsed, indent=2) + "\n")
+                if callable(on_save_tag_responses):
+                    response = on_save_tag_responses(parsed, user["email"])
+                    if not isinstance(response, dict):
+                        raise ValueError("Invalid response from tag response save handler")
+                    if not response.get("ok"):
+                        raise ValueError(str(response.get("error") or "Failed to save tag responses"))
+                else:
+                    path.write_text(json.dumps(parsed, indent=2) + "\n")
                 if callable(on_tag_responses_saved):
                     on_tag_responses_saved()
                 flash("Tag responses updated.", "success")
             except Exception as exc:
                 flash(f"Invalid tag JSON: {exc}", "error")
 
-        current = path.read_text()
+        if callable(on_get_tag_responses):
+            response = on_get_tag_responses()
+            if isinstance(response, dict) and response.get("ok"):
+                current_mapping = response.get("mapping", {}) or {}
+                current = json.dumps(current_mapping, indent=2) + "\n"
+            else:
+                error_text = response.get("error") if isinstance(response, dict) else "Unknown error"
+                flash(f"Could not load tag responses from storage: {error_text}", "error")
+                current = "{}\n"
+        else:
+            if not path.exists():
+                path.write_text("{}\n")
+            current = path.read_text()
+
         escaped_current = escape(current)
         body = f"""
         <div class="card">
           <h2>Tag Responses</h2>
-          <p class="muted">Edit the same mapping stored in <span class="mono">{escape(str(path))}</span>.</p>
+          <p class="muted">Edit the tag-to-response JSON mapping used by slash and message tag commands.</p>
           <form method="post">
             <textarea name="tag_json">{escaped_current}</textarea>
             <div style="margin-top:14px;">
@@ -1357,6 +1413,8 @@ def start_web_admin_interface(
     default_admin_email: str,
     default_admin_password: str,
     on_env_settings_saved=None,
+    on_get_tag_responses=None,
+    on_save_tag_responses=None,
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
     on_get_discord_catalog=None,
@@ -1375,6 +1433,8 @@ def start_web_admin_interface(
         default_admin_email=default_admin_email,
         default_admin_password=default_admin_password,
         on_env_settings_saved=on_env_settings_saved,
+        on_get_tag_responses=on_get_tag_responses,
+        on_save_tag_responses=on_save_tag_responses,
         on_tag_responses_saved=on_tag_responses_saved,
         on_bulk_assign_role_csv=on_bulk_assign_role_csv,
         on_get_discord_catalog=on_get_discord_catalog,

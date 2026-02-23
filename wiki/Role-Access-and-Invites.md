@@ -18,9 +18,8 @@ This feature set handles role mapping using invite links and 6-digit codes.
 
 ## Data Used
 
-- `data/role_codes.txt`
-- `data/invite_roles.json`
-- `data/access_role.txt`
+- `data/bot_data.db` (primary SQLite storage)
+- Legacy files above are auto-migrated into SQLite at startup if present.
 
 ## Required Permissions
 

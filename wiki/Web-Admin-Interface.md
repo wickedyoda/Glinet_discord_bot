@@ -28,7 +28,7 @@ Password-protected admin UI for runtime bot management.
   - Configure per-command access mode
   - Default/public/custom role permission support
 - `/admin/tag-responses`
-  - Edit JSON tag map and refresh runtime tag commands
+  - Edit tag map and refresh runtime tag commands
 - `/admin/bulk-role-csv`
   - Upload CSV and run bulk role assignment
 - `/admin/users`
