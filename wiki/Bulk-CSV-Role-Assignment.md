@@ -1,40 +1,70 @@
 # Bulk CSV Role Assignment
 
-Bulk-assign an existing role to many members using uploaded CSV input.
+Bulk-assign an existing role to many members from uploaded CSV input.
 
-## Command
+## Command and Web Path
 
-- `/bulk_assign_role_csv` (moderator-only)
+| Interface | Access | Path/Command |
+|---|---|---|
+| Discord slash | Moderator | `/bulk_assign_role_csv` |
+| Web GUI | Admin web users | `/admin/bulk-role-csv` |
 
-## Web UI
+## Input Formats
 
-- Page: `/admin/bulk-role-csv`
-- Supports CSV upload and role selection from Discord role dropdown.
-- Shows summary, missing members, ambiguous members, and assignment failures.
+Accepted input variations:
 
-## Input Rules
+- Comma-separated names in one or more rows
+- One name per line
+- Mixed whitespace and separators
 
-- CSV may be comma-separated or one name per line.
-- Name matching uses normalized Discord display/member names.
-- Role can be selected from current guild roles (dropdown), with manual fallback when catalog is unavailable.
+Normalized matching attempts:
 
-## Output
+- Display name
+- Username
+- Member name variants normalized for case/spacing
 
-- Assigned count
-- Already-had-role count
-- Unmatched names
-- Ambiguous names
-- Assignment failures
-- Full downloadable-style report text in UI/response
+## Role Selection Variations
 
-## Env Variables
+- Preferred: select role from live Discord role dropdown.
+- Fallback: manual role ID entry when role catalog is unavailable.
 
-- `CSV_ROLE_ASSIGN_MAX_NAMES`
-- `WEB_BULK_ASSIGN_TIMEOUT_SECONDS`
-- `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES`
-- `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT`
+## Output Report Fields
+
+- `assigned`: members successfully given role
+- `already_had_role`: members that already had target role
+- `unmatched`: names not resolved to a guild member
+- `ambiguous`: names mapping to multiple candidates
+- `failures`: permission/API/hierarchy errors
+
+Web UI includes full text report and summary counts.
+
+## Limits and Tuning
+
+| Variable | Purpose | Typical Tuning |
+|---|---|---|
+| `CSV_ROLE_ASSIGN_MAX_NAMES` | Max unique names per request | Raise for bigger batches |
+| `WEB_BULK_ASSIGN_TIMEOUT_SECONDS` | Execution timeout window | Increase for large guilds |
+| `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES` | Upload size cap | Raise only as needed |
+| `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT` | Per-section result display cap | Raise for deeper diagnostics |
+
+## Large Guild Guidance
+
+For ~4000-member guilds:
+
+- Use smaller batch files first to verify matching quality.
+- Keep timeout high enough for worst-case API latency.
+- Prefer exact display names for lower ambiguity.
+- Run off-peak when making very large role changes.
+
+## Failure Modes
+
+- Role hierarchy mismatch: bot role must be above target role.
+- Missing permission: `Manage Roles` required.
+- Member not found: unresolved name appears in `unmatched`.
+- Duplicate or ambiguous names: entries reported under `ambiguous`.
 
 ## Related Pages
 
+- [Moderation and Logs](Moderation-and-Logs)
 - [Web Admin Interface](Web-Admin-Interface)
 - [Environment Variables](Environment-Variables)

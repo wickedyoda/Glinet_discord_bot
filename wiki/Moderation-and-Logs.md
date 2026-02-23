@@ -1,51 +1,86 @@
 # Moderation and Logs
 
-Moderator-only actions with structured mod-log delivery.
+Moderator tooling for members, roles, and operational incident visibility.
 
-## Commands
+## Moderation Command Matrix
 
-- Role management:
-  - `/create_role`
-  - `/edit_role`
-  - `/delete_role`
-  - `/add_role_member`, `!addrolemember`
-  - `/remove_role_member`, `!removerolemember`
-- Member moderation:
-  - `/ban_member`, `!banmember`
-  - `/unban_member`, `!unbanmember`
-  - `/kick_member`, `!kickmember`
-  - `/timeout_member`, `!timeoutmember`
-  - `/untimeout_member`, `!untimeoutmember`
-- Log channel test:
-  - `/modlog_test`, `!modlogtest`
-- Runtime error inspection:
-  - `/logs` (ephemeral, moderator-only)
+| Category | Command | Prefix Equivalent | Default Access |
+|---|---|---|---|
+| Role | `/create_role` | none | Moderator |
+| Role | `/edit_role` | none | Moderator |
+| Role | `/delete_role` | none | Moderator |
+| Role membership | `/add_role_member` | `!addrolemember` | Moderator |
+| Role membership | `/remove_role_member` | `!removerolemember` | Moderator |
+| Member discipline | `/ban_member` | `!banmember` | Moderator |
+| Member discipline | `/unban_member` | `!unbanmember` | Moderator |
+| Member discipline | `/kick_member` | `!kickmember` | Moderator |
+| Member discipline | `/timeout_member` | `!timeoutmember` | Moderator |
+| Member discipline | `/untimeout_member` | `!untimeoutmember` | Moderator |
+| Logging test | `/modlog_test` | `!modlogtest` | Moderator |
+| Runtime error logs | `/logs` | none | Moderator |
 
-## Access Control
+## `/logs` Command Behavior
 
-- Moderator access is role-ID based.
-- Configured with:
-  - `MODERATOR_ROLE_ID`
-  - `ADMIN_ROLE_ID`
-- Per-command overrides can be configured by admins in `/admin/command-permissions`.
+- Reads recent lines from `data/container_errors.log`.
+- Ephemeral response to reduce accidental exposure.
+- Intended for production incident triage without shell access.
 
-## Logging
+Tuning variable:
 
-- All moderation actions are sent to `MOD_LOG_CHANNEL_ID`.
-- Additional server-event logs include:
-  - Message deletions (single and bulk)
-  - Username/global name changes
-  - Avatar changes
-  - Join/leave
-  - Invite creation
-  - Channel/category create/delete
-  - Role creation and role add/remove
+- `CONTAINER_LOG_LEVEL` controls what gets written to error log file.
 
-## Env Variables
+## Access Control Layers
+
+Layer 1: baseline role gates
 
 - `MODERATOR_ROLE_ID`
 - `ADMIN_ROLE_ID`
+
+Layer 2: per-command overrides in web admin
+
+- `/admin/command-permissions`
+- Modes: `default`, `public`, `custom_roles`
+
+## Logged Events (Mod Log Channel)
+
+Configured target:
+
 - `MOD_LOG_CHANNEL_ID`
-- `KICK_PRUNE_HOURS`
-- `LOG_LEVEL`
-- `CONTAINER_LOG_LEVEL`
+
+Event coverage includes:
+
+- Ban/unban/kick/timeout actions
+- Role add/remove and role object changes
+- Message deletions (single and bulk)
+- Invite creation events
+- User profile changes (name/avatar)
+- Join/leave and select channel/category changes
+
+## Operational Variations
+
+- Strict moderation profile:
+  - Keep defaults, no public overrides.
+  - Route all moderation actions to dedicated private log channel.
+- Delegated moderation profile:
+  - Use `custom_roles` for specific commands (for example role maintenance but no ban access).
+
+## Tuning and Safety
+
+- `KICK_PRUNE_HOURS` controls message prune window on kick.
+- Keep `LOG_LEVEL` at `INFO` or `WARNING` in production unless active debugging is required.
+- Keep `CONTAINER_LOG_LEVEL` at `ERROR` to reduce noisy `/logs` output.
+
+## Troubleshooting
+
+- Moderator can run command in one channel but not another:
+  - Check Discord channel permission overrides.
+- Mod logs missing:
+  - Validate `MOD_LOG_CHANNEL_ID` exists and bot can send messages there.
+- `/logs` empty during incident:
+  - Lower `CONTAINER_LOG_LEVEL` temporarily to capture more detail.
+
+## Related Pages
+
+- [Command Reference](Command-Reference)
+- [Environment Variables](Environment-Variables)
+- [Security Hardening](Security-Hardening)

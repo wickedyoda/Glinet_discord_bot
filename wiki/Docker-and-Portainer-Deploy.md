@@ -1,10 +1,15 @@
 # Docker and Portainer Deploy
 
-This bot can run as a local Docker Compose project or as a Portainer stack.
+Deployment guide for local Docker Compose, Portainer stacks, and proxy-fronted production setups.
 
-## Local Compose
+## Deployment Variations
 
-Use repository compose and Dockerfile:
+- Variation A: Local development on localhost bind.
+- Variation B: Container behind reverse proxy (recommended production).
+- Variation C: Portainer stack with direct `environment:` variables.
+- Variation D: Prebuilt image deployment (no local build context).
+
+## Variation A: Local Compose (Development)
 
 ```yaml
 services:
@@ -18,6 +23,7 @@ services:
       - WEB_BIND_HOST=0.0.0.0
       - WEB_ENABLED=${WEB_ENABLED:-true}
       - WEB_PORT=${WEB_PORT:-8080}
+      - WEB_HOST_PORT=${WEB_HOST_PORT:-8080}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CONTAINER_LOG_LEVEL=${CONTAINER_LOG_LEVEL:-ERROR}
       - WEB_PUBLIC_BASE_URL=${WEB_PUBLIC_BASE_URL:-}
@@ -39,34 +45,91 @@ Run:
 docker compose up -d --build
 ```
 
-## Portainer Stack (No `.env` File Mount)
+## Variation B: Reverse Proxy Fronted (Production)
 
-Use `environment:` entries directly in the stack spec instead of `env_file` references that may not exist in Portainer-managed paths.
+Recommended adjustments:
 
-Example service image:
+- Keep container port private (localhost bind or internal network only).
+- Set `WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/`.
+- Keep `WEB_SESSION_COOKIE_SECURE=true`.
+- Keep CSRF and same-origin checks enabled.
+
+Example host mapping:
+
+```yaml
+ports:
+  - "127.0.0.1:8080:8080"
+```
+
+Use your proxy to publish HTTPS domain externally.
+
+## Variation C: Portainer Stack
+
+When Portainer cannot access local `.env` path:
+
+- Remove `env_file:` reference
+- Provide variables under `environment:` directly
+
+Example image:
 
 - `ghcr.io/wickedyoda/discord_invite_bot:latest`
 
-Recommended volume:
+Recommended persistent volume:
 
 - `/root/docker/linkbot/data:/app/data`
 
-## Web Port
+## Variation D: Image-Only Deploy
 
-- Container listens on `WEB_PORT` (default `8080`)
-- Default secure mapping is localhost-only: `127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}`
-- Expose externally only behind HTTPS + additional access controls
+Use prebuilt image when:
 
-## Logging
+- build context is unavailable
+- Dockerfile is not present in stack path
+- you want predictable immutable deployments
 
-- Runtime log file: `data/bot.log`
-- Container-wide error log file: `data/container_errors.log`
-- Moderator command `/logs` returns recent lines from `container_errors.log`
+## Port and Network Model
 
-## Troubleshooting
+- App listens on `WEB_PORT` inside container.
+- Host published port controlled by `WEB_HOST_PORT` in compose mapping.
+- Public exposure should happen via reverse proxy, not direct open port.
 
-- `env file ... not found` in Portainer:
-  - Remove `env_file:` dependency and use `environment:` block.
-- `failed to read dockerfile: open Dockerfile`:
-  - Happens when using `build:` in a directory without Dockerfile.
-  - Use prebuilt image (`ghcr.io/...`) in Portainer unless build context is present.
+## Logs and Diagnostics
+
+Persistent log files:
+
+- `data/bot.log` (application logs)
+- `data/container_errors.log` (error stream used by `/logs`)
+
+Tune with:
+
+- `LOG_LEVEL`
+- `CONTAINER_LOG_LEVEL`
+
+## Upgrade and Restart Workflow
+
+1. Pull latest image or code.
+2. Review `.env`/compose changes.
+3. Recreate container:
+   - `docker compose up -d --build`
+4. Check logs:
+   - `docker compose logs -f discord_invite_bot`
+
+## Common Failures
+
+- `env file ... not found`:
+  - Replace `env_file` with explicit `environment` values in Portainer.
+- `failed to read dockerfile`:
+  - Use image-based deploy or correct stack path.
+- Web UI unavailable:
+  - Check bind host/port mapping and proxy upstream target.
+
+## Security Guidance
+
+- Avoid exposing container port directly to internet.
+- Use HTTPS proxy + HSTS + strict forwarding headers.
+- Keep secrets only in trusted env/secret management tooling.
+
+## Related Pages
+
+- [Environment Variables](Environment-Variables)
+- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
+- [Security Hardening](Security-Hardening)

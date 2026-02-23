@@ -1,70 +1,146 @@
 # Environment Variables
 
-This page groups runtime variables by feature area.
+This page lists all supported environment variables, defaults, and accepted options.
+
+## Value Conventions
+
+- Boolean flags: use `true`/`false` (also accepted in web settings: `1/0`, `yes/no`, `on/off`)
+- Channel field `firmware_notification_channel`: numeric channel ID or `<#channel_id>`
+- Cron field `firmware_check_schedule`: valid 5-field cron in UTC
+- URL fields: include scheme (`http://` or `https://`) where noted
+
+## Required
+
+| Variable | Default | Allowed / Options | Notes |
+|---|---|---|---|
+| `DISCORD_TOKEN` | none | Discord bot token string | Required to start bot |
+| `GUILD_ID` | none | Integer guild ID | Required to scope guild operations |
 
 ## Core
 
-- `DISCORD_TOKEN` (required)
-- `GUILD_ID` (required)
-- `GENERAL_CHANNEL_ID`
-- `DATA_DIR`
-- `LOG_LEVEL`
-- `CONTAINER_LOG_LEVEL`
+| Variable | Default | Allowed / Options | Notes |
+|---|---|---|---|
+| `GENERAL_CHANNEL_ID` | `0` | Integer, `>= 0` | Used for invite generation fallback |
+| `DATA_DIR` | `data` | Path string | Persistent runtime data directory |
+| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Runtime bot/web verbosity |
+| `CONTAINER_LOG_LEVEL` | `ERROR` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Threshold for `data/container_errors.log` |
 
-## Search / Docs
+## Search and Docs
 
-- `FORUM_BASE_URL`
-- `FORUM_MAX_RESULTS`
-- `DOCS_MAX_RESULTS_PER_SITE`
-- `DOCS_INDEX_TTL_SECONDS`
-- `SEARCH_RESPONSE_MAX_CHARS`
+| Variable | Default | Allowed / Options | Notes |
+|---|---|---|---|
+| `FORUM_BASE_URL` | `https://forum.gl-inet.com` | URL | Forum search base URL |
+| `FORUM_MAX_RESULTS` | `5` | Integer, `>= 1` | Max forum links returned |
+| `DOCS_MAX_RESULTS_PER_SITE` | `2` | Integer, `>= 1` | Max docs results per docs source |
+| `DOCS_INDEX_TTL_SECONDS` | `3600` | Integer, `>= 60` | Docs index cache TTL |
+| `SEARCH_RESPONSE_MAX_CHARS` | `1900` | Integer, `>= 200` | Max chars in search response |
 
 ## Moderation
 
-- `MODERATOR_ROLE_ID`
-- `ADMIN_ROLE_ID`
-- `MOD_LOG_CHANNEL_ID`
-- `KICK_PRUNE_HOURS`
+| Variable | Default | Allowed / Options | Notes |
+|---|---|---|---|
+| `MODERATOR_ROLE_ID` | `1294957416294645771` | Integer role ID | Moderator role gate |
+| `ADMIN_ROLE_ID` | `1138302148292116551` | Integer role ID | Additional role gate |
+| `MOD_LOG_CHANNEL_ID` | `1311820410269995009` | Integer channel ID | Moderation/server log channel |
+| `KICK_PRUNE_HOURS` | `72` | Integer, `>= 1` | Prune window for kick actions |
 
 ## CSV Role Assignment
 
-- `CSV_ROLE_ASSIGN_MAX_NAMES`
-- `WEB_BULK_ASSIGN_TIMEOUT_SECONDS`
-- `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES`
-- `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT`
+| Variable | Default | Allowed / Options | Notes |
+|---|---|---|---|
+| `CSV_ROLE_ASSIGN_MAX_NAMES` | `500` | Integer, `>= 1` | Max unique names accepted |
+| `WEB_BULK_ASSIGN_TIMEOUT_SECONDS` | `300` | Integer, `>= 30` | Timeout for web CSV assignment execution |
+| `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES` | `2097152` | Integer, `>= 1024` | Max CSV upload size in bytes |
+| `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT` | `50` | Integer, `>= 1` | Max items shown per result section |
 
 ## Firmware Monitor
 
-- `firmware_notification_channel`
-- `FIRMWARE_FEED_URL`
-- `firmware_check_schedule`
-- `FIRMWARE_REQUEST_TIMEOUT_SECONDS`
-- `FIRMWARE_RELEASE_NOTES_MAX_CHARS`
+| Variable | Default | Allowed / Options | Notes |
+|---|---|---|---|
+| `firmware_notification_channel` | none | Channel ID or `<#channel_id>` | Required to enable firmware notifications |
+| `FIRMWARE_FEED_URL` | `https://gl-fw.remotetohome.io/` | URL | Firmware source URL |
+| `firmware_check_schedule` | `*/30 * * * *` | Valid 5-field cron (UTC) | Primary scheduler |
+| `FIRMWARE_REQUEST_TIMEOUT_SECONDS` | `30` | Integer, `>= 5` | HTTP timeout for firmware fetch |
+| `FIRMWARE_RELEASE_NOTES_MAX_CHARS` | `900` | Integer, `>= 200` | Max release note excerpt length |
 
 ## Web Admin
 
-- `WEB_ENABLED`
-- `WEB_BIND_HOST` (default local bind for non-container runs; set to `0.0.0.0` inside container)
-- `WEB_PORT`
-- `WEB_HOST_PORT`
-- `WEB_SESSION_TIMEOUT_MINUTES` (auto-logout timeout in minutes; allowed `5,10,15,20,25,30`)
-- `WEB_PUBLIC_BASE_URL` (public external URL when behind reverse proxy; used for same-origin checks)
-- `WEB_ENV_FILE`
-- `WEB_RESTART_ENABLED`
-- `WEB_GITHUB_WIKI_URL`
-- `WEB_ADMIN_DEFAULT_USERNAME`
-- `WEB_ADMIN_DEFAULT_PASSWORD` (required for first boot when no web users exist; must meet password policy)
-- `WEB_ADMIN_SESSION_SECRET`
-- `WEB_SESSION_COOKIE_SECURE`
-- `WEB_TRUST_PROXY_HEADERS`
-- `WEB_ENFORCE_CSRF`
-- `WEB_ENFORCE_SAME_ORIGIN_POSTS`
-- `WEB_HARDEN_FILE_PERMISSIONS`
-- `WEB_DISCORD_CATALOG_TTL_SECONDS`
-- `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS`
-- `WEB_BOT_PROFILE_TIMEOUT_SECONDS`
-- `WEB_AVATAR_MAX_UPLOAD_BYTES`
+| Variable | Default | Allowed / Options | Notes |
+|---|---|---|---|
+| `WEB_ENABLED` | `true` | Boolean | Enable/disable web admin interface |
+| `WEB_BIND_HOST` | `127.0.0.1` | Host/IP string | Use `0.0.0.0` in container deployments |
+| `WEB_PORT` | `8080` | Integer port | Internal web service port |
+| `WEB_HOST_PORT` | `8080` | Integer port | Compose host mapping variable |
+| `WEB_SESSION_TIMEOUT_MINUTES` | `5` | `5`, `10`, `15`, `20`, `25`, `30` | Inactivity timeout for non-remembered sessions |
+| `WEB_PUBLIC_BASE_URL` | empty | URL with `http://` or `https://` | External URL used for origin checks behind proxy |
+| `WEB_ENV_FILE` | `.env` | Path string | Env file path used by web settings editor |
+| `WEB_RESTART_ENABLED` | `true` | Boolean | Enables admin restart button |
+| `WEB_GITHUB_WIKI_URL` | `http://discord.glinet.wickedyoda.com/wiki` | URL with `http://` or `https://` | Header docs link |
+| `WEB_ADMIN_DEFAULT_USERNAME` | `admin@example.com` | Valid email | First-boot admin email |
+| `WEB_ADMIN_DEFAULT_PASSWORD` | empty | Must satisfy password policy | Required on first boot when no web users exist |
+| `WEB_ADMIN_SESSION_SECRET` | generated at runtime if unset | Secret string | Session signing secret |
+| `WEB_SESSION_COOKIE_SECURE` | `true` | Boolean | Secure cookie flag (HTTPS recommended) |
+| `WEB_TRUST_PROXY_HEADERS` | `true` | Boolean | Trust forwarded host/proto/IP headers |
+| `WEB_ENFORCE_CSRF` | `true` | Boolean | CSRF checks on state-changing requests |
+| `WEB_ENFORCE_SAME_ORIGIN_POSTS` | `true` | Boolean | Same-origin checks for state-changing requests |
+| `WEB_HARDEN_FILE_PERMISSIONS` | `true` | Boolean | Best-effort file permission hardening |
+| `WEB_DISCORD_CATALOG_TTL_SECONDS` | `120` | Integer, `>= 15` | Cache TTL for Discord channels/roles catalog |
+| `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for Discord catalog fetch |
+| `WEB_BOT_PROFILE_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for bot profile web actions |
+| `WEB_AVATAR_MAX_UPLOAD_BYTES` | `2097152` | Integer, `>= 1024` | Max avatar upload size |
+
+## Compatibility Aliases
+
+| Variable | Used As | Notes |
+|---|---|---|
+| `FIRMWARE_NOTIFY_CHANNEL_ID` | Fallback for `firmware_notification_channel` | Legacy alias |
+| `FIRMWARE_CHECK_INTERVAL_SECONDS` | Legacy fallback scheduler | Used only when `firmware_check_schedule` is empty |
+| `WEB_ADMIN_DEFAULT_EMAIL` | Preferred over `WEB_ADMIN_DEFAULT_USERNAME` when set | Legacy/admin alias |
+
+## Password Policy (Web Users)
+
+- Minimum 6 characters
+- Maximum 16 characters
+- At least 2 numbers
+- At least 1 uppercase letter
+- At least 1 symbol
+
+## Configuration Profiles
+
+### Local Development (No External Proxy)
+
+```env
+WEB_BIND_HOST=0.0.0.0
+WEB_PORT=8080
+WEB_HOST_PORT=8080
+WEB_PUBLIC_BASE_URL=http://localhost:8080/
+WEB_SESSION_COOKIE_SECURE=false
+WEB_TRUST_PROXY_HEADERS=false
+WEB_ENFORCE_CSRF=true
+WEB_ENFORCE_SAME_ORIGIN_POSTS=true
+```
+
+### Reverse Proxy Production (Recommended)
+
+```env
+WEB_BIND_HOST=0.0.0.0
+WEB_PORT=8080
+WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/
+WEB_SESSION_COOKIE_SECURE=true
+WEB_TRUST_PROXY_HEADERS=true
+WEB_ENFORCE_CSRF=true
+WEB_ENFORCE_SAME_ORIGIN_POSTS=true
+```
+
+### Hardened Logging Profile
+
+```env
+LOG_LEVEL=INFO
+CONTAINER_LOG_LEVEL=ERROR
+WEB_HARDEN_FILE_PERMISSIONS=true
+```
 
 ## Reference
 
-For defaults and examples, see [`README.md`](../README.md).
+- Complete `.env` template: [`.env.example`](../.env.example)
+- Deployment defaults/examples: [`README.md`](../README.md)
