@@ -708,6 +708,24 @@ def _write_env_file(env_file: Path, values: dict):
         pass
 
 
+def _normalize_url_env_value(value: str):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if text.startswith(("http://", "https://")):
+        return text
+    return f"https://{text.lstrip('/')}"
+
+
+def _normalize_env_updates(updated_values: dict):
+    normalized = dict(updated_values)
+    for key in ("WEB_GITHUB_WIKI_URL", "WEB_PUBLIC_BASE_URL", "FIRMWARE_FEED_URL"):
+        raw = normalized.get(key, "")
+        if raw:
+            normalized[key] = _normalize_url_env_value(raw)
+    return normalized
+
+
 def _validate_env_updates(updated_values: dict):
     truthy_values = {"1", "0", "true", "false", "yes", "no", "on", "off"}
     valid_log_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
@@ -773,6 +791,12 @@ def _validate_env_updates(updated_values: dict):
             and not value.startswith(("http://", "https://"))
         ):
             errors.append("WEB_PUBLIC_BASE_URL must start with http:// or https://.")
+        if (
+            key == "FIRMWARE_FEED_URL"
+            and value
+            and not value.startswith(("http://", "https://"))
+        ):
+            errors.append("FIRMWARE_FEED_URL must start with http:// or https://.")
     return errors
 
 
@@ -2556,6 +2580,12 @@ def create_web_app(
     def settings():
         user = _current_user()
         file_values = _parse_env_file(env_file)
+        normalized_file_values = _normalize_env_updates(file_values)
+        if normalized_file_values != file_values:
+            _write_env_file(env_file, normalized_file_values)
+            file_values = normalized_file_values
+            for key, value in file_values.items():
+                os.environ[key] = value
         discord_catalog = (
             on_get_discord_catalog() if callable(on_get_discord_catalog) else None
         )
@@ -2578,6 +2608,7 @@ def create_web_app(
                     updated_values[key] = submitted if submitted else current
                 else:
                     updated_values[key] = request.form.get(key, "").strip()
+            updated_values = _normalize_env_updates(updated_values)
 
             validation_errors = _validate_env_updates(updated_values)
             if validation_errors:

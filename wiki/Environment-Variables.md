@@ -94,6 +94,8 @@ This page lists all supported environment variables, defaults, and accepted opti
 
 | Variable | Used As | Notes |
 |---|---|---|
+| `FIRMWARE_NOTIFICATION_CHANNEL` | Fallback for `firmware_notification_channel` | Uppercase alias for Portainer/stack compatibility |
+| `FIRMWARE_CHECK_SCHEDULE` | Fallback for `firmware_check_schedule` | Uppercase alias for Portainer/stack compatibility |
 | `FIRMWARE_NOTIFY_CHANNEL_ID` | Fallback for `firmware_notification_channel` | Legacy alias |
 | `FIRMWARE_CHECK_INTERVAL_SECONDS` | Legacy fallback scheduler | Used only when `firmware_check_schedule` is empty |
 | `WEB_ADMIN_DEFAULT_EMAIL` | Preferred over `WEB_ADMIN_DEFAULT_USERNAME` when set | Legacy/admin alias |
