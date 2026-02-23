@@ -1181,14 +1181,12 @@ def run_web_update_command_permissions(payload: dict, actor_email: str):
     try:
         save_command_permission_rules(updated_rules, actor_email=actor_email)
     except Exception:
-        logger.exception(
-            "Failed to save command permissions from web admin by %s", actor_email
-        )
+        logger.exception("Failed to save command permissions from web admin")
         return {"ok": False, "error": "Failed to save command permissions."}
 
     response = build_command_permissions_web_payload()
     response["message"] = "Command permissions updated."
-    logger.info("Command permissions updated via web admin by %s", actor_email)
+    logger.info("Command permissions updated via web admin")
     return response
 
 
@@ -1217,16 +1215,10 @@ def run_web_save_tag_responses(mapping: dict, actor_email: str):
     try:
         save_tag_responses(normalized)
     except Exception:
-        logger.exception(
-            "Failed saving tag responses from web admin by %s", actor_email
-        )
+        logger.exception("Failed saving tag responses from web admin")
         return {"ok": False, "error": "Unexpected error while saving tag responses."}
 
-    logger.info(
-        "Tag responses updated via web admin by %s (%s entries)",
-        actor_email,
-        len(normalized),
-    )
+    logger.info("Tag responses updated via web admin (%s entries)", len(normalized))
     return {"ok": True, "mapping": normalized, "message": "Tag responses updated."}
 
 
@@ -1493,8 +1485,7 @@ async def process_bulk_role_assignment_payload(
         "duplicate_member_inputs": duplicate_member_inputs,
     }
     logger.info(
-        "CSV role assignment by %s role=%s processed=%s assigned=%s already=%s unmatched=%s ambiguous=%s failed=%s",
-        requested_by,
+        "CSV role assignment role=%s processed=%s assigned=%s already=%s unmatched=%s ambiguous=%s failed=%s",
         role.id,
         result["unique_names_count"],
         len(assigned),
@@ -1834,9 +1825,7 @@ async def apply_bot_profile_updates_async(
                 await current_user.edit(username=username)
                 updated_username = True
             except discord.HTTPException:
-                logger.exception(
-                    "Failed to update bot username (actor=%s)", actor_label
-                )
+                logger.exception("Failed to update bot username")
                 errors.append(
                     "Failed to update username. Discord may enforce rename limits; try again later."
                 )
@@ -1860,16 +1849,13 @@ async def apply_bot_profile_updates_async(
                     updated_server_nickname = True
                 except discord.Forbidden:
                     logger.exception(
-                        "Missing permission to update bot server nickname (actor=%s)",
-                        actor_label,
+                        "Missing permission to update bot server nickname"
                     )
                     errors.append(
                         "Missing permission to update server nickname. Check `Manage Nicknames` and role hierarchy."
                     )
                 except discord.HTTPException:
-                    logger.exception(
-                        "Failed to update bot server nickname (actor=%s)", actor_label
-                    )
+                    logger.exception("Failed to update bot server nickname")
                     errors.append(
                         "Failed to update server nickname due to a Discord API error."
                     )
@@ -1948,7 +1934,7 @@ async def run_web_update_bot_avatar_async(payload: bytes, actor_email: str):
     try:
         await current_user.edit(avatar=payload)
     except discord.HTTPException:
-        logger.exception("Failed to update bot avatar via web admin by %s", actor_email)
+        logger.exception("Failed to update bot avatar via web admin")
         return {
             "ok": False,
             "error": "Discord rejected the avatar image. Use a valid PNG/JPG/WEBP/GIF image.",
@@ -1956,7 +1942,7 @@ async def run_web_update_bot_avatar_async(payload: bytes, actor_email: str):
 
     profile = await fetch_bot_profile_async()
     if profile.get("ok"):
-        logger.info("Bot avatar updated via web admin by %s", actor_email)
+        logger.info("Bot avatar updated via web admin")
     return profile
 
 
@@ -1983,8 +1969,7 @@ async def run_web_update_bot_profile_async(
     )
     if result.get("ok"):
         logger.info(
-            "Bot profile update via web admin by %s (username=%s nickname_change=%s)",
-            actor_email,
+            "Bot profile update via web admin (username=%s nickname_change=%s)",
             bool(normalized_username),
             nickname_target is not BOT_SERVER_NICKNAME_UNSET,
         )
@@ -2016,9 +2001,7 @@ def run_web_update_bot_profile(
         future.cancel()
         return {"ok": False, "error": "Timed out while updating bot profile."}
     except Exception:
-        logger.exception(
-            "Unexpected failure while updating bot profile from %s", actor_email
-        )
+        logger.exception("Unexpected failure while updating bot profile")
         return {"ok": False, "error": "Unexpected error while updating bot profile."}
 
 
@@ -2039,16 +2022,12 @@ def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
         future.cancel()
         return {"ok": False, "error": "Timed out while updating bot avatar."}
     except Exception:
-        logger.exception(
-            "Unexpected failure while updating bot avatar from %s (%s)",
-            actor_email,
-            filename,
-        )
+        logger.exception("Unexpected failure while updating bot avatar")
         return {"ok": False, "error": "Unexpected error while updating bot avatar."}
 
 
 def run_web_request_restart(actor_email: str):
-    logger.warning("Web admin container restart requested by %s", actor_email)
+    logger.warning("Web admin container restart requested")
 
     def _exit_process():
         logger.warning("Exiting bot process due to web admin container restart request")
