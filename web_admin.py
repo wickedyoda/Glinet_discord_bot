@@ -998,7 +998,7 @@ def _render_layout(
     .flash.success { background: var(--flash-ok-bg); color: var(--flash-ok-fg); }
     table { width: 100%; border-collapse: collapse; }
     th, td { border-bottom: 1px solid var(--border); padding: 10px; text-align: left; vertical-align: top; }
-    input[type=text], input[type=password], textarea, select {
+    input[type=text], input[type=email], input[type=password], textarea, select {
       width: 100%;
       border: 1px solid var(--border);
       border-radius: 8px;
@@ -1308,6 +1308,27 @@ def create_web_app(
                 "Strict-Transport-Security",
                 "max-age=31536000; includeSubDomains; preload",
             )
+
+        # Allow local non-HTTPS testing to keep login working when secure cookies are enabled.
+        if secure_session_cookie and (not request.is_secure) and is_local_request:
+            session_cookie_name = str(app.config.get("SESSION_COOKIE_NAME", "session"))
+            set_cookie_headers = response.headers.getlist("Set-Cookie")
+            if set_cookie_headers:
+                rewritten_headers = []
+                for header_value in set_cookie_headers:
+                    rewritten = header_value
+                    if rewritten.startswith(f"{session_cookie_name}="):
+                        rewritten = re.sub(
+                            r";\s*Secure(?=;|$)",
+                            "",
+                            rewritten,
+                            flags=re.IGNORECASE,
+                        )
+                    rewritten_headers.append(rewritten)
+                if rewritten_headers != set_cookie_headers:
+                    response.headers.pop("Set-Cookie", None)
+                    for header_value in rewritten_headers:
+                        response.headers.add("Set-Cookie", header_value)
         return response
 
     users_file = Path(data_dir) / "bot_data.db"
@@ -1482,7 +1503,27 @@ def create_web_app(
         if trust_proxy_headers:
             forwarded_host = str(request.headers.get("X-Forwarded-Host", "")).strip()
             if forwarded_host:
-                allowed_hosts.add(_extract_hostname(forwarded_host.split(",")[0]))
+                forwarded_host_name = _extract_hostname(forwarded_host.split(",")[0])
+                if forwarded_host_name:
+                    allowed_hosts.add(forwarded_host_name)
+            original_host = str(request.headers.get("X-Original-Host", "")).strip()
+            if original_host:
+                original_host_name = _extract_hostname(original_host.split(",")[0])
+                if original_host_name:
+                    allowed_hosts.add(original_host_name)
+            forwarded_header = str(request.headers.get("Forwarded", "")).strip()
+            if forwarded_header:
+                forwarded_match = re.search(
+                    r"(?i)\bhost=([^;,\s]+)",
+                    forwarded_header,
+                )
+                if forwarded_match:
+                    forwarded_token = (
+                        str(forwarded_match.group(1) or "").strip().strip('"')
+                    )
+                    forwarded_name = _extract_hostname(forwarded_token)
+                    if forwarded_name:
+                        allowed_hosts.add(forwarded_name)
 
         public_base_url = _public_base_url()
         if public_base_url:
@@ -1493,19 +1534,31 @@ def create_web_app(
         if not allowed_hosts:
             return False
 
+        def _match_allowed_host_from_url(raw_value: str):
+            text = str(raw_value or "").strip()
+            if not text:
+                return None
+            parsed = urlparse(text)
+            if parsed.scheme not in {"http", "https"}:
+                return None
+            host = _extract_hostname(text)
+            if not host:
+                return None
+            return host in allowed_hosts
+
         origin = str(request.headers.get("Origin", "")).strip()
-        if origin:
-            parsed_origin = urlparse(origin)
-            if parsed_origin.scheme not in {"http", "https"}:
-                return False
-            return str(parsed_origin.hostname or "").strip().lower() in allowed_hosts
+        origin_allowed = _match_allowed_host_from_url(origin)
+        if origin_allowed is True:
+            return True
 
         referer = str(request.headers.get("Referer", "")).strip()
-        if referer:
-            parsed_referer = urlparse(referer)
-            if parsed_referer.scheme not in {"http", "https"}:
-                return False
-            return str(parsed_referer.hostname or "").strip().lower() in allowed_hosts
+        referer_allowed = _match_allowed_host_from_url(referer)
+        if referer_allowed is True:
+            return True
+
+        # If either header was present but neither matched an allowed host, reject.
+        if origin or referer:
+            return False
 
         # Some clients/proxies omit Origin/Referer on same-site form submits.
         # CSRF validation still protects state-changing routes.
@@ -1689,10 +1742,10 @@ def create_web_app(
               <h2>Web Login</h2>
               <p class="muted">Web GUI login with email/password. Users are created by an admin only.</p>
               <form method="post">
-                <label>Email</label>
-                <input type="email" name="email" placeholder="admin@example.com" autocomplete="username" autocapitalize="none" spellcheck="false" required />
-                <label style="margin-top:10px;display:block;">Password</label>
-                <input type="password" name="password" autocomplete="current-password" required />
+                <label for="login_email">Email</label>
+                <input id="login_email" type="email" name="email" placeholder="admin@example.com" autocomplete="username" autocapitalize="none" spellcheck="false" required />
+                <label for="login_password" style="margin-top:10px;display:block;">Password</label>
+                <input id="login_password" type="password" name="password" autocomplete="current-password" required />
                 <label style="margin-top:10px;display:block;">
                   <input type="checkbox" name="remember_login" value="1" />
                   Keep me signed in for {REMEMBER_LOGIN_DAYS} days on this device
