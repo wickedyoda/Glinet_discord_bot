@@ -73,6 +73,11 @@ ENV_FIELDS = [
         "Default channel for invite generation.",
     ),
     ("LOG_LEVEL", "Log Level", "Bot log level (DEBUG, INFO, WARNING, ERROR)."),
+    (
+        "CONTAINER_LOG_LEVEL",
+        "Container Log Level",
+        "Container-wide error log level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+    ),
     ("DATA_DIR", "Data Directory", "Persistent data directory inside container."),
     ("FORUM_BASE_URL", "Forum Base URL", "GL.iNet forum root URL."),
     ("FORUM_MAX_RESULTS", "Forum Max Results", "Max forum links returned per search."),
