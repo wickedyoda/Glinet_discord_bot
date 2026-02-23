@@ -75,6 +75,7 @@ All notable changes to this project are documented in this file.
 
 ### Ops and Deployment
 - Updated `docker-compose.yml` to reflect current runtime/security variables.
+- Updated Docker publish workflows to build and push multi-arch images for both `linux/amd64` and `linux/arm64`.
 - Added/updated environment examples for new and compatibility variables:
   - `CONTAINER_LOG_LEVEL`
   - `DISCORD_LOG_LEVEL`
@@ -86,6 +87,9 @@ All notable changes to this project are documented in this file.
   - `WEB_ENFORCE_SAME_ORIGIN_POSTS`
   - compatibility aliases documented in `.env.example`
 - Updated docs for proxy deployment, security posture, command access, and logging paths.
+- Added architecture support guidance in:
+  - `README.md`
+  - `wiki/Docker-and-Portainer-Deploy.md`
 
 ## [2025-07-24] - Invite Tracking Enhancements
 

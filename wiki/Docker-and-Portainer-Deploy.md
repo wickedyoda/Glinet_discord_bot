@@ -88,6 +88,32 @@ Use prebuilt image when:
 - Dockerfile is not present in stack path
 - you want predictable immutable deployments
 
+## Variation E: Multi-Architecture (amd64 + arm64)
+
+Supported deployment model:
+
+- GHCR published images are pushed as a single multi-arch manifest list:
+  - `linux/amd64`
+  - `linux/arm64`
+- Docker automatically pulls the correct architecture image for the host.
+
+Local multi-arch build (Buildx):
+
+```bash
+docker buildx create --use --name glinet-multiarch-builder
+docker buildx inspect --bootstrap
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/<owner>/discord_invite_bot:local-multiarch \
+  --push \
+  .
+```
+
+Notes:
+
+- Use `--push` for true multi-arch output; `--load` only loads a single architecture into the local Docker engine.
+- Standard `docker compose build` stays host-native and is still the fastest local test path.
+
 ## Port and Network Model
 
 - App listens on `WEB_PORT` inside container.
