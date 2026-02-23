@@ -42,6 +42,28 @@ docker compose up -d --build
 http://localhost:8080
 ```
 
+## Architecture Support
+
+- Native local builds (`docker compose up -d --build`) run on the host architecture (Apple Silicon `arm64` or Intel/AMD `amd64`).
+- Published GHCR images are built as a multi-arch manifest for:
+  - `linux/amd64`
+  - `linux/arm64`
+- Optional multi-arch publish command:
+
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/<owner>/discord_invite_bot:multiarch-test \
+  --push \
+  .
+```
+
+- Optional host-native local test image command:
+
+```bash
+docker compose build
+```
+
 ## What It Includes
 
 - Role access via invite links and 6-digit access codes
