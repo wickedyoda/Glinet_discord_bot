@@ -59,6 +59,7 @@ This page documents concrete security actions implemented in the bot and web adm
 ## Deployment Security Guidance
 
 - Run web UI behind a trusted HTTPS reverse proxy.
+- Reverse proxy setup details: [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI).
 - Keep `WEB_TRUST_PROXY_HEADERS=true` only when proxy headers come from trusted infrastructure.
 - Keep CSRF and same-origin enforcement enabled in production:
   - `WEB_ENFORCE_CSRF=true`
@@ -70,4 +71,3 @@ This page documents concrete security actions implemented in the bot and web adm
 
 - Application-level database encryption at rest is not currently built into the bot.
 - For encryption at rest, use host/platform disk encryption and encrypted backups.
-

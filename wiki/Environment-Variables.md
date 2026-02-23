@@ -47,6 +47,7 @@ This page groups runtime variables by feature area.
 - `WEB_PORT`
 - `WEB_HOST_PORT`
 - `WEB_SESSION_TIMEOUT_MINUTES` (auto-logout timeout in minutes; allowed `5,10,15,20,25,30`)
+- `WEB_PUBLIC_BASE_URL` (public external URL when behind reverse proxy; used for same-origin checks)
 - `WEB_ENV_FILE`
 - `WEB_RESTART_ENABLED`
 - `WEB_GITHUB_WIKI_URL`

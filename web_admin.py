@@ -25,6 +25,9 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
 PASSWORD_MAX_AGE_DAYS = 90
+REMEMBER_LOGIN_DAYS = 5
+AUTH_MODE_STANDARD = "standard"
+AUTH_MODE_REMEMBER = "remember"
 PASSWORD_HASH_METHOD = "pbkdf2:sha256:600000"
 SESSION_TIMEOUT_MINUTE_OPTIONS = tuple(range(5, 31, 5))
 POST_FORM_TAG_PATTERN = re.compile(
@@ -190,6 +193,11 @@ ENV_FIELDS = [
         "WEB_RESTART_ENABLED",
         "Web Restart Enabled",
         "Enable admin restart button in the web header.",
+    ),
+    (
+        "WEB_PUBLIC_BASE_URL",
+        "Web Public Base URL",
+        "Public external base URL used behind reverse proxies (for origin validation).",
     ),
     (
         "WEB_GITHUB_WIKI_URL",
@@ -746,6 +754,12 @@ def _validate_env_updates(updated_values: dict):
             and not value.startswith(("http://", "https://"))
         ):
             errors.append("WEB_GITHUB_WIKI_URL must start with http:// or https://.")
+        if (
+            key == "WEB_PUBLIC_BASE_URL"
+            and value
+            and not value.startswith(("http://", "https://"))
+        ):
+            errors.append("WEB_PUBLIC_BASE_URL must start with http:// or https://.")
     return errors
 
 
@@ -896,6 +910,8 @@ def _render_layout(
   <meta name="csrf-token" content="{{ csrf_token }}" />
   <title>{{ title }}</title>
   <style>
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
     :root {
       --bg: #0a0a0a;
       --bg-grad-a: #101010;
@@ -973,10 +989,11 @@ def _render_layout(
     th, td { border-bottom: 1px solid var(--border); padding: 10px; text-align: left; vertical-align: top; }
     input[type=text], input[type=password], textarea, select {
       width: 100%;
-      box-sizing: border-box;
       border: 1px solid var(--border);
       border-radius: 8px;
       padding: 8px;
+      min-height: 44px;
+      font-size: 16px;
       background: var(--input-bg);
       color: var(--input-fg);
     }
@@ -989,11 +1006,14 @@ def _render_layout(
       border-radius: 8px;
       cursor: pointer;
       text-decoration: none;
-      display: inline-block;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
     }
     .btn.secondary { background: var(--btn-secondary); }
     .btn.danger { background: var(--btn-danger); }
-    .inline-form { display: inline; margin-left: 0; }
+    .inline-form { display: inline-flex; margin-left: 0; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .muted { color: var(--muted); font-size: 0.9rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -1029,11 +1049,40 @@ def _render_layout(
     .dash-card h3 { margin-top: 0; margin-bottom: 8px; }
     .dash-card p { margin-top: 0; min-height: 50px; }
     .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .table-scroll {
+      width: 100%;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+    }
+    .table-scroll > table {
+      min-width: 760px;
+      margin: 0;
+    }
     @media (max-width: 1080px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 900px) {
       .grid { grid-template-columns: 1fr; }
       .dash-grid { grid-template-columns: 1fr; }
+      header { padding: 10px 12px; align-items: flex-start; }
+      .wrap { margin: 14px auto; padding: 0 10px; }
+      .card { padding: 14px; }
       .header-right { width: 100%; justify-content: flex-start; }
+      .nav-controls { width: 100%; display: grid; grid-template-columns: 1fr; }
+      .nav-select { width: 100%; max-width: 100%; min-width: 0; }
+      .nav-controls .btn { width: 100%; }
+      .inline-form { width: 100%; }
+      .inline-form .btn { width: 100%; }
+      .theme-switch { width: 100%; }
+      .theme-btn { flex: 1; min-height: 42px; }
+      .current-user-email { display: block; }
+      .dash-actions .btn { width: 100%; }
+      th, td { padding: 8px; }
+      .table-scroll > table { min-width: 680px; }
+    }
+    @media (max-width: 600px) {
+      .card { border-radius: 10px; }
+      .table-scroll > table { min-width: 620px; }
     }
   </style>
 </head>
@@ -1131,6 +1180,17 @@ def _render_layout(
           navPageSelect.value = "";
         });
       }
+
+      document.querySelectorAll(".wrap table").forEach((table) => {
+        const parent = table.parentElement;
+        if (!parent || parent.classList.contains("table-scroll")) {
+          return;
+        }
+        const wrapper = document.createElement("div");
+        wrapper.className = "table-scroll";
+        parent.insertBefore(wrapper, table);
+        wrapper.appendChild(table);
+      });
     })();
   </script>
 </body>
@@ -1195,12 +1255,13 @@ def create_web_app(
         os.getenv("WEB_SESSION_TIMEOUT_MINUTES", "5"),
         default_value=5,
     )
+    session_timeout_state = {"minutes": web_session_timeout_minutes}
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Strict",
         SESSION_COOKIE_SECURE=secure_session_cookie,
         SESSION_REFRESH_EACH_REQUEST=True,
-        PERMANENT_SESSION_LIFETIME=timedelta(minutes=web_session_timeout_minutes),
+        PERMANENT_SESSION_LIFETIME=timedelta(days=REMEMBER_LOGIN_DAYS),
         MAX_CONTENT_LENGTH=max(max_bulk_upload, max_avatar_upload) + (256 * 1024),
     )
     login_window_seconds = 15 * 60
@@ -1273,6 +1334,8 @@ def create_web_app(
         return page_map
 
     def _current_user():
+        if not _is_active_auth_session():
+            return None
         email = _normalize_email(session.get("auth_email", ""))
         if not email:
             return None
@@ -1290,6 +1353,16 @@ def create_web_app(
 
     def _restart_enabled():
         return _is_truthy_env_value(os.getenv("WEB_RESTART_ENABLED", "true"))
+
+    def _public_base_url():
+        return str(os.getenv("WEB_PUBLIC_BASE_URL", "")).strip()
+
+    def _extract_hostname(value: str):
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        parsed = urlparse(text if "://" in text else f"//{text}")
+        return str(parsed.hostname or "").strip().lower()
 
     def _client_ip():
         x_forwarded_for = str(request.headers.get("X-Forwarded-For", "")).strip()
@@ -1309,9 +1382,98 @@ def create_web_app(
         session["csrf_token"] = token
         return token
 
+    def _clear_auth_session():
+        session.pop("auth_email", None)
+        session.pop("auth_mode", None)
+        session.pop("auth_issued_at", None)
+        session.pop("auth_last_seen", None)
+        session.pop("auth_remember_until", None)
+        session.pop("force_password_change_notice_shown", None)
+
+    def _set_auth_session(email: str, remember_login: bool):
+        now_dt = datetime.now(timezone.utc)
+        now_iso = now_dt.isoformat()
+        session["auth_email"] = _normalize_email(email)
+        session["auth_mode"] = (
+            AUTH_MODE_REMEMBER if remember_login else AUTH_MODE_STANDARD
+        )
+        session["auth_issued_at"] = now_iso
+        session["auth_last_seen"] = now_iso
+        if remember_login:
+            session["auth_remember_until"] = (
+                now_dt + timedelta(days=REMEMBER_LOGIN_DAYS)
+            ).isoformat()
+        else:
+            session.pop("auth_remember_until", None)
+        session.permanent = True
+
+    def _session_timeout_minutes():
+        return _normalize_session_timeout_minutes(
+            session_timeout_state.get("minutes", 5),
+            default_value=5,
+        )
+
+    def _is_active_auth_session():
+        email = _normalize_email(session.get("auth_email", ""))
+        if not email:
+            return False
+
+        now_dt = datetime.now(timezone.utc)
+        mode = str(session.get("auth_mode", AUTH_MODE_STANDARD)).strip().lower()
+        if mode not in {AUTH_MODE_STANDARD, AUTH_MODE_REMEMBER}:
+            mode = AUTH_MODE_STANDARD
+
+        issued_dt = _parse_iso_datetime(session.get("auth_issued_at", ""))
+        last_seen_dt = _parse_iso_datetime(session.get("auth_last_seen", ""))
+        if issued_dt is None and last_seen_dt is None:
+            _clear_auth_session()
+            flash("Your session has expired. Please log in again.", "error")
+            return False
+        if issued_dt is None:
+            issued_dt = last_seen_dt
+            session["auth_issued_at"] = issued_dt.isoformat()
+        if last_seen_dt is None:
+            last_seen_dt = issued_dt
+
+        if mode == AUTH_MODE_REMEMBER:
+            remember_until = _parse_iso_datetime(session.get("auth_remember_until", ""))
+            if remember_until is None:
+                remember_until = issued_dt + timedelta(days=REMEMBER_LOGIN_DAYS)
+                session["auth_remember_until"] = remember_until.isoformat()
+            if now_dt > remember_until:
+                _clear_auth_session()
+                flash("Your saved login expired. Please log in again.", "error")
+                return False
+        else:
+            inactivity_limit = timedelta(minutes=_session_timeout_minutes())
+            if (now_dt - last_seen_dt) > inactivity_limit:
+                _clear_auth_session()
+                flash("You were logged out due to inactivity.", "error")
+                return False
+
+        session["auth_mode"] = mode
+        session["auth_last_seen"] = now_dt.isoformat()
+        session.permanent = True
+        return True
+
     def _is_same_origin_request():
-        host = str(request.host or "").strip().lower()
-        if not host:
+        allowed_hosts = set()
+        request_host = _extract_hostname(str(request.host or ""))
+        if request_host:
+            allowed_hosts.add(request_host)
+
+        if trust_proxy_headers:
+            forwarded_host = str(request.headers.get("X-Forwarded-Host", "")).strip()
+            if forwarded_host:
+                allowed_hosts.add(_extract_hostname(forwarded_host.split(",")[0]))
+
+        public_base_url = _public_base_url()
+        if public_base_url:
+            public_host = _extract_hostname(public_base_url)
+            if public_host:
+                allowed_hosts.add(public_host)
+
+        if not allowed_hosts:
             return False
 
         origin = str(request.headers.get("Origin", "")).strip()
@@ -1319,16 +1481,18 @@ def create_web_app(
             parsed_origin = urlparse(origin)
             if parsed_origin.scheme not in {"http", "https"}:
                 return False
-            return str(parsed_origin.netloc or "").strip().lower() == host
+            return str(parsed_origin.hostname or "").strip().lower() in allowed_hosts
 
         referer = str(request.headers.get("Referer", "")).strip()
         if referer:
             parsed_referer = urlparse(referer)
             if parsed_referer.scheme not in {"http", "https"}:
                 return False
-            return str(parsed_referer.netloc or "").strip().lower() == host
+            return str(parsed_referer.hostname or "").strip().lower() in allowed_hosts
 
-        return False
+        # Some clients/proxies omit Origin/Referer on same-site form submits.
+        # CSRF validation still protects state-changing routes.
+        return True if enforce_csrf else False
 
     @app.before_request
     def enforce_request_security():
@@ -1474,6 +1638,7 @@ def create_web_app(
                 return redirect(url_for("login"))
             email = _normalize_email(request.form.get("email", ""))
             password = request.form.get("password", "")
+            remember_login = bool(request.form.get("remember_login"))
             user = next(
                 (entry for entry in _read_users(users_file) if entry["email"] == email),
                 None,
@@ -1487,8 +1652,7 @@ def create_web_app(
                             _save_users(users_file, users_data)
                             break
                 login_attempts.pop(client_ip, None)
-                session["auth_email"] = user["email"]
-                session.permanent = True
+                _set_auth_session(user["email"], remember_login=remember_login)
                 if _password_change_required(user):
                     session["force_password_change_notice_shown"] = True
                     flash(
@@ -1503,7 +1667,7 @@ def create_web_app(
 
         return _render_page(
             "Login",
-            """
+            f"""
             <div class="card" style="max-width:520px;margin:30px auto;">
               <h2>Web Login</h2>
               <p class="muted">Web GUI login with email/password. Users are created by an admin only.</p>
@@ -1512,6 +1676,10 @@ def create_web_app(
                 <input type="text" name="email" placeholder="admin@example.com" required />
                 <label style="margin-top:10px;display:block;">Password</label>
                 <input type="password" name="password" required />
+                <label style="margin-top:10px;display:block;">
+                  <input type="checkbox" name="remember_login" value="1" />
+                  Keep me signed in for {REMEMBER_LOGIN_DAYS} days on this device
+                </label>
                 <div style="margin-top:14px;">
                   <button class="btn" type="submit">Login</button>
                 </div>
@@ -2342,12 +2510,7 @@ def create_web_app(
                     ),
                     default_value=5,
                 )
-                app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
-                    minutes=effective_timeout_minutes
-                )
-                app.permanent_session_lifetime = timedelta(
-                    minutes=effective_timeout_minutes
-                )
+                session_timeout_state["minutes"] = effective_timeout_minutes
                 if callable(on_env_settings_saved):
                     on_env_settings_saved(updated_values)
                 flash("Settings saved to .env and applied where supported.", "success")
