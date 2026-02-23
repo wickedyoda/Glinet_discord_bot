@@ -8,6 +8,7 @@ Password-protected admin UI for runtime bot management.
 - Exposed via mapped host port (`WEB_HOST_PORT`)
 - Login is email/password
 - Login is web-only (`/login` route in the web UI)
+- Theme selector supports `Light` and `Black` modes in the web header
 
 ## User Model
 
@@ -23,6 +24,8 @@ Password-protected admin UI for runtime bot management.
 
 ## Admin Pages
 
+- `/admin` (dashboard)
+  - Quick-action cards with direct buttons for all available web-admin tools
 - `/admin/settings`
   - Environment-backed settings editor
   - Channel dropdowns for channel fields

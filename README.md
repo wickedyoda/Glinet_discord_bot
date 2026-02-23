@@ -94,6 +94,8 @@ Discord bot for GL.iNet community operations:
 - Supports multiple users (admin and non-admin accounts).
 - Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
 - Admin can manage:
+  - Dashboard quick-action cards with direct buttons to all web-admin tools
+  - Light/Black theme toggle in the web header (persisted in browser local storage)
   - Bot environment settings (channels, firmware schedule, logging/mod settings, etc.)
   - Per-command access rules (default/public/custom roles) in web GUI
   - Multi-role command restrictions using Discord role-name dropdowns (with multi-select)

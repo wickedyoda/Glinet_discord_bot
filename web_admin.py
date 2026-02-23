@@ -404,52 +404,156 @@ def _render_layout(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{ title }}</title>
   <style>
-    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background:#f6f7fb; color:#1f2937; }
-    header { background:#111827; color:#fff; padding:12px 18px; display:flex; justify-content:space-between; align-items:center; }
-    header a { color:#93c5fd; text-decoration:none; margin-left:12px; }
-    .wrap { max-width:1100px; margin:22px auto; padding:0 16px; }
-    .card { background:#fff; border:1px solid #e5e7eb; border-radius:10px; padding:18px; margin-bottom:16px; }
-    .flash { padding:10px 12px; border-radius:8px; margin-bottom:10px; }
-    .flash.error { background:#fee2e2; color:#991b1b; }
-    .flash.success { background:#dcfce7; color:#166534; }
-    table { width:100%; border-collapse:collapse; }
-    th, td { border-bottom:1px solid #e5e7eb; padding:10px; text-align:left; vertical-align:top; }
-    input[type=text], input[type=password], textarea, select {
-      width:100%; box-sizing:border-box; border:1px solid #d1d5db; border-radius:8px; padding:8px;
+    :root {
+      --bg: #0a0a0a;
+      --bg-grad-a: #101010;
+      --bg-grad-b: #141923;
+      --fg: #e7edf7;
+      --muted: #94a3b8;
+      --card: #12161d;
+      --border: #243047;
+      --header: #06070a;
+      --link: #7cc4ff;
+      --btn-bg: #2563eb;
+      --btn-secondary: #374151;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #3b1318;
+      --flash-err-fg: #fecaca;
+      --flash-ok-bg: #102c1c;
+      --flash-ok-fg: #bbf7d0;
+      --input-bg: #0f141d;
+      --input-fg: #e7edf7;
     }
-    textarea { min-height:220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .btn { background:#2563eb; border:0; color:#fff; padding:9px 14px; border-radius:8px; cursor:pointer; }
-    .btn.secondary { background:#4b5563; }
-    .btn.danger { background:#dc2626; }
-    .inline-form { display:inline; margin-left:12px; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
-    .muted { color:#6b7280; font-size:0.9rem; }
+    body[data-theme="light"] {
+      --bg: #eef3fb;
+      --bg-grad-a: #eef3fb;
+      --bg-grad-b: #f8fbff;
+      --fg: #1e293b;
+      --muted: #64748b;
+      --card: #ffffff;
+      --border: #d6dee9;
+      --header: #ffffff;
+      --link: #1d4ed8;
+      --btn-bg: #2563eb;
+      --btn-secondary: #475569;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #fee2e2;
+      --flash-err-fg: #991b1b;
+      --flash-ok-bg: #dcfce7;
+      --flash-ok-fg: #166534;
+      --input-bg: #ffffff;
+      --input-fg: #1e293b;
+    }
+    body {
+      font-family: "Trebuchet MS", "Lucida Sans", "Segoe UI", sans-serif;
+      margin: 0;
+      color: var(--fg);
+      background:
+        radial-gradient(1100px 450px at 20% -20%, var(--bg-grad-b), transparent 55%),
+        radial-gradient(900px 360px at 100% 0%, #10213d, transparent 50%),
+        var(--bg);
+    }
+    a { color: var(--link); }
+    header {
+      background: var(--header);
+      border-bottom: 1px solid var(--border);
+      color: var(--fg);
+      padding: 12px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
+    .nav-links { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .nav-links a { text-decoration: none; }
+    .wrap { max-width: 1200px; margin: 22px auto; padding: 0 16px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+    .flash { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid var(--border); }
+    .flash.error { background: var(--flash-err-bg); color: var(--flash-err-fg); }
+    .flash.success { background: var(--flash-ok-bg); color: var(--flash-ok-fg); }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--border); padding: 10px; text-align: left; vertical-align: top; }
+    input[type=text], input[type=password], textarea, select {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      background: var(--input-bg);
+      color: var(--input-fg);
+    }
+    textarea { min-height: 220px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .btn {
+      background: var(--btn-bg);
+      border: 0;
+      color: #fff;
+      padding: 9px 14px;
+      border-radius: 8px;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-block;
+    }
+    .btn.secondary { background: var(--btn-secondary); }
+    .btn.danger { background: var(--btn-danger); }
+    .inline-form { display: inline; margin-left: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .muted { color: var(--muted); font-size: 0.9rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-    @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
+    .theme-switch { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+    .theme-btn {
+      border: 0;
+      background: transparent;
+      color: var(--fg);
+      padding: 7px 11px;
+      cursor: pointer;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .theme-btn.active { background: var(--btn-bg); color: #fff; }
+    .dash-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+    .dash-card h3 { margin-top: 0; margin-bottom: 8px; }
+    .dash-card p { margin-top: 0; min-height: 50px; }
+    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    @media (max-width: 1080px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      .dash-grid { grid-template-columns: 1fr; }
+      .header-right { width: 100%; justify-content: flex-start; }
+    }
   </style>
 </head>
-<body>
+<body data-theme="black">
   <header>
     <div><strong>Discord Bot Admin</strong></div>
-    <div>
+    <div class="header-right">
+      <div class="theme-switch" aria-label="Theme selector">
+        <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
+        <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+      </div>
       {% if current_email %}
-        <span>{{ current_email }}</span>
-        <a href="{{ url_for('dashboard') }}">Dashboard</a>
-        {% if is_admin %}<a href="{{ url_for('bot_profile') }}">Bot Profile</a>{% endif %}
-        {% if is_admin %}<a href="{{ url_for('command_permissions') }}">Command Permissions</a>{% endif %}
-        <a href="{{ url_for('settings') }}">Settings</a>
-        <a href="{{ url_for('documentation') }}">Documentation</a>
-        {% if github_wiki_url %}<a href="{{ github_wiki_url }}" target="_blank" rel="noopener noreferrer">GitHub Wiki</a>{% endif %}
-        <a href="{{ url_for('tag_responses') }}">Tag Responses</a>
-        {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
-        {% if is_admin %}<a href="{{ url_for('users') }}">Users</a>{% endif %}
-        {% if is_admin and restart_enabled %}
-          <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
-            <input type="hidden" name="confirm" value="yes" />
-            <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
-          </form>
-        {% endif %}
-        <a href="{{ url_for('logout') }}">Logout</a>
+        <nav class="nav-links">
+          <span>{{ current_email }}</span>
+          <a href="{{ url_for('dashboard') }}">Dashboard</a>
+          {% if is_admin %}<a href="{{ url_for('bot_profile') }}">Bot Profile</a>{% endif %}
+          {% if is_admin %}<a href="{{ url_for('command_permissions') }}">Command Permissions</a>{% endif %}
+          {% if is_admin %}<a href="{{ url_for('settings') }}">Settings</a>{% endif %}
+          <a href="{{ url_for('documentation') }}">Documentation</a>
+          {% if github_wiki_url %}<a href="{{ github_wiki_url }}" target="_blank" rel="noopener noreferrer">GitHub Wiki</a>{% endif %}
+          {% if is_admin %}<a href="{{ url_for('tag_responses') }}">Tag Responses</a>{% endif %}
+          {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
+          {% if is_admin %}<a href="{{ url_for('users') }}">Users</a>{% endif %}
+          {% if is_admin and restart_enabled %}
+            <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
+              <input type="hidden" name="confirm" value="yes" />
+              <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
+            </form>
+          {% endif %}
+          <a href="{{ url_for('logout') }}">Logout</a>
+        </nav>
       {% endif %}
     </div>
   </header>
@@ -461,6 +565,36 @@ def _render_layout(
     {% endwith %}
     {{ body_html | safe }}
   </div>
+  <script>
+    (function () {
+      const storageKey = "web_theme_choice";
+      const fallbackTheme = "black";
+      const allowed = { light: true, black: true };
+
+      function setTheme(theme) {
+        const selected = allowed[theme] ? theme : fallbackTheme;
+        document.body.setAttribute("data-theme", selected);
+        try {
+          window.localStorage.setItem(storageKey, selected);
+        } catch (error) {}
+        document.querySelectorAll("[data-theme-choice]").forEach((btn) => {
+          btn.classList.toggle("active", btn.getAttribute("data-theme-choice") === selected);
+        });
+      }
+
+      let stored = fallbackTheme;
+      try {
+        stored = window.localStorage.getItem(storageKey) || fallbackTheme;
+      } catch (error) {}
+      setTheme(stored);
+
+      document.querySelectorAll("[data-theme-choice]").forEach((btn) => {
+        btn.addEventListener("click", function () {
+          setTheme(btn.getAttribute("data-theme-choice"));
+        });
+      });
+    })();
+  </script>
 </body>
 </html>
         """,
@@ -627,24 +761,112 @@ def create_web_app(
     @login_required
     def dashboard():
         user = _current_user()
-        return _render_page(
-            "Dashboard",
-            """
-            <div class="card">
-              <h2>Dashboard</h2>
-              <p>Use <a href="/admin/bot-profile">Bot Profile</a> to view current bot identity and upload a new avatar.</p>
-              <p>Use <a href="/admin/command-permissions">Command Permissions</a> to configure who can use each bot command.</p>
-              <p>Use <a href="/admin/settings">Settings</a> to edit environment-driven bot settings.</p>
-              <p>Use <a href="/admin/documentation">Documentation</a> to browse the built-in wiki pages.</p>
-              <p>Use <a href="/admin/tag-responses">Tag Responses</a> to manage dynamic tag commands.</p>
-              <p>Use <a href="/admin/bulk-role-csv">Bulk Role CSV</a> to upload members and assign a role.</p>
-              <p>Use <a href="/admin/users">Users</a> to create/manage login users (admin only).</p>
-              <p class="muted">Some Discord command metadata (for example guild-specific slash registration) may still require a process restart after changes.</p>
-            </div>
-            """,
-            user["email"],
-            bool(user.get("is_admin")),
+        is_admin = bool(user.get("is_admin"))
+
+        cards = []
+
+        def add_dashboard_card(title: str, description: str, href: str, button_label: str, external: bool = False):
+            link_target = " target='_blank' rel='noopener noreferrer'" if external else ""
+            cards.append(
+                f"""
+                <div class="card dash-card">
+                  <h3>{escape(title)}</h3>
+                  <p class="muted">{escape(description)}</p>
+                  <div class="dash-actions">
+                    <a class="btn secondary" href="{escape(href, quote=True)}"{link_target}>{escape(button_label)}</a>
+                  </div>
+                </div>
+                """
+            )
+
+        if is_admin:
+            add_dashboard_card(
+                "Bot Profile",
+                "Rename the bot, update server nickname, and upload avatar.",
+                url_for("bot_profile"),
+                "Open Bot Profile",
+            )
+            add_dashboard_card(
+                "Command Permissions",
+                "Set access mode per command and pick restricted roles from Discord role lists.",
+                url_for("command_permissions"),
+                "Open Permissions",
+            )
+            add_dashboard_card(
+                "Settings",
+                "Edit runtime environment settings with channel and role dropdowns.",
+                url_for("settings"),
+                "Open Settings",
+            )
+            add_dashboard_card(
+                "Tag Responses",
+                "Manage dynamic tag-response mappings and refresh runtime commands.",
+                url_for("tag_responses"),
+                "Open Tag Responses",
+            )
+            add_dashboard_card(
+                "Bulk Role CSV",
+                "Upload a CSV of names and assign a role with a detailed result report.",
+                url_for("bulk_role_csv"),
+                "Open Bulk CSV",
+            )
+            add_dashboard_card(
+                "Users",
+                "Create web users, toggle admin rights, and reset passwords.",
+                url_for("users"),
+                "Open Users",
+            )
+
+        add_dashboard_card(
+            "Documentation",
+            "Browse embedded docs for commands, deployment, and operations.",
+            url_for("documentation"),
+            "Open Docs",
         )
+
+        wiki_url = _github_wiki_url()
+        if wiki_url:
+            add_dashboard_card(
+                "GitHub Wiki",
+                "Open the external project wiki in a new tab.",
+                wiki_url,
+                "Open GitHub Wiki",
+                external=True,
+            )
+
+        restart_card = ""
+        if is_admin and _restart_enabled():
+            restart_card = f"""
+            <div class="card dash-card">
+              <h3>Restart Container</h3>
+              <p class="muted">Apply runtime-level changes that require a process restart.</p>
+              <form method="post" action="{escape(url_for('restart_service'), quote=True)}"
+                onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
+                <input type="hidden" name="confirm" value="yes" />
+                <button class="btn danger" type="submit">Restart Container</button>
+              </form>
+            </div>
+            """
+
+        admin_note = (
+            "<p class='muted'>Some Discord metadata changes may still require a restart after saving.</p>"
+            if is_admin
+            else "<p class='muted'>This account has limited access. Contact an admin for management actions.</p>"
+        )
+
+        body = f"""
+        <div class="card">
+          <h2>Dashboard</h2>
+          <p>Quick actions for all available web interface functions.</p>
+          {admin_note}
+        </div>
+        <div class="dash-grid">
+          {''.join(cards)}
+          {restart_card}
+        </div>
+        """
+
+        return _render_page("Dashboard", body, user["email"], is_admin)
 
     @app.route("/admin/restart", methods=["POST"])
     @admin_required
