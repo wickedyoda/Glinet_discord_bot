@@ -21,7 +21,7 @@ Moderator tooling for members, roles, and operational incident visibility.
 
 ## `/logs` Command Behavior
 
-- Reads recent lines from `data/container_errors.log`.
+- Reads recent lines from `${LOG_DIR}/container_errors.log` (default `/logs/container_errors.log`).
 - Ephemeral response to reduce accidental exposure.
 - Intended for production incident triage without shell access.
 

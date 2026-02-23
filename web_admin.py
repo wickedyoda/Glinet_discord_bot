@@ -4,6 +4,7 @@ import re
 import secrets
 import sqlite3
 import time
+import ipaddress
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from html import escape
@@ -1283,7 +1284,25 @@ def create_web_app(
     @app.after_request
     def apply_security_headers(response):
         request_host = _extract_hostname(str(request.host or ""))
-        is_local_request = request_host in {"localhost", "127.0.0.1", "::1"}
+        is_local_request = False
+        if request_host:
+            if request_host in {"localhost", "127.0.0.1", "::1"}:
+                is_local_request = True
+            elif request_host.endswith(".local"):
+                is_local_request = True
+            elif "." not in request_host:
+                # Single-label hostnames are commonly local/private network names.
+                is_local_request = True
+            else:
+                try:
+                    ip_value = ipaddress.ip_address(request_host)
+                    is_local_request = (
+                        ip_value.is_loopback
+                        or ip_value.is_private
+                        or ip_value.is_link_local
+                    )
+                except ValueError:
+                    is_local_request = False
         allow_coop = bool(request.is_secure or is_local_request)
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")

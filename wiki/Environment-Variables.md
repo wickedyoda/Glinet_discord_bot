@@ -22,8 +22,9 @@ This page lists all supported environment variables, defaults, and accepted opti
 |---|---|---|---|
 | `GENERAL_CHANNEL_ID` | `0` | Integer, `>= 0` | Used for invite generation fallback |
 | `DATA_DIR` | `data` | Path string | Persistent runtime data directory |
+| `LOG_DIR` | `/logs` | Path string | Directory for `bot.log` and `container_errors.log` |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Runtime bot/web verbosity |
-| `CONTAINER_LOG_LEVEL` | `ERROR` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Threshold for `data/container_errors.log` |
+| `CONTAINER_LOG_LEVEL` | `ERROR` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Threshold for `${LOG_DIR}/container_errors.log` |
 
 ## Search and Docs
 
@@ -135,6 +136,7 @@ WEB_ENFORCE_SAME_ORIGIN_POSTS=true
 ### Hardened Logging Profile
 
 ```env
+LOG_DIR=/logs
 LOG_LEVEL=INFO
 CONTAINER_LOG_LEVEL=ERROR
 WEB_HARDEN_FILE_PERMISSIONS=true

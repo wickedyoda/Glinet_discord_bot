@@ -24,6 +24,7 @@ services:
       - WEB_ENABLED=${WEB_ENABLED:-true}
       - WEB_PORT=${WEB_PORT:-8080}
       - WEB_HOST_PORT=${WEB_HOST_PORT:-8080}
+      - LOG_DIR=${LOG_DIR:-/logs}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CONTAINER_LOG_LEVEL=${CONTAINER_LOG_LEVEL:-ERROR}
       - WEB_PUBLIC_BASE_URL=${WEB_PUBLIC_BASE_URL:-}
@@ -35,6 +36,7 @@ services:
       - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
+      - ./logs:/logs
       - ./.env:/app/.env
     restart: unless-stopped
 ```
@@ -96,13 +98,14 @@ Use prebuilt image when:
 
 Persistent log files:
 
-- `data/bot.log` (application logs)
-- `data/container_errors.log` (error stream used by `/logs`)
+- `${LOG_DIR}/bot.log` (application logs, default `/logs/bot.log`)
+- `${LOG_DIR}/container_errors.log` (error stream used by `/logs`, default `/logs/container_errors.log`)
 
 Tune with:
 
 - `LOG_LEVEL`
 - `CONTAINER_LOG_LEVEL`
+- `LOG_DIR`
 
 ## Upgrade and Restart Workflow
 
