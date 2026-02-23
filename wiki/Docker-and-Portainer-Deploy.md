@@ -13,8 +13,10 @@ services:
       context: .
     env_file:
       - .env
+    environment:
+      - WEB_BIND_HOST=0.0.0.0
     ports:
-      - "${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
+      - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
 ```
@@ -40,7 +42,8 @@ Recommended volume:
 ## Web Port
 
 - Container listens on `WEB_PORT` (default `8080`)
-- Host mapping should be `${WEB_HOST_PORT:-8080}:8080` for image-based deployments
+- Default secure mapping is localhost-only: `127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}`
+- Expose externally only behind HTTPS + additional access controls
 
 ## Troubleshooting
 

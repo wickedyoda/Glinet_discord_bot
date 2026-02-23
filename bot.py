@@ -12,12 +12,12 @@ import csv
 import io
 import threading
 import sqlite3
+import secrets
 from difflib import SequenceMatcher
 from datetime import timedelta, datetime, timezone
 from html import unescape
 from urllib.parse import urljoin
 from dotenv import load_dotenv
-import random
 import requests
 from bs4 import BeautifulSoup
 from croniter import croniter
@@ -52,17 +52,28 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
-FIRMWARE_FEED_URL = os.getenv("FIRMWARE_FEED_URL", "https://gl-fw.remotetohome.io/").strip()
+FIRMWARE_FEED_URL = os.getenv(
+    "FIRMWARE_FEED_URL", "https://gl-fw.remotetohome.io/"
+).strip()
 FIRMWARE_NOTIFICATION_CHANNEL_RAW = os.getenv(
     "firmware_notification_channel",
     os.getenv("FIRMWARE_NOTIFY_CHANNEL_ID", ""),
 ).strip()
-if FIRMWARE_NOTIFICATION_CHANNEL_RAW.startswith("<#") and FIRMWARE_NOTIFICATION_CHANNEL_RAW.endswith(">"):
+if FIRMWARE_NOTIFICATION_CHANNEL_RAW.startswith(
+    "<#"
+) and FIRMWARE_NOTIFICATION_CHANNEL_RAW.endswith(">"):
     FIRMWARE_NOTIFICATION_CHANNEL_RAW = FIRMWARE_NOTIFICATION_CHANNEL_RAW[2:-1]
 try:
-    FIRMWARE_NOTIFY_CHANNEL_ID = int(FIRMWARE_NOTIFICATION_CHANNEL_RAW) if FIRMWARE_NOTIFICATION_CHANNEL_RAW else 0
+    FIRMWARE_NOTIFY_CHANNEL_ID = (
+        int(FIRMWARE_NOTIFICATION_CHANNEL_RAW)
+        if FIRMWARE_NOTIFICATION_CHANNEL_RAW
+        else 0
+    )
 except ValueError:
-    logger.warning("Invalid firmware_notification_channel value: %s", FIRMWARE_NOTIFICATION_CHANNEL_RAW)
+    logger.warning(
+        "Invalid firmware_notification_channel value: %s",
+        FIRMWARE_NOTIFICATION_CHANNEL_RAW,
+    )
     FIRMWARE_NOTIFY_CHANNEL_ID = 0
 
 FIRMWARE_CHECK_SCHEDULE = os.getenv("firmware_check_schedule", "").strip()
@@ -74,14 +85,25 @@ if not FIRMWARE_CHECK_SCHEDULE:
             interval_minutes = max(1, interval_seconds // 60)
             FIRMWARE_CHECK_SCHEDULE = f"*/{interval_minutes} * * * *"
         except ValueError:
-            logger.warning("Invalid FIRMWARE_CHECK_INTERVAL_SECONDS value: %s", legacy_interval_raw)
+            logger.warning(
+                "Invalid FIRMWARE_CHECK_INTERVAL_SECONDS value: %s", legacy_interval_raw
+            )
 if not FIRMWARE_CHECK_SCHEDULE:
     FIRMWARE_CHECK_SCHEDULE = "*/30 * * * *"
 
-FIRMWARE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "30"))
-FIRMWARE_RELEASE_NOTES_MAX_CHARS = max(200, int(os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "900")))
-WEB_ENABLED = (os.getenv("WEB_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"})
-WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "0.0.0.0").strip() or "0.0.0.0"
+FIRMWARE_REQUEST_TIMEOUT_SECONDS = int(
+    os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "30")
+)
+FIRMWARE_RELEASE_NOTES_MAX_CHARS = max(
+    200, int(os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "900"))
+)
+WEB_ENABLED = os.getenv("WEB_ENABLED", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
 try:
     WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 except ValueError:
@@ -93,7 +115,9 @@ WEB_ADMIN_DEFAULT_EMAIL = os.getenv(
 ).strip()
 WEB_ADMIN_DEFAULT_PASSWORD = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
 try:
-    WEB_DISCORD_CATALOG_TTL_SECONDS = max(15, int(os.getenv("WEB_DISCORD_CATALOG_TTL_SECONDS", "120")))
+    WEB_DISCORD_CATALOG_TTL_SECONDS = max(
+        15, int(os.getenv("WEB_DISCORD_CATALOG_TTL_SECONDS", "120"))
+    )
 except ValueError:
     WEB_DISCORD_CATALOG_TTL_SECONDS = 120
 try:
@@ -104,15 +128,21 @@ try:
 except ValueError:
     WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS = 20
 try:
-    WEB_BULK_ASSIGN_TIMEOUT_SECONDS = max(30, int(os.getenv("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "300")))
+    WEB_BULK_ASSIGN_TIMEOUT_SECONDS = max(
+        30, int(os.getenv("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "300"))
+    )
 except ValueError:
     WEB_BULK_ASSIGN_TIMEOUT_SECONDS = 300
 try:
-    WEB_BOT_PROFILE_TIMEOUT_SECONDS = max(5, int(os.getenv("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "20")))
+    WEB_BOT_PROFILE_TIMEOUT_SECONDS = max(
+        5, int(os.getenv("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "20"))
+    )
 except ValueError:
     WEB_BOT_PROFILE_TIMEOUT_SECONDS = 20
 try:
-    WEB_AVATAR_MAX_UPLOAD_BYTES = max(1024, int(os.getenv("WEB_AVATAR_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024))))
+    WEB_AVATAR_MAX_UPLOAD_BYTES = max(
+        1024, int(os.getenv("WEB_AVATAR_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024)))
+    )
 except ValueError:
     WEB_AVATAR_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
@@ -295,7 +325,7 @@ intents = discord.Intents.default()
 intents.members = True
 intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents, case_insensitive=True)
+bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
 tree = bot.tree
 
 tag_responses = {}
@@ -446,8 +476,11 @@ def migrate_legacy_files_to_db():
     now_iso = datetime.now(timezone.utc).isoformat()
 
     with db_lock:
+
         def kv_exists(key: str):
-            row = conn.execute("SELECT 1 FROM kv_store WHERE key = ?", (key,)).fetchone()
+            row = conn.execute(
+                "SELECT 1 FROM kv_store WHERE key = ?", (key,)
+            ).fetchone()
             return row is not None
 
         def kv_insert_if_missing(key: str, value: str):
@@ -483,7 +516,9 @@ def migrate_legacy_files_to_db():
                                 (code, role_id, now_iso),
                             )
             except Exception:
-                logger.exception("Failed migrating legacy role codes from %s", CODES_FILE)
+                logger.exception(
+                    "Failed migrating legacy role codes from %s", CODES_FILE
+                )
 
         if os.path.exists(INVITE_ROLE_FILE):
             try:
@@ -505,7 +540,10 @@ def migrate_legacy_files_to_db():
                                 (code, role_id, now_iso),
                             )
             except Exception:
-                logger.exception("Failed migrating legacy invite-role mapping from %s", INVITE_ROLE_FILE)
+                logger.exception(
+                    "Failed migrating legacy invite-role mapping from %s",
+                    INVITE_ROLE_FILE,
+                )
 
         tag_mapping_loaded = False
         if os.path.exists(TAG_RESPONSES_FILE):
@@ -526,9 +564,13 @@ def migrate_legacy_files_to_db():
                             (tag, str(raw_response), now_iso),
                         )
             except Exception:
-                logger.exception("Failed migrating legacy tag responses from %s", TAG_RESPONSES_FILE)
+                logger.exception(
+                    "Failed migrating legacy tag responses from %s", TAG_RESPONSES_FILE
+                )
 
-        tag_count = conn.execute("SELECT COUNT(*) AS c FROM tag_responses").fetchone()["c"]
+        tag_count = conn.execute("SELECT COUNT(*) AS c FROM tag_responses").fetchone()[
+            "c"
+        ]
         if tag_count == 0 and not tag_mapping_loaded:
             for raw_tag, raw_response in DEFAULT_TAG_RESPONSES.items():
                 conn.execute(
@@ -562,9 +604,14 @@ def migrate_legacy_files_to_db():
                     if sync_value:
                         kv_insert_if_missing("firmware_last_synced", sync_value)
             except Exception:
-                logger.exception("Failed migrating legacy firmware state from %s", FIRMWARE_STATE_FILE)
+                logger.exception(
+                    "Failed migrating legacy firmware state from %s",
+                    FIRMWARE_STATE_FILE,
+                )
 
-        firmware_seen_count = conn.execute("SELECT COUNT(*) AS c FROM firmware_seen").fetchone()["c"]
+        firmware_seen_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM firmware_seen"
+        ).fetchone()["c"]
         if firmware_seen_count > 0:
             kv_insert_if_missing("firmware_seen_initialized", "1")
             kv_insert_if_missing("firmware_source_url", FIRMWARE_FEED_URL)
@@ -573,7 +620,9 @@ def migrate_legacy_files_to_db():
             try:
                 with open(COMMAND_PERMISSIONS_FILE, "r") as f:
                     payload = json.load(f)
-                raw_rules = payload.get("rules", {}) if isinstance(payload, dict) else {}
+                raw_rules = (
+                    payload.get("rules", {}) if isinstance(payload, dict) else {}
+                )
                 if isinstance(raw_rules, dict):
                     for command_key, raw_rule in raw_rules.items():
                         if command_key not in COMMAND_PERMISSION_DEFAULTS:
@@ -594,7 +643,10 @@ def migrate_legacy_files_to_db():
                             ),
                         )
             except Exception:
-                logger.exception("Failed migrating legacy command permissions from %s", COMMAND_PERMISSIONS_FILE)
+                logger.exception(
+                    "Failed migrating legacy command permissions from %s",
+                    COMMAND_PERMISSIONS_FILE,
+                )
 
         if os.path.exists(WEB_USERS_FILE):
             try:
@@ -619,7 +671,9 @@ def migrate_legacy_files_to_db():
                             (email, password_hash, is_admin, created_at, now_iso),
                         )
             except Exception:
-                logger.exception("Failed migrating legacy web users from %s", WEB_USERS_FILE)
+                logger.exception(
+                    "Failed migrating legacy web users from %s", WEB_USERS_FILE
+                )
 
         if not kv_exists("access_role_id") and os.path.exists(ROLE_FILE):
             try:
@@ -629,7 +683,9 @@ def migrate_legacy_files_to_db():
                 if role_id > 0:
                     kv_insert_if_missing("access_role_id", str(role_id))
             except Exception:
-                logger.exception("Failed migrating legacy access role from %s", ROLE_FILE)
+                logger.exception(
+                    "Failed migrating legacy access role from %s", ROLE_FILE
+                )
 
         conn.commit()
 
@@ -661,7 +717,9 @@ def load_tag_responses():
 def save_tag_responses(mapping):
     conn = get_db_connection()
     now_iso = datetime.now(timezone.utc).isoformat()
-    normalized = {normalize_tag(k): str(v) for k, v in (mapping or {}).items() if normalize_tag(k)}
+    normalized = {
+        normalize_tag(k): str(v) for k, v in (mapping or {}).items() if normalize_tag(k)
+    }
     with db_lock:
         conn.execute("DELETE FROM tag_responses")
         for tag, response in normalized.items():
@@ -704,14 +762,18 @@ def register_tag_commands():
     existing_names = {cmd.name for cmd in tree.get_commands()}
     for command_name, response in tag_commands.items():
         if command_name in existing_names:
-            logger.warning("Skipping tag slash command /%s due to name conflict", command_name)
+            logger.warning(
+                "Skipping tag slash command /%s due to name conflict", command_name
+            )
             continue
 
         def make_tag_reply(tag_response: str):
             async def tag_reply(interaction: discord.Interaction):
                 if not can_use_command(interaction.user, "tag_commands"):
                     await interaction.response.send_message(
-                        build_command_permission_denied_message("tag_commands", interaction.guild),
+                        build_command_permission_denied_message(
+                            "tag_commands", interaction.guild
+                        ),
                         ephemeral=True,
                     )
                     return
@@ -778,7 +840,7 @@ def generate_code():
         last_digit = None
         streak = 1
         for _ in range(6):
-            digit = str(random.randint(0, 9))
+            digit = str(secrets.randbelow(10))
             if digit == last_digit:
                 streak += 1
             else:
@@ -790,6 +852,7 @@ def generate_code():
         if len(code) == 6:
             logger.debug("Generated code %s", code)
             return code
+
 
 def save_role_code(code, role_id):
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -805,6 +868,7 @@ def save_role_code(code, role_id):
         conn.commit()
     logger.info("Saved code %s for role %s", code, role_id)
 
+
 def get_role_id_by_code(code):
     conn = get_db_connection()
     with db_lock:
@@ -818,11 +882,13 @@ def get_role_id_by_code(code):
     logger.info("Code %s matched role %s", code, role_id)
     return role_id
 
+
 def load_invite_roles():
     conn = get_db_connection()
     with db_lock:
         rows = conn.execute("SELECT invite_code, role_id FROM invite_roles").fetchall()
     return {row["invite_code"]: int(row["role_id"]) for row in rows}
+
 
 def save_invite_role(invite_code, role_id):
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -838,6 +904,7 @@ def save_invite_role(invite_code, role_id):
         conn.commit()
     logger.info("Saved invite %s for role %s", invite_code, role_id)
 
+
 def has_allowed_role(member: discord.Member):
     has_role = any(role.name in DEFAULT_ALLOWED_ROLE_NAMES for role in member.roles)
     logger.debug("User %s allowed: %s", member, has_role)
@@ -850,7 +917,11 @@ def has_moderator_access(member: discord.Member):
 
 def normalize_permission_mode(value: str | None):
     raw = (value or "").strip().lower()
-    if raw in {COMMAND_PERMISSION_MODE_DEFAULT, COMMAND_PERMISSION_MODE_PUBLIC, COMMAND_PERMISSION_MODE_CUSTOM_ROLES}:
+    if raw in {
+        COMMAND_PERMISSION_MODE_DEFAULT,
+        COMMAND_PERMISSION_MODE_PUBLIC,
+        COMMAND_PERMISSION_MODE_CUSTOM_ROLES,
+    }:
         return raw
     return COMMAND_PERMISSION_MODE_DEFAULT
 
@@ -959,7 +1030,9 @@ def save_command_permission_rules(rules: dict, actor_email: str = ""):
 
 
 def resolve_command_permission_state(command_key: str):
-    default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
+    default_policy = COMMAND_PERMISSION_DEFAULTS.get(
+        command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC
+    )
     rule = load_command_permission_rules().get(
         command_key,
         {"mode": COMMAND_PERMISSION_MODE_DEFAULT, "role_ids": []},
@@ -995,7 +1068,9 @@ def can_use_command(member: discord.Member | discord.User, command_key: str):
     return False
 
 
-def build_command_permission_denied_message(command_key: str, guild: discord.Guild | None = None):
+def build_command_permission_denied_message(
+    command_key: str, guild: discord.Guild | None = None
+):
     default_policy, mode, role_ids = resolve_command_permission_state(command_key)
     if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
         if guild is None or not role_ids:
@@ -1014,7 +1089,9 @@ def build_command_permission_denied_message(command_key: str, guild: discord.Gui
     return "❌ You do not have permission to use this command."
 
 
-async def ensure_interaction_command_access(interaction: discord.Interaction, command_key: str):
+async def ensure_interaction_command_access(
+    interaction: discord.Interaction, command_key: str
+):
     if can_use_command(interaction.user, command_key):
         return True
     await interaction.response.send_message(
@@ -1035,7 +1112,9 @@ def build_command_permissions_web_payload():
     rules = load_command_permission_rules()
     commands_payload = []
     for command_key, metadata in COMMAND_PERMISSION_METADATA.items():
-        default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
+        default_policy = COMMAND_PERMISSION_DEFAULTS.get(
+            command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC
+        )
         rule = normalize_command_permission_rule(rules.get(command_key, {}))
         commands_payload.append(
             {
@@ -1043,7 +1122,9 @@ def build_command_permissions_web_payload():
                 "label": metadata.get("label", command_key),
                 "description": metadata.get("description", ""),
                 "default_policy": default_policy,
-                "default_policy_label": COMMAND_PERMISSION_POLICY_LABELS.get(default_policy, default_policy),
+                "default_policy_label": COMMAND_PERMISSION_POLICY_LABELS.get(
+                    default_policy, default_policy
+                ),
                 "mode": rule["mode"],
                 "role_ids": rule["role_ids"],
             }
@@ -1061,12 +1142,18 @@ def run_web_get_command_permissions():
         return build_command_permissions_web_payload()
     except Exception:
         logger.exception("Failed to build command permissions payload for web admin")
-        return {"ok": False, "error": "Unexpected error while loading command permissions."}
+        return {
+            "ok": False,
+            "error": "Unexpected error while loading command permissions.",
+        }
 
 
 def run_web_update_command_permissions(payload: dict, actor_email: str):
     if not isinstance(payload, dict):
-        return {"ok": False, "error": "Invalid payload type for command permissions update."}
+        return {
+            "ok": False,
+            "error": "Invalid payload type for command permissions update.",
+        }
     commands_payload = payload.get("commands", {})
     if not isinstance(commands_payload, dict):
         return {"ok": False, "error": "Payload is missing a commands object."}
@@ -1092,7 +1179,9 @@ def run_web_update_command_permissions(payload: dict, actor_email: str):
     try:
         save_command_permission_rules(updated_rules, actor_email=actor_email)
     except Exception:
-        logger.exception("Failed to save command permissions from web admin by %s", actor_email)
+        logger.exception(
+            "Failed to save command permissions from web admin by %s", actor_email
+        )
         return {"ok": False, "error": "Failed to save command permissions."}
 
     response = build_command_permissions_web_payload()
@@ -1126,14 +1215,22 @@ def run_web_save_tag_responses(mapping: dict, actor_email: str):
     try:
         save_tag_responses(normalized)
     except Exception:
-        logger.exception("Failed saving tag responses from web admin by %s", actor_email)
+        logger.exception(
+            "Failed saving tag responses from web admin by %s", actor_email
+        )
         return {"ok": False, "error": "Unexpected error while saving tag responses."}
 
-    logger.info("Tag responses updated via web admin by %s (%s entries)", actor_email, len(normalized))
+    logger.info(
+        "Tag responses updated via web admin by %s (%s entries)",
+        actor_email,
+        len(normalized),
+    )
     return {"ok": True, "mapping": normalized, "message": "Tag responses updated."}
 
 
-def validate_moderation_target(actor: discord.Member, target: discord.Member, bot_member: discord.Member):
+def validate_moderation_target(
+    actor: discord.Member, target: discord.Member, bot_member: discord.Member
+):
     if target.id == actor.id:
         return False, "❌ You cannot moderate yourself."
     if target.id == actor.guild.owner_id:
@@ -1147,11 +1244,16 @@ def validate_moderation_target(actor: discord.Member, target: discord.Member, bo
     return True, None
 
 
-def validate_manageable_role(actor: discord.Member, role: discord.Role, bot_member: discord.Member):
+def validate_manageable_role(
+    actor: discord.Member, role: discord.Role, bot_member: discord.Member
+):
     if role == actor.guild.default_role:
         return False, "❌ You cannot manage the @everyone role."
     if role.managed:
-        return False, "❌ That role is managed by an integration and cannot be changed here."
+        return (
+            False,
+            "❌ That role is managed by an integration and cannot be changed here.",
+        )
     if actor.id != actor.guild.owner_id and actor.top_role <= role:
         return False, "❌ You can only manage roles below your top role."
     if bot_member.top_role <= role:
@@ -1275,7 +1377,9 @@ def format_bulk_assignment_preview(title: str, values: list[str], limit: int = 2
     return f"**{title}:** {preview}"
 
 
-def build_bulk_assignment_summary_lines(source_name: str, role_mention: str, result: dict):
+def build_bulk_assignment_summary_lines(
+    source_name: str, role_mention: str, result: dict
+):
     summary_lines = [
         f"✅ Finished processing `{source_name}` for role {role_mention}.",
         f"- Unique names processed: `{result['unique_names_count']}`",
@@ -1290,14 +1394,18 @@ def build_bulk_assignment_summary_lines(source_name: str, role_mention: str, res
         format_bulk_assignment_preview("Unmatched", result["unmatched_names"]),
         format_bulk_assignment_preview("Ambiguous", result["ambiguous_names"]),
         format_bulk_assignment_preview("Failed", result["assignment_failures"]),
-        format_bulk_assignment_preview("Duplicate member inputs", result["duplicate_member_inputs"]),
+        format_bulk_assignment_preview(
+            "Duplicate member inputs", result["duplicate_member_inputs"]
+        ),
     ):
         if line:
             summary_lines.append(line)
     return summary_lines
 
 
-def build_bulk_assignment_report_text(role: discord.Role, requested_by: str, source_name: str, result: dict):
+def build_bulk_assignment_report_text(
+    role: discord.Role, requested_by: str, source_name: str, result: dict
+):
     def section_block(title: str, values: list[str]):
         lines = [f"{title}: {len(values)}"]
         if values:
@@ -1333,7 +1441,10 @@ async def process_bulk_role_assignment_payload(
     if not unique_names:
         return None, "❌ The uploaded file did not contain any names."
     if len(unique_names) > CSV_ROLE_ASSIGN_MAX_NAMES:
-        return None, f"❌ Too many names. Limit is `{CSV_ROLE_ASSIGN_MAX_NAMES}` unique names per file."
+        return (
+            None,
+            f"❌ Too many names. Limit is `{CSV_ROLE_ASSIGN_MAX_NAMES}` unique names per file.",
+        )
 
     member_lookup = build_member_name_lookup(guild)
     matched_members = {}
@@ -1393,17 +1504,25 @@ async def process_bulk_role_assignment_payload(
     return result, None
 
 
-async def run_web_bulk_role_assignment_async(role_input: str, payload: bytes, filename: str, actor_email: str):
+async def run_web_bulk_role_assignment_async(
+    role_input: str, payload: bytes, filename: str, actor_email: str
+):
     guild = bot.get_guild(GUILD_ID)
     if guild is None:
         return {"ok": False, "error": "Guild is not currently available to the bot."}
 
     role_id = parse_role_id_input(role_input)
     if role_id is None:
-        return {"ok": False, "error": "Role ID is invalid. Use a numeric role ID or role mention format."}
+        return {
+            "ok": False,
+            "error": "Role ID is invalid. Use a numeric role ID or role mention format.",
+        }
     role = guild.get_role(role_id)
     if role is None:
-        return {"ok": False, "error": f"Role `{role_id}` was not found in the configured guild."}
+        return {
+            "ok": False,
+            "error": f"Role `{role_id}` was not found in the configured guild.",
+        }
 
     bot_user_id = bot.user.id if bot.user else None
     bot_member = guild.me or (guild.get_member(bot_user_id) if bot_user_id else None)
@@ -1412,9 +1531,15 @@ async def run_web_bulk_role_assignment_async(role_input: str, payload: bytes, fi
     if role == guild.default_role:
         return {"ok": False, "error": "The @everyone role cannot be assigned this way."}
     if role.managed:
-        return {"ok": False, "error": "That role is managed by an integration and cannot be assigned manually."}
+        return {
+            "ok": False,
+            "error": "That role is managed by an integration and cannot be assigned manually.",
+        }
     if bot_member.top_role <= role:
-        return {"ok": False, "error": "I cannot assign that role because it is above my top role."}
+        return {
+            "ok": False,
+            "error": "I cannot assign that role because it is above my top role.",
+        }
 
     result, error = await process_bulk_role_assignment_payload(
         guild=guild,
@@ -1427,7 +1552,9 @@ async def run_web_bulk_role_assignment_async(role_input: str, payload: bytes, fi
         return {"ok": False, "error": error}
 
     summary_lines = build_bulk_assignment_summary_lines(filename, role.mention, result)
-    report_text = build_bulk_assignment_report_text(role, f"web admin {actor_email}", filename, result)
+    report_text = build_bulk_assignment_report_text(
+        role, f"web admin {actor_email}", filename, result
+    )
     return {
         "ok": True,
         "role_name": role.name,
@@ -1438,10 +1565,15 @@ async def run_web_bulk_role_assignment_async(role_input: str, payload: bytes, fi
     }
 
 
-def run_web_bulk_role_assignment(role_input: str, payload: bytes, filename: str, actor_email: str):
+def run_web_bulk_role_assignment(
+    role_input: str, payload: bytes, filename: str, actor_email: str
+):
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
-        return {"ok": False, "error": "Bot loop is not running yet. Try again in a few seconds."}
+        return {
+            "ok": False,
+            "error": "Bot loop is not running yet. Try again in a few seconds.",
+        }
     future = asyncio.run_coroutine_threadsafe(
         run_web_bulk_role_assignment_async(role_input, payload, filename, actor_email),
         loop,
@@ -1450,10 +1582,16 @@ def run_web_bulk_role_assignment(role_input: str, payload: bytes, filename: str,
         return future.result(timeout=WEB_BULK_ASSIGN_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
         future.cancel()
-        return {"ok": False, "error": "Timed out while processing the CSV. Try a smaller file or retry."}
+        return {
+            "ok": False,
+            "error": "Timed out while processing the CSV. Try a smaller file or retry.",
+        }
     except Exception:
         logger.exception("Unexpected failure in web bulk role assignment")
-        return {"ok": False, "error": "Unexpected error while assigning roles from CSV."}
+        return {
+            "ok": False,
+            "error": "Unexpected error while assigning roles from CSV.",
+        }
 
 
 async def fetch_discord_catalog_async():
@@ -1466,7 +1604,9 @@ async def fetch_discord_catalog_async():
     try:
         source_channels = await guild.fetch_channels()
     except Exception:
-        logger.debug("Falling back to cached guild channels for web catalog", exc_info=True)
+        logger.debug(
+            "Falling back to cached guild channels for web catalog", exc_info=True
+        )
 
     for channel in source_channels:
         if isinstance(channel, discord.CategoryChannel):
@@ -1498,7 +1638,9 @@ async def fetch_discord_catalog_async():
             }
         )
 
-    channels.sort(key=lambda item: (item["type"], item["position"], item["name"].casefold()))
+    channels.sort(
+        key=lambda item: (item["type"], item["position"], item["name"].casefold())
+    )
 
     roles = []
     for role in guild.roles:
@@ -1526,7 +1668,11 @@ async def fetch_discord_catalog_async():
 def run_web_get_discord_catalog():
     now = time.time()
     cached = discord_catalog_cache.get("data")
-    if cached and now - discord_catalog_cache.get("fetched_at", 0.0) < WEB_DISCORD_CATALOG_TTL_SECONDS:
+    if (
+        cached
+        and now - discord_catalog_cache.get("fetched_at", 0.0)
+        < WEB_DISCORD_CATALOG_TTL_SECONDS
+    ):
         return cached
 
     loop = getattr(bot, "loop", None)
@@ -1541,7 +1687,10 @@ def run_web_get_discord_catalog():
         return {"ok": False, "error": "Timed out fetching Discord channels/roles."}
     except Exception:
         logger.exception("Unexpected failure while fetching web Discord catalog")
-        return {"ok": False, "error": "Unexpected error while fetching Discord channels/roles."}
+        return {
+            "ok": False,
+            "error": "Unexpected error while fetching Discord channels/roles.",
+        }
 
     if isinstance(data, dict) and data.get("ok"):
         discord_catalog_cache["fetched_at"] = now
@@ -1564,9 +1713,13 @@ async def fetch_bot_profile_async():
             except discord.HTTPException:
                 logger.exception("Failed to fetch bot member for guild %s", guild.id)
 
-    server_display_name = bot_member.display_name if bot_member is not None else current_user.display_name
+    server_display_name = (
+        bot_member.display_name if bot_member is not None else current_user.display_name
+    )
     server_nickname = bot_member.nick if bot_member is not None else ""
-    avatar_url = str(current_user.display_avatar.url) if current_user.display_avatar else ""
+    avatar_url = (
+        str(current_user.display_avatar.url) if current_user.display_avatar else ""
+    )
     return {
         "ok": True,
         "id": str(current_user.id),
@@ -1597,15 +1750,28 @@ def validate_bot_profile_change_request(
     normalized_nickname = normalize_optional_text(server_nickname)
 
     if clear_server_nickname and normalized_nickname is not None:
-        return None, None, "Provide either `server_nickname` or `clear_server_nickname`, not both."
-    if normalized_username is not None and not (BOT_USERNAME_MIN_LENGTH <= len(normalized_username) <= BOT_USERNAME_MAX_LENGTH):
+        return (
+            None,
+            None,
+            "Provide either `server_nickname` or `clear_server_nickname`, not both.",
+        )
+    if normalized_username is not None and not (
+        BOT_USERNAME_MIN_LENGTH <= len(normalized_username) <= BOT_USERNAME_MAX_LENGTH
+    ):
         return (
             None,
             None,
             f"Username must be between {BOT_USERNAME_MIN_LENGTH} and {BOT_USERNAME_MAX_LENGTH} characters.",
         )
-    if normalized_nickname is not None and len(normalized_nickname) > BOT_NICKNAME_MAX_LENGTH:
-        return None, None, f"Server nickname must be {BOT_NICKNAME_MAX_LENGTH} characters or fewer."
+    if (
+        normalized_nickname is not None
+        and len(normalized_nickname) > BOT_NICKNAME_MAX_LENGTH
+    ):
+        return (
+            None,
+            None,
+            f"Server nickname must be {BOT_NICKNAME_MAX_LENGTH} characters or fewer.",
+        )
 
     nickname_target = BOT_SERVER_NICKNAME_UNSET
     if clear_server_nickname:
@@ -1614,7 +1780,11 @@ def validate_bot_profile_change_request(
         nickname_target = normalized_nickname
 
     if normalized_username is None and nickname_target is BOT_SERVER_NICKNAME_UNSET:
-        return None, None, "Provide at least one change: `username`, `server_nickname`, or `clear_server_nickname`."
+        return (
+            None,
+            None,
+            "Provide at least one change: `username`, `server_nickname`, or `clear_server_nickname`.",
+        )
 
     return normalized_username, nickname_target, None
 
@@ -1633,14 +1803,18 @@ async def resolve_configured_guild_bot_member():
         try:
             bot_member = await guild.fetch_member(current_user.id)
         except discord.HTTPException:
-            logger.exception("Failed to fetch bot member for configured guild %s", guild.id)
+            logger.exception(
+                "Failed to fetch bot member for configured guild %s", guild.id
+            )
             bot_member = None
     if bot_member is None:
         return guild, None, "Could not resolve the bot member in the configured guild."
     return guild, bot_member, None
 
 
-async def apply_bot_profile_updates_async(username: str | None, server_nickname, actor_label: str):
+async def apply_bot_profile_updates_async(
+    username: str | None, server_nickname, actor_label: str
+):
     current_user = bot.user
     if current_user is None:
         return {"ok": False, "error": "Bot user is not ready yet."}
@@ -1658,8 +1832,12 @@ async def apply_bot_profile_updates_async(username: str | None, server_nickname,
                 await current_user.edit(username=username)
                 updated_username = True
             except discord.HTTPException:
-                logger.exception("Failed to update bot username (actor=%s)", actor_label)
-                errors.append("Failed to update username. Discord may enforce rename limits; try again later.")
+                logger.exception(
+                    "Failed to update bot username (actor=%s)", actor_label
+                )
+                errors.append(
+                    "Failed to update username. Discord may enforce rename limits; try again later."
+                )
 
     if server_nickname is not BOT_SERVER_NICKNAME_UNSET:
         _, bot_member, member_error = await resolve_configured_guild_bot_member()
@@ -1673,16 +1851,26 @@ async def apply_bot_profile_updates_async(username: str | None, server_nickname,
                     notes.append("Server nickname was already set to that value.")
             else:
                 try:
-                    await bot_member.edit(nick=server_nickname, reason=f"Bot profile updated by {actor_label}")
+                    await bot_member.edit(
+                        nick=server_nickname,
+                        reason=f"Bot profile updated by {actor_label}",
+                    )
                     updated_server_nickname = True
                 except discord.Forbidden:
-                    logger.exception("Missing permission to update bot server nickname (actor=%s)", actor_label)
+                    logger.exception(
+                        "Missing permission to update bot server nickname (actor=%s)",
+                        actor_label,
+                    )
                     errors.append(
                         "Missing permission to update server nickname. Check `Manage Nicknames` and role hierarchy."
                     )
                 except discord.HTTPException:
-                    logger.exception("Failed to update bot server nickname (actor=%s)", actor_label)
-                    errors.append("Failed to update server nickname due to a Discord API error.")
+                    logger.exception(
+                        "Failed to update bot server nickname (actor=%s)", actor_label
+                    )
+                    errors.append(
+                        "Failed to update server nickname due to a Discord API error."
+                    )
 
     profile = await fetch_bot_profile_async()
     result = {
@@ -1695,7 +1883,9 @@ async def apply_bot_profile_updates_async(username: str | None, server_nickname,
             if key != "ok":
                 result[key] = value
         if not profile.get("ok"):
-            errors.append(str(profile.get("error") or "Unable to refresh bot profile details."))
+            errors.append(
+                str(profile.get("error") or "Unable to refresh bot profile details.")
+            )
 
     updated_parts = []
     if updated_username:
@@ -1757,7 +1947,10 @@ async def run_web_update_bot_avatar_async(payload: bytes, actor_email: str):
         await current_user.edit(avatar=payload)
     except discord.HTTPException:
         logger.exception("Failed to update bot avatar via web admin by %s", actor_email)
-        return {"ok": False, "error": "Discord rejected the avatar image. Use a valid PNG/JPG/WEBP/GIF image."}
+        return {
+            "ok": False,
+            "error": "Discord rejected the avatar image. Use a valid PNG/JPG/WEBP/GIF image.",
+        }
 
     profile = await fetch_bot_profile_async()
     if profile.get("ok"):
@@ -1771,10 +1964,12 @@ async def run_web_update_bot_profile_async(
     clear_server_nickname: bool,
     actor_email: str,
 ):
-    normalized_username, nickname_target, validation_error = validate_bot_profile_change_request(
-        username=username,
-        server_nickname=server_nickname,
-        clear_server_nickname=clear_server_nickname,
+    normalized_username, nickname_target, validation_error = (
+        validate_bot_profile_change_request(
+            username=username,
+            server_nickname=server_nickname,
+            clear_server_nickname=clear_server_nickname,
+        )
     )
     if validation_error:
         return {"ok": False, "error": validation_error}
@@ -1802,10 +1997,15 @@ def run_web_update_bot_profile(
 ):
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
-        return {"ok": False, "error": "Bot loop is not running yet. Try again in a few seconds."}
+        return {
+            "ok": False,
+            "error": "Bot loop is not running yet. Try again in a few seconds.",
+        }
 
     future = asyncio.run_coroutine_threadsafe(
-        run_web_update_bot_profile_async(username, server_nickname, clear_server_nickname, actor_email),
+        run_web_update_bot_profile_async(
+            username, server_nickname, clear_server_nickname, actor_email
+        ),
         loop,
     )
     try:
@@ -1814,23 +2014,34 @@ def run_web_update_bot_profile(
         future.cancel()
         return {"ok": False, "error": "Timed out while updating bot profile."}
     except Exception:
-        logger.exception("Unexpected failure while updating bot profile from %s", actor_email)
+        logger.exception(
+            "Unexpected failure while updating bot profile from %s", actor_email
+        )
         return {"ok": False, "error": "Unexpected error while updating bot profile."}
 
 
 def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
-        return {"ok": False, "error": "Bot loop is not running yet. Try again in a few seconds."}
+        return {
+            "ok": False,
+            "error": "Bot loop is not running yet. Try again in a few seconds.",
+        }
 
-    future = asyncio.run_coroutine_threadsafe(run_web_update_bot_avatar_async(payload, actor_email), loop)
+    future = asyncio.run_coroutine_threadsafe(
+        run_web_update_bot_avatar_async(payload, actor_email), loop
+    )
     try:
         return future.result(timeout=WEB_BOT_PROFILE_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
         future.cancel()
         return {"ok": False, "error": "Timed out while updating bot avatar."}
     except Exception:
-        logger.exception("Unexpected failure while updating bot avatar from %s (%s)", actor_email, filename)
+        logger.exception(
+            "Unexpected failure while updating bot avatar from %s (%s)",
+            actor_email,
+            filename,
+        )
         return {"ok": False, "error": "Unexpected error while updating bot avatar."}
 
 
@@ -1844,7 +2055,10 @@ def run_web_request_restart(actor_email: str):
     restart_timer = threading.Timer(1.0, _exit_process)
     restart_timer.daemon = True
     restart_timer.start()
-    return {"ok": True, "message": "Restart requested. The container process will exit and restart shortly."}
+    return {
+        "ok": True,
+        "message": "Restart requested. The container process will exit and restart shortly.",
+    }
 
 
 def parse_timeout_duration(value: str):
@@ -1927,7 +2141,9 @@ async def prune_user_messages(guild: discord.Guild, user_id: int, hours: int):
         seen_channel_ids.add(channel.id)
 
         perms = channel.permissions_for(guild.me)
-        if not (perms.view_channel and perms.read_message_history and perms.manage_messages):
+        if not (
+            perms.view_channel and perms.read_message_history and perms.manage_messages
+        ):
             continue
 
         scanned_channels += 1
@@ -1941,7 +2157,9 @@ async def prune_user_messages(guild: discord.Guild, user_id: int, hours: int):
             )
             deleted_count += len(deleted)
         except discord.Forbidden:
-            logger.warning("Skipping channel %s while pruning: missing permissions", channel.id)
+            logger.warning(
+                "Skipping channel %s while pruning: missing permissions", channel.id
+            )
         except discord.HTTPException:
             logger.exception("Failed to prune messages in channel %s", channel.id)
 
@@ -1959,16 +2177,22 @@ async def resolve_mod_log_channel(guild: discord.Guild):
             logger.warning("Moderation log channel %s not found", MOD_LOG_CHANNEL_ID)
             return None
         except discord.Forbidden:
-            logger.warning("No permission to access moderation log channel %s", MOD_LOG_CHANNEL_ID)
+            logger.warning(
+                "No permission to access moderation log channel %s", MOD_LOG_CHANNEL_ID
+            )
             return None
         except discord.HTTPException:
-            logger.exception("Failed to fetch moderation log channel %s", MOD_LOG_CHANNEL_ID)
+            logger.exception(
+                "Failed to fetch moderation log channel %s", MOD_LOG_CHANNEL_ID
+            )
             return None
 
     if isinstance(channel, (discord.TextChannel, discord.Thread)):
         return channel
 
-    logger.warning("Moderation log channel %s is not a text channel", MOD_LOG_CHANNEL_ID)
+    logger.warning(
+        "Moderation log channel %s is not a text channel", MOD_LOG_CHANNEL_ID
+    )
     return None
 
 
@@ -2001,7 +2225,9 @@ async def send_moderation_log(
         await channel.send(message)
         return True
     except discord.Forbidden:
-        logger.warning("No permission to send moderation logs to channel %s", MOD_LOG_CHANNEL_ID)
+        logger.warning(
+            "No permission to send moderation logs to channel %s", MOD_LOG_CHANNEL_ID
+        )
         return False
     except discord.HTTPException:
         logger.exception("Failed to send moderation log for action %s", action)
@@ -2027,7 +2253,9 @@ async def send_server_event_log(guild: discord.Guild, event_name: str, details: 
         await channel.send(message)
         return True
     except discord.Forbidden:
-        logger.warning("No permission to send server event logs to channel %s", MOD_LOG_CHANNEL_ID)
+        logger.warning(
+            "No permission to send server event logs to channel %s", MOD_LOG_CHANNEL_ID
+        )
         return False
     except discord.HTTPException:
         logger.exception("Failed to send server event log for %s", event_name)
@@ -2081,7 +2309,9 @@ def save_firmware_state(seen_ids: set[str], sync_label: str = ""):
 def parse_firmware_entries(page_html: str):
     soup = BeautifulSoup(page_html, "html.parser")
     sync_line = soup.select_one(".sync-line")
-    sync_label = clean_search_text(sync_line.get_text(" ", strip=True)) if sync_line else ""
+    sync_label = (
+        clean_search_text(sync_line.get_text(" ", strip=True)) if sync_line else ""
+    )
     entries = []
 
     for section in soup.select("section.model-section"):
@@ -2092,14 +2322,24 @@ def parse_firmware_entries(page_html: str):
             code_tag = heading.find("span", class_="code")
             if code_tag is not None:
                 code_tag.extract()
-            model_name = clean_search_text(heading.get_text(" ", strip=True)) or model_name
+            model_name = (
+                clean_search_text(heading.get_text(" ", strip=True)) or model_name
+            )
 
         for row in section.find_all("div", class_="fw-row"):
             stage = (row.get("data-stage") or "unknown").strip().lower()
             version_tag = row.find("span", class_="fw-version")
             date_tag = row.find("span", class_="fw-date")
-            version = clean_search_text(version_tag.get_text(" ", strip=True)) if version_tag else "unknown"
-            published_date = clean_search_text(date_tag.get_text(" ", strip=True)) if date_tag else "unknown"
+            version = (
+                clean_search_text(version_tag.get_text(" ", strip=True))
+                if version_tag
+                else "unknown"
+            )
+            published_date = (
+                clean_search_text(date_tag.get_text(" ", strip=True))
+                if date_tag
+                else "unknown"
+            )
 
             files = []
             for link in row.select(".fw-files a[href]"):
@@ -2116,14 +2356,22 @@ def parse_firmware_entries(page_html: str):
 
             release_notes = ""
             notes_block = row.find_next_sibling()
-            if notes_block and notes_block.name == "details" and "release-notes" in (notes_block.get("class") or []):
+            if (
+                notes_block
+                and notes_block.name == "details"
+                and "release-notes" in (notes_block.get("class") or [])
+            ):
                 notes_content = notes_block.find("div", class_="content")
                 if notes_content:
-                    release_notes = normalize_release_notes_text(notes_content.get_text("\n", strip=True))
+                    release_notes = normalize_release_notes_text(
+                        notes_content.get_text("\n", strip=True)
+                    )
 
             file_key = "|".join(sorted(file_info["url"] for file_info in files))
             sha_key = "|".join(sorted(value for value in sha256_values if value))
-            entry_id = f"{model_code}|{stage}|{version}|{published_date}|{file_key or sha_key}"
+            entry_id = (
+                f"{model_code}|{stage}|{version}|{published_date}|{file_key or sha_key}"
+            )
             entries.append(
                 {
                     "id": entry_id,
@@ -2179,7 +2427,13 @@ def trim_discord_message(message: str, max_chars: int = 1900):
 
 
 def format_firmware_notification(entry: dict, sync_label: str):
-    stage_text = "Stable" if entry["stage"] == "release" else "Testing" if entry["stage"] == "testing" else entry["stage"].title()
+    stage_text = (
+        "Stable"
+        if entry["stage"] == "release"
+        else "Testing"
+        if entry["stage"] == "testing"
+        else entry["stage"].title()
+    )
     lines = [
         "🆕 **New firmware mirrored**",
         f"**Model:** {entry['model_name']} (`{entry['model_code']}`)",
@@ -2215,19 +2469,28 @@ async def resolve_firmware_notify_channel():
         try:
             channel = await bot.fetch_channel(FIRMWARE_NOTIFY_CHANNEL_ID)
         except discord.NotFound:
-            logger.warning("Firmware notify channel %s not found", FIRMWARE_NOTIFY_CHANNEL_ID)
+            logger.warning(
+                "Firmware notify channel %s not found", FIRMWARE_NOTIFY_CHANNEL_ID
+            )
             return None
         except discord.Forbidden:
-            logger.warning("No permission to access firmware notify channel %s", FIRMWARE_NOTIFY_CHANNEL_ID)
+            logger.warning(
+                "No permission to access firmware notify channel %s",
+                FIRMWARE_NOTIFY_CHANNEL_ID,
+            )
             return None
         except discord.HTTPException:
-            logger.exception("Failed to fetch firmware notify channel %s", FIRMWARE_NOTIFY_CHANNEL_ID)
+            logger.exception(
+                "Failed to fetch firmware notify channel %s", FIRMWARE_NOTIFY_CHANNEL_ID
+            )
             return None
 
     if isinstance(channel, (discord.TextChannel, discord.Thread)):
         return channel
 
-    logger.warning("Firmware notify channel %s is not a text channel", FIRMWARE_NOTIFY_CHANNEL_ID)
+    logger.warning(
+        "Firmware notify channel %s is not a text channel", FIRMWARE_NOTIFY_CHANNEL_ID
+    )
     return None
 
 
@@ -2249,7 +2512,9 @@ async def check_firmware_updates_once():
     seen_ids = load_firmware_seen_ids()
     if seen_ids is None:
         save_firmware_state(current_ids, sync_label)
-        logger.info("Firmware monitor baseline initialized with %d entries", len(current_ids))
+        logger.info(
+            "Firmware monitor baseline initialized with %d entries", len(current_ids)
+        )
         return
 
     new_entries = [entry for entry in entries if entry["id"] not in seen_ids]
@@ -2265,16 +2530,24 @@ async def check_firmware_updates_once():
         )
         return
 
-    new_entries.sort(key=lambda item: (item["published_date"], item["model_code"], item["version"]))
+    new_entries.sort(
+        key=lambda item: (item["published_date"], item["model_code"], item["version"])
+    )
     logger.info("Firmware monitor found %d new entries", len(new_entries))
     for entry in new_entries:
         try:
             await channel.send(format_firmware_notification(entry, sync_label))
         except discord.Forbidden:
-            logger.warning("No permission to post firmware notification in channel %s", channel.id)
+            logger.warning(
+                "No permission to post firmware notification in channel %s", channel.id
+            )
             return
         except discord.HTTPException:
-            logger.exception("Failed to post firmware notification for %s %s", entry["model_code"], entry["version"])
+            logger.exception(
+                "Failed to post firmware notification for %s %s",
+                entry["model_code"],
+                entry["version"],
+            )
             return
 
     save_firmware_state(current_ids, sync_label)
@@ -2282,11 +2555,16 @@ async def check_firmware_updates_once():
 
 async def firmware_monitor_loop():
     if FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
-        logger.info("Firmware monitor disabled: set firmware_notification_channel to enable it.")
+        logger.info(
+            "Firmware monitor disabled: set firmware_notification_channel to enable it."
+        )
         return
 
     if not croniter.is_valid(FIRMWARE_CHECK_SCHEDULE):
-        logger.error("Firmware monitor disabled: invalid firmware_check_schedule '%s'", FIRMWARE_CHECK_SCHEDULE)
+        logger.error(
+            "Firmware monitor disabled: invalid firmware_check_schedule '%s'",
+            FIRMWARE_CHECK_SCHEDULE,
+        )
         return
 
     logger.info(
@@ -2300,7 +2578,9 @@ async def firmware_monitor_loop():
         now_utc = datetime.now(timezone.utc)
         next_run_utc = croniter(FIRMWARE_CHECK_SCHEDULE, now_utc).get_next(datetime)
         wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
-        logger.debug("Next firmware check scheduled for %s UTC", next_run_utc.isoformat())
+        logger.debug(
+            "Next firmware check scheduled for %s UTC", next_run_utc.isoformat()
+        )
         await asyncio.sleep(wait_seconds)
         await check_firmware_updates_once()
 
@@ -2309,7 +2589,9 @@ def restart_firmware_monitor_task():
     global firmware_monitor_task
     if firmware_monitor_task is not None and not firmware_monitor_task.done():
         firmware_monitor_task.cancel()
-    firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
+    firmware_monitor_task = asyncio.create_task(
+        firmware_monitor_loop(), name="firmware_monitor"
+    )
 
 
 def schedule_firmware_monitor_restart():
@@ -2345,9 +2627,15 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     LOG_LEVEL = os.getenv("LOG_LEVEL", LOG_LEVEL)
     logger.setLevel(LOG_LEVEL)
 
-    GENERAL_CHANNEL_ID = parse_int_setting(os.getenv("GENERAL_CHANNEL_ID", GENERAL_CHANNEL_ID), GENERAL_CHANNEL_ID, minimum=0)
+    GENERAL_CHANNEL_ID = parse_int_setting(
+        os.getenv("GENERAL_CHANNEL_ID", GENERAL_CHANNEL_ID),
+        GENERAL_CHANNEL_ID,
+        minimum=0,
+    )
     FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", FORUM_BASE_URL).rstrip("/")
-    FORUM_MAX_RESULTS = parse_int_setting(os.getenv("FORUM_MAX_RESULTS", FORUM_MAX_RESULTS), FORUM_MAX_RESULTS, minimum=1)
+    FORUM_MAX_RESULTS = parse_int_setting(
+        os.getenv("FORUM_MAX_RESULTS", FORUM_MAX_RESULTS), FORUM_MAX_RESULTS, minimum=1
+    )
     DOCS_MAX_RESULTS_PER_SITE = parse_int_setting(
         os.getenv("DOCS_MAX_RESULTS_PER_SITE", DOCS_MAX_RESULTS_PER_SITE),
         DOCS_MAX_RESULTS_PER_SITE,
@@ -2376,24 +2664,37 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     )
     MODERATOR_ROLE_IDS = {moderator_role_id, admin_role_id}
 
-    MOD_LOG_CHANNEL_ID = parse_int_setting(os.getenv("MOD_LOG_CHANNEL_ID", MOD_LOG_CHANNEL_ID), MOD_LOG_CHANNEL_ID, minimum=1)
-    KICK_PRUNE_HOURS = parse_int_setting(os.getenv("KICK_PRUNE_HOURS", KICK_PRUNE_HOURS), KICK_PRUNE_HOURS, minimum=1)
+    MOD_LOG_CHANNEL_ID = parse_int_setting(
+        os.getenv("MOD_LOG_CHANNEL_ID", MOD_LOG_CHANNEL_ID),
+        MOD_LOG_CHANNEL_ID,
+        minimum=1,
+    )
+    KICK_PRUNE_HOURS = parse_int_setting(
+        os.getenv("KICK_PRUNE_HOURS", KICK_PRUNE_HOURS), KICK_PRUNE_HOURS, minimum=1
+    )
     CSV_ROLE_ASSIGN_MAX_NAMES = parse_int_setting(
         os.getenv("CSV_ROLE_ASSIGN_MAX_NAMES", CSV_ROLE_ASSIGN_MAX_NAMES),
         CSV_ROLE_ASSIGN_MAX_NAMES,
         minimum=1,
     )
 
-    FIRMWARE_FEED_URL = os.getenv("FIRMWARE_FEED_URL", FIRMWARE_FEED_URL).strip() or FIRMWARE_FEED_URL
+    FIRMWARE_FEED_URL = (
+        os.getenv("FIRMWARE_FEED_URL", FIRMWARE_FEED_URL).strip() or FIRMWARE_FEED_URL
+    )
     FIRMWARE_NOTIFY_CHANNEL_ID = parse_firmware_channel_id(
         os.getenv("firmware_notification_channel", FIRMWARE_NOTIFY_CHANNEL_ID),
         FIRMWARE_NOTIFY_CHANNEL_ID,
     )
-    candidate_schedule = os.getenv("firmware_check_schedule", FIRMWARE_CHECK_SCHEDULE).strip() or FIRMWARE_CHECK_SCHEDULE
+    candidate_schedule = (
+        os.getenv("firmware_check_schedule", FIRMWARE_CHECK_SCHEDULE).strip()
+        or FIRMWARE_CHECK_SCHEDULE
+    )
     if croniter.is_valid(candidate_schedule):
         FIRMWARE_CHECK_SCHEDULE = candidate_schedule
     else:
-        logger.warning("Ignoring invalid firmware_check_schedule value: %s", candidate_schedule)
+        logger.warning(
+            "Ignoring invalid firmware_check_schedule value: %s", candidate_schedule
+        )
     FIRMWARE_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
         os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", FIRMWARE_REQUEST_TIMEOUT_SECONDS),
         FIRMWARE_REQUEST_TIMEOUT_SECONDS,
@@ -2410,7 +2711,10 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         minimum=15,
     )
     WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS = parse_int_setting(
-        os.getenv("WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS", WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS),
+        os.getenv(
+            "WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS",
+            WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS,
+        ),
         WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS,
         minimum=5,
     )
@@ -2440,9 +2744,13 @@ def refresh_runtime_settings_from_env(_updated_values=None):
 def refresh_tag_responses_from_web():
     get_tag_responses()
     if schedule_tag_command_refresh():
-        logger.info("Tag responses refreshed from storage; slash command refresh scheduled")
+        logger.info(
+            "Tag responses refreshed from storage; slash command refresh scheduled"
+        )
     else:
-        logger.info("Tag responses refreshed from storage; slash command refresh deferred until bot loop is ready")
+        logger.info(
+            "Tag responses refreshed from storage; slash command refresh deferred until bot loop is ready"
+        )
 
 
 def start_web_admin_server():
@@ -2526,14 +2834,18 @@ def search_forum_links(query: str):
         return links
 
     try:
-        response = requests.get(search_url, params={"q": query}, timeout=10, headers=request_headers)
+        response = requests.get(
+            search_url, params={"q": query}, timeout=10, headers=request_headers
+        )
         response.raise_for_status()
         data = response.json()
     except requests.HTTPError as exc:
         status_code = getattr(exc.response, "status_code", None)
         if status_code == 429:
             logger.warning("Forum search rate limited for query: %s", query)
-            return ["❌ Forum search is rate-limited right now. Please try again in a minute."]
+            return [
+                "❌ Forum search is rate-limited right now. Please try again in a minute."
+            ]
         logger.exception("Forum search HTTP failure for query: %s", query)
         return ["❌ Failed to fetch forum results."]
     except requests.RequestException:
@@ -2738,12 +3050,14 @@ def build_docs_site_search_message(query: str, site_key: str):
         lines.append("- No matching docs results found.")
     return trim_search_message("\n".join(lines))
 
+
 # Initialize SQLite storage before any runtime cache is loaded.
 initialize_storage()
 
 # Runtime caches for invite tracking
 invite_roles = load_invite_roles()
 invite_uses = {}
+
 
 @bot.event
 async def on_ready():
@@ -2753,7 +3067,9 @@ async def on_ready():
     if callable(globals().get("register_tag_commands")):
         register_tag_commands()
     else:
-        logger.warning("Tag slash commands not registered: register_tag_commands missing")
+        logger.warning(
+            "Tag slash commands not registered: register_tag_commands missing"
+        )
     synced = await tree.sync(guild=guild)
     logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
     get_tag_responses()
@@ -2767,7 +3083,10 @@ async def on_ready():
         logger.exception("Failed to cache invites on startup")
 
     if firmware_monitor_task is None or firmware_monitor_task.done():
-        firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
+        firmware_monitor_task = asyncio.create_task(
+            firmware_monitor_loop(), name="firmware_monitor"
+        )
+
 
 @bot.event
 async def on_member_join(member: discord.Member):
@@ -2793,7 +3112,12 @@ async def on_member_join(member: discord.Member):
         if role:
             try:
                 await member.add_roles(role)
-                logger.info("Assigned role %s to %s via invite %s", role.id, member, used_invite.code)
+                logger.info(
+                    "Assigned role %s to %s via invite %s",
+                    role.id,
+                    member,
+                    used_invite.code,
+                )
             except Exception:
                 logger.exception("Failed to assign role on join for %s", member)
 
@@ -2825,7 +3149,11 @@ async def on_message_delete(message: discord.Message):
     if guild is None or guild.id != GUILD_ID:
         return
 
-    channel_name = message.channel.mention if hasattr(message.channel, "mention") else f"`{message.channel.id}`"
+    channel_name = (
+        message.channel.mention
+        if hasattr(message.channel, "mention")
+        else f"`{message.channel.id}`"
+    )
     details = (
         f"**Author:** {message.author} (`{message.author.id}`)\n"
         f"**Channel:** {channel_name}\n"
@@ -2846,10 +3174,7 @@ async def on_bulk_message_delete(messages: list[discord.Message]):
 
     channel = messages[0].channel
     channel_name = channel.mention if hasattr(channel, "mention") else f"`{channel.id}`"
-    details = (
-        f"**Channel:** {channel_name}\n"
-        f"**Messages Deleted:** `{len(messages)}`\n"
-    )
+    details = f"**Channel:** {channel_name}\n**Messages Deleted:** `{len(messages)}`\n"
     await send_server_event_log(guild, "bulk_message_delete", details)
 
 
@@ -2919,7 +3244,9 @@ async def on_invite_create(invite: discord.Invite):
     if guild is None or guild.id != GUILD_ID:
         return
 
-    inviter_text = f"{invite.inviter} (`{invite.inviter.id}`)" if invite.inviter else "Unknown"
+    inviter_text = (
+        f"{invite.inviter} (`{invite.inviter.id}`)" if invite.inviter else "Unknown"
+    )
     channel_text = invite.channel.mention if getattr(invite, "channel", None) else "N/A"
     details = (
         f"**Invite Code:** `{invite.code}`\n"
@@ -3009,16 +3336,26 @@ async def list_commands(ctx: commands.Context):
         return
     await ctx.send(build_command_list())
 
-@tree.command(name="submitrole", description="Submit a role for invite/code linking", guild=discord.Object(id=GUILD_ID))
+
+@tree.command(
+    name="submitrole",
+    description="Submit a role for invite/code linking",
+    guild=discord.Object(id=GUILD_ID),
+)
 async def submitrole(interaction: discord.Interaction):
     logger.info("/submitrole invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
 
-    await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
+    await interaction.response.send_message(
+        "Please mention the role you want to assign.", ephemeral=True
+    )
 
     def check(m):
-        return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
+        return (
+            m.author.id == interaction.user.id
+            and m.channel.id == interaction.channel.id
+        )
 
     try:
         msg = await bot.wait_for("message", timeout=30.0, check=check)
@@ -3048,7 +3385,9 @@ async def submitrole(interaction: discord.Interaction):
         )
     except Exception:
         logger.exception("Error in /submitrole")
-        await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ Something went wrong. Try again.", ephemeral=True
+        )
 
 
 @tree.command(
@@ -3060,23 +3399,33 @@ async def submitrole(interaction: discord.Interaction):
     role="Role to assign",
     csv_file="Upload a .csv containing Discord names (comma-separated or one-per-line)",
 )
-async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment):
+async def bulk_assign_role_csv(
+    interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment
+):
     logger.info("/bulk_assign_role_csv invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "bulk_assign_role_csv"):
         return
 
     if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server channel.", ephemeral=True
+        )
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    bot_member = interaction.guild.me or (
+        interaction.guild.get_member(bot_user_id) if bot_user_id else None
+    )
     actor = interaction.user if isinstance(interaction.user, discord.Member) else None
     if bot_member is None:
-        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Could not resolve bot member in this guild.", ephemeral=True
+        )
         return
     if role == interaction.guild.default_role:
-        await interaction.response.send_message("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ The @everyone role cannot be assigned this way.", ephemeral=True
+        )
         return
     if role.managed:
         await interaction.response.send_message(
@@ -3110,7 +3459,9 @@ async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.R
         payload = await csv_file.read()
     except Exception:
         logger.exception("Failed reading CSV attachment for /bulk_assign_role_csv")
-        await interaction.followup.send("❌ Could not read that file. Please try again.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ Could not read that file. Please try again.", ephemeral=True
+        )
         return
 
     result, error = await process_bulk_role_assignment_payload(
@@ -3124,7 +3475,9 @@ async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.R
         await interaction.followup.send(error, ephemeral=True)
         return
 
-    summary_lines = build_bulk_assignment_summary_lines(csv_file.filename, role.mention, result)
+    summary_lines = build_bulk_assignment_summary_lines(
+        csv_file.filename, role.mention, result
+    )
     report_text = build_bulk_assignment_report_text(
         role=role,
         requested_by=f"{interaction.user} ({interaction.user.id})",
@@ -3136,14 +3489,18 @@ async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.R
     await interaction.followup.send(
         "\n".join(summary_lines),
         ephemeral=True,
-        file=discord.File(io.BytesIO(report_text.encode("utf-8")), filename=report_filename),
+        file=discord.File(
+            io.BytesIO(report_text.encode("utf-8")), filename=report_filename
+        ),
     )
 
 
 class CodeEntryModal(discord.ui.Modal):
     def __init__(self):
         super().__init__(title="Enter Role Code")
-        self.code = discord.ui.TextInput(label="6-digit code", min_length=6, max_length=6)
+        self.code = discord.ui.TextInput(
+            label="6-digit code", min_length=6, max_length=6
+        )
         self.add_item(self.code)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -3152,10 +3509,11 @@ class CodeEntryModal(discord.ui.Modal):
             await interaction.response.send_message("❌ Invalid code.", ephemeral=True)
             return
 
-
         role = interaction.guild.get_role(role_id)
         if not role:
-            await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Role not found.", ephemeral=True
+            )
             return
 
         await interaction.user.add_roles(role)
@@ -3177,7 +3535,11 @@ async def enter_role(interaction: discord.Interaction):
     await interaction.response.send_modal(CodeEntryModal())
 
 
-@tree.command(name="getaccess", description="Assign yourself the protected role", guild=discord.Object(id=GUILD_ID))
+@tree.command(
+    name="getaccess",
+    description="Assign yourself the protected role",
+    guild=discord.Object(id=GUILD_ID),
+)
 async def getaccess(interaction: discord.Interaction):
     logger.info("/getaccess invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "getaccess"):
@@ -3191,7 +3553,9 @@ async def getaccess(interaction: discord.Interaction):
         role = interaction.guild.get_role(role_id)
         await interaction.user.add_roles(role)
         logger.info("Assigned default role %s to user %s", role.id, interaction.user)
-        await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
+        await interaction.response.send_message(
+            f"✅ You've been given the **{role.name}** role!", ephemeral=True
+        )
     except Exception:
         logger.exception("Error in /getaccess")
         await interaction.response.send_message(
@@ -3199,7 +3563,11 @@ async def getaccess(interaction: discord.Interaction):
         )
 
 
-@tree.command(name="country", description="Add your country code to your nickname", guild=discord.Object(id=GUILD_ID))
+@tree.command(
+    name="country",
+    description="Add your country code to your nickname",
+    guild=discord.Object(id=GUILD_ID),
+)
 @app_commands.describe(code="2-letter country code (e.g. US, CA, DE)")
 async def country_slash(interaction: discord.Interaction, code: str):
     logger.info("/country invoked by %s with code %s", interaction.user, code)
@@ -3246,13 +3614,19 @@ async def country_prefix(ctx: commands.Context, code: str):
         await ctx.send(message)
     except discord.Forbidden:
         logger.exception("Missing permission to edit nickname for %s", ctx.author)
-        await ctx.send("❌ I can't edit your nickname. Check role hierarchy and nickname permissions.")
+        await ctx.send(
+            "❌ I can't edit your nickname. Check role hierarchy and nickname permissions."
+        )
     except discord.HTTPException:
         logger.exception("Failed to update nickname for %s", ctx.author)
         await ctx.send("❌ Could not update your nickname right now. Try again.")
 
 
-@tree.command(name="clear_country", description="Remove country code suffix from your nickname", guild=discord.Object(id=GUILD_ID))
+@tree.command(
+    name="clear_country",
+    description="Remove country code suffix from your nickname",
+    guild=discord.Object(id=GUILD_ID),
+)
 async def clear_country_slash(interaction: discord.Interaction):
     logger.info("/clear_country invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "clear_country"):
@@ -3284,7 +3658,9 @@ async def clear_country_prefix(ctx: commands.Context):
         await ctx.send(message)
     except discord.Forbidden:
         logger.exception("Missing permission to edit nickname for %s", ctx.author)
-        await ctx.send("❌ I can't edit your nickname. Check role hierarchy and nickname permissions.")
+        await ctx.send(
+            "❌ I can't edit your nickname. Check role hierarchy and nickname permissions."
+        )
     except discord.HTTPException:
         logger.exception("Failed to clear nickname suffix for %s", ctx.author)
         await ctx.send("❌ Could not update your nickname right now. Try again.")
@@ -3312,12 +3688,16 @@ async def create_role_slash(
     if not await ensure_interaction_command_access(interaction, "create_role"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
         return
 
     normalized_name = name.strip()
     if not normalized_name:
-        await interaction.response.send_message("❌ Role name cannot be empty.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Role name cannot be empty.", ephemeral=True
+        )
         return
     if len(normalized_name) > ROLE_NAME_MAX_LENGTH:
         await interaction.response.send_message(
@@ -3332,9 +3712,13 @@ async def create_role_slash(
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    bot_member = interaction.guild.me or (
+        interaction.guild.get_member(bot_user_id) if bot_user_id else None
+    )
     if bot_member is None:
-        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Could not resolve bot member in this guild.", ephemeral=True
+        )
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -3351,9 +3735,13 @@ async def create_role_slash(
     if parsed_color is not None:
         create_kwargs["color"] = parsed_color
 
-    action_reason = f"Role created by {interaction.user} ({interaction.user.id}) via bot"
+    action_reason = (
+        f"Role created by {interaction.user} ({interaction.user.id}) via bot"
+    )
     try:
-        role = await interaction.guild.create_role(reason=action_reason, **create_kwargs)
+        role = await interaction.guild.create_role(
+            reason=action_reason, **create_kwargs
+        )
     except discord.Forbidden:
         logger.exception("Missing permission to create role %s", normalized_name)
         await send_moderation_log(
@@ -3379,7 +3767,9 @@ async def create_role_slash(
             outcome="failed",
             details="Discord API error while creating role.",
         )
-        await interaction.response.send_message("❌ Failed to create role. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to create role. Try again.", ephemeral=True
+        )
         return
 
     await send_moderation_log(
@@ -3410,13 +3800,19 @@ async def delete_role_slash(
     if not await ensure_interaction_command_access(interaction, "delete_role"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    bot_member = interaction.guild.me or (
+        interaction.guild.get_member(bot_user_id) if bot_user_id else None
+    )
     if bot_member is None:
-        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Could not resolve bot member in this guild.", ephemeral=True
+        )
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -3425,8 +3821,12 @@ async def delete_role_slash(
         )
         return
 
-    can_manage, error_message = validate_manageable_role(interaction.user, role, bot_member)
-    action_reason = (reason or "").strip() or f"Role deleted by {interaction.user} via bot"
+    can_manage, error_message = validate_manageable_role(
+        interaction.user, role, bot_member
+    )
+    action_reason = (
+        reason or ""
+    ).strip() or f"Role deleted by {interaction.user} via bot"
     if not can_manage:
         await send_moderation_log(
             interaction.guild,
@@ -3468,7 +3868,9 @@ async def delete_role_slash(
             outcome="failed",
             details="Discord API error while deleting role.",
         )
-        await interaction.response.send_message("❌ Failed to delete that role. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to delete that role. Try again.", ephemeral=True
+        )
         return
 
     await send_moderation_log(
@@ -3510,13 +3912,19 @@ async def edit_role_slash(
     if not await ensure_interaction_command_access(interaction, "edit_role"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    bot_member = interaction.guild.me or (
+        interaction.guild.get_member(bot_user_id) if bot_user_id else None
+    )
     if bot_member is None:
-        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Could not resolve bot member in this guild.", ephemeral=True
+        )
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -3525,8 +3933,12 @@ async def edit_role_slash(
         )
         return
 
-    can_manage, error_message = validate_manageable_role(interaction.user, role, bot_member)
-    action_reason = (reason or "").strip() or f"Role edited by {interaction.user} via bot"
+    can_manage, error_message = validate_manageable_role(
+        interaction.user, role, bot_member
+    )
+    action_reason = (
+        reason or ""
+    ).strip() or f"Role edited by {interaction.user} via bot"
     if not can_manage:
         await send_moderation_log(
             interaction.guild,
@@ -3544,7 +3956,9 @@ async def edit_role_slash(
     if name is not None:
         normalized_name = name.strip()
         if not normalized_name:
-            await interaction.response.send_message("❌ Role name cannot be empty.", ephemeral=True)
+            await interaction.response.send_message(
+                "❌ Role name cannot be empty.", ephemeral=True
+            )
             return
         if len(normalized_name) > ROLE_NAME_MAX_LENGTH:
             await interaction.response.send_message(
@@ -3608,7 +4022,9 @@ async def edit_role_slash(
             outcome="failed",
             details="Discord API error while editing role.",
         )
-        await interaction.response.send_message("❌ Failed to edit that role. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to edit that role. Try again.", ephemeral=True
+        )
         return
 
     details = f"Edited role {role.mention} (`{role.id}`): {', '.join(changed_fields)}."
@@ -3684,12 +4100,16 @@ async def modlog_test_prefix(ctx: commands.Context):
     guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(member="Member to ban", reason="Reason for ban")
-async def ban_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+async def ban_member_slash(
+    interaction: discord.Interaction, member: discord.Member, reason: str | None = None
+):
     logger.info("/ban_member invoked by %s targeting %s", interaction.user, member)
     if not await ensure_interaction_command_access(interaction, "ban_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    can_moderate, error_message = validate_moderation_target(
+        interaction.user, member, interaction.guild.me
+    )
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -3733,7 +4153,9 @@ async def ban_member_slash(interaction: discord.Interaction, member: discord.Mem
             outcome="failed",
             details="Discord API error while banning member.",
         )
-        await interaction.response.send_message("❌ Failed to ban the member. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to ban the member. Try again.", ephemeral=True
+        )
         return
 
     await send_moderation_log(
@@ -3748,12 +4170,16 @@ async def ban_member_slash(interaction: discord.Interaction, member: discord.Mem
 
 
 @bot.command(name="banmember")
-async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+async def ban_member_prefix(
+    ctx: commands.Context, member: discord.Member, *, reason: str = ""
+):
     logger.info("!banmember invoked by %s targeting %s", ctx.author, member)
     if not await ensure_prefix_command_access(ctx, "ban_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    can_moderate, error_message = validate_moderation_target(
+        ctx.author, member, ctx.guild.me
+    )
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -3781,7 +4207,9 @@ async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, re
             outcome="failed",
             details="Bot missing `Ban Members` permission or role hierarchy block.",
         )
-        await ctx.send("❌ I can't ban that member. Check role hierarchy and `Ban Members` permission.")
+        await ctx.send(
+            "❌ I can't ban that member. Check role hierarchy and `Ban Members` permission."
+        )
         return
     except discord.HTTPException:
         logger.exception("Failed to ban member %s", member)
@@ -3814,12 +4242,16 @@ async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, re
     guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(member="Member to kick", reason="Reason for kicking")
-async def kick_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+async def kick_member_slash(
+    interaction: discord.Interaction, member: discord.Member, reason: str | None = None
+):
     logger.info("/kick_member invoked by %s targeting %s", interaction.user, member)
     if not await ensure_interaction_command_access(interaction, "kick_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    can_moderate, error_message = validate_moderation_target(
+        interaction.user, member, interaction.guild.me
+    )
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -3867,10 +4299,14 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
             outcome="failed",
             details="Discord API error while kicking member.",
         )
-        await interaction.followup.send("❌ Failed to kick the member. Try again.", ephemeral=True)
+        await interaction.followup.send(
+            "❌ Failed to kick the member. Try again.", ephemeral=True
+        )
         return
 
-    deleted_count, scanned_channels = await prune_user_messages(interaction.guild, target_id, KICK_PRUNE_HOURS)
+    deleted_count, scanned_channels = await prune_user_messages(
+        interaction.guild, target_id, KICK_PRUNE_HOURS
+    )
     await send_moderation_log(
         interaction.guild,
         interaction.user,
@@ -3890,12 +4326,16 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
 
 
 @bot.command(name="kickmember")
-async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+async def kick_member_prefix(
+    ctx: commands.Context, member: discord.Member, *, reason: str = ""
+):
     logger.info("!kickmember invoked by %s targeting %s", ctx.author, member)
     if not await ensure_prefix_command_access(ctx, "kick_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    can_moderate, error_message = validate_moderation_target(
+        ctx.author, member, ctx.guild.me
+    )
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -3925,7 +4365,9 @@ async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, r
             outcome="failed",
             details="Bot missing `Kick Members` permission or role hierarchy block.",
         )
-        await ctx.send("❌ I can't kick that member. Check role hierarchy and `Kick Members` permission.")
+        await ctx.send(
+            "❌ I can't kick that member. Check role hierarchy and `Kick Members` permission."
+        )
         return
     except discord.HTTPException:
         logger.exception("Failed to kick member %s", member)
@@ -3941,7 +4383,9 @@ async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, r
         await ctx.send("❌ Failed to kick the member. Try again.")
         return
 
-    deleted_count, scanned_channels = await prune_user_messages(ctx.guild, target_id, KICK_PRUNE_HOURS)
+    deleted_count, scanned_channels = await prune_user_messages(
+        ctx.guild, target_id, KICK_PRUNE_HOURS
+    )
     await send_moderation_log(
         ctx.guild,
         ctx.author,
@@ -3975,11 +4419,18 @@ async def timeout_member_slash(
     duration: str,
     reason: str | None = None,
 ):
-    logger.info("/timeout_member invoked by %s targeting %s for %s", interaction.user, member, duration)
+    logger.info(
+        "/timeout_member invoked by %s targeting %s for %s",
+        interaction.user,
+        member,
+        duration,
+    )
     if not await ensure_interaction_command_access(interaction, "timeout_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    can_moderate, error_message = validate_moderation_target(
+        interaction.user, member, interaction.guild.me
+    )
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -4038,7 +4489,9 @@ async def timeout_member_slash(
             outcome="failed",
             details="Discord API error while applying timeout.",
         )
-        await interaction.response.send_message("❌ Failed to timeout the member. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to timeout the member. Try again.", ephemeral=True
+        )
         return
 
     timestamp = int(until.timestamp())
@@ -4057,12 +4510,18 @@ async def timeout_member_slash(
 
 
 @bot.command(name="timeoutmember")
-async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""):
-    logger.info("!timeoutmember invoked by %s targeting %s for %s", ctx.author, member, duration)
+async def timeout_member_prefix(
+    ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""
+):
+    logger.info(
+        "!timeoutmember invoked by %s targeting %s for %s", ctx.author, member, duration
+    )
     if not await ensure_prefix_command_access(ctx, "timeout_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    can_moderate, error_message = validate_moderation_target(
+        ctx.author, member, ctx.guild.me
+    )
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -4105,7 +4564,9 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
             outcome="failed",
             details="Bot missing `Moderate Members` permission or role hierarchy block.",
         )
-        await ctx.send("❌ I can't timeout that member. Check role hierarchy and `Moderate Members` permission.")
+        await ctx.send(
+            "❌ I can't timeout that member. Check role hierarchy and `Moderate Members` permission."
+        )
         return
     except discord.HTTPException:
         logger.exception("Failed to timeout member %s", member)
@@ -4130,7 +4591,9 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
         reason=action_reason,
         details=f"Timed out for {duration_text} until <t:{timestamp}:f>.",
     )
-    await ctx.send(f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>).")
+    await ctx.send(
+        f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>)."
+    )
 
 
 @tree.command(
@@ -4138,13 +4601,21 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
     description="Remove timeout from a member",
     guild=discord.Object(id=GUILD_ID),
 )
-@app_commands.describe(member="Member to remove timeout from", reason="Reason for removing timeout")
-async def untimeout_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
-    logger.info("/untimeout_member invoked by %s targeting %s", interaction.user, member)
+@app_commands.describe(
+    member="Member to remove timeout from", reason="Reason for removing timeout"
+)
+async def untimeout_member_slash(
+    interaction: discord.Interaction, member: discord.Member, reason: str | None = None
+):
+    logger.info(
+        "/untimeout_member invoked by %s targeting %s", interaction.user, member
+    )
     if not await ensure_interaction_command_access(interaction, "untimeout_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    can_moderate, error_message = validate_moderation_target(
+        interaction.user, member, interaction.guild.me
+    )
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -4160,10 +4631,14 @@ async def untimeout_member_slash(interaction: discord.Interaction, member: disco
 
     timed_out_until = member.timed_out_until
     if timed_out_until is None or timed_out_until <= discord.utils.utcnow():
-        await interaction.response.send_message("ℹ️ That member is not currently timed out.", ephemeral=True)
+        await interaction.response.send_message(
+            "ℹ️ That member is not currently timed out.", ephemeral=True
+        )
         return
 
-    action_reason = (reason or "").strip() or f"Timeout removed by {interaction.user} via bot"
+    action_reason = (
+        reason or ""
+    ).strip() or f"Timeout removed by {interaction.user} via bot"
     try:
         await member.timeout(None, reason=action_reason)
     except discord.Forbidden:
@@ -4193,7 +4668,9 @@ async def untimeout_member_slash(interaction: discord.Interaction, member: disco
             outcome="failed",
             details="Discord API error while removing timeout.",
         )
-        await interaction.response.send_message("❌ Failed to remove timeout. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to remove timeout. Try again.", ephemeral=True
+        )
         return
 
     await send_moderation_log(
@@ -4204,16 +4681,22 @@ async def untimeout_member_slash(interaction: discord.Interaction, member: disco
         reason=action_reason,
         details="Timeout removed successfully.",
     )
-    await interaction.response.send_message(f"✅ Removed timeout for **{member}**.", ephemeral=True)
+    await interaction.response.send_message(
+        f"✅ Removed timeout for **{member}**.", ephemeral=True
+    )
 
 
 @bot.command(name="untimeoutmember")
-async def untimeout_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+async def untimeout_member_prefix(
+    ctx: commands.Context, member: discord.Member, *, reason: str = ""
+):
     logger.info("!untimeoutmember invoked by %s targeting %s", ctx.author, member)
     if not await ensure_prefix_command_access(ctx, "untimeout_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    can_moderate, error_message = validate_moderation_target(
+        ctx.author, member, ctx.guild.me
+    )
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -4280,24 +4763,37 @@ async def untimeout_member_prefix(ctx: commands.Context, member: discord.Member,
     description="Assign a role to a member",
     guild=discord.Object(id=GUILD_ID),
 )
-@app_commands.describe(member="Member to update", role="Role to add", reason="Reason for role assignment")
+@app_commands.describe(
+    member="Member to update", role="Role to add", reason="Reason for role assignment"
+)
 async def add_role_member_slash(
     interaction: discord.Interaction,
     member: discord.Member,
     role: discord.Role,
     reason: str | None = None,
 ):
-    logger.info("/add_role_member invoked by %s target=%s role=%s", interaction.user, member, role)
+    logger.info(
+        "/add_role_member invoked by %s target=%s role=%s",
+        interaction.user,
+        member,
+        role,
+    )
     if not await ensure_interaction_command_access(interaction, "add_role_member"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    bot_member = interaction.guild.me or (
+        interaction.guild.get_member(bot_user_id) if bot_user_id else None
+    )
     if bot_member is None:
-        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Could not resolve bot member in this guild.", ephemeral=True
+        )
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -4306,7 +4802,9 @@ async def add_role_member_slash(
         )
         return
 
-    can_moderate, member_error = validate_moderation_target(interaction.user, member, bot_member)
+    can_moderate, member_error = validate_moderation_target(
+        interaction.user, member, bot_member
+    )
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -4320,7 +4818,9 @@ async def add_role_member_slash(
         await interaction.response.send_message(member_error, ephemeral=True)
         return
 
-    can_manage_role, role_error = validate_manageable_role(interaction.user, role, bot_member)
+    can_manage_role, role_error = validate_manageable_role(
+        interaction.user, role, bot_member
+    )
     if not can_manage_role:
         await send_moderation_log(
             interaction.guild,
@@ -4341,7 +4841,9 @@ async def add_role_member_slash(
         )
         return
 
-    action_reason = (reason or "").strip() or f"Role assigned by {interaction.user} via bot"
+    action_reason = (
+        reason or ""
+    ).strip() or f"Role assigned by {interaction.user} via bot"
     try:
         await member.add_roles(role, reason=action_reason)
     except discord.Forbidden:
@@ -4371,7 +4873,9 @@ async def add_role_member_slash(
             outcome="failed",
             details="Discord API error while assigning role.",
         )
-        await interaction.response.send_message("❌ Failed to assign role. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to assign role. Try again.", ephemeral=True
+        )
         return
 
     await send_moderation_log(
@@ -4389,8 +4893,16 @@ async def add_role_member_slash(
 
 
 @bot.command(name="addrolemember")
-async def add_role_member_prefix(ctx: commands.Context, member: discord.Member, role: discord.Role, *, reason: str = ""):
-    logger.info("!addrolemember invoked by %s target=%s role=%s", ctx.author, member, role)
+async def add_role_member_prefix(
+    ctx: commands.Context,
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: str = "",
+):
+    logger.info(
+        "!addrolemember invoked by %s target=%s role=%s", ctx.author, member, role
+    )
     if not await ensure_prefix_command_access(ctx, "add_role_member"):
         return
     if ctx.guild is None:
@@ -4398,15 +4910,21 @@ async def add_role_member_prefix(ctx: commands.Context, member: discord.Member, 
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
+    bot_member = ctx.guild.me or (
+        ctx.guild.get_member(bot_user_id) if bot_user_id else None
+    )
     if bot_member is None:
         await ctx.send("❌ Could not resolve bot member in this guild.")
         return
     if not bot_member.guild_permissions.manage_roles:
-        await ctx.send("❌ I need the `Manage Roles` permission to manage member roles.")
+        await ctx.send(
+            "❌ I need the `Manage Roles` permission to manage member roles."
+        )
         return
 
-    can_moderate, member_error = validate_moderation_target(ctx.author, member, bot_member)
+    can_moderate, member_error = validate_moderation_target(
+        ctx.author, member, bot_member
+    )
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -4452,7 +4970,9 @@ async def add_role_member_prefix(ctx: commands.Context, member: discord.Member, 
             outcome="failed",
             details="Bot missing `Manage Roles` permission or role hierarchy block.",
         )
-        await ctx.send("❌ I can't assign that role. Check `Manage Roles` permission and role hierarchy.")
+        await ctx.send(
+            "❌ I can't assign that role. Check `Manage Roles` permission and role hierarchy."
+        )
         return
     except discord.HTTPException:
         logger.exception("Failed to add role %s to member %s", role, member)
@@ -4484,24 +5004,37 @@ async def add_role_member_prefix(ctx: commands.Context, member: discord.Member, 
     description="Remove a role from a member",
     guild=discord.Object(id=GUILD_ID),
 )
-@app_commands.describe(member="Member to update", role="Role to remove", reason="Reason for role removal")
+@app_commands.describe(
+    member="Member to update", role="Role to remove", reason="Reason for role removal"
+)
 async def remove_role_member_slash(
     interaction: discord.Interaction,
     member: discord.Member,
     role: discord.Role,
     reason: str | None = None,
 ):
-    logger.info("/remove_role_member invoked by %s target=%s role=%s", interaction.user, member, role)
+    logger.info(
+        "/remove_role_member invoked by %s target=%s role=%s",
+        interaction.user,
+        member,
+        role,
+    )
     if not await ensure_interaction_command_access(interaction, "remove_role_member"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    bot_member = interaction.guild.me or (
+        interaction.guild.get_member(bot_user_id) if bot_user_id else None
+    )
     if bot_member is None:
-        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Could not resolve bot member in this guild.", ephemeral=True
+        )
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -4510,7 +5043,9 @@ async def remove_role_member_slash(
         )
         return
 
-    can_moderate, member_error = validate_moderation_target(interaction.user, member, bot_member)
+    can_moderate, member_error = validate_moderation_target(
+        interaction.user, member, bot_member
+    )
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -4524,7 +5059,9 @@ async def remove_role_member_slash(
         await interaction.response.send_message(member_error, ephemeral=True)
         return
 
-    can_manage_role, role_error = validate_manageable_role(interaction.user, role, bot_member)
+    can_manage_role, role_error = validate_manageable_role(
+        interaction.user, role, bot_member
+    )
     if not can_manage_role:
         await send_moderation_log(
             interaction.guild,
@@ -4545,11 +5082,15 @@ async def remove_role_member_slash(
         )
         return
 
-    action_reason = (reason or "").strip() or f"Role removed by {interaction.user} via bot"
+    action_reason = (
+        reason or ""
+    ).strip() or f"Role removed by {interaction.user} via bot"
     try:
         await member.remove_roles(role, reason=action_reason)
     except discord.Forbidden:
-        logger.exception("Missing permission to remove role %s from member %s", role, member)
+        logger.exception(
+            "Missing permission to remove role %s from member %s", role, member
+        )
         await send_moderation_log(
             interaction.guild,
             interaction.user,
@@ -4575,7 +5116,9 @@ async def remove_role_member_slash(
             outcome="failed",
             details="Discord API error while removing role.",
         )
-        await interaction.response.send_message("❌ Failed to remove role. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to remove role. Try again.", ephemeral=True
+        )
         return
 
     await send_moderation_log(
@@ -4600,7 +5143,9 @@ async def remove_role_member_prefix(
     *,
     reason: str = "",
 ):
-    logger.info("!removerolemember invoked by %s target=%s role=%s", ctx.author, member, role)
+    logger.info(
+        "!removerolemember invoked by %s target=%s role=%s", ctx.author, member, role
+    )
     if not await ensure_prefix_command_access(ctx, "remove_role_member"):
         return
     if ctx.guild is None:
@@ -4608,15 +5153,21 @@ async def remove_role_member_prefix(
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
+    bot_member = ctx.guild.me or (
+        ctx.guild.get_member(bot_user_id) if bot_user_id else None
+    )
     if bot_member is None:
         await ctx.send("❌ Could not resolve bot member in this guild.")
         return
     if not bot_member.guild_permissions.manage_roles:
-        await ctx.send("❌ I need the `Manage Roles` permission to manage member roles.")
+        await ctx.send(
+            "❌ I need the `Manage Roles` permission to manage member roles."
+        )
         return
 
-    can_moderate, member_error = validate_moderation_target(ctx.author, member, bot_member)
+    can_moderate, member_error = validate_moderation_target(
+        ctx.author, member, bot_member
+    )
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -4652,7 +5203,9 @@ async def remove_role_member_prefix(
     try:
         await member.remove_roles(role, reason=action_reason)
     except discord.Forbidden:
-        logger.exception("Missing permission to remove role %s from member %s", role, member)
+        logger.exception(
+            "Missing permission to remove role %s from member %s", role, member
+        )
         await send_moderation_log(
             ctx.guild,
             ctx.author,
@@ -4662,7 +5215,9 @@ async def remove_role_member_prefix(
             outcome="failed",
             details="Bot missing `Manage Roles` permission or role hierarchy block.",
         )
-        await ctx.send("❌ I can't remove that role. Check `Manage Roles` permission and role hierarchy.")
+        await ctx.send(
+            "❌ I can't remove that role. Check `Manage Roles` permission and role hierarchy."
+        )
         return
     except discord.HTTPException:
         logger.exception("Failed to remove role %s from member %s", role, member)
@@ -4695,12 +5250,16 @@ async def remove_role_member_prefix(
     guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(user_id="User ID to unban", reason="Reason for unban")
-async def unban_member_slash(interaction: discord.Interaction, user_id: str, reason: str | None = None):
+async def unban_member_slash(
+    interaction: discord.Interaction, user_id: str, reason: str | None = None
+):
     logger.info("/unban_member invoked by %s target=%s", interaction.user, user_id)
     if not await ensure_interaction_command_access(interaction, "unban_member"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
         return
 
     target_user_id = parse_user_id_input(user_id)
@@ -4710,7 +5269,9 @@ async def unban_member_slash(interaction: discord.Interaction, user_id: str, rea
 
     action_reason = (reason or "").strip() or f"Unbanned by {interaction.user} via bot"
     try:
-        await interaction.guild.unban(discord.Object(id=target_user_id), reason=action_reason)
+        await interaction.guild.unban(
+            discord.Object(id=target_user_id), reason=action_reason
+        )
     except discord.NotFound:
         await interaction.response.send_message(
             f"❌ User `{target_user_id}` is not currently banned.",
@@ -4742,7 +5303,9 @@ async def unban_member_slash(interaction: discord.Interaction, user_id: str, rea
             outcome="failed",
             details=f"Discord API error while unbanning user `{target_user_id}`.",
         )
-        await interaction.response.send_message("❌ Failed to unban that user. Try again.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Failed to unban that user. Try again.", ephemeral=True
+        )
         return
 
     await send_moderation_log(
@@ -4752,7 +5315,9 @@ async def unban_member_slash(interaction: discord.Interaction, user_id: str, rea
         reason=action_reason,
         details=f"Unbanned user ID `{target_user_id}`.",
     )
-    await interaction.response.send_message(f"✅ Unbanned user ID `{target_user_id}`.", ephemeral=True)
+    await interaction.response.send_message(
+        f"✅ Unbanned user ID `{target_user_id}`.", ephemeral=True
+    )
 
 
 @bot.command(name="unbanmember")
@@ -4810,7 +5375,11 @@ async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: st
     await ctx.send(f"✅ Unbanned user ID `{target_user_id}`.")
 
 
-@tree.command(name="search", description="Search GL.iNet forum and docs", guild=discord.Object(id=GUILD_ID))
+@tree.command(
+    name="search",
+    description="Search GL.iNet forum and docs",
+    guild=discord.Object(id=GUILD_ID),
+)
 @app_commands.describe(query="Enter search keywords")
 async def search_slash(interaction: discord.Interaction, query: str):
     logger.info("/search invoked by %s with query %s", interaction.user, query)
@@ -4818,7 +5387,9 @@ async def search_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Please provide a search query.", ephemeral=True
+        )
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_search_message, query)
@@ -4839,7 +5410,11 @@ async def search_prefix(ctx: commands.Context, *, query: str):
     await ctx.send(message)
 
 
-@tree.command(name="search_forum", description="Search the GL.iNet forum only", guild=discord.Object(id=GUILD_ID))
+@tree.command(
+    name="search_forum",
+    description="Search the GL.iNet forum only",
+    guild=discord.Object(id=GUILD_ID),
+)
 @app_commands.describe(query="Enter search keywords")
 async def search_forum_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_forum invoked by %s with query %s", interaction.user, query)
@@ -4847,7 +5422,9 @@ async def search_forum_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Please provide a search query.", ephemeral=True
+        )
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_forum_search_message, query)
@@ -4868,7 +5445,11 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
     await ctx.send(message)
 
 
-@tree.command(name="search_kvm", description="Search KVM docs only", guild=discord.Object(id=GUILD_ID))
+@tree.command(
+    name="search_kvm",
+    description="Search KVM docs only",
+    guild=discord.Object(id=GUILD_ID),
+)
 @app_commands.describe(query="Enter search keywords")
 async def search_kvm_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_kvm invoked by %s with query %s", interaction.user, query)
@@ -4876,7 +5457,9 @@ async def search_kvm_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Please provide a search query.", ephemeral=True
+        )
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_docs_site_search_message, query, "kvm")
@@ -4897,7 +5480,11 @@ async def search_kvm_prefix(ctx: commands.Context, *, query: str):
     await ctx.send(message)
 
 
-@tree.command(name="search_iot", description="Search IoT docs only", guild=discord.Object(id=GUILD_ID))
+@tree.command(
+    name="search_iot",
+    description="Search IoT docs only",
+    guild=discord.Object(id=GUILD_ID),
+)
 @app_commands.describe(query="Enter search keywords")
 async def search_iot_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_iot invoked by %s with query %s", interaction.user, query)
@@ -4905,7 +5492,9 @@ async def search_iot_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Please provide a search query.", ephemeral=True
+        )
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_docs_site_search_message, query, "iot")
@@ -4926,7 +5515,11 @@ async def search_iot_prefix(ctx: commands.Context, *, query: str):
     await ctx.send(message)
 
 
-@tree.command(name="search_router", description="Search Router v4 docs only", guild=discord.Object(id=GUILD_ID))
+@tree.command(
+    name="search_router",
+    description="Search Router v4 docs only",
+    guild=discord.Object(id=GUILD_ID),
+)
 @app_commands.describe(query="Enter search keywords")
 async def search_router_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_router invoked by %s with query %s", interaction.user, query)
@@ -4934,7 +5527,9 @@ async def search_router_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        await interaction.response.send_message(
+            "❌ Please provide a search query.", ephemeral=True
+        )
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_docs_site_search_message, query, "router")
