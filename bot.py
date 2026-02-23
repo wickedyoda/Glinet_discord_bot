@@ -14,6 +14,7 @@ import threading
 import sqlite3
 import secrets
 import sys
+import hashlib
 from collections import deque
 from difflib import SequenceMatcher
 from datetime import timedelta, datetime, timezone
@@ -52,13 +53,28 @@ def to_logging_level(level_name: str):
     return getattr(logging, str(level_name or "INFO").upper(), logging.INFO)
 
 
+def resolve_log_dir(preferred_value: str):
+    preferred = str(preferred_value or "").strip()
+    candidates = [preferred, os.path.join(DATA_DIR, "logs"), DATA_DIR]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            return candidate
+        except OSError:
+            continue
+    return DATA_DIR
+
+
 # Set up logging to console and persistent file
 LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", "INFO"))
 CONTAINER_LOG_LEVEL = normalize_log_level(
     os.getenv("CONTAINER_LOG_LEVEL", "ERROR"), fallback="ERROR"
 )
-BOT_LOG_FILE = os.path.join(DATA_DIR, "bot.log")
-CONTAINER_ERROR_LOG_FILE = os.path.join(DATA_DIR, "container_errors.log")
+LOG_DIR = resolve_log_dir(os.getenv("LOG_DIR", "/logs"))
+BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
+CONTAINER_ERROR_LOG_FILE = os.path.join(LOG_DIR, "container_errors.log")
 logger = logging.getLogger("invite_bot")
 logger.setLevel(to_logging_level(LOG_LEVEL))
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -80,6 +96,7 @@ root_logger = logging.getLogger()
 root_logger.addHandler(container_error_handler)
 logging.getLogger("discord").setLevel(to_logging_level(LOG_LEVEL))
 logging.getLogger("werkzeug").setLevel(to_logging_level(LOG_LEVEL))
+logger.info("Runtime log files: %s | %s", BOT_LOG_FILE, CONTAINER_ERROR_LOG_FILE)
 
 
 def install_global_exception_logging():
@@ -429,6 +446,7 @@ command_permissions_cache = {"mtime": None, "rules": {}}
 db_lock = threading.RLock()
 db_connection = None
 FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS = 3600
+FIRMWARE_NOTIFICATION_ITEM_LIMIT = 12
 firmware_channel_warning_state = {"reason": "", "last_logged_at": 0.0}
 
 
@@ -2368,7 +2386,66 @@ def load_firmware_seen_ids():
     return {str(row["entry_id"]) for row in rows if row["entry_id"]}
 
 
-def save_firmware_state(seen_ids: set[str], sync_label: str = ""):
+def load_firmware_signature_map():
+    raw_payload = db_kv_get("firmware_entry_signatures")
+    if not raw_payload:
+        return None
+    try:
+        parsed = json.loads(raw_payload)
+    except (TypeError, ValueError):
+        logger.warning("Firmware signature state is invalid JSON; rebuilding baseline.")
+        return None
+    if not isinstance(parsed, dict):
+        logger.warning("Firmware signature state is invalid; rebuilding baseline.")
+        return None
+    signatures = {}
+    for raw_key, raw_signature in parsed.items():
+        key = str(raw_key or "").strip()
+        signature = str(raw_signature or "").strip()
+        if key and signature:
+            signatures[key] = signature
+    return signatures
+
+
+def build_firmware_change_key(entry: dict):
+    model_code = str(entry.get("model_code") or "unknown").strip().lower()
+    stage = str(entry.get("stage") or "unknown").strip().lower()
+    version = str(entry.get("version") or "unknown").strip()
+    return f"{model_code}|{stage}|{version}"
+
+
+def build_firmware_entry_signature(entry: dict):
+    file_tokens = [
+        f"{str(item.get('label') or '').strip()}|{str(item.get('url') or '').strip()}"
+        for item in entry.get("files", [])
+        if str(item.get("url") or "").strip()
+    ]
+    sha_tokens = [
+        str(value).strip() for value in entry.get("sha256", []) if str(value).strip()
+    ]
+    payload = "|".join(
+        [
+            str(entry.get("published_date") or "").strip(),
+            ",".join(sorted(file_tokens)),
+            ",".join(sorted(sha_tokens)),
+            normalize_release_notes_text(str(entry.get("release_notes") or "")),
+        ]
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def build_firmware_signature_snapshot(entries: list[dict]):
+    snapshot = {}
+    for entry in entries:
+        change_key = build_firmware_change_key(entry)
+        entry["change_key"] = change_key
+        snapshot[change_key] = build_firmware_entry_signature(entry)
+    return snapshot
+
+
+def save_firmware_state(
+    seen_ids: set[str], signature_snapshot: dict[str, str], sync_label: str = ""
+):
     now_iso = datetime.now(timezone.utc).isoformat()
     conn = get_db_connection()
     with db_lock:
@@ -2387,6 +2464,10 @@ def save_firmware_state(seen_ids: set[str], sync_label: str = ""):
         conn.commit()
     db_kv_set("firmware_seen_initialized", "1")
     db_kv_set("firmware_source_url", FIRMWARE_FEED_URL)
+    db_kv_set(
+        "firmware_entry_signatures",
+        json.dumps(signature_snapshot, separators=(",", ":"), sort_keys=True),
+    )
     if sync_label:
         db_kv_set("firmware_last_synced", sync_label)
     else:
@@ -2482,65 +2563,53 @@ def fetch_firmware_entries():
     return parse_firmware_entries(response.text)
 
 
-def format_release_notes_excerpt(release_notes: str):
-    if not release_notes:
-        return "- No release notes available on source page."
-
-    excerpt_lines = []
-    used_chars = 0
-    for raw_line in release_notes.splitlines():
-        line = clip_text(raw_line, max_chars=220)
-        if not line or line == "N/A":
-            continue
-        projected = used_chars + len(line) + 3
-        if excerpt_lines and projected > FIRMWARE_RELEASE_NOTES_MAX_CHARS:
-            excerpt_lines.append("- ...")
-            break
-        excerpt_lines.append(f"- {line}")
-        used_chars = projected
-        if len(excerpt_lines) >= 12:
-            excerpt_lines.append("- ...")
-            break
-
-    if not excerpt_lines:
-        return "- No release notes available on source page."
-    return "\n".join(excerpt_lines)
-
-
 def trim_discord_message(message: str, max_chars: int = 1900):
     if len(message) <= max_chars:
         return message
     return message[: max_chars - 4].rstrip() + " ..."
 
 
-def format_firmware_notification(entry: dict, sync_label: str):
-    stage_text = (
+def firmware_stage_label(raw_stage: str):
+    stage = str(raw_stage or "").strip().lower()
+    return (
         "Stable"
-        if entry["stage"] == "release"
+        if stage == "release"
         else "Testing"
-        if entry["stage"] == "testing"
-        else entry["stage"].title()
+        if stage == "testing"
+        else stage.title() or "Unknown"
     )
+
+
+def format_firmware_change_summary(
+    new_entries: list[dict], changed_entries: list[dict], sync_label: str
+):
+    total_changes = len(new_entries) + len(changed_entries)
     lines = [
-        "🆕 **New firmware mirrored**",
-        f"**Model:** {entry['model_name']} (`{entry['model_code']}`)",
-        f"**Track:** `{stage_text}`",
-        f"**Version:** `{entry['version']}`",
-        f"**Date:** `{entry['published_date']}`",
+        "📡 **Firmware updates detected**",
+        f"New: `{len(new_entries)}` | Changed: `{len(changed_entries)}`",
     ]
+    combined_entries = [("🆕", entry) for entry in new_entries] + [
+        ("🔄", entry) for entry in changed_entries
+    ]
+    combined_entries.sort(
+        key=lambda item: (
+            item[1].get("published_date", ""),
+            item[1].get("model_code", ""),
+            item[1].get("version", ""),
+        )
+    )
+    for icon, entry in combined_entries[:FIRMWARE_NOTIFICATION_ITEM_LIMIT]:
+        stage_text = firmware_stage_label(entry.get("stage", ""))
+        model_code = str(entry.get("model_code") or "unknown").upper()
+        version = str(entry.get("version") or "unknown")
+        published_date = str(entry.get("published_date") or "unknown")
+        lines.append(
+            f"- {icon} `{model_code}` `{version}` ({stage_text}, {published_date})"
+        )
 
-    if entry["files"]:
-        lines.append("**Files:**")
-        for file_info in entry["files"]:
-            lines.append(f"- [{file_info['label']}]({file_info['url']})")
-
-    if entry["sha256"]:
-        lines.append("**SHA256:**")
-        for sha_value in entry["sha256"][:2]:
-            lines.append(f"- `{sha_value}`")
-
-    lines.append("**Release Notes (excerpt):**")
-    lines.append(format_release_notes_excerpt(entry["release_notes"]))
+    if total_changes > FIRMWARE_NOTIFICATION_ITEM_LIMIT:
+        remaining = total_changes - FIRMWARE_NOTIFICATION_ITEM_LIMIT
+        lines.append(f"- ... and `{remaining}` more update(s)")
     if sync_label:
         lines.append(f"`{sync_label}`")
     lines.append(f"Source: {FIRMWARE_FEED_URL}")
@@ -2592,7 +2661,7 @@ def log_firmware_channel_unavailable(reason_key: str, pending_count: int):
     firmware_channel_warning_state["reason"] = reason_key
     firmware_channel_warning_state["last_logged_at"] = now_ts
     logger.warning(
-        "Firmware notifications paused: %s (channel_id=%s, guild_id=%s, pending_new_entries=%d). "
+        "Firmware notifications paused: %s (channel_id=%s, guild_id=%s, pending_updates=%d). "
         "Update firmware_notification_channel to a valid text channel the bot can access.",
         reason_text,
         FIRMWARE_NOTIFY_CHANNEL_ID,
@@ -2616,47 +2685,70 @@ async def check_firmware_updates_once():
         return
 
     current_ids = {entry["id"] for entry in entries}
+    current_signatures = build_firmware_signature_snapshot(entries)
     seen_ids = load_firmware_seen_ids()
     if seen_ids is None:
-        save_firmware_state(current_ids, sync_label)
+        save_firmware_state(current_ids, current_signatures, sync_label)
         logger.info(
             "Firmware monitor baseline initialized with %d entries", len(current_ids)
         )
         return
 
-    new_entries = [entry for entry in entries if entry["id"] not in seen_ids]
-    if not new_entries:
-        save_firmware_state(current_ids, sync_label)
+    previous_signatures = load_firmware_signature_map()
+    if previous_signatures is None:
+        save_firmware_state(current_ids, current_signatures, sync_label)
+        logger.info(
+            "Firmware monitor signature baseline initialized with %d entries",
+            len(current_ids),
+        )
+        return
+
+    new_entries = []
+    changed_entries = []
+    for entry in entries:
+        change_key = str(entry.get("change_key") or "").strip()
+        if not change_key:
+            continue
+        previous_signature = previous_signatures.get(change_key)
+        current_signature = current_signatures.get(change_key, "")
+        if previous_signature is None:
+            new_entries.append(entry)
+            continue
+        if previous_signature != current_signature:
+            changed_entries.append(entry)
+
+    if not new_entries and not changed_entries:
+        save_firmware_state(current_ids, current_signatures, sync_label)
         return
 
     channel, channel_error = await resolve_firmware_notify_channel()
     if channel is None:
-        log_firmware_channel_unavailable(channel_error, len(new_entries))
+        log_firmware_channel_unavailable(
+            channel_error, len(new_entries) + len(changed_entries)
+        )
         return
 
     firmware_channel_warning_state["reason"] = ""
     firmware_channel_warning_state["last_logged_at"] = 0.0
-    new_entries.sort(
-        key=lambda item: (item["published_date"], item["model_code"], item["version"])
+    logger.info(
+        "Firmware monitor detected %d new and %d changed entries",
+        len(new_entries),
+        len(changed_entries),
     )
-    logger.info("Firmware monitor found %d new entries", len(new_entries))
-    for entry in new_entries:
-        try:
-            await channel.send(format_firmware_notification(entry, sync_label))
-        except discord.Forbidden:
-            logger.warning(
-                "No permission to post firmware notification in channel %s", channel.id
-            )
-            return
-        except discord.HTTPException:
-            logger.exception(
-                "Failed to post firmware notification for %s %s",
-                entry["model_code"],
-                entry["version"],
-            )
-            return
+    try:
+        await channel.send(
+            format_firmware_change_summary(new_entries, changed_entries, sync_label)
+        )
+    except discord.Forbidden:
+        logger.warning(
+            "No permission to post firmware notification in channel %s", channel.id
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to post firmware summary notification")
+        return
 
-    save_firmware_state(current_ids, sync_label)
+    save_firmware_state(current_ids, current_signatures, sync_label)
 
 
 async def firmware_monitor_loop():
