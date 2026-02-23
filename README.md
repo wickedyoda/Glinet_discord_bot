@@ -314,6 +314,11 @@ This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 See [`LICENSE`](./LICENSE) for the full text.
 Additional rights/policy summary: [`LICENSE.md`](./LICENSE.md)
 
+## Contributing
+
+Contributors must provide complete commit and PR descriptions for all changes.
+See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for required format and templates.
+
 ## Maintainer
 
 Created and maintained by [WickedYoda](https://wickedyoda.com)  

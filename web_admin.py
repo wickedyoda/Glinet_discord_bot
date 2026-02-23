@@ -622,8 +622,9 @@ def _render_layout(
       z-index: 10;
     }
     .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
-    .nav-links { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .nav-links a { text-decoration: none; }
+    .nav-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .nav-controls a { text-decoration: none; }
+    .current-user { color: var(--muted); font-size: 0.95rem; }
     .wrap { max-width: 1200px; margin: 22px auto; padding: 0 16px; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
     .flash { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid var(--border); }
@@ -653,7 +654,7 @@ def _render_layout(
     }
     .btn.secondary { background: var(--btn-secondary); }
     .btn.danger { background: var(--btn-danger); }
-    .inline-form { display: inline; margin-left: 12px; }
+    .inline-form { display: inline; margin-left: 0; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .muted { color: var(--muted); font-size: 0.9rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -668,6 +669,23 @@ def _render_layout(
       letter-spacing: 0.02em;
     }
     .theme-btn.active { background: var(--btn-bg); color: #fff; }
+    .nav-select {
+      width: 280px;
+      max-width: 70vw;
+      min-width: 190px;
+      padding: 7px 9px;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
     .dash-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
     .dash-card h3 { margin-top: 0; margin-bottom: 8px; }
     .dash-card p { margin-top: 0; min-height: 50px; }
@@ -689,24 +707,28 @@ def _render_layout(
         <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
       </div>
       {% if current_email %}
-        <nav class="nav-links">
-          <span>{{ current_email }}</span>
-          <a href="{{ url_for('dashboard') }}">Dashboard</a>
-          {% if is_admin %}<a href="{{ url_for('bot_profile') }}">Bot Profile</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('command_permissions') }}">Command Permissions</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('settings') }}">Settings</a>{% endif %}
-          <a href="{{ url_for('documentation') }}">Documentation</a>
-          {% if github_wiki_url %}<a href="{{ github_wiki_url }}" target="_blank" rel="noopener noreferrer">GitHub Wiki</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('tag_responses') }}">Tag Responses</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('users') }}">Users</a>{% endif %}
+        <nav class="nav-controls">
+          <span class="current-user">{{ current_email }}</span>
+          <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+          <label class="sr-only" for="nav-page-select">Open page</label>
+          <select id="nav-page-select" class="nav-select">
+            <option value="">Go to page...</option>
+            {% if is_admin %}<option value="{{ url_for('bot_profile') }}">Bot Profile</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('command_permissions') }}">Command Permissions</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('settings') }}">Settings</option>{% endif %}
+            <option value="{{ url_for('documentation') }}">Documentation</option>
+            {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('tag_responses') }}">Tag Responses</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('users') }}">Users</option>{% endif %}
+            <option value="{{ url_for('logout') }}">Logout</option>
+          </select>
           {% if is_admin and restart_enabled %}
             <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
               <input type="hidden" name="confirm" value="yes" />
               <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
             </form>
           {% endif %}
-          <a href="{{ url_for('logout') }}">Logout</a>
         </nav>
       {% endif %}
     </div>
@@ -747,6 +769,24 @@ def _render_layout(
           setTheme(btn.getAttribute("data-theme-choice"));
         });
       });
+
+      const navPageSelect = document.getElementById("nav-page-select");
+      if (navPageSelect) {
+        navPageSelect.addEventListener("change", function () {
+          const option = navPageSelect.options[navPageSelect.selectedIndex];
+          const target = option ? option.value : "";
+          if (!target) {
+            return;
+          }
+          const external = option.getAttribute("data-external") === "1";
+          if (external) {
+            window.open(target, "_blank", "noopener,noreferrer");
+          } else {
+            window.location.href = target;
+          }
+          navPageSelect.value = "";
+        });
+      }
     })();
   </script>
 </body>

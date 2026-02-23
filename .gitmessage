@@ -1,0 +1,19 @@
+<type>(<scope>): <short summary>
+
+Why:
+- What problem is this commit solving?
+
+What changed:
+- Concrete change 1
+- Concrete change 2
+
+Impact:
+- User/admin/runtime impact
+- Security/performance impact (or "none")
+
+Validation:
+- Tests/checks/manual verification performed
+
+Refs:
+- Issue/PR/Discussion link (if available)
+
