@@ -37,12 +37,51 @@ Do not open public issues for unpatched security vulnerabilities.
 Aligned with the WickedYoda site privacy and policy statement at:
 
 - `https://wickedyoda.com/?page_id=3`
+- Discord Developer Terms of Service:
+  - `https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service`
+- Discord Data Privacy FAQ for Developers:
+  - `https://support-dev.discord.com/hc/en-us/articles/8563934450327-Discord-Data-Privacy-FAQ`
 
 Project principles:
 
 - No intentional sale of user data.
 - Data use is limited to operational needs (bot/web admin functionality, security, and diagnostics).
 - Sensitive data exposure should be minimized in logs, reports, and screenshots.
+
+## Implemented Controls for Discord Security Expectations
+
+This project implements the following controls to align with Discord developer security and privacy expectations:
+
+- Web-only admin identity lifecycle:
+  - No Discord `/login` or `!login` flow for web user creation
+  - No public self-signup route
+  - Admin-controlled account provisioning and privilege management
+- Password and account protections:
+  - Password hashing at rest
+  - Password complexity policy enforcement
+  - Forced password rotation every 90 days
+  - Existing users can update password/email/profile fields in `My Account`
+  - Login attempt throttling to reduce brute-force risk
+- Session and browser protections:
+  - CSRF validation on state-changing requests
+  - Same-origin checks for POST/PUT/PATCH/DELETE
+  - HttpOnly + SameSite session cookies
+  - Optional secure session cookie mode for HTTPS proxy deployments
+  - Restrictive security headers (CSP, frame deny, no-sniff, referrer policy, cache-control no-store, related cross-origin headers)
+- Access control protections:
+  - Admin route guards for sensitive web actions
+  - Command permission model with default/public/custom role restrictions
+  - Multi-role command restriction support in web GUI
+- Data and storage protections:
+  - SQLite persistence with WAL mode and foreign key enforcement
+  - Merge-only legacy data migration to avoid overwriting existing records
+  - Best-effort restrictive permissions for `.env`, data directory, and SQLite files
+  - Request upload-size limits for file-based web actions
+- Operational hardening:
+  - Password hash upgrade path on successful login when stronger hash policy is detected
+  - Security-focused documentation maintained in:
+    - `SECURITY.md`
+    - `wiki/Security-Hardening.md`
 
 ## Scope Notes
 
