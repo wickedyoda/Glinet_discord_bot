@@ -27,7 +27,8 @@ Scheduled monitor for new firmware mirrored on GL.iNet firmware feed pages.
 
 ## Persistence
 
-- Seen entries stored in `data/firmware_seen.json`
+- Seen entries are stored in SQLite (`data/bot_data.db`)
+- Legacy `data/firmware_seen.json` is imported on startup (merge-only)
 - Prevents repeat alerts after restart
 
 ## Env Variables

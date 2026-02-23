@@ -44,4 +44,7 @@
 ## Access Rules
 
 - Moderator/admin command access is controlled by env role IDs.
+- Admins can override each command's access rule in `/admin/command-permissions`.
+- Custom command restrictions support multi-role selection from Discord role dropdowns.
+- Web-user creation is web-admin only (`/admin/users`); no Discord `/login` command exists.
 - See [Environment Variables](Environment-Variables) and [Moderation and Logs](Moderation-and-Logs).

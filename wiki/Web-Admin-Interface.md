@@ -7,16 +7,19 @@ Password-protected admin UI for runtime bot management.
 - Runs inside container on `WEB_PORT` (default `8080`)
 - Exposed via mapped host port (`WEB_HOST_PORT`)
 - Login is email/password
+- Login is web-only (`/login` route in the web UI)
 
 ## User Model
 
 - No public signup
 - First-run default admin is created from env values
 - Admin can create additional users
+- No Discord `/login` or `!login` command exists for web-user creation
 - Password policy:
   - At least 6 digits
   - At least 2 uppercase letters
   - At least 1 symbol
+- Create-user and reset-password forms include a show-password toggle
 
 ## Admin Pages
 
@@ -27,6 +30,8 @@ Password-protected admin UI for runtime bot management.
 - `/admin/command-permissions`
   - Configure per-command access mode
   - Default/public/custom role permission support
+  - Select custom roles with multi-select role dropdowns from live Discord data
+  - Optional manual role-ID entry for roles not present in dropdown
 - `/admin/tag-responses`
   - Edit tag map and refresh runtime tag commands
 - `/admin/bulk-role-csv`
@@ -35,7 +40,7 @@ Password-protected admin UI for runtime bot management.
   - Create/delete users and promote/demote admin status
 - `/admin/bot-profile`
   - View bot identity
-  - Update bot username and server nickname (admin-only)
+  - Update bot username and server nickname (admin-only; web GUI only)
   - Upload bot avatar image
 
 ## Discord Catalog Dropdowns
