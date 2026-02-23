@@ -683,7 +683,7 @@ def _ensure_default_admin(
     finally:
         conn.close()
     if logger:
-        logger.info("Created default web admin user: %s", email)
+        logger.info("Created default web admin user.")
 
 
 def _parse_env_file(env_file: Path):
@@ -1844,21 +1844,8 @@ def create_web_app(
                 recent_entries.append(time.time())
                 recent_login_success[client_ip] = recent_entries[-5:]
                 _set_auth_session(user["email"], remember_login=remember_login)
-                if logger:
-                    logger.info(
-                        "Web login success: email=%s ip=%s remember_login=%s",
-                        user["email"],
-                        client_ip,
-                        remember_login,
-                    )
                 if _password_change_required(user):
                     session["force_password_change_notice_shown"] = True
-                    if logger:
-                        logger.info(
-                            "Password rotation required at login: email=%s ip=%s",
-                            user["email"],
-                            client_ip,
-                        )
                     flash(
                         f"Password expired. You must change it every {PASSWORD_MAX_AGE_DAYS} days.",
                         "error",
@@ -1867,14 +1854,6 @@ def create_web_app(
                 return redirect(url_for("dashboard"))
             attempts.append(time.time())
             login_attempts[client_ip] = attempts[-login_max_attempts:]
-            if logger:
-                logger.warning(
-                    "Web login failed: email=%s ip=%s user_exists=%s attempts_recent=%s",
-                    email,
-                    client_ip,
-                    bool(user),
-                    len(login_attempts.get(client_ip, [])),
-                )
             flash("Invalid email or password.", "error")
 
         return _render_page(

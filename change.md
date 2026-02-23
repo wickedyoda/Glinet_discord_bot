@@ -54,7 +54,7 @@ All notable changes to this project are documented in this file.
 - Added explicit web login/security decision logging for troubleshooting:
   - origin-policy blocks
   - CSRF validation blocks
-  - login success/failure/rate-limit events
+  - session-loss warnings after recent successful login (proxy/cookie troubleshooting)
 - Improved login page form semantics and field consistency:
   - associated labels (`for`/`id`)
   - password/email autocomplete attributes
