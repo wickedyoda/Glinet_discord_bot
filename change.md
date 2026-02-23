@@ -55,6 +55,10 @@ All notable changes to this project are documented in this file.
   - associated labels (`for`/`id`)
   - password/email autocomplete attributes
   - consistent field sizing and styling
+- Firmware monitor update behavior:
+  - first-run baseline now captures the current firmware list without sending historical alerts
+  - notifications now trigger only for true deltas (new entries or changed existing entries)
+  - firmware notifications are now compact summaries instead of long per-entry posts
 
 ### Security
 - CSRF protection enabled for state-changing requests.

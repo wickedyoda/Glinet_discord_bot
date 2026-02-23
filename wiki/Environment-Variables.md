@@ -61,7 +61,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `FIRMWARE_FEED_URL` | `https://gl-fw.remotetohome.io/` | URL | Firmware source URL |
 | `firmware_check_schedule` | `*/30 * * * *` | Valid 5-field cron (UTC) | Primary scheduler |
 | `FIRMWARE_REQUEST_TIMEOUT_SECONDS` | `30` | Integer, `>= 5` | HTTP timeout for firmware fetch |
-| `FIRMWARE_RELEASE_NOTES_MAX_CHARS` | `900` | Integer, `>= 200` | Max release note excerpt length |
+| `FIRMWARE_RELEASE_NOTES_MAX_CHARS` | `900` | Integer, `>= 200` | Legacy compatibility value (compact firmware notifications no longer send long release note excerpts) |
 
 ## Web Admin
 
