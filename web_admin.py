@@ -349,6 +349,44 @@ def _render_select_input(name: str, selected_value: str, options: list[dict], pl
     )
 
 
+def _render_multi_select_input(name: str, selected_values, options: list[dict], size: int = 8):
+    selected_set = set()
+    if isinstance(selected_values, str):
+        selected_values = [selected_values]
+    if not isinstance(selected_values, list):
+        selected_values = []
+    for value in selected_values:
+        normalized = _normalize_select_value(str(value))
+        if normalized:
+            selected_set.add(normalized)
+
+    rows = []
+    seen = set()
+    for option in options:
+        option_id = str(option.get("id", "")).strip()
+        if not option_id:
+            continue
+        seen.add(option_id)
+        label = str(option.get("label") or option.get("name") or option_id)
+        selected_attr = " selected" if option_id in selected_set else ""
+        rows.append(
+            f"<option value='{escape(option_id, quote=True)}'{selected_attr}>"
+            f"{escape(label)} ({escape(option_id)})</option>"
+        )
+
+    for missing_value in sorted(selected_set - seen):
+        rows.append(
+            f"<option value='{escape(missing_value, quote=True)}' selected>"
+            f"Current value (not found): {escape(missing_value)}</option>"
+        )
+
+    return (
+        f"<select name='{escape(name, quote=True)}' multiple size='{max(4, int(size))}'>"
+        + "".join(rows)
+        + "</select>"
+    )
+
+
 def _render_layout(
     title: str,
     body_html: str,
@@ -854,9 +892,14 @@ def create_web_app(
             else:
                 command_updates = {}
                 for command_key in request.form.getlist("command_key"):
+                    selected_role_ids = request.form.getlist(f"role_ids__{command_key}")
+                    manual_role_ids = request.form.get(f"role_ids_text__{command_key}", "")
+                    role_ids_payload = selected_role_ids if role_options else manual_role_ids
+                    if role_options and not selected_role_ids and manual_role_ids.strip():
+                        role_ids_payload = manual_role_ids
                     command_updates[command_key] = {
                         "mode": request.form.get(f"mode__{command_key}", "default"),
-                        "role_ids": request.form.get(f"role_ids__{command_key}", ""),
+                        "role_ids": role_ids_payload,
                     }
                 response = on_save_command_permissions({"commands": command_updates}, user["email"])
                 if not isinstance(response, dict):
@@ -894,6 +937,23 @@ def create_web_app(
             default_selected = " selected" if mode == "default" else ""
             public_selected = " selected" if mode == "public" else ""
             custom_selected = " selected" if mode == "custom_roles" else ""
+            if role_options:
+                role_input_html = (
+                    _render_multi_select_input(
+                        name=f"role_ids__{command_key}",
+                        selected_values=[str(value) for value in role_ids],
+                        options=role_options,
+                        size=7,
+                    )
+                    + f"<input type='text' name='role_ids_text__{escape(command_key, quote=True)}' "
+                    "placeholder='Optional: comma-separated role IDs not listed above' />"
+                )
+            else:
+                role_input_html = (
+                    f"<input type='text' name='role_ids__{escape(command_key, quote=True)}' "
+                    f"value='{escape(role_ids_value, quote=True)}' "
+                    "placeholder='Comma-separated role IDs (for custom mode)' />"
+                )
             rows.append(
                 f"""
                 <tr>
@@ -908,31 +968,24 @@ def create_web_app(
                     <select name="mode__{escape(command_key, quote=True)}">
                       <option value="default"{default_selected}>Default rule</option>
                       <option value="public"{public_selected}>Public (any member)</option>
-                      <option value="custom_roles"{custom_selected}>Custom role IDs</option>
+                      <option value="custom_roles"{custom_selected}>Custom roles</option>
                     </select>
                   </td>
                   <td>
-                    <input type="text" name="role_ids__{escape(command_key, quote=True)}"
-                      value="{escape(role_ids_value, quote=True)}"
-                      placeholder="Comma-separated role IDs (for custom mode)" />
+                    {role_input_html}
                   </td>
                 </tr>
                 """
             )
 
         role_hint_html = ""
-        if role_options:
-            role_entries = "".join(
-                f"<li><span class='mono'>{escape(str(role.get('id', '')))}</span> - {escape(str(role.get('name', '')))}</li>"
-                for role in role_options[:200]
-            )
-            role_hint_html = (
-                "<details class='card'><summary>Available Guild Roles</summary>"
-                "<p class='muted'>Use these role IDs in custom command permissions.</p>"
-                f"<ul>{role_entries}</ul></details>"
-            )
-        elif catalog_error:
+        if catalog_error:
             role_hint_html = f"<p class='muted'>Could not load guild roles: {escape(catalog_error)}</p>"
+        elif role_options:
+            role_hint_html = (
+                "<p class='muted'>Role dropdown loaded from Discord. "
+                "Use Ctrl/Cmd-click to select multiple roles per command.</p>"
+            )
 
         allowed_role_names = permissions_payload.get("allowed_role_names", []) or []
         moderator_role_ids = permissions_payload.get("moderator_role_ids", []) or []
@@ -942,10 +995,11 @@ def create_web_app(
           <p class="muted">Set access mode per command. Default mode follows built-in behavior. Custom mode requires at least one role ID.</p>
           <p class="muted">Default named-role gate: {escape(', '.join(str(item) for item in allowed_role_names) or 'None')}</p>
           <p class="muted">Current moderator role IDs: <span class="mono">{escape(','.join(str(item) for item in moderator_role_ids) or 'None')}</span></p>
+          {role_hint_html}
           <form method="post">
             <table>
               <thead>
-                <tr><th>Command</th><th>Default Access</th><th>Mode</th><th>Custom Role IDs</th></tr>
+                <tr><th>Command</th><th>Default Access</th><th>Mode</th><th>Custom Role Selection</th></tr>
               </thead>
               <tbody>
                 {''.join(rows)}
@@ -956,7 +1010,6 @@ def create_web_app(
             </div>
           </form>
         </div>
-        {role_hint_html}
         """
         return _render_page("Command Permissions", body, user["email"], bool(user.get("is_admin")))
 
