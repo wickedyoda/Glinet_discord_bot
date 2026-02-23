@@ -86,6 +86,9 @@ LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", "INFO"))
 CONTAINER_LOG_LEVEL = normalize_log_level(
     os.getenv("CONTAINER_LOG_LEVEL", "ERROR"), fallback="ERROR"
 )
+DISCORD_LOG_LEVEL = normalize_log_level(
+    os.getenv("DISCORD_LOG_LEVEL", "INFO"), fallback="INFO"
+)
 LOG_DIR = resolve_log_dir(os.getenv("LOG_DIR", "/logs"))
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 CONTAINER_ERROR_LOG_FILE = os.path.join(LOG_DIR, "container_errors.log")
@@ -108,8 +111,14 @@ container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
 container_error_handler.setFormatter(formatter)
 root_logger = logging.getLogger()
 root_logger.addHandler(container_error_handler)
-logging.getLogger("discord").setLevel(to_logging_level(LOG_LEVEL))
-logging.getLogger("werkzeug").setLevel(to_logging_level(LOG_LEVEL))
+
+
+def apply_external_logger_levels():
+    logging.getLogger("discord").setLevel(to_logging_level(DISCORD_LOG_LEVEL))
+    logging.getLogger("werkzeug").setLevel(to_logging_level(DISCORD_LOG_LEVEL))
+
+
+apply_external_logger_levels()
 logger.info("Runtime log files: %s | %s", BOT_LOG_FILE, CONTAINER_ERROR_LOG_FILE)
 
 
@@ -2824,6 +2833,7 @@ def schedule_firmware_monitor_restart():
 def refresh_runtime_settings_from_env(_updated_values=None):
     global LOG_LEVEL
     global CONTAINER_LOG_LEVEL
+    global DISCORD_LOG_LEVEL
     global GENERAL_CHANNEL_ID
     global FORUM_BASE_URL
     global FORUM_MAX_RESULTS
@@ -2850,12 +2860,15 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         os.getenv("CONTAINER_LOG_LEVEL", CONTAINER_LOG_LEVEL),
         fallback=CONTAINER_LOG_LEVEL,
     )
+    DISCORD_LOG_LEVEL = normalize_log_level(
+        os.getenv("DISCORD_LOG_LEVEL", DISCORD_LOG_LEVEL),
+        fallback=DISCORD_LOG_LEVEL,
+    )
     logger.setLevel(to_logging_level(LOG_LEVEL))
     console_handler.setLevel(to_logging_level(LOG_LEVEL))
     file_handler.setLevel(to_logging_level(LOG_LEVEL))
     container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
-    logging.getLogger("discord").setLevel(to_logging_level(LOG_LEVEL))
-    logging.getLogger("werkzeug").setLevel(to_logging_level(LOG_LEVEL))
+    apply_external_logger_levels()
 
     GENERAL_CHANNEL_ID = parse_int_setting(
         os.getenv("GENERAL_CHANNEL_ID", GENERAL_CHANNEL_ID),

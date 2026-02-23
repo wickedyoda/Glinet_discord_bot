@@ -27,6 +27,7 @@ WEB_PORT=8080
 WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/
 WEB_TRUST_PROXY_HEADERS=true
 WEB_SESSION_COOKIE_SECURE=true
+WEB_SESSION_COOKIE_SAMESITE=Lax
 WEB_ENFORCE_CSRF=true
 WEB_ENFORCE_SAME_ORIGIN_POSTS=true
 ```
@@ -204,6 +205,13 @@ If secure cookies do not persist:
 1. Confirm users access the site over `https://`.
 2. Keep `WEB_SESSION_COOKIE_SECURE=true`.
 3. Confirm `X-Forwarded-Proto` is passed as `https`.
+
+If login POST returns `302` then immediately loads `/login` again:
+
+1. Confirm `WEB_PUBLIC_BASE_URL` matches the exact host users open.
+2. Confirm proxy forwards `Host`, `X-Forwarded-Host`, and `X-Forwarded-Proto`.
+3. Use `WEB_SESSION_COOKIE_SAMESITE=Lax` for proxy compatibility (switch to `Strict` after stable if desired).
+4. Confirm the upstream target in `proxy_pass` is `http://...:8080` (not `https://` to the container).
 
 If browser console warns that `Cross-Origin-Opener-Policy` was ignored on login:
 

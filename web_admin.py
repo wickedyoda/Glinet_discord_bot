@@ -79,6 +79,11 @@ ENV_FIELDS = [
         "Container Log Level",
         "Container-wide error log level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     ),
+    (
+        "DISCORD_LOG_LEVEL",
+        "Discord Library Log Level",
+        "Discord/werkzeug logger level to prevent noisy payload dumps (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
+    ),
     ("DATA_DIR", "Data Directory", "Persistent data directory inside container."),
     ("LOG_DIR", "Log Directory", "Directory for runtime log files (bot.log, container_errors.log)."),
     ("FORUM_BASE_URL", "Forum Base URL", "GL.iNet forum root URL."),
@@ -233,6 +238,11 @@ ENV_FIELDS = [
         "Set true to require HTTPS for session cookies.",
     ),
     (
+        "WEB_SESSION_COOKIE_SAMESITE",
+        "Web Session Cookie SameSite",
+        "Session cookie SameSite policy: Lax, Strict, or None.",
+    ),
+    (
         "WEB_TRUST_PROXY_HEADERS",
         "Web Trust Proxy Headers",
         "Set true when running behind a trusted reverse proxy forwarding host/proto/IP headers.",
@@ -329,6 +339,17 @@ def _normalize_session_timeout_minutes(raw_value, default_value: int = 5) -> int
     if parsed not in SESSION_TIMEOUT_MINUTE_OPTIONS:
         return default_value
     return parsed
+
+
+def _normalize_session_cookie_samesite(raw_value, default_value: str = "Lax") -> str:
+    candidate = str(raw_value or "").strip().lower()
+    mapping = {"lax": "Lax", "strict": "Strict", "none": "None"}
+    default_key = str(default_value or "").strip().lower()
+    if not default_key:
+        fallback = ""
+    else:
+        fallback = mapping.get(default_key, "Lax")
+    return mapping.get(candidate, fallback)
 
 
 def _clean_profile_text(value: str, max_length: int = 80) -> str:
@@ -662,7 +683,7 @@ def _ensure_default_admin(
     finally:
         conn.close()
     if logger:
-        logger.info("Created default web admin user: %s", email)
+        logger.info("Created default web admin user.")
 
 
 def _parse_env_file(env_file: Path):
@@ -754,11 +775,15 @@ def _validate_env_updates(updated_values: dict):
             errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email.")
         if key == "WEB_ADMIN_DEFAULT_PASSWORD" and value:
             errors.extend(_password_policy_errors(value))
-        if key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL"}:
+        if key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL", "DISCORD_LOG_LEVEL"}:
             if value.upper() not in valid_log_levels:
                 errors.append(
                     f"{key} must be one of: DEBUG, INFO, WARNING, ERROR, CRITICAL."
                 )
+        if key == "WEB_SESSION_COOKIE_SAMESITE":
+            normalized = _normalize_session_cookie_samesite(value, default_value="")
+            if normalized not in {"Lax", "Strict", "None"}:
+                errors.append("WEB_SESSION_COOKIE_SAMESITE must be Lax, Strict, or None.")
         if key == "WEB_RESTART_ENABLED" and value.lower() not in truthy_values:
             errors.append(
                 "WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off)."
@@ -1281,6 +1306,10 @@ def create_web_app(
     secure_session_cookie = _is_truthy_env_value(
         os.getenv("WEB_SESSION_COOKIE_SECURE", "true")
     )
+    session_cookie_samesite = _normalize_session_cookie_samesite(
+        os.getenv("WEB_SESSION_COOKIE_SAMESITE", "Lax"),
+        default_value="Lax",
+    )
     enforce_csrf = _is_truthy_env_value(os.getenv("WEB_ENFORCE_CSRF", "true"))
     enforce_same_origin_posts = _is_truthy_env_value(
         os.getenv("WEB_ENFORCE_SAME_ORIGIN_POSTS", "true")
@@ -1295,7 +1324,7 @@ def create_web_app(
     session_timeout_state = {"minutes": web_session_timeout_minutes}
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Strict",
+        SESSION_COOKIE_SAMESITE=session_cookie_samesite,
         SESSION_COOKIE_SECURE=secure_session_cookie,
         SESSION_REFRESH_EACH_REQUEST=True,
         PERMANENT_SESSION_LIFETIME=timedelta(days=REMEMBER_LOGIN_DAYS),
@@ -1304,6 +1333,7 @@ def create_web_app(
     login_window_seconds = 15 * 60
     login_max_attempts = 6
     login_attempts = {}
+    recent_login_success = {}
 
     @app.after_request
     def apply_security_headers(response):
@@ -1616,6 +1646,18 @@ def create_web_app(
             return None
 
         if enforce_same_origin_posts and not _is_same_origin_request():
+            if logger:
+                logger.warning(
+                    "Blocked request due to origin policy: endpoint=%s method=%s ip=%s host=%s origin=%s referer=%s x_forwarded_host=%s x_forwarded_proto=%s",
+                    request.endpoint,
+                    request.method,
+                    _client_ip(),
+                    str(request.host or ""),
+                    str(request.headers.get("Origin", "") or ""),
+                    str(request.headers.get("Referer", "") or ""),
+                    str(request.headers.get("X-Forwarded-Host", "") or ""),
+                    str(request.headers.get("X-Forwarded-Proto", "") or ""),
+                )
             flash("Blocked request due to origin policy.", "error")
             user = _current_user()
             if user:
@@ -1631,6 +1673,15 @@ def create_web_app(
             if not expected or not submitted or not secrets.compare_digest(
                 expected, submitted
             ):
+                if logger:
+                    logger.warning(
+                        "Blocked request due to CSRF validation: endpoint=%s method=%s ip=%s has_expected=%s has_submitted=%s",
+                        request.endpoint,
+                        request.method,
+                        _client_ip(),
+                        bool(expected),
+                        bool(submitted),
+                    )
                 flash("Session security token check failed. Please retry.", "error")
                 user = _current_user()
                 if user:
@@ -1646,6 +1697,16 @@ def create_web_app(
             login_attempts[client_ip] = fresh_entries
         else:
             login_attempts.pop(client_ip, None)
+        return fresh_entries
+
+    def _prune_recent_login_success(client_ip: str):
+        now_ts = time.time()
+        entries = recent_login_success.get(client_ip, [])
+        fresh_entries = [ts for ts in entries if (now_ts - ts) < 120]
+        if fresh_entries:
+            recent_login_success[client_ip] = fresh_entries
+        else:
+            recent_login_success.pop(client_ip, None)
         return fresh_entries
 
     @app.errorhandler(413)
@@ -1744,10 +1805,23 @@ def create_web_app(
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
+        client_ip = _client_ip()
+        if request.method == "GET":
+            recent_success = _prune_recent_login_success(client_ip)
+            if recent_success and logger:
+                logger.warning(
+                    "Recent login success from ip=%s but no active session on subsequent GET /login; verify reverse proxy host/proto forwarding and session cookie policy.",
+                    client_ip,
+                )
         if request.method == "POST":
-            client_ip = _client_ip()
             attempts = _prune_login_attempts(client_ip)
             if len(attempts) >= login_max_attempts:
+                if logger:
+                    logger.warning(
+                        "Login rate limit triggered for ip=%s attempts=%s",
+                        client_ip,
+                        len(attempts),
+                    )
                 flash("Too many login attempts. Try again in 15 minutes.", "error")
                 return redirect(url_for("login"))
             email = _normalize_email(request.form.get("email", ""))
@@ -1766,6 +1840,9 @@ def create_web_app(
                             _save_users(users_file, users_data)
                             break
                 login_attempts.pop(client_ip, None)
+                recent_entries = _prune_recent_login_success(client_ip)
+                recent_entries.append(time.time())
+                recent_login_success[client_ip] = recent_entries[-5:]
                 _set_auth_session(user["email"], remember_login=remember_login)
                 if _password_change_required(user):
                     session["force_password_change_notice_shown"] = True
@@ -2655,7 +2732,7 @@ def create_web_app(
                     for minutes in SESSION_TIMEOUT_MINUTE_OPTIONS
                 ]
                 select_placeholder = "Select auto logout timeout..."
-            elif key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL"}:
+            elif key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL", "DISCORD_LOG_LEVEL"}:
                 safe_level = str(safe_value or "INFO").strip().upper()
                 if safe_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
                     safe_level = "INFO"
@@ -2668,6 +2745,16 @@ def create_web_app(
                     {"value": "CRITICAL", "label": "CRITICAL"},
                 ]
                 select_placeholder = "Select log level..."
+            elif key == "WEB_SESSION_COOKIE_SAMESITE":
+                safe_value = _normalize_session_cookie_samesite(
+                    safe_value or "Lax", default_value="Lax"
+                )
+                static_select_options = [
+                    {"value": "Lax", "label": "Lax (recommended)"},
+                    {"value": "Strict", "label": "Strict"},
+                    {"value": "None", "label": "None (requires HTTPS secure cookie)"},
+                ]
+                select_placeholder = "Select SameSite policy..."
             if key == "firmware_notification_channel" or key.endswith("_CHANNEL_ID"):
                 select_options = channel_options
             elif key.endswith("_ROLE_ID"):

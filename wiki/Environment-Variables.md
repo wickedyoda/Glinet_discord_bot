@@ -25,6 +25,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `LOG_DIR` | `/logs` | Path string | Directory for `bot.log` and `container_errors.log` |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Runtime bot/web verbosity |
 | `CONTAINER_LOG_LEVEL` | `ERROR` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Threshold for `${LOG_DIR}/container_errors.log` |
+| `DISCORD_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Discord/werkzeug logger verbosity (keep `INFO` or higher to avoid verbose payload logs) |
 
 ## Search and Docs
 
@@ -81,6 +82,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `WEB_ADMIN_DEFAULT_PASSWORD` | empty | Must satisfy password policy | Required on first boot when no web users exist |
 | `WEB_ADMIN_SESSION_SECRET` | generated at runtime if unset | Secret string | Session signing secret |
 | `WEB_SESSION_COOKIE_SECURE` | `true` | Boolean | Secure cookie flag (HTTPS recommended) |
+| `WEB_SESSION_COOKIE_SAMESITE` | `Lax` | `Lax`, `Strict`, `None` | Session cookie SameSite policy (`None` requires secure HTTPS) |
 | `WEB_TRUST_PROXY_HEADERS` | `true` | Boolean | Trust forwarded host/proto/IP headers |
 | `WEB_ENFORCE_CSRF` | `true` | Boolean | CSRF checks on state-changing requests |
 | `WEB_ENFORCE_SAME_ORIGIN_POSTS` | `true` | Boolean | Same-origin checks for state-changing requests |
