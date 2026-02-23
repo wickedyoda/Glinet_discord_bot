@@ -1621,11 +1621,15 @@ def create_web_app(
             return host in allowed_hosts
 
         origin = str(request.headers.get("Origin", "")).strip()
+        if origin.lower() == "null":
+            origin = ""
         origin_allowed = _match_allowed_host_from_url(origin)
         if origin_allowed is True:
             return True
 
         referer = str(request.headers.get("Referer", "")).strip()
+        if referer.lower() == "null":
+            referer = ""
         referer_allowed = _match_allowed_host_from_url(referer)
         if referer_allowed is True:
             return True
