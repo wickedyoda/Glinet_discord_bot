@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from html import escape
 from pathlib import Path
+from urllib.parse import urlparse
 
 from croniter import croniter
 from flask import (
@@ -19,9 +20,17 @@ from flask import (
     session,
     url_for,
 )
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
+PASSWORD_MAX_AGE_DAYS = 90
+PASSWORD_HASH_METHOD = "pbkdf2:sha256:600000"
+SESSION_TIMEOUT_MINUTE_OPTIONS = tuple(range(5, 31, 5))
+POST_FORM_TAG_PATTERN = re.compile(
+    r"(<form\b[^>]*\bmethod\s*=\s*[\"']?post[\"']?[^>]*>)",
+    re.IGNORECASE,
+)
 INT_KEYS = {
     "GUILD_ID",
     "GENERAL_CHANNEL_ID",
@@ -45,6 +54,7 @@ INT_KEYS = {
     "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT",
     "WEB_BOT_PROFILE_TIMEOUT_SECONDS",
     "WEB_AVATAR_MAX_UPLOAD_BYTES",
+    "WEB_SESSION_TIMEOUT_MINUTES",
 }
 SENSITIVE_KEYS = {
     "DISCORD_TOKEN",
@@ -137,6 +147,11 @@ ENV_FIELDS = [
         "Host port mapped to WEB_PORT in Docker compose.",
     ),
     (
+        "WEB_SESSION_TIMEOUT_MINUTES",
+        "Web Auto Logout (Minutes)",
+        "Session inactivity timeout in minutes (5, 10, 15, 20, 25, or 30).",
+    ),
+    (
         "WEB_DISCORD_CATALOG_TTL_SECONDS",
         "Discord Catalog TTL",
         "Seconds to cache polled Discord channels/roles for dropdowns.",
@@ -197,6 +212,31 @@ ENV_FIELDS = [
         "Default admin password for first boot user creation.",
     ),
     ("WEB_ADMIN_SESSION_SECRET", "Web Session Secret", "Flask session signing secret."),
+    (
+        "WEB_SESSION_COOKIE_SECURE",
+        "Web Secure Session Cookie",
+        "Set true to require HTTPS for session cookies.",
+    ),
+    (
+        "WEB_TRUST_PROXY_HEADERS",
+        "Web Trust Proxy Headers",
+        "Set true when running behind a trusted reverse proxy forwarding host/proto/IP headers.",
+    ),
+    (
+        "WEB_ENFORCE_CSRF",
+        "Web Enforce CSRF",
+        "Enable CSRF token checks for POST/PUT/PATCH/DELETE requests.",
+    ),
+    (
+        "WEB_ENFORCE_SAME_ORIGIN_POSTS",
+        "Web Enforce Same-Origin POST",
+        "Require POST/PUT/PATCH/DELETE requests to originate from the same host.",
+    ),
+    (
+        "WEB_HARDEN_FILE_PERMISSIONS",
+        "Web Harden File Permissions",
+        "Attempt to enforce restrictive permissions on .env and data files.",
+    ),
 ]
 
 
@@ -258,8 +298,163 @@ def _password_policy_errors(password: str):
     return errors
 
 
+def _hash_password(password: str) -> str:
+    return generate_password_hash(password, method=PASSWORD_HASH_METHOD)
+
+
+def _password_hash_needs_upgrade(password_hash: str) -> bool:
+    return not str(password_hash or "").startswith(f"{PASSWORD_HASH_METHOD}$")
+
+
+def _normalize_session_timeout_minutes(raw_value, default_value: int = 5) -> int:
+    try:
+        parsed = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return default_value
+    if parsed not in SESSION_TIMEOUT_MINUTE_OPTIONS:
+        return default_value
+    return parsed
+
+
+def _clean_profile_text(value: str, max_length: int = 80) -> str:
+    normalized = " ".join(str(value or "").strip().split())
+    if len(normalized) > max_length:
+        return normalized[:max_length].strip()
+    return normalized
+
+
+def _default_display_name(email: str) -> str:
+    local = str(email or "").split("@", 1)[0]
+    local = re.sub(r"[._-]+", " ", local)
+    cleaned = _clean_profile_text(local, max_length=80)
+    return cleaned.title() if cleaned else "User"
+
+
+def _parse_iso_datetime(raw_value: str):
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _password_change_required(user: dict) -> bool:
+    baseline = (
+        _parse_iso_datetime(user.get("password_changed_at"))
+        or _parse_iso_datetime(user.get("updated_at"))
+        or _parse_iso_datetime(user.get("created_at"))
+    )
+    if baseline is None:
+        return True
+    return datetime.now(timezone.utc) >= (baseline + timedelta(days=PASSWORD_MAX_AGE_DAYS))
+
+
+def _password_age_days(user: dict) -> int:
+    baseline = (
+        _parse_iso_datetime(user.get("password_changed_at"))
+        or _parse_iso_datetime(user.get("updated_at"))
+        or _parse_iso_datetime(user.get("created_at"))
+    )
+    if baseline is None:
+        return PASSWORD_MAX_AGE_DAYS
+    delta = datetime.now(timezone.utc) - baseline
+    return max(0, delta.days)
+
+
 def _now_iso():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_users_table_columns(conn):
+    rows = conn.execute("PRAGMA table_info(web_users)").fetchall()
+    columns = {str(row["name"]) for row in rows}
+    alter_statements = []
+    if "first_name" not in columns:
+        alter_statements.append(
+            "ALTER TABLE web_users ADD COLUMN first_name TEXT NOT NULL DEFAULT ''"
+        )
+    if "last_name" not in columns:
+        alter_statements.append(
+            "ALTER TABLE web_users ADD COLUMN last_name TEXT NOT NULL DEFAULT ''"
+        )
+    if "display_name" not in columns:
+        alter_statements.append(
+            "ALTER TABLE web_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
+        )
+    if "password_changed_at" not in columns:
+        alter_statements.append(
+            "ALTER TABLE web_users ADD COLUMN password_changed_at TEXT NOT NULL DEFAULT ''"
+        )
+    if "email_changed_at" not in columns:
+        alter_statements.append(
+            "ALTER TABLE web_users ADD COLUMN email_changed_at TEXT NOT NULL DEFAULT ''"
+        )
+    if "updated_at" not in columns:
+        alter_statements.append(
+            "ALTER TABLE web_users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
+        )
+    if "created_at" not in columns:
+        alter_statements.append(
+            "ALTER TABLE web_users ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
+        )
+    for statement in alter_statements:
+        conn.execute(statement)
+
+    now_iso = _now_iso()
+    conn.execute(
+        """
+        UPDATE web_users
+        SET created_at = COALESCE(NULLIF(TRIM(created_at), ''), ?)
+        """,
+        (now_iso,),
+    )
+    conn.execute(
+        """
+        UPDATE web_users
+        SET updated_at = COALESCE(NULLIF(TRIM(updated_at), ''), created_at, ?)
+        """,
+        (now_iso,),
+    )
+    conn.execute(
+        """
+        UPDATE web_users
+        SET password_changed_at = COALESCE(
+            NULLIF(TRIM(password_changed_at), ''),
+            NULLIF(TRIM(updated_at), ''),
+            NULLIF(TRIM(created_at), ''),
+            ?
+        )
+        """,
+        (now_iso,),
+    )
+    conn.execute(
+        """
+        UPDATE web_users
+        SET email_changed_at = COALESCE(
+            NULLIF(TRIM(email_changed_at), ''),
+            NULLIF(TRIM(updated_at), ''),
+            NULLIF(TRIM(created_at), ''),
+            ?
+        )
+        """,
+        (now_iso,),
+    )
+    conn.execute(
+        """
+        UPDATE web_users
+        SET first_name = COALESCE(first_name, ''),
+            last_name = COALESCE(last_name, ''),
+            display_name = COALESCE(display_name, '')
+        """
+    )
+    conn.commit()
 
 
 def _open_users_db(users_db_file: Path):
@@ -279,6 +474,11 @@ def _open_users_db(users_db_file: Path):
         )
         """
     )
+    _ensure_users_table_columns(conn)
+    try:
+        os.chmod(users_db_file, 0o600)
+    except (PermissionError, OSError):
+        pass
     return conn
 
 
@@ -286,7 +486,21 @@ def _read_users(users_db_file: Path):
     conn = _open_users_db(users_db_file)
     try:
         rows = conn.execute(
-            "SELECT email, password_hash, is_admin, created_at FROM web_users ORDER BY created_at ASC, email ASC"
+            """
+            SELECT
+                email,
+                password_hash,
+                is_admin,
+                first_name,
+                last_name,
+                display_name,
+                password_changed_at,
+                email_changed_at,
+                created_at,
+                updated_at
+            FROM web_users
+            ORDER BY created_at ASC, email ASC
+            """
         ).fetchall()
     finally:
         conn.close()
@@ -296,7 +510,20 @@ def _read_users(users_db_file: Path):
             "email": str(row["email"]).strip().lower(),
             "password_hash": str(row["password_hash"]),
             "is_admin": bool(row["is_admin"]),
+            "first_name": _clean_profile_text(str(row["first_name"] or ""), max_length=80),
+            "last_name": _clean_profile_text(str(row["last_name"] or ""), max_length=80),
+            "display_name": _clean_profile_text(
+                str(row["display_name"] or "") or _default_display_name(str(row["email"] or "")),
+                max_length=80,
+            ),
+            "password_changed_at": str(
+                row["password_changed_at"] or row["updated_at"] or row["created_at"] or _now_iso()
+            ),
+            "email_changed_at": str(
+                row["email_changed_at"] or row["updated_at"] or row["created_at"] or _now_iso()
+            ),
             "created_at": str(row["created_at"] or _now_iso()),
+            "updated_at": str(row["updated_at"] or row["created_at"] or _now_iso()),
         }
         for row in rows
         if str(row["email"]).strip() and str(row["password_hash"]).strip()
@@ -315,13 +542,48 @@ def _save_users(users_db_file: Path, users):
                 if not email or not password_hash:
                     continue
                 is_admin = 1 if bool(entry.get("is_admin", False)) else 0
+                first_name = _clean_profile_text(
+                    str(entry.get("first_name", "")), max_length=80
+                )
+                last_name = _clean_profile_text(
+                    str(entry.get("last_name", "")), max_length=80
+                )
+                display_name = _clean_profile_text(
+                    str(entry.get("display_name", "")), max_length=80
+                ) or _default_display_name(email)
                 created_at = str(entry.get("created_at") or now_iso)
+                password_changed_at = str(
+                    entry.get("password_changed_at") or created_at or now_iso
+                )
+                email_changed_at = str(entry.get("email_changed_at") or created_at or now_iso)
                 conn.execute(
                     """
-                    INSERT INTO web_users (email, password_hash, is_admin, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO web_users (
+                        email,
+                        password_hash,
+                        is_admin,
+                        first_name,
+                        last_name,
+                        display_name,
+                        password_changed_at,
+                        email_changed_at,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (email, password_hash, is_admin, created_at, now_iso),
+                    (
+                        email,
+                        password_hash,
+                        is_admin,
+                        first_name,
+                        last_name,
+                        display_name,
+                        password_changed_at,
+                        email_changed_at,
+                        created_at,
+                        now_iso,
+                    ),
                 )
     finally:
         conn.close()
@@ -349,15 +611,38 @@ def _ensure_default_admin(
         raise ValueError(message)
 
     now_iso = _now_iso()
+    display_name = _default_display_name(email)
     conn = _open_users_db(users_db_file)
     try:
         with conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO web_users (email, password_hash, is_admin, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO web_users (
+                    email,
+                    password_hash,
+                    is_admin,
+                    first_name,
+                    last_name,
+                    display_name,
+                    password_changed_at,
+                    email_changed_at,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (email, generate_password_hash(password), 1, now_iso, now_iso),
+                (
+                    email,
+                    _hash_password(password),
+                    1,
+                    "",
+                    "",
+                    display_name,
+                    now_iso,
+                    now_iso,
+                    now_iso,
+                    now_iso,
+                ),
             )
     finally:
         conn.close()
@@ -402,9 +687,14 @@ def _write_env_file(env_file: Path, values: dict):
             continue
         lines.append(f"{key}={_encode_env_value(str(value))}")
     env_file.write_text("\n".join(lines) + ("\n" if lines else ""))
+    try:
+        os.chmod(env_file, 0o600)
+    except (PermissionError, OSError):
+        pass
 
 
 def _validate_env_updates(updated_values: dict):
+    truthy_values = {"1", "0", "true", "false", "yes", "no", "on", "off"}
     errors = []
     for key, value in updated_values.items():
         if value == "":
@@ -430,19 +720,26 @@ def _validate_env_updates(updated_values: dict):
             errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email.")
         if key == "WEB_ADMIN_DEFAULT_PASSWORD" and value:
             errors.extend(_password_policy_errors(value))
-        if key == "WEB_RESTART_ENABLED" and value.lower() not in {
-            "1",
-            "0",
-            "true",
-            "false",
-            "yes",
-            "no",
-            "on",
-            "off",
-        }:
+        if key == "WEB_RESTART_ENABLED" and value.lower() not in truthy_values:
             errors.append(
                 "WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off)."
             )
+        if key in {
+            "WEB_SESSION_COOKIE_SECURE",
+            "WEB_TRUST_PROXY_HEADERS",
+            "WEB_ENFORCE_CSRF",
+            "WEB_ENFORCE_SAME_ORIGIN_POSTS",
+            "WEB_HARDEN_FILE_PERMISSIONS",
+        } and value.lower() not in truthy_values:
+            errors.append(
+                f"{key} must be true/false (or 1/0, yes/no, on/off)."
+            )
+        if key == "WEB_SESSION_TIMEOUT_MINUTES":
+            parsed = _normalize_session_timeout_minutes(value, default_value=-1)
+            if parsed == -1:
+                errors.append(
+                    "WEB_SESSION_TIMEOUT_MINUTES must be one of: 5, 10, 15, 20, 25, 30."
+                )
         if (
             key == "WEB_GITHUB_WIKI_URL"
             and value
@@ -501,6 +798,31 @@ def _render_select_input(
     return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
 
 
+def _render_fixed_select_input(
+    name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."
+):
+    selected = str(selected_value or "").strip()
+    rows = [f"<option value=''>{escape(placeholder)}</option>"]
+    seen = set()
+    for option in options:
+        option_value = str(option.get("value", "")).strip()
+        if not option_value:
+            continue
+        seen.add(option_value)
+        label = str(option.get("label") or option_value)
+        selected_attr = " selected" if option_value == selected else ""
+        rows.append(
+            f"<option value='{escape(option_value, quote=True)}'{selected_attr}>"
+            f"{escape(label)}</option>"
+        )
+    if selected and selected not in seen:
+        rows.append(
+            f"<option value='{escape(selected, quote=True)}' selected>"
+            f"Current value: {escape(selected)}</option>"
+        )
+    return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
+
+
 def _render_multi_select_input(
     name: str, selected_values, options: list[dict], size: int = 8
 ):
@@ -541,10 +863,25 @@ def _render_multi_select_input(
     )
 
 
+def _inject_csrf_token_inputs(body_html: str, csrf_token: str) -> str:
+    token = str(csrf_token or "").strip()
+    if not token:
+        return body_html
+    hidden_input = (
+        f"<input type='hidden' name='csrf_token' value='{escape(token, quote=True)}' />"
+    )
+    return POST_FORM_TAG_PATTERN.sub(
+        lambda match: match.group(1) + hidden_input,
+        str(body_html or ""),
+    )
+
+
 def _render_layout(
     title: str,
     body_html: str,
     current_email: str,
+    current_display_name: str,
+    csrf_token: str,
     is_admin: bool,
     github_wiki_url: str = "",
     restart_enabled: bool = False,
@@ -556,6 +893,7 @@ def _render_layout(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="csrf-token" content="{{ csrf_token }}" />
   <title>{{ title }}</title>
   <style>
     :root {
@@ -622,8 +960,10 @@ def _render_layout(
       z-index: 10;
     }
     .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
-    .nav-links { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .nav-links a { text-decoration: none; }
+    .nav-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .nav-controls a { text-decoration: none; }
+    .current-user { color: var(--muted); font-size: 0.95rem; }
+    .current-user-email { color: var(--muted); font-size: 0.85rem; }
     .wrap { max-width: 1200px; margin: 22px auto; padding: 0 16px; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
     .flash { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid var(--border); }
@@ -653,7 +993,7 @@ def _render_layout(
     }
     .btn.secondary { background: var(--btn-secondary); }
     .btn.danger { background: var(--btn-danger); }
-    .inline-form { display: inline; margin-left: 12px; }
+    .inline-form { display: inline; margin-left: 0; }
     .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .muted { color: var(--muted); font-size: 0.9rem; }
     .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
@@ -668,6 +1008,23 @@ def _render_layout(
       letter-spacing: 0.02em;
     }
     .theme-btn.active { background: var(--btn-bg); color: #fff; }
+    .nav-select {
+      width: 280px;
+      max-width: 70vw;
+      min-width: 190px;
+      padding: 7px 9px;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
     .dash-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
     .dash-card h3 { margin-top: 0; margin-bottom: 8px; }
     .dash-card p { margin-top: 0; min-height: 50px; }
@@ -689,24 +1046,33 @@ def _render_layout(
         <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
       </div>
       {% if current_email %}
-        <nav class="nav-links">
-          <span>{{ current_email }}</span>
-          <a href="{{ url_for('dashboard') }}">Dashboard</a>
-          {% if is_admin %}<a href="{{ url_for('bot_profile') }}">Bot Profile</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('command_permissions') }}">Command Permissions</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('settings') }}">Settings</a>{% endif %}
-          <a href="{{ url_for('documentation') }}">Documentation</a>
-          {% if github_wiki_url %}<a href="{{ github_wiki_url }}" target="_blank" rel="noopener noreferrer">GitHub Wiki</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('tag_responses') }}">Tag Responses</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</a>{% endif %}
-          {% if is_admin %}<a href="{{ url_for('users') }}">Users</a>{% endif %}
+        <nav class="nav-controls">
+          <span class="current-user">{{ current_display_name or current_email }}</span>
+          {% if current_display_name and current_display_name != current_email %}
+            <span class="current-user-email">({{ current_email }})</span>
+          {% endif %}
+          <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+          <label class="sr-only" for="nav-page-select">Open page</label>
+          <select id="nav-page-select" class="nav-select">
+            <option value="">Go to page...</option>
+            <option value="{{ url_for('account') }}">My Account</option>
+            {% if is_admin %}<option value="{{ url_for('bot_profile') }}">Bot Profile</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('command_permissions') }}">Command Permissions</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('settings') }}">Settings</option>{% endif %}
+            <option value="{{ url_for('documentation') }}">Documentation</option>
+            {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('tag_responses') }}">Tag Responses</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>{% endif %}
+            {% if is_admin %}<option value="{{ url_for('users') }}">Users</option>{% endif %}
+            <option value="{{ url_for('logout') }}">Logout</option>
+          </select>
           {% if is_admin and restart_enabled %}
             <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
               <input type="hidden" name="confirm" value="yes" />
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
             </form>
           {% endif %}
-          <a href="{{ url_for('logout') }}">Logout</a>
         </nav>
       {% endif %}
     </div>
@@ -747,6 +1113,24 @@ def _render_layout(
           setTheme(btn.getAttribute("data-theme-choice"));
         });
       });
+
+      const navPageSelect = document.getElementById("nav-page-select");
+      if (navPageSelect) {
+        navPageSelect.addEventListener("change", function () {
+          const option = navPageSelect.options[navPageSelect.selectedIndex];
+          const target = option ? option.value : "";
+          if (!target) {
+            return;
+          }
+          const external = option.getAttribute("data-external") === "1";
+          if (external) {
+            window.open(target, "_blank", "noopener,noreferrer");
+          } else {
+            window.location.href = target;
+          }
+          navPageSelect.value = "";
+        });
+      }
     })();
   </script>
 </body>
@@ -755,6 +1139,8 @@ def _render_layout(
         title=title,
         body_html=body_html,
         current_email=current_email,
+        current_display_name=current_display_name,
+        csrf_token=csrf_token,
         is_admin=is_admin,
         github_wiki_url=github_wiki_url,
         restart_enabled=restart_enabled,
@@ -782,6 +1168,12 @@ def create_web_app(
     logger=None,
 ):
     app = Flask(__name__)
+    trust_proxy_headers = _is_truthy_env_value(
+        os.getenv("WEB_TRUST_PROXY_HEADERS", "true")
+    )
+    if trust_proxy_headers:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
+
     app.secret_key = os.getenv("WEB_ADMIN_SESSION_SECRET", "") or secrets.token_hex(32)
     max_bulk_upload = _get_int_env(
         "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
@@ -789,10 +1181,26 @@ def create_web_app(
     max_avatar_upload = _get_int_env(
         "WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
     )
+    secure_session_cookie = _is_truthy_env_value(
+        os.getenv("WEB_SESSION_COOKIE_SECURE", "true")
+    )
+    enforce_csrf = _is_truthy_env_value(os.getenv("WEB_ENFORCE_CSRF", "true"))
+    enforce_same_origin_posts = _is_truthy_env_value(
+        os.getenv("WEB_ENFORCE_SAME_ORIGIN_POSTS", "true")
+    )
+    harden_file_permissions = _is_truthy_env_value(
+        os.getenv("WEB_HARDEN_FILE_PERMISSIONS", "true")
+    )
+    web_session_timeout_minutes = _normalize_session_timeout_minutes(
+        os.getenv("WEB_SESSION_TIMEOUT_MINUTES", "5"),
+        default_value=5,
+    )
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Strict",
-        PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+        SESSION_COOKIE_SECURE=secure_session_cookie,
+        SESSION_REFRESH_EACH_REQUEST=True,
+        PERMANENT_SESSION_LIFETIME=timedelta(minutes=web_session_timeout_minutes),
         MAX_CONTENT_LENGTH=max(max_bulk_upload, max_avatar_upload) + (256 * 1024),
     )
     login_window_seconds = 15 * 60
@@ -804,20 +1212,39 @@ def create_web_app(
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+        response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
         response.headers.setdefault(
             "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
         )
         response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+        response.headers.setdefault("Cache-Control", "no-store")
+        response.headers.setdefault("Pragma", "no-cache")
         response.headers.setdefault(
             "Content-Security-Policy",
             "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; "
             "script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         )
+        if request.is_secure:
+            response.headers.setdefault(
+                "Strict-Transport-Security",
+                "max-age=31536000; includeSubDomains; preload",
+            )
         return response
 
     users_file = Path(data_dir) / "bot_data.db"
     users_file.parent.mkdir(parents=True, exist_ok=True)
     env_file = Path(env_file_path)
+    if harden_file_permissions:
+        try:
+            os.chmod(users_file.parent, 0o700)
+        except (PermissionError, OSError):
+            pass
+        if env_file.exists():
+            try:
+                os.chmod(env_file, 0o600)
+            except (PermissionError, OSError):
+                pass
 
     _ensure_default_admin(
         users_file, default_admin_email, default_admin_password, logger
@@ -857,7 +1284,7 @@ def create_web_app(
     def _github_wiki_url():
         value = os.getenv(
             "WEB_GITHUB_WIKI_URL",
-            "https://github.com/wickedyoda/Glinet_discord_bot/wiki",
+            "http://discord.glinet.wickedyoda.com/wiki",
         )
         return str(value or "").strip()
 
@@ -866,13 +1293,72 @@ def create_web_app(
 
     def _client_ip():
         x_forwarded_for = str(request.headers.get("X-Forwarded-For", "")).strip()
-        if x_forwarded_for:
+        if trust_proxy_headers and x_forwarded_for:
             parts = [
                 part.strip() for part in x_forwarded_for.split(",") if part.strip()
             ]
             if parts:
                 return parts[0]
         return str(request.remote_addr or "unknown")
+
+    def _ensure_csrf_token():
+        token = str(session.get("csrf_token", "")).strip()
+        if token:
+            return token
+        token = secrets.token_urlsafe(32)
+        session["csrf_token"] = token
+        return token
+
+    def _is_same_origin_request():
+        host = str(request.host or "").strip().lower()
+        if not host:
+            return False
+
+        origin = str(request.headers.get("Origin", "")).strip()
+        if origin:
+            parsed_origin = urlparse(origin)
+            if parsed_origin.scheme not in {"http", "https"}:
+                return False
+            return str(parsed_origin.netloc or "").strip().lower() == host
+
+        referer = str(request.headers.get("Referer", "")).strip()
+        if referer:
+            parsed_referer = urlparse(referer)
+            if parsed_referer.scheme not in {"http", "https"}:
+                return False
+            return str(parsed_referer.netloc or "").strip().lower() == host
+
+        return False
+
+    @app.before_request
+    def enforce_request_security():
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+            return None
+        if request.endpoint == "healthz":
+            return None
+
+        if enforce_same_origin_posts and not _is_same_origin_request():
+            flash("Blocked request due to origin policy.", "error")
+            user = _current_user()
+            if user:
+                return redirect(url_for("dashboard"))
+            return redirect(url_for("login"))
+
+        if enforce_csrf:
+            expected = str(session.get("csrf_token", "")).strip()
+            submitted = str(
+                request.form.get("csrf_token", "")
+                or request.headers.get("X-CSRF-Token", "")
+            ).strip()
+            if not expected or not submitted or not secrets.compare_digest(
+                expected, submitted
+            ):
+                flash("Session security token check failed. Please retry.", "error")
+                user = _current_user()
+                if user:
+                    return redirect(url_for("dashboard"))
+                return redirect(url_for("login"))
+        return None
 
     def _prune_login_attempts(client_ip: str):
         now_ts = time.time()
@@ -892,21 +1378,62 @@ def create_web_app(
             return redirect(url_for("dashboard"))
         return redirect(url_for("login"))
 
-    def _render_page(title: str, body_html: str, current_email: str, is_admin: bool):
+    def _render_page(
+        title: str,
+        body_html: str,
+        current_email: str,
+        is_admin: bool,
+        current_display_name: str = "",
+    ):
+        csrf_token = _ensure_csrf_token()
+        resolved_display_name = _clean_profile_text(current_display_name, max_length=80)
+        normalized_email = _normalize_email(current_email)
+        if not resolved_display_name and normalized_email:
+            for account in _read_users(users_file):
+                if account.get("email") == normalized_email:
+                    resolved_display_name = _clean_profile_text(
+                        str(account.get("display_name", "")),
+                        max_length=80,
+                    )
+                    break
+        if not resolved_display_name and normalized_email:
+            resolved_display_name = _default_display_name(normalized_email)
         return _render_layout(
             title,
-            body_html,
+            _inject_csrf_token_inputs(body_html, csrf_token),
             current_email,
+            resolved_display_name,
+            csrf_token,
             is_admin,
             github_wiki_url=_github_wiki_url(),
             restart_enabled=_restart_enabled(),
         )
 
+    def _redirect_for_password_rotation(user: dict):
+        if not user:
+            return None
+        if not _password_change_required(user):
+            session.pop("force_password_change_notice_shown", None)
+            return None
+        if request.endpoint in {"account", "logout", "login", "healthz"}:
+            return None
+        if not session.get("force_password_change_notice_shown"):
+            flash(
+                f"Password expired. You must change it every {PASSWORD_MAX_AGE_DAYS} days.",
+                "error",
+            )
+            session["force_password_change_notice_shown"] = True
+        return redirect(url_for("account"))
+
     def login_required(fn):
         @wraps(fn)
         def wrapper(*args, **kwargs):
-            if _current_user() is None:
+            user = _current_user()
+            if user is None:
                 return redirect(url_for("login"))
+            rotation_redirect = _redirect_for_password_rotation(user)
+            if rotation_redirect is not None:
+                return rotation_redirect
             return fn(*args, **kwargs)
 
         return wrapper
@@ -917,6 +1444,9 @@ def create_web_app(
             user = _current_user()
             if user is None:
                 return redirect(url_for("login"))
+            rotation_redirect = _redirect_for_password_rotation(user)
+            if rotation_redirect is not None:
+                return rotation_redirect
             if not user.get("is_admin"):
                 flash("Admin privileges are required.", "error")
                 return redirect(url_for("dashboard"))
@@ -949,9 +1479,23 @@ def create_web_app(
                 None,
             )
             if user and check_password_hash(user["password_hash"], password):
+                if _password_hash_needs_upgrade(user.get("password_hash", "")):
+                    users_data = _read_users(users_file)
+                    for entry in users_data:
+                        if entry.get("email") == user.get("email"):
+                            entry["password_hash"] = _hash_password(password)
+                            _save_users(users_file, users_data)
+                            break
                 login_attempts.pop(client_ip, None)
                 session["auth_email"] = user["email"]
                 session.permanent = True
+                if _password_change_required(user):
+                    session["force_password_change_notice_shown"] = True
+                    flash(
+                        f"Password expired. You must change it every {PASSWORD_MAX_AGE_DAYS} days.",
+                        "error",
+                    )
+                    return redirect(url_for("account"))
                 return redirect(url_for("dashboard"))
             attempts.append(time.time())
             login_attempts[client_ip] = attempts[-login_max_attempts:]
@@ -961,8 +1505,8 @@ def create_web_app(
             "Login",
             """
             <div class="card" style="max-width:520px;margin:30px auto;">
-              <h2>Admin Login</h2>
-              <p class="muted">Email/password login. Users are created by an admin only.</p>
+              <h2>Web Login</h2>
+              <p class="muted">Web GUI login with email/password. Users are created by an admin only.</p>
               <form method="post">
                 <label>Email</label>
                 <input type="text" name="email" placeholder="admin@example.com" required />
@@ -982,6 +1526,196 @@ def create_web_app(
     def logout():
         session.clear()
         return redirect(url_for("login"))
+
+    @app.route("/admin/account", methods=["GET", "POST"])
+    @login_required
+    def account():
+        user = _current_user()
+        if not user:
+            return redirect(url_for("login"))
+
+        if request.method == "POST":
+            action = str(request.form.get("action", "")).strip().lower()
+            users_data = _read_users(users_file)
+            user_index = next(
+                (
+                    idx
+                    for idx, entry in enumerate(users_data)
+                    if entry.get("email") == user.get("email")
+                ),
+                -1,
+            )
+            if user_index < 0:
+                session.clear()
+                flash("Your account was not found. Please log in again.", "error")
+                return redirect(url_for("login"))
+
+            entry = users_data[user_index]
+            password_expired = _password_change_required(entry)
+
+            if action == "profile":
+                if password_expired:
+                    flash(
+                        "Password expired. Change your password before updating other account fields.",
+                        "error",
+                    )
+                else:
+                    first_name = _clean_profile_text(
+                        request.form.get("first_name", ""), max_length=80
+                    )
+                    last_name = _clean_profile_text(
+                        request.form.get("last_name", ""), max_length=80
+                    )
+                    display_name = _clean_profile_text(
+                        request.form.get("display_name", ""), max_length=80
+                    )
+                    next_email = _normalize_email(request.form.get("email", ""))
+                    current_password = request.form.get("current_password", "")
+
+                    validation_errors = []
+                    if not first_name:
+                        validation_errors.append("First name is required.")
+                    if not last_name:
+                        validation_errors.append("Last name is required.")
+                    if not display_name:
+                        validation_errors.append("Display name is required.")
+                    if not _is_valid_email(next_email):
+                        validation_errors.append("Enter a valid email.")
+                    if any(
+                        row.get("email") == next_email
+                        and row.get("email") != entry.get("email")
+                        for row in users_data
+                    ):
+                        validation_errors.append(
+                            "Another account already uses that email."
+                        )
+                    if not check_password_hash(entry["password_hash"], current_password):
+                        validation_errors.append(
+                            "Current password is required to update account details."
+                        )
+
+                    if validation_errors:
+                        for message in validation_errors:
+                            flash(message, "error")
+                    else:
+                        previous_email = entry["email"]
+                        now_iso = _now_iso()
+                        entry["first_name"] = first_name
+                        entry["last_name"] = last_name
+                        entry["display_name"] = display_name
+                        entry["email"] = next_email
+                        if next_email != previous_email:
+                            entry["email_changed_at"] = now_iso
+                            session["auth_email"] = next_email
+                        _save_users(users_file, users_data)
+                        flash("Account profile updated.", "success")
+
+            elif action == "password":
+                current_password = request.form.get("current_password", "")
+                new_password = request.form.get("new_password", "")
+                confirm_password = request.form.get("confirm_password", "")
+
+                validation_errors = []
+                if not check_password_hash(entry["password_hash"], current_password):
+                    validation_errors.append("Current password is incorrect.")
+                if new_password != confirm_password:
+                    validation_errors.append("New password and confirmation must match.")
+                validation_errors.extend(_password_policy_errors(new_password))
+                if check_password_hash(entry["password_hash"], new_password):
+                    validation_errors.append(
+                        "New password must be different from the current password."
+                    )
+
+                if validation_errors:
+                    for message in validation_errors:
+                        flash(message, "error")
+                else:
+                    now_iso = _now_iso()
+                    entry["password_hash"] = _hash_password(new_password)
+                    entry["password_changed_at"] = now_iso
+                    _save_users(users_file, users_data)
+                    session.pop("force_password_change_notice_shown", None)
+                    flash("Password updated successfully.", "success")
+
+            else:
+                flash("Invalid account action.", "error")
+
+            user = _current_user() or user
+
+        password_expired = _password_change_required(user)
+        password_age_days = _password_age_days(user)
+        days_remaining = max(0, PASSWORD_MAX_AGE_DAYS - password_age_days)
+        profile_disabled_attr = " disabled" if password_expired else ""
+        profile_note = (
+            f"<p class='muted'>Password is expired (older than {PASSWORD_MAX_AGE_DAYS} days). "
+            "Update your password to unlock profile/email changes.</p>"
+            if password_expired
+            else (
+                f"<p class='muted'>Password age: {password_age_days} day(s). "
+                f"Days remaining before forced reset: {days_remaining}.</p>"
+            )
+        )
+
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>My Account</h2>
+            <p class="muted">Update your identity details used in the web GUI header and account records.</p>
+            {profile_note}
+            <form method="post">
+              <input type="hidden" name="action" value="profile" />
+              <label>First Name</label>
+              <input type="text" name="first_name" value="{escape(str(user.get("first_name", "")), quote=True)}" required{profile_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Last Name</label>
+              <input type="text" name="last_name" value="{escape(str(user.get("last_name", "")), quote=True)}" required{profile_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Display Name</label>
+              <input type="text" name="display_name" value="{escape(str(user.get("display_name", "")), quote=True)}" required{profile_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Email</label>
+              <input type="text" name="email" value="{escape(str(user.get("email", "")), quote=True)}" required{profile_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Current Password (required to save profile/email)</label>
+              <input id="account_profile_current_password" type="password" name="current_password" required{profile_disabled_attr} />
+              <label style="margin-top:8px;display:block;">
+                <input type="checkbox"
+                  onchange="document.getElementById('account_profile_current_password').type=this.checked?'text':'password';"{profile_disabled_attr} />
+                Show password
+              </label>
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{profile_disabled_attr}>Update Profile</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Change Password</h2>
+            <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>
+            <p class="muted">Password changes are required every {PASSWORD_MAX_AGE_DAYS} days.</p>
+            <form method="post">
+              <input type="hidden" name="action" value="password" />
+              <label>Current Password</label>
+              <input id="account_password_current" type="password" name="current_password" required />
+              <label style="margin-top:10px;display:block;">New Password</label>
+              <input id="account_password_new" type="password" name="new_password" required />
+              <label style="margin-top:10px;display:block;">Confirm New Password</label>
+              <input id="account_password_confirm" type="password" name="confirm_password" required />
+              <label style="margin-top:8px;display:block;">
+                <input type="checkbox"
+                  onchange="document.getElementById('account_password_current').type=this.checked?'text':'password';document.getElementById('account_password_new').type=this.checked?'text':'password';document.getElementById('account_password_confirm').type=this.checked?'text':'password';" />
+                Show passwords
+              </label>
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit">Update Password</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        """
+
+        return _render_page(
+            "My Account",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
 
     @app.route("/admin", methods=["GET"])
     @login_required
@@ -1012,6 +1746,13 @@ def create_web_app(
                 </div>
                 """
             )
+
+        add_dashboard_card(
+            "My Account",
+            "Change your password, update your email, and manage profile display details.",
+            url_for("account"),
+            "Open My Account",
+        )
 
         if is_admin:
             add_dashboard_card(
@@ -1594,6 +2335,19 @@ def create_web_app(
                         final_values[key] = value
                         os.environ[key] = value
                 _write_env_file(env_file, final_values)
+                effective_timeout_minutes = _normalize_session_timeout_minutes(
+                    final_values.get(
+                        "WEB_SESSION_TIMEOUT_MINUTES",
+                        os.getenv("WEB_SESSION_TIMEOUT_MINUTES", "5"),
+                    ),
+                    default_value=5,
+                )
+                app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
+                    minutes=effective_timeout_minutes
+                )
+                app.permanent_session_lifetime = timedelta(
+                    minutes=effective_timeout_minutes
+                )
                 if callable(on_env_settings_saved):
                     on_env_settings_saved(updated_values)
                 flash("Settings saved to .env and applied where supported.", "success")
@@ -1605,18 +2359,36 @@ def create_web_app(
             safe_value = "" if key in SENSITIVE_KEYS else value
             placeholder = "•••••• (unchanged if blank)" if key in SENSITIVE_KEYS else ""
             input_type = "password" if key in SENSITIVE_KEYS else "text"
+            static_select_options = []
             select_options = []
+            select_placeholder = "Select..."
+            if key == "WEB_SESSION_TIMEOUT_MINUTES":
+                safe_value = str(
+                    _normalize_session_timeout_minutes(safe_value or "5", default_value=5)
+                )
+                static_select_options = [
+                    {"value": str(minutes), "label": f"{minutes} minutes"}
+                    for minutes in SESSION_TIMEOUT_MINUTE_OPTIONS
+                ]
+                select_placeholder = "Select auto logout timeout..."
             if key == "firmware_notification_channel" or key.endswith("_CHANNEL_ID"):
                 select_options = channel_options
             elif key.endswith("_ROLE_ID"):
                 select_options = role_options
 
-            if select_options:
+            if static_select_options:
+                input_html = _render_fixed_select_input(
+                    name=key,
+                    selected_value=safe_value,
+                    options=static_select_options,
+                    placeholder=select_placeholder,
+                )
+            elif select_options:
                 input_html = _render_select_input(
                     name=key,
                     selected_value=safe_value,
                     options=select_options,
-                    placeholder="Select from Discord...",
+                    placeholder=select_placeholder if select_placeholder != "Select..." else "Select from Discord...",
                 )
             else:
                 input_html = (
@@ -1884,9 +2656,24 @@ def create_web_app(
             if action == "create":
                 email = _normalize_email(request.form.get("email", ""))
                 password = request.form.get("password", "")
+                first_name = _clean_profile_text(
+                    request.form.get("first_name", ""), max_length=80
+                )
+                last_name = _clean_profile_text(
+                    request.form.get("last_name", ""), max_length=80
+                )
+                display_name = _clean_profile_text(
+                    request.form.get("display_name", ""), max_length=80
+                )
                 is_admin = bool(request.form.get("is_admin"))
                 if not _is_valid_email(email):
                     flash("Enter a valid email.", "error")
+                elif not first_name:
+                    flash("First name is required.", "error")
+                elif not last_name:
+                    flash("Last name is required.", "error")
+                elif not display_name:
+                    flash("Display name is required.", "error")
                 elif any(entry["email"] == email for entry in users_data):
                     flash("A user with that email already exists.", "error")
                 else:
@@ -1898,8 +2685,13 @@ def create_web_app(
                         users_data.append(
                             {
                                 "email": email,
-                                "password_hash": generate_password_hash(password),
+                                "password_hash": _hash_password(password),
                                 "is_admin": is_admin,
+                                "first_name": first_name,
+                                "last_name": last_name,
+                                "display_name": display_name,
+                                "password_changed_at": _now_iso(),
+                                "email_changed_at": _now_iso(),
                                 "created_at": _now_iso(),
                             }
                         )
@@ -1935,9 +2727,8 @@ def create_web_app(
                     changed = False
                     for entry in users_data:
                         if entry["email"] == target_email:
-                            entry["password_hash"] = generate_password_hash(
-                                new_password
-                            )
+                            entry["password_hash"] = _hash_password(new_password)
+                            entry["password_changed_at"] = _now_iso()
                             changed = True
                             break
                     if changed:
@@ -1969,11 +2760,19 @@ def create_web_app(
         for entry in users_data:
             email = entry["email"]
             admin_label = "Yes" if entry.get("is_admin") else "No"
+            display_name = str(entry.get("display_name") or _default_display_name(email))
+            full_name = _clean_profile_text(
+                f"{str(entry.get('first_name') or '')} {str(entry.get('last_name') or '')}",
+                max_length=160,
+            )
             user_rows.append(
                 f"""
                 <tr>
+                  <td>{escape(display_name)}</td>
+                  <td>{escape(full_name or "n/a")}</td>
                   <td class="mono">{escape(email)}</td>
                   <td>{escape(admin_label)}</td>
+                  <td class="mono">{escape(str(entry.get("password_changed_at", "n/a")))}</td>
                   <td class="mono">{escape(str(entry.get("created_at", "n/a")))}</td>
                   <td>
                     <form method="post" style="display:inline;">
@@ -1998,7 +2797,13 @@ def create_web_app(
             <p class="muted">No public signup exists. Admins create accounts here.</p>
             <form method="post">
               <input type="hidden" name="action" value="create" />
-              <label>Email</label>
+              <label>First Name</label>
+              <input type="text" name="first_name" required />
+              <label style="margin-top:10px;display:block;">Last Name</label>
+              <input type="text" name="last_name" required />
+              <label style="margin-top:10px;display:block;">Display Name</label>
+              <input type="text" name="display_name" required />
+              <label style="margin-top:10px;display:block;">Email</label>
               <input type="text" name="email" required />
               <label style="margin-top:10px;display:block;">Password</label>
               <input id="create_user_password" type="password" name="password" required />
@@ -2032,7 +2837,7 @@ def create_web_app(
         <div class="card">
           <h2>Existing Users</h2>
           <table>
-            <thead><tr><th>Email</th><th>Admin</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Admin</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody>{"".join(user_rows)}</tbody>
           </table>
         </div>

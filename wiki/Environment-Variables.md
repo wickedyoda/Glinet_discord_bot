@@ -46,6 +46,7 @@ This page groups runtime variables by feature area.
 - `WEB_BIND_HOST` (default local bind for non-container runs; set to `0.0.0.0` inside container)
 - `WEB_PORT`
 - `WEB_HOST_PORT`
+- `WEB_SESSION_TIMEOUT_MINUTES` (auto-logout timeout in minutes; allowed `5,10,15,20,25,30`)
 - `WEB_ENV_FILE`
 - `WEB_RESTART_ENABLED`
 - `WEB_GITHUB_WIKI_URL`
