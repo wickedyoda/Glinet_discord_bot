@@ -240,14 +240,19 @@ def _is_valid_email(email: str) -> bool:
 
 def _password_policy_errors(password: str):
     candidate = password or ""
+    length = len(candidate)
     digits = sum(1 for char in candidate if char.isdigit())
     uppercase = sum(1 for char in candidate if char.isupper())
     symbols = sum(1 for char in candidate if not char.isalnum())
     errors = []
-    if digits < 6:
-        errors.append("Password must contain at least 6 digits.")
-    if uppercase < 2:
-        errors.append("Password must contain at least 2 uppercase letters.")
+    if length < 6:
+        errors.append("Password must be at least 6 characters long.")
+    if length > 16:
+        errors.append("Password must be 16 characters or fewer.")
+    if digits < 2:
+        errors.append("Password must contain at least 2 numbers.")
+    if uppercase < 1:
+        errors.append("Password must contain at least 1 uppercase letter.")
     if symbols < 1:
         errors.append("Password must contain at least 1 symbol.")
     return errors
@@ -2003,7 +2008,7 @@ def create_web_app(
                 Show password
               </label>
               <label style="margin-top:10px;display:block;"><input type="checkbox" name="is_admin" /> Admin user</label>
-              <p class="muted">Password policy: at least 6 digits, 2 uppercase letters, and 1 symbol.</p>
+              <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>
               <button class="btn" type="submit">Create User</button>
             </form>
           </div>

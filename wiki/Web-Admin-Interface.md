@@ -24,8 +24,9 @@ Password-protected admin UI for runtime bot management.
 - Admin can create additional users
 - No Discord `/login` or `!login` command exists for web-user creation
 - Password policy:
-  - At least 6 digits
-  - At least 2 uppercase letters
+  - Minimum 6 characters, maximum 16 characters
+  - At least 2 numbers
+  - At least 1 uppercase letter
   - At least 1 symbol
 - Create-user and reset-password forms include a show-password toggle
 
