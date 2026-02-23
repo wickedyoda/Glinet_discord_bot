@@ -340,6 +340,8 @@ command_permissions_lock = threading.Lock()
 command_permissions_cache = {"mtime": None, "rules": {}}
 db_lock = threading.RLock()
 db_connection = None
+FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS = 3600
+firmware_channel_warning_state = {"reason": "", "last_logged_at": 0.0}
 
 
 def normalize_tag(tag: str) -> str:
@@ -2462,36 +2464,56 @@ def format_firmware_notification(entry: dict, sync_label: str):
 
 async def resolve_firmware_notify_channel():
     if FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
-        return None
+        return None, "channel_id_not_configured"
 
     channel = bot.get_channel(FIRMWARE_NOTIFY_CHANNEL_ID)
     if channel is None:
         try:
             channel = await bot.fetch_channel(FIRMWARE_NOTIFY_CHANNEL_ID)
         except discord.NotFound:
-            logger.warning(
-                "Firmware notify channel %s not found", FIRMWARE_NOTIFY_CHANNEL_ID
-            )
-            return None
+            return None, "channel_not_found"
         except discord.Forbidden:
-            logger.warning(
-                "No permission to access firmware notify channel %s",
-                FIRMWARE_NOTIFY_CHANNEL_ID,
-            )
-            return None
+            return None, "channel_access_forbidden"
         except discord.HTTPException:
             logger.exception(
                 "Failed to fetch firmware notify channel %s", FIRMWARE_NOTIFY_CHANNEL_ID
             )
-            return None
+            return None, "channel_fetch_http_error"
 
     if isinstance(channel, (discord.TextChannel, discord.Thread)):
-        return channel
+        return channel, ""
 
+    return None, "channel_not_text"
+
+
+def log_firmware_channel_unavailable(reason_key: str, pending_count: int):
+    reason_messages = {
+        "channel_id_not_configured": "firmware_notification_channel is not configured",
+        "channel_not_found": "configured channel was not found",
+        "channel_access_forbidden": "bot does not have access to the configured channel",
+        "channel_fetch_http_error": "Discord API error while fetching configured channel",
+        "channel_not_text": "configured channel is not a text/thread channel",
+    }
+    reason_text = reason_messages.get(reason_key, "configured channel is unavailable")
+    now_ts = time.time()
+    last_reason = firmware_channel_warning_state.get("reason", "")
+    last_logged_at = float(firmware_channel_warning_state.get("last_logged_at", 0.0))
+    if (
+        reason_key == last_reason
+        and (now_ts - last_logged_at) < FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS
+    ):
+        return
+
+    firmware_channel_warning_state["reason"] = reason_key
+    firmware_channel_warning_state["last_logged_at"] = now_ts
     logger.warning(
-        "Firmware notify channel %s is not a text channel", FIRMWARE_NOTIFY_CHANNEL_ID
+        "Firmware notifications paused: %s (channel_id=%s, guild_id=%s, pending_new_entries=%d). "
+        "Update firmware_notification_channel to a valid text channel the bot can access.",
+        reason_text,
+        FIRMWARE_NOTIFY_CHANNEL_ID,
+        GUILD_ID,
+        pending_count,
     )
-    return None
 
 
 async def check_firmware_updates_once():
@@ -2522,14 +2544,13 @@ async def check_firmware_updates_once():
         save_firmware_state(current_ids, sync_label)
         return
 
-    channel = await resolve_firmware_notify_channel()
+    channel, channel_error = await resolve_firmware_notify_channel()
     if channel is None:
-        logger.warning(
-            "Firmware monitor found %d new entries but channel is unavailable; retrying on next check",
-            len(new_entries),
-        )
+        log_firmware_channel_unavailable(channel_error, len(new_entries))
         return
 
+    firmware_channel_warning_state["reason"] = ""
+    firmware_channel_warning_state["last_logged_at"] = 0.0
     new_entries.sort(
         key=lambda item: (item["published_date"], item["model_code"], item["version"])
     )
