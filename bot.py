@@ -11,6 +11,7 @@ import time
 import csv
 import io
 import threading
+import sqlite3
 from difflib import SequenceMatcher
 from datetime import timedelta, datetime, timezone
 from html import unescape
@@ -129,6 +130,9 @@ KICK_PRUNE_HOURS = int(os.getenv("KICK_PRUNE_HOURS", "72"))
 TIMEOUT_MAX_MINUTES = 28 * 24 * 60
 ROLE_NAME_MAX_LENGTH = 100
 CSV_ROLE_ASSIGN_MAX_NAMES = int(os.getenv("CSV_ROLE_ASSIGN_MAX_NAMES", "500"))
+BOT_USERNAME_MIN_LENGTH = 2
+BOT_USERNAME_MAX_LENGTH = 32
+BOT_NICKNAME_MAX_LENGTH = 32
 DOCS_SITE_MAP = {
     "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
@@ -142,10 +146,149 @@ CODES_FILE = os.path.join(DATA_DIR, "role_codes.txt")
 INVITE_ROLE_FILE = os.path.join(DATA_DIR, "invite_roles.json")
 TAG_RESPONSES_FILE = os.path.join(DATA_DIR, "tag_responses.json")
 FIRMWARE_STATE_FILE = os.path.join(DATA_DIR, "firmware_seen.json")
+COMMAND_PERMISSIONS_FILE = os.path.join(DATA_DIR, "command_permissions.json")
+DB_FILE = os.path.join(DATA_DIR, "bot_data.db")
+WEB_USERS_FILE = os.path.join(DATA_DIR, "web_users.json")
 
 DEFAULT_TAG_RESPONSES = {
     "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
     "!support": "🛠️ Need help? Please open a ticket or message a moderator.",
+}
+DEFAULT_ALLOWED_ROLE_NAMES = {"Employee", "Admin", "Gl.iNet Moderator"}
+COMMAND_PERMISSION_MODE_DEFAULT = "default"
+COMMAND_PERMISSION_MODE_PUBLIC = "public"
+COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
+COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
+COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES = "allowed_role_names"
+COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS = "moderator_role_ids"
+COMMAND_PERMISSION_DEFAULTS = {
+    "list": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "tag_commands": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "submitrole": COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
+    "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "enter_role": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "getaccess": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "clear_country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "create_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "delete_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "edit_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "modlog_test": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "ban_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "kick_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "timeout_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "untimeout_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "unban_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "add_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "remove_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "search": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_forum": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_kvm": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+}
+COMMAND_PERMISSION_METADATA = {
+    "list": {
+        "label": "!list",
+        "description": "Show available tag commands.",
+    },
+    "tag_commands": {
+        "label": "Dynamic Tag Commands",
+        "description": "Slash/message tag responses loaded from persistent storage.",
+    },
+    "submitrole": {
+        "label": "/submitrole",
+        "description": "Create role invite + code mapping.",
+    },
+    "bulk_assign_role_csv": {
+        "label": "/bulk_assign_role_csv",
+        "description": "Bulk-assign a role from CSV.",
+    },
+    "enter_role": {
+        "label": "/enter_role",
+        "description": "Enter a code to receive a role.",
+    },
+    "getaccess": {
+        "label": "/getaccess",
+        "description": "Assign the configured default access role.",
+    },
+    "country": {
+        "label": "/country, !country",
+        "description": "Set country suffix on nickname.",
+    },
+    "clear_country": {
+        "label": "/clear_country, !clearcountry",
+        "description": "Remove country suffix from nickname.",
+    },
+    "create_role": {
+        "label": "/create_role",
+        "description": "Create a guild role.",
+    },
+    "delete_role": {
+        "label": "/delete_role",
+        "description": "Delete a guild role.",
+    },
+    "edit_role": {
+        "label": "/edit_role",
+        "description": "Edit role name/color/flags.",
+    },
+    "modlog_test": {
+        "label": "/modlog_test, !modlogtest",
+        "description": "Send a moderation log test event.",
+    },
+    "ban_member": {
+        "label": "/ban_member, !banmember",
+        "description": "Ban a member.",
+    },
+    "kick_member": {
+        "label": "/kick_member, !kickmember",
+        "description": "Kick a member and prune recent messages.",
+    },
+    "timeout_member": {
+        "label": "/timeout_member, !timeoutmember",
+        "description": "Apply a timeout to a member.",
+    },
+    "untimeout_member": {
+        "label": "/untimeout_member, !untimeoutmember",
+        "description": "Remove timeout from a member.",
+    },
+    "unban_member": {
+        "label": "/unban_member, !unbanmember",
+        "description": "Unban a user by ID.",
+    },
+    "add_role_member": {
+        "label": "/add_role_member, !addrolemember",
+        "description": "Assign a role to a member.",
+    },
+    "remove_role_member": {
+        "label": "/remove_role_member, !removerolemember",
+        "description": "Remove a role from a member.",
+    },
+    "search": {
+        "label": "/search, !search",
+        "description": "Search forum + docs.",
+    },
+    "search_forum": {
+        "label": "/search_forum, !searchforum",
+        "description": "Search forum only.",
+    },
+    "search_kvm": {
+        "label": "/search_kvm, !searchkvm",
+        "description": "Search KVM docs only.",
+    },
+    "search_iot": {
+        "label": "/search_iot, !searchiot",
+        "description": "Search IoT docs only.",
+    },
+    "search_router": {
+        "label": "/search_router, !searchrouter",
+        "description": "Search Router docs only.",
+    },
+}
+COMMAND_PERMISSION_POLICY_LABELS = {
+    COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC: "Public (any member)",
+    COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES: "Named roles: Employee/Admin/Gl.iNet Moderator",
+    COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS: "Moderator/Admin role IDs (env)",
 }
 
 intents = discord.Intents.default()
@@ -162,6 +305,11 @@ docs_index_cache = {}
 firmware_monitor_task = None
 web_admin_thread = None
 discord_catalog_cache = {"fetched_at": 0.0, "data": None}
+BOT_SERVER_NICKNAME_UNSET = object()
+command_permissions_lock = threading.Lock()
+command_permissions_cache = {"mtime": None, "rules": {}}
+db_lock = threading.RLock()
+db_connection = None
 
 
 def normalize_tag(tag: str) -> str:
@@ -188,6 +336,309 @@ def parse_firmware_channel_id(raw_value, default_value):
         return default_value
 
 
+def get_db_connection():
+    global db_connection
+    with db_lock:
+        if db_connection is not None:
+            return db_connection
+
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA cache_size=-20000;")
+        db_connection = conn
+        return conn
+
+
+def ensure_db_schema():
+    conn = get_db_connection()
+    with db_lock:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS role_codes (
+                code TEXT PRIMARY KEY,
+                role_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS invite_roles (
+                invite_code TEXT PRIMARY KEY,
+                role_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tag_responses (
+                tag TEXT PRIMARY KEY,
+                response TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS firmware_seen (
+                entry_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS command_permissions (
+                command_key TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                role_ids_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS web_users (
+                email TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
+            CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
+            """
+        )
+        conn.commit()
+
+
+def db_kv_get(key: str):
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            "SELECT value FROM kv_store WHERE key = ?",
+            (key,),
+        ).fetchone()
+    return row["value"] if row else None
+
+
+def db_kv_set(key: str, value: str):
+    conn = get_db_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO kv_store (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+            """,
+            (key, value, now_iso),
+        )
+        conn.commit()
+
+
+def db_kv_delete(key: str):
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
+        conn.commit()
+
+
+def migrate_legacy_files_to_db():
+    conn = get_db_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    with db_lock:
+        def kv_exists(key: str):
+            row = conn.execute("SELECT 1 FROM kv_store WHERE key = ?", (key,)).fetchone()
+            return row is not None
+
+        def kv_insert_if_missing(key: str, value: str):
+            if kv_exists(key):
+                return
+            conn.execute(
+                """
+                INSERT INTO kv_store (key, value, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (key, str(value), now_iso),
+            )
+
+        if os.path.exists(CODES_FILE):
+            try:
+                with open(CODES_FILE, "r") as f:
+                    for raw_line in f:
+                        line = raw_line.strip()
+                        if ":" not in line:
+                            continue
+                        code, raw_role_id = line.split(":", 1)
+                        code = code.strip()
+                        try:
+                            role_id = int(raw_role_id.strip())
+                        except ValueError:
+                            continue
+                        if code and role_id > 0:
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO role_codes (code, role_id, created_at)
+                                VALUES (?, ?, ?)
+                                """,
+                                (code, role_id, now_iso),
+                            )
+            except Exception:
+                logger.exception("Failed migrating legacy role codes from %s", CODES_FILE)
+
+        if os.path.exists(INVITE_ROLE_FILE):
+            try:
+                with open(INVITE_ROLE_FILE, "r") as f:
+                    mapping = json.load(f)
+                if isinstance(mapping, dict):
+                    for invite_code, raw_role_id in mapping.items():
+                        try:
+                            role_id = int(raw_role_id)
+                        except (TypeError, ValueError):
+                            continue
+                        code = str(invite_code or "").strip()
+                        if code and role_id > 0:
+                            conn.execute(
+                                """
+                                INSERT OR IGNORE INTO invite_roles (invite_code, role_id, created_at)
+                                VALUES (?, ?, ?)
+                                """,
+                                (code, role_id, now_iso),
+                            )
+            except Exception:
+                logger.exception("Failed migrating legacy invite-role mapping from %s", INVITE_ROLE_FILE)
+
+        tag_mapping_loaded = False
+        if os.path.exists(TAG_RESPONSES_FILE):
+            try:
+                with open(TAG_RESPONSES_FILE, "r") as f:
+                    payload = json.load(f)
+                if isinstance(payload, dict):
+                    tag_mapping_loaded = True
+                    for raw_tag, raw_response in payload.items():
+                        tag = normalize_tag(str(raw_tag))
+                        if not tag:
+                            continue
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO tag_responses (tag, response, updated_at)
+                            VALUES (?, ?, ?)
+                            """,
+                            (tag, str(raw_response), now_iso),
+                        )
+            except Exception:
+                logger.exception("Failed migrating legacy tag responses from %s", TAG_RESPONSES_FILE)
+
+        tag_count = conn.execute("SELECT COUNT(*) AS c FROM tag_responses").fetchone()["c"]
+        if tag_count == 0 and not tag_mapping_loaded:
+            for raw_tag, raw_response in DEFAULT_TAG_RESPONSES.items():
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO tag_responses (tag, response, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (normalize_tag(raw_tag), str(raw_response), now_iso),
+                )
+
+        if os.path.exists(FIRMWARE_STATE_FILE):
+            try:
+                with open(FIRMWARE_STATE_FILE, "r") as f:
+                    payload = json.load(f)
+                seen_ids = payload.get("seen_ids", [])
+                if isinstance(seen_ids, list):
+                    for item in seen_ids:
+                        entry_id = str(item or "").strip()
+                        if not entry_id:
+                            continue
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO firmware_seen (entry_id, created_at)
+                            VALUES (?, ?)
+                            """,
+                            (entry_id, now_iso),
+                        )
+                    kv_insert_if_missing("firmware_seen_initialized", "1")
+                    kv_insert_if_missing("firmware_source_url", FIRMWARE_FEED_URL)
+                    sync_value = str(payload.get("last_synced") or "").strip()
+                    if sync_value:
+                        kv_insert_if_missing("firmware_last_synced", sync_value)
+            except Exception:
+                logger.exception("Failed migrating legacy firmware state from %s", FIRMWARE_STATE_FILE)
+
+        firmware_seen_count = conn.execute("SELECT COUNT(*) AS c FROM firmware_seen").fetchone()["c"]
+        if firmware_seen_count > 0:
+            kv_insert_if_missing("firmware_seen_initialized", "1")
+            kv_insert_if_missing("firmware_source_url", FIRMWARE_FEED_URL)
+
+        if os.path.exists(COMMAND_PERMISSIONS_FILE):
+            try:
+                with open(COMMAND_PERMISSIONS_FILE, "r") as f:
+                    payload = json.load(f)
+                raw_rules = payload.get("rules", {}) if isinstance(payload, dict) else {}
+                if isinstance(raw_rules, dict):
+                    for command_key, raw_rule in raw_rules.items():
+                        if command_key not in COMMAND_PERMISSION_DEFAULTS:
+                            continue
+                        normalized_rule = normalize_command_permission_rule(raw_rule)
+                        if normalized_rule["mode"] == COMMAND_PERMISSION_MODE_DEFAULT:
+                            continue
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO command_permissions (command_key, mode, role_ids_json, updated_at)
+                            VALUES (?, ?, ?, ?)
+                            """,
+                            (
+                                command_key,
+                                normalized_rule["mode"],
+                                json.dumps(normalized_rule["role_ids"]),
+                                now_iso,
+                            ),
+                        )
+            except Exception:
+                logger.exception("Failed migrating legacy command permissions from %s", COMMAND_PERMISSIONS_FILE)
+
+        if os.path.exists(WEB_USERS_FILE):
+            try:
+                with open(WEB_USERS_FILE, "r") as f:
+                    payload = json.load(f)
+                users = payload.get("users", []) if isinstance(payload, dict) else []
+                if isinstance(users, list):
+                    for entry in users:
+                        if not isinstance(entry, dict):
+                            continue
+                        email = str(entry.get("email", "")).strip().lower()
+                        password_hash = str(entry.get("password_hash", "")).strip()
+                        if not email or not password_hash:
+                            continue
+                        is_admin = 1 if bool(entry.get("is_admin", False)) else 0
+                        created_at = str(entry.get("created_at") or now_iso)
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO web_users (email, password_hash, is_admin, created_at, updated_at)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (email, password_hash, is_admin, created_at, now_iso),
+                        )
+            except Exception:
+                logger.exception("Failed migrating legacy web users from %s", WEB_USERS_FILE)
+
+        if not kv_exists("access_role_id") and os.path.exists(ROLE_FILE):
+            try:
+                with open(ROLE_FILE, "r") as f:
+                    raw_value = f.read().strip()
+                role_id = int(raw_value)
+                if role_id > 0:
+                    kv_insert_if_missing("access_role_id", str(role_id))
+            except Exception:
+                logger.exception("Failed migrating legacy access role from %s", ROLE_FILE)
+
+        conn.commit()
+
+
+def initialize_storage():
+    ensure_db_schema()
+    migrate_legacy_files_to_db()
+
+
 def tag_to_command_name(tag: str) -> str:
     normalized = normalize_tag(tag)
     if normalized.startswith("!"):
@@ -198,40 +649,39 @@ def tag_to_command_name(tag: str) -> str:
 
 
 def load_tag_responses():
-    if not os.path.exists(TAG_RESPONSES_FILE):
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute("SELECT tag, response FROM tag_responses").fetchall()
+    if not rows:
         save_tag_responses(DEFAULT_TAG_RESPONSES)
         return {normalize_tag(k): str(v) for k, v in DEFAULT_TAG_RESPONSES.items()}
-    try:
-        with open(TAG_RESPONSES_FILE, "r") as f:
-            data = json.load(f)
-        if not isinstance(data, dict):
-            logger.warning("Tag responses file does not contain an object. Using empty mapping.")
-            return {}
-        return {normalize_tag(k): str(v) for k, v in data.items()}
-    except Exception:
-        logger.exception("Failed to load tag responses")
-        return {}
+    return {normalize_tag(row["tag"]): str(row["response"]) for row in rows}
 
 
 def save_tag_responses(mapping):
-    with open(TAG_RESPONSES_FILE, "w") as f:
-        json.dump(mapping, f, indent=2)
+    conn = get_db_connection()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    normalized = {normalize_tag(k): str(v) for k, v in (mapping or {}).items() if normalize_tag(k)}
+    with db_lock:
+        conn.execute("DELETE FROM tag_responses")
+        for tag, response in normalized.items():
+            conn.execute(
+                """
+                INSERT INTO tag_responses (tag, response, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (tag, response, now_iso),
+            )
+        conn.commit()
+    db_kv_set("tag_responses_updated_at", now_iso)
 
 
 def get_tag_responses():
     global tag_responses, tag_responses_mtime
-    try:
-        current_mtime = os.path.getmtime(TAG_RESPONSES_FILE)
-    except FileNotFoundError:
+    current_version = db_kv_get("tag_responses_updated_at") or "bootstrap"
+    if tag_responses_mtime != current_version:
         tag_responses = load_tag_responses()
-        try:
-            tag_responses_mtime = os.path.getmtime(TAG_RESPONSES_FILE)
-        except FileNotFoundError:
-            tag_responses_mtime = None
-        return tag_responses
-    if tag_responses_mtime != current_mtime:
-        tag_responses = load_tag_responses()
-        tag_responses_mtime = current_mtime
+        tag_responses_mtime = current_version
     return tag_responses
 
 
@@ -259,6 +709,12 @@ def register_tag_commands():
 
         def make_tag_reply(tag_response: str):
             async def tag_reply(interaction: discord.Interaction):
+                if not can_use_command(interaction.user, "tag_commands"):
+                    await interaction.response.send_message(
+                        build_command_permission_denied_message("tag_commands", interaction.guild),
+                        ephemeral=True,
+                    )
+                    return
                 await interaction.response.send_message(tag_response)
 
             return tag_reply
@@ -336,49 +792,345 @@ def generate_code():
             return code
 
 def save_role_code(code, role_id):
-    with open(CODES_FILE, 'a') as f:
-        f.write(f"{code}:{role_id}\n")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO role_codes (code, role_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (str(code), int(role_id), now_iso),
+        )
+        conn.commit()
     logger.info("Saved code %s for role %s", code, role_id)
 
 def get_role_id_by_code(code):
-    if not os.path.exists(CODES_FILE):
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            "SELECT role_id FROM role_codes WHERE code = ?",
+            (str(code),),
+        ).fetchone()
+    if row is None:
         return None
-    with open(CODES_FILE, 'r') as f:
-        for line in f:
-            if line.startswith(code + ":"):
-                role_id = int(line.strip().split(":")[1])
-                logger.info("Code %s matched role %s", code, role_id)
-                return role_id
-    return None
+    role_id = int(row["role_id"])
+    logger.info("Code %s matched role %s", code, role_id)
+    return role_id
 
 def load_invite_roles():
-    if not os.path.exists(INVITE_ROLE_FILE):
-        return {}
-    try:
-        with open(INVITE_ROLE_FILE, "r") as f:
-            import json
-            return json.load(f)
-    except Exception:
-        logger.exception("Failed to load invite-role mappings")
-        return {}
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute("SELECT invite_code, role_id FROM invite_roles").fetchall()
+    return {row["invite_code"]: int(row["role_id"]) for row in rows}
 
 def save_invite_role(invite_code, role_id):
-    mapping = load_invite_roles()
-    mapping[invite_code] = role_id
-    with open(INVITE_ROLE_FILE, "w") as f:
-        import json
-        json.dump(mapping, f)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO invite_roles (invite_code, role_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            (str(invite_code), int(role_id), now_iso),
+        )
+        conn.commit()
     logger.info("Saved invite %s for role %s", invite_code, role_id)
 
 def has_allowed_role(member: discord.Member):
-    allowed = {"Employee", "Admin", "Gl.iNet Moderator"}
-    has_role = any(role.name in allowed for role in member.roles)
+    has_role = any(role.name in DEFAULT_ALLOWED_ROLE_NAMES for role in member.roles)
     logger.debug("User %s allowed: %s", member, has_role)
     return has_role
 
 
 def has_moderator_access(member: discord.Member):
     return any(role.id in MODERATOR_ROLE_IDS for role in member.roles)
+
+
+def normalize_permission_mode(value: str | None):
+    raw = (value or "").strip().lower()
+    if raw in {COMMAND_PERMISSION_MODE_DEFAULT, COMMAND_PERMISSION_MODE_PUBLIC, COMMAND_PERMISSION_MODE_CUSTOM_ROLES}:
+        return raw
+    return COMMAND_PERMISSION_MODE_DEFAULT
+
+
+def normalize_role_ids(values):
+    normalized = []
+    seen = set()
+    if isinstance(values, str):
+        values = re.split(r"[\s,]+", values.strip()) if values.strip() else []
+    if not isinstance(values, list):
+        values = []
+    for value in values:
+        cleaned = str(value or "").strip()
+        if cleaned.startswith("<@&") and cleaned.endswith(">"):
+            cleaned = cleaned[3:-1]
+        try:
+            role_id = int(cleaned)
+        except (TypeError, ValueError):
+            continue
+        if role_id <= 0 or role_id in seen:
+            continue
+        seen.add(role_id)
+        normalized.append(role_id)
+    return normalized
+
+
+def normalize_command_permission_rule(raw_rule):
+    if not isinstance(raw_rule, dict):
+        return {
+            "mode": COMMAND_PERMISSION_MODE_DEFAULT,
+            "role_ids": [],
+        }
+    mode = normalize_permission_mode(raw_rule.get("mode"))
+    role_ids = normalize_role_ids(raw_rule.get("role_ids", []))
+    if mode != COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
+        role_ids = []
+    return {
+        "mode": mode,
+        "role_ids": role_ids,
+    }
+
+
+def load_command_permission_rules():
+    global command_permissions_cache
+    with command_permissions_lock:
+        version = db_kv_get("command_permissions_updated_at") or "bootstrap"
+        if command_permissions_cache.get("mtime") == version:
+            return command_permissions_cache.get("rules", {})
+
+        conn = get_db_connection()
+        with db_lock:
+            rows = conn.execute(
+                "SELECT command_key, mode, role_ids_json FROM command_permissions"
+            ).fetchall()
+        normalized_rules = {}
+        for row in rows:
+            command_key = str(row["command_key"])
+            if command_key not in COMMAND_PERMISSION_DEFAULTS:
+                continue
+            try:
+                role_ids_payload = json.loads(row["role_ids_json"] or "[]")
+            except Exception:
+                role_ids_payload = []
+            normalized_rules[command_key] = normalize_command_permission_rule(
+                {"mode": row["mode"], "role_ids": role_ids_payload}
+            )
+
+        command_permissions_cache = {"mtime": version, "rules": normalized_rules}
+        return normalized_rules
+
+
+def save_command_permission_rules(rules: dict, actor_email: str = ""):
+    safe_rules = {}
+    for command_key, raw_rule in (rules or {}).items():
+        if command_key not in COMMAND_PERMISSION_DEFAULTS:
+            continue
+        normalized_rule = normalize_command_permission_rule(raw_rule)
+        if normalized_rule["mode"] == COMMAND_PERMISSION_MODE_DEFAULT:
+            continue
+        safe_rules[command_key] = normalized_rule
+
+    updated_at = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with command_permissions_lock:
+        with db_lock:
+            conn.execute("DELETE FROM command_permissions")
+            for command_key, normalized_rule in safe_rules.items():
+                conn.execute(
+                    """
+                    INSERT INTO command_permissions (command_key, mode, role_ids_json, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        command_key,
+                        normalized_rule["mode"],
+                        json.dumps(normalized_rule["role_ids"]),
+                        updated_at,
+                    ),
+                )
+            conn.commit()
+        db_kv_set("command_permissions_updated_at", updated_at)
+        db_kv_set("command_permissions_updated_by", actor_email or "unknown")
+        command_permissions_cache["mtime"] = updated_at
+        command_permissions_cache["rules"] = safe_rules
+    return safe_rules
+
+
+def resolve_command_permission_state(command_key: str):
+    default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
+    rule = load_command_permission_rules().get(
+        command_key,
+        {"mode": COMMAND_PERMISSION_MODE_DEFAULT, "role_ids": []},
+    )
+    mode = rule.get("mode", COMMAND_PERMISSION_MODE_DEFAULT)
+    role_ids = normalize_role_ids(rule.get("role_ids", []))
+    return default_policy, mode, role_ids
+
+
+def member_has_any_role_id(member: discord.Member | discord.User, role_ids: list[int]):
+    if not isinstance(member, discord.Member):
+        return False
+    if not role_ids:
+        return False
+    member_role_ids = {role.id for role in member.roles}
+    return any(role_id in member_role_ids for role_id in role_ids)
+
+
+def can_use_command(member: discord.Member | discord.User, command_key: str):
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key)
+
+    if mode == COMMAND_PERMISSION_MODE_PUBLIC:
+        return True
+    if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
+        return member_has_any_role_id(member, role_ids)
+
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC:
+        return True
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES:
+        return isinstance(member, discord.Member) and has_allowed_role(member)
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS:
+        return isinstance(member, discord.Member) and has_moderator_access(member)
+    return False
+
+
+def build_command_permission_denied_message(command_key: str, guild: discord.Guild | None = None):
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key)
+    if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
+        if guild is None or not role_ids:
+            return "❌ You do not have one of the roles allowed to use this command."
+        mentions = []
+        for role_id in role_ids:
+            role = guild.get_role(role_id)
+            mentions.append(role.mention if role else f"`{role_id}`")
+        return f"❌ You need one of these roles: {', '.join(mentions)}."
+
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES:
+        names = ", ".join(sorted(DEFAULT_ALLOWED_ROLE_NAMES))
+        return f"❌ You need one of these roles: `{names}`."
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS:
+        return "❌ Only moderators can use this command."
+    return "❌ You do not have permission to use this command."
+
+
+async def ensure_interaction_command_access(interaction: discord.Interaction, command_key: str):
+    if can_use_command(interaction.user, command_key):
+        return True
+    await interaction.response.send_message(
+        build_command_permission_denied_message(command_key, interaction.guild),
+        ephemeral=True,
+    )
+    return False
+
+
+async def ensure_prefix_command_access(ctx: commands.Context, command_key: str):
+    if can_use_command(ctx.author, command_key):
+        return True
+    await ctx.send(build_command_permission_denied_message(command_key, ctx.guild))
+    return False
+
+
+def build_command_permissions_web_payload():
+    rules = load_command_permission_rules()
+    commands_payload = []
+    for command_key, metadata in COMMAND_PERMISSION_METADATA.items():
+        default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
+        rule = normalize_command_permission_rule(rules.get(command_key, {}))
+        commands_payload.append(
+            {
+                "key": command_key,
+                "label": metadata.get("label", command_key),
+                "description": metadata.get("description", ""),
+                "default_policy": default_policy,
+                "default_policy_label": COMMAND_PERMISSION_POLICY_LABELS.get(default_policy, default_policy),
+                "mode": rule["mode"],
+                "role_ids": rule["role_ids"],
+            }
+        )
+    return {
+        "ok": True,
+        "commands": commands_payload,
+        "allowed_role_names": sorted(DEFAULT_ALLOWED_ROLE_NAMES),
+        "moderator_role_ids": sorted(MODERATOR_ROLE_IDS),
+    }
+
+
+def run_web_get_command_permissions():
+    try:
+        return build_command_permissions_web_payload()
+    except Exception:
+        logger.exception("Failed to build command permissions payload for web admin")
+        return {"ok": False, "error": "Unexpected error while loading command permissions."}
+
+
+def run_web_update_command_permissions(payload: dict, actor_email: str):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid payload type for command permissions update."}
+    commands_payload = payload.get("commands", {})
+    if not isinstance(commands_payload, dict):
+        return {"ok": False, "error": "Payload is missing a commands object."}
+
+    updated_rules = {}
+    validation_errors = []
+    for command_key in COMMAND_PERMISSION_METADATA.keys():
+        raw_rule = commands_payload.get(command_key, {})
+        if not isinstance(raw_rule, dict):
+            raw_rule = {}
+
+        mode = normalize_permission_mode(raw_rule.get("mode"))
+        role_ids = normalize_role_ids(raw_rule.get("role_ids", []))
+        if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES and not role_ids:
+            validation_errors.append(
+                f"{command_key}: mode `custom_roles` requires at least one role ID."
+            )
+        updated_rules[command_key] = {"mode": mode, "role_ids": role_ids}
+
+    if validation_errors:
+        return {"ok": False, "error": " ".join(validation_errors)}
+
+    try:
+        save_command_permission_rules(updated_rules, actor_email=actor_email)
+    except Exception:
+        logger.exception("Failed to save command permissions from web admin by %s", actor_email)
+        return {"ok": False, "error": "Failed to save command permissions."}
+
+    response = build_command_permissions_web_payload()
+    response["message"] = "Command permissions updated."
+    logger.info("Command permissions updated via web admin by %s", actor_email)
+    return response
+
+
+def run_web_get_tag_responses():
+    try:
+        mapping = get_tag_responses()
+    except Exception:
+        logger.exception("Failed loading tag responses for web admin")
+        return {"ok": False, "error": "Unexpected error while loading tag responses."}
+    return {"ok": True, "mapping": mapping}
+
+
+def run_web_save_tag_responses(mapping: dict, actor_email: str):
+    if not isinstance(mapping, dict):
+        return {"ok": False, "error": "Tag responses payload must be a JSON object."}
+
+    normalized = {}
+    for raw_tag, raw_response in mapping.items():
+        if not isinstance(raw_tag, str) or not isinstance(raw_response, str):
+            return {"ok": False, "error": "All tag keys and values must be strings."}
+        tag = normalize_tag(raw_tag)
+        if not tag:
+            continue
+        normalized[tag] = raw_response
+
+    try:
+        save_tag_responses(normalized)
+    except Exception:
+        logger.exception("Failed saving tag responses from web admin by %s", actor_email)
+        return {"ok": False, "error": "Unexpected error while saving tag responses."}
+
+    logger.info("Tag responses updated via web admin by %s (%s entries)", actor_email, len(normalized))
+    return {"ok": True, "mapping": normalized, "message": "Tag responses updated."}
 
 
 def validate_moderation_target(actor: discord.Member, target: discord.Member, bot_member: discord.Member):
@@ -498,6 +1250,19 @@ def parse_role_id_input(value: str):
     except (TypeError, ValueError):
         return None
     return role_id if role_id > 0 else None
+
+
+def parse_user_id_input(value: str):
+    cleaned = (value or "").strip()
+    if cleaned.startswith("<@") and cleaned.endswith(">"):
+        cleaned = cleaned[2:-1]
+        if cleaned.startswith("!"):
+            cleaned = cleaned[1:]
+    try:
+        user_id = int(cleaned)
+    except (TypeError, ValueError):
+        return None
+    return user_id if user_id > 0 else None
 
 
 def format_bulk_assignment_preview(title: str, values: list[str], limit: int = 20):
@@ -789,14 +1554,175 @@ async def fetch_bot_profile_async():
     if current_user is None:
         return {"ok": False, "error": "Bot user is not ready yet."}
 
+    guild = bot.get_guild(GUILD_ID)
+    bot_member = None
+    if guild is not None:
+        bot_member = guild.me or guild.get_member(current_user.id)
+        if bot_member is None:
+            try:
+                bot_member = await guild.fetch_member(current_user.id)
+            except discord.HTTPException:
+                logger.exception("Failed to fetch bot member for guild %s", guild.id)
+
+    server_display_name = bot_member.display_name if bot_member is not None else current_user.display_name
+    server_nickname = bot_member.nick if bot_member is not None else ""
     avatar_url = str(current_user.display_avatar.url) if current_user.display_avatar else ""
     return {
         "ok": True,
         "id": str(current_user.id),
         "name": current_user.name,
         "display_name": current_user.display_name,
+        "global_name": current_user.global_name or "",
+        "guild_id": str(guild.id) if guild is not None else "",
+        "guild_name": guild.name if guild is not None else "",
+        "server_display_name": server_display_name,
+        "server_nickname": server_nickname or "",
         "avatar_url": avatar_url,
     }
+
+
+def normalize_optional_text(value: str | None):
+    if value is None:
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def validate_bot_profile_change_request(
+    username: str | None,
+    server_nickname: str | None,
+    clear_server_nickname: bool,
+):
+    normalized_username = normalize_optional_text(username)
+    normalized_nickname = normalize_optional_text(server_nickname)
+
+    if clear_server_nickname and normalized_nickname is not None:
+        return None, None, "Provide either `server_nickname` or `clear_server_nickname`, not both."
+    if normalized_username is not None and not (BOT_USERNAME_MIN_LENGTH <= len(normalized_username) <= BOT_USERNAME_MAX_LENGTH):
+        return (
+            None,
+            None,
+            f"Username must be between {BOT_USERNAME_MIN_LENGTH} and {BOT_USERNAME_MAX_LENGTH} characters.",
+        )
+    if normalized_nickname is not None and len(normalized_nickname) > BOT_NICKNAME_MAX_LENGTH:
+        return None, None, f"Server nickname must be {BOT_NICKNAME_MAX_LENGTH} characters or fewer."
+
+    nickname_target = BOT_SERVER_NICKNAME_UNSET
+    if clear_server_nickname:
+        nickname_target = None
+    elif normalized_nickname is not None:
+        nickname_target = normalized_nickname
+
+    if normalized_username is None and nickname_target is BOT_SERVER_NICKNAME_UNSET:
+        return None, None, "Provide at least one change: `username`, `server_nickname`, or `clear_server_nickname`."
+
+    return normalized_username, nickname_target, None
+
+
+async def resolve_configured_guild_bot_member():
+    current_user = bot.user
+    if current_user is None:
+        return None, None, "Bot user is not ready yet."
+
+    guild = bot.get_guild(GUILD_ID)
+    if guild is None:
+        return None, None, "Configured guild is not currently available to the bot."
+
+    bot_member = guild.me or guild.get_member(current_user.id)
+    if bot_member is None:
+        try:
+            bot_member = await guild.fetch_member(current_user.id)
+        except discord.HTTPException:
+            logger.exception("Failed to fetch bot member for configured guild %s", guild.id)
+            bot_member = None
+    if bot_member is None:
+        return guild, None, "Could not resolve the bot member in the configured guild."
+    return guild, bot_member, None
+
+
+async def apply_bot_profile_updates_async(username: str | None, server_nickname, actor_label: str):
+    current_user = bot.user
+    if current_user is None:
+        return {"ok": False, "error": "Bot user is not ready yet."}
+
+    updated_username = False
+    updated_server_nickname = False
+    notes = []
+    errors = []
+
+    if username is not None:
+        if username == current_user.name:
+            notes.append("Username was already set to that value.")
+        else:
+            try:
+                await current_user.edit(username=username)
+                updated_username = True
+            except discord.HTTPException:
+                logger.exception("Failed to update bot username (actor=%s)", actor_label)
+                errors.append("Failed to update username. Discord may enforce rename limits; try again later.")
+
+    if server_nickname is not BOT_SERVER_NICKNAME_UNSET:
+        _, bot_member, member_error = await resolve_configured_guild_bot_member()
+        if member_error:
+            errors.append(member_error)
+        else:
+            if bot_member.nick == server_nickname:
+                if server_nickname is None:
+                    notes.append("Server nickname was already cleared.")
+                else:
+                    notes.append("Server nickname was already set to that value.")
+            else:
+                try:
+                    await bot_member.edit(nick=server_nickname, reason=f"Bot profile updated by {actor_label}")
+                    updated_server_nickname = True
+                except discord.Forbidden:
+                    logger.exception("Missing permission to update bot server nickname (actor=%s)", actor_label)
+                    errors.append(
+                        "Missing permission to update server nickname. Check `Manage Nicknames` and role hierarchy."
+                    )
+                except discord.HTTPException:
+                    logger.exception("Failed to update bot server nickname (actor=%s)", actor_label)
+                    errors.append("Failed to update server nickname due to a Discord API error.")
+
+    profile = await fetch_bot_profile_async()
+    result = {
+        "ok": False,
+        "updated_username": updated_username,
+        "updated_server_nickname": updated_server_nickname,
+    }
+    if isinstance(profile, dict):
+        for key, value in profile.items():
+            if key != "ok":
+                result[key] = value
+        if not profile.get("ok"):
+            errors.append(str(profile.get("error") or "Unable to refresh bot profile details."))
+
+    updated_parts = []
+    if updated_username:
+        updated_parts.append("username")
+    if updated_server_nickname:
+        updated_parts.append("server nickname")
+
+    if updated_parts:
+        message = f"Updated {' and '.join(updated_parts)}."
+        if notes:
+            message = f"{message} {' '.join(notes)}"
+        if errors:
+            message = f"{message} {' '.join(errors)}"
+        result["ok"] = True
+        result["message"] = message
+        return result
+
+    if errors:
+        result["error"] = " ".join(errors)
+        return result
+
+    result["ok"] = True
+    if notes:
+        result["message"] = f"No changes were needed. {' '.join(notes)}"
+    else:
+        result["message"] = "No changes were needed."
+    return result
 
 
 def run_web_get_bot_profile():
@@ -837,6 +1763,59 @@ async def run_web_update_bot_avatar_async(payload: bytes, actor_email: str):
     if profile.get("ok"):
         logger.info("Bot avatar updated via web admin by %s", actor_email)
     return profile
+
+
+async def run_web_update_bot_profile_async(
+    username: str | None,
+    server_nickname: str | None,
+    clear_server_nickname: bool,
+    actor_email: str,
+):
+    normalized_username, nickname_target, validation_error = validate_bot_profile_change_request(
+        username=username,
+        server_nickname=server_nickname,
+        clear_server_nickname=clear_server_nickname,
+    )
+    if validation_error:
+        return {"ok": False, "error": validation_error}
+
+    result = await apply_bot_profile_updates_async(
+        username=normalized_username,
+        server_nickname=nickname_target,
+        actor_label=f"web admin {actor_email}",
+    )
+    if result.get("ok"):
+        logger.info(
+            "Bot profile update via web admin by %s (username=%s nickname_change=%s)",
+            actor_email,
+            bool(normalized_username),
+            nickname_target is not BOT_SERVER_NICKNAME_UNSET,
+        )
+    return result
+
+
+def run_web_update_bot_profile(
+    username: str | None,
+    server_nickname: str | None,
+    clear_server_nickname: bool,
+    actor_email: str,
+):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet. Try again in a few seconds."}
+
+    future = asyncio.run_coroutine_threadsafe(
+        run_web_update_bot_profile_async(username, server_nickname, clear_server_nickname, actor_email),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_BOT_PROFILE_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while updating bot profile."}
+    except Exception:
+        logger.exception("Unexpected failure while updating bot profile from %s", actor_email)
+        return {"ok": False, "error": "Unexpected error while updating bot profile."}
 
 
 def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
@@ -1065,30 +2044,38 @@ def normalize_release_notes_text(value: str):
 
 
 def load_firmware_seen_ids():
-    if not os.path.exists(FIRMWARE_STATE_FILE):
+    initialized = db_kv_get("firmware_seen_initialized")
+    if initialized != "1":
         return None
-    try:
-        with open(FIRMWARE_STATE_FILE, "r") as f:
-            data = json.load(f)
-        seen_ids = data.get("seen_ids", [])
-        if not isinstance(seen_ids, list):
-            return None
-        return {str(item) for item in seen_ids if item}
-    except Exception:
-        logger.exception("Failed to load firmware state from %s", FIRMWARE_STATE_FILE)
-        return None
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute("SELECT entry_id FROM firmware_seen").fetchall()
+    return {str(row["entry_id"]) for row in rows if row["entry_id"]}
 
 
 def save_firmware_state(seen_ids: set[str], sync_label: str = ""):
-    payload = {
-        "source_url": FIRMWARE_FEED_URL,
-        "updated_at": int(time.time()),
-        "seen_ids": sorted(seen_ids),
-    }
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute("DELETE FROM firmware_seen")
+        for entry_id in sorted(seen_ids):
+            cleaned = str(entry_id or "").strip()
+            if not cleaned:
+                continue
+            conn.execute(
+                """
+                INSERT INTO firmware_seen (entry_id, created_at)
+                VALUES (?, ?)
+                """,
+                (cleaned, now_iso),
+            )
+        conn.commit()
+    db_kv_set("firmware_seen_initialized", "1")
+    db_kv_set("firmware_source_url", FIRMWARE_FEED_URL)
     if sync_label:
-        payload["last_synced"] = sync_label
-    with open(FIRMWARE_STATE_FILE, "w") as f:
-        json.dump(payload, f, indent=2)
+        db_kv_set("firmware_last_synced", sync_label)
+    else:
+        db_kv_delete("firmware_last_synced")
 
 
 def parse_firmware_entries(page_html: str):
@@ -1453,9 +2440,9 @@ def refresh_runtime_settings_from_env(_updated_values=None):
 def refresh_tag_responses_from_web():
     get_tag_responses()
     if schedule_tag_command_refresh():
-        logger.info("Tag responses refreshed from file; slash command refresh scheduled")
+        logger.info("Tag responses refreshed from storage; slash command refresh scheduled")
     else:
-        logger.info("Tag responses refreshed from file; slash command refresh deferred until bot loop is ready")
+        logger.info("Tag responses refreshed from storage; slash command refresh deferred until bot loop is ready")
 
 
 def start_web_admin_server():
@@ -1478,9 +2465,14 @@ def start_web_admin_server():
                 default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
                 on_env_settings_saved=refresh_runtime_settings_from_env,
                 on_tag_responses_saved=refresh_tag_responses_from_web,
+                on_get_tag_responses=run_web_get_tag_responses,
+                on_save_tag_responses=run_web_save_tag_responses,
                 on_bulk_assign_role_csv=run_web_bulk_role_assignment,
                 on_get_discord_catalog=run_web_get_discord_catalog,
+                on_get_command_permissions=run_web_get_command_permissions,
+                on_save_command_permissions=run_web_update_command_permissions,
                 on_get_bot_profile=run_web_get_bot_profile,
+                on_update_bot_profile=run_web_update_bot_profile,
                 on_update_bot_avatar=run_web_update_bot_avatar,
                 on_request_restart=run_web_request_restart,
                 logger=logger,
@@ -1746,6 +2738,9 @@ def build_docs_site_search_message(query: str, site_key: str):
         lines.append("- No matching docs results found.")
     return trim_search_message("\n".join(lines))
 
+# Initialize SQLite storage before any runtime cache is loaded.
+initialize_storage()
+
 # Runtime caches for invite tracking
 invite_roles = load_invite_roles()
 invite_uses = {}
@@ -2003,19 +2998,21 @@ async def on_message(message: discord.Message):
             return
         response = get_tag_responses().get(tag)
         if response:
-            await message.channel.send(response)
+            if can_use_command(message.author, "tag_commands"):
+                await message.channel.send(response)
     await bot.process_commands(message)
 
 
 @bot.command(name="list")
 async def list_commands(ctx: commands.Context):
+    if not await ensure_prefix_command_access(ctx, "list"):
+        return
     await ctx.send(build_command_list())
 
 @tree.command(name="submitrole", description="Submit a role for invite/code linking", guild=discord.Object(id=GUILD_ID))
 async def submitrole(interaction: discord.Interaction):
     logger.info("/submitrole invoked by %s", interaction.user)
-    if not has_allowed_role(interaction.user):
-        await interaction.response.send_message("❌ You do not have permission to use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
 
     await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
@@ -2065,8 +3062,7 @@ async def submitrole(interaction: discord.Interaction):
 )
 async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment):
     logger.info("/bulk_assign_role_csv invoked by %s", interaction.user)
-    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "bulk_assign_role_csv"):
         return
 
     if interaction.guild is None:
@@ -2176,15 +3172,22 @@ class CodeEntryModal(discord.ui.Modal):
 async def enter_role(interaction: discord.Interaction):
     """Prompt the user to enter their code via a modal."""
     logger.info("/enter_role invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "enter_role"):
+        return
     await interaction.response.send_modal(CodeEntryModal())
 
 
 @tree.command(name="getaccess", description="Assign yourself the protected role", guild=discord.Object(id=GUILD_ID))
 async def getaccess(interaction: discord.Interaction):
     logger.info("/getaccess invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "getaccess"):
+        return
     try:
-        with open(ROLE_FILE, "r") as f:
-            role_id = int(f.read().strip())
+        role_id_raw = db_kv_get("access_role_id")
+        if role_id_raw is None and os.path.exists(ROLE_FILE):
+            with open(ROLE_FILE, "r") as f:
+                role_id_raw = f.read().strip()
+        role_id = int(str(role_id_raw).strip())
         role = interaction.guild.get_role(role_id)
         await interaction.user.add_roles(role)
         logger.info("Assigned default role %s to user %s", role.id, interaction.user)
@@ -2200,6 +3203,8 @@ async def getaccess(interaction: discord.Interaction):
 @app_commands.describe(code="2-letter country code (e.g. US, CA, DE)")
 async def country_slash(interaction: discord.Interaction, code: str):
     logger.info("/country invoked by %s with code %s", interaction.user, code)
+    if not await ensure_interaction_command_access(interaction, "country"):
+        return
     normalized = normalize_country_code(code)
     if not normalized:
         await interaction.response.send_message(
@@ -2229,6 +3234,8 @@ async def country_slash(interaction: discord.Interaction, code: str):
 @bot.command(name="country")
 async def country_prefix(ctx: commands.Context, code: str):
     logger.info("!country invoked by %s with code %s", ctx.author, code)
+    if not await ensure_prefix_command_access(ctx, "country"):
+        return
     normalized = normalize_country_code(code)
     if not normalized:
         await ctx.send("❌ Please provide a valid 2-letter country code (A-Z).")
@@ -2248,6 +3255,8 @@ async def country_prefix(ctx: commands.Context, code: str):
 @tree.command(name="clear_country", description="Remove country code suffix from your nickname", guild=discord.Object(id=GUILD_ID))
 async def clear_country_slash(interaction: discord.Interaction):
     logger.info("/clear_country invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "clear_country"):
+        return
     try:
         _, message = await clear_member_country(interaction.user)
         await interaction.response.send_message(message, ephemeral=True)
@@ -2268,6 +3277,8 @@ async def clear_country_slash(interaction: discord.Interaction):
 @bot.command(name="clearcountry")
 async def clear_country_prefix(ctx: commands.Context):
     logger.info("!clearcountry invoked by %s", ctx.author)
+    if not await ensure_prefix_command_access(ctx, "clear_country"):
+        return
     try:
         _, message = await clear_member_country(ctx.author)
         await ctx.send(message)
@@ -2298,8 +3309,7 @@ async def create_role_slash(
     mentionable: bool = False,
 ):
     logger.info("/create_role invoked by %s for role name %s", interaction.user, name)
-    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "create_role"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -2397,8 +3407,7 @@ async def delete_role_slash(
     reason: str | None = None,
 ):
     logger.info("/delete_role invoked by %s for role %s", interaction.user, role)
-    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "delete_role"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -2498,8 +3507,7 @@ async def edit_role_slash(
     reason: str | None = None,
 ):
     logger.info("/edit_role invoked by %s for role %s", interaction.user, role)
-    if not isinstance(interaction.user, discord.Member) or not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "edit_role"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
@@ -2621,8 +3629,7 @@ async def edit_role_slash(
 )
 async def modlog_test_slash(interaction: discord.Interaction):
     logger.info("/modlog_test invoked by %s", interaction.user)
-    if not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "modlog_test"):
         return
 
     sent = await send_moderation_log(
@@ -2650,8 +3657,7 @@ async def modlog_test_slash(interaction: discord.Interaction):
 @bot.command(name="modlogtest")
 async def modlog_test_prefix(ctx: commands.Context):
     logger.info("!modlogtest invoked by %s", ctx.author)
-    if not has_moderator_access(ctx.author):
-        await ctx.send("❌ Only moderators can use this command.")
+    if not await ensure_prefix_command_access(ctx, "modlog_test"):
         return
 
     sent = await send_moderation_log(
@@ -2680,8 +3686,7 @@ async def modlog_test_prefix(ctx: commands.Context):
 @app_commands.describe(member="Member to ban", reason="Reason for ban")
 async def ban_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
     logger.info("/ban_member invoked by %s targeting %s", interaction.user, member)
-    if not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "ban_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
@@ -2745,8 +3750,7 @@ async def ban_member_slash(interaction: discord.Interaction, member: discord.Mem
 @bot.command(name="banmember")
 async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
     logger.info("!banmember invoked by %s targeting %s", ctx.author, member)
-    if not has_moderator_access(ctx.author):
-        await ctx.send("❌ Only moderators can use this command.")
+    if not await ensure_prefix_command_access(ctx, "ban_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
@@ -2812,11 +3816,7 @@ async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, re
 @app_commands.describe(member="Member to kick", reason="Reason for kicking")
 async def kick_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
     logger.info("/kick_member invoked by %s targeting %s", interaction.user, member)
-    if not has_moderator_access(interaction.user):
-        await interaction.response.send_message(
-            "❌ Only moderators can use this command.",
-            ephemeral=True,
-        )
+    if not await ensure_interaction_command_access(interaction, "kick_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
@@ -2892,8 +3892,7 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
 @bot.command(name="kickmember")
 async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
     logger.info("!kickmember invoked by %s targeting %s", ctx.author, member)
-    if not has_moderator_access(ctx.author):
-        await ctx.send("❌ Only moderators can use this command.")
+    if not await ensure_prefix_command_access(ctx, "kick_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
@@ -2977,8 +3976,7 @@ async def timeout_member_slash(
     reason: str | None = None,
 ):
     logger.info("/timeout_member invoked by %s targeting %s for %s", interaction.user, member, duration)
-    if not has_moderator_access(interaction.user):
-        await interaction.response.send_message("❌ Only moderators can use this command.", ephemeral=True)
+    if not await ensure_interaction_command_access(interaction, "timeout_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
@@ -3061,8 +4059,7 @@ async def timeout_member_slash(
 @bot.command(name="timeoutmember")
 async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""):
     logger.info("!timeoutmember invoked by %s targeting %s for %s", ctx.author, member, duration)
-    if not has_moderator_access(ctx.author):
-        await ctx.send("❌ Only moderators can use this command.")
+    if not await ensure_prefix_command_access(ctx, "timeout_member"):
         return
 
     can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
@@ -3136,10 +4133,689 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
     await ctx.send(f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>).")
 
 
+@tree.command(
+    name="untimeout_member",
+    description="Remove timeout from a member",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to remove timeout from", reason="Reason for removing timeout")
+async def untimeout_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+    logger.info("/untimeout_member invoked by %s targeting %s", interaction.user, member)
+    if not await ensure_interaction_command_access(interaction, "untimeout_member"):
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "untimeout_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    timed_out_until = member.timed_out_until
+    if timed_out_until is None or timed_out_until <= discord.utils.utcnow():
+        await interaction.response.send_message("ℹ️ That member is not currently timed out.", ephemeral=True)
+        return
+
+    action_reason = (reason or "").strip() or f"Timeout removed by {interaction.user} via bot"
+    try:
+        await member.timeout(None, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove timeout for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "untimeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Moderate Members` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't remove timeout from that member. Check role hierarchy and `Moderate Members` permission.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to remove timeout for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "untimeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while removing timeout.",
+        )
+        await interaction.response.send_message("❌ Failed to remove timeout. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "untimeout_member",
+        target=member,
+        reason=action_reason,
+        details="Timeout removed successfully.",
+    )
+    await interaction.response.send_message(f"✅ Removed timeout for **{member}**.", ephemeral=True)
+
+
+@bot.command(name="untimeoutmember")
+async def untimeout_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
+    logger.info("!untimeoutmember invoked by %s targeting %s", ctx.author, member)
+    if not await ensure_prefix_command_access(ctx, "untimeout_member"):
+        return
+
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
+    if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "untimeout_member",
+            member,
+            reason.strip() or None,
+            outcome="blocked",
+            details=error_message,
+        )
+        await ctx.send(error_message)
+        return
+
+    timed_out_until = member.timed_out_until
+    if timed_out_until is None or timed_out_until <= discord.utils.utcnow():
+        await ctx.send("ℹ️ That member is not currently timed out.")
+        return
+
+    action_reason = reason.strip() or f"Timeout removed by {ctx.author} via bot"
+    try:
+        await member.timeout(None, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove timeout for member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "untimeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Moderate Members` permission or role hierarchy block.",
+        )
+        await ctx.send(
+            "❌ I can't remove timeout from that member. Check role hierarchy and `Moderate Members` permission."
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to remove timeout for member %s", member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "untimeout_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while removing timeout.",
+        )
+        await ctx.send("❌ Failed to remove timeout. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "untimeout_member",
+        target=member,
+        reason=action_reason,
+        details="Timeout removed successfully.",
+    )
+    await ctx.send(f"✅ Removed timeout for **{member}**.")
+
+
+@tree.command(
+    name="add_role_member",
+    description="Assign a role to a member",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to update", role="Role to add", reason="Reason for role assignment")
+async def add_role_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    role: discord.Role,
+    reason: str | None = None,
+):
+    logger.info("/add_role_member invoked by %s target=%s role=%s", interaction.user, member, role)
+    if not await ensure_interaction_command_access(interaction, "add_role_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Roles` permission to manage member roles.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, member_error = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "add_role_member",
+            target=member,
+            reason=reason,
+            outcome="blocked",
+            details=member_error,
+        )
+        await interaction.response.send_message(member_error, ephemeral=True)
+        return
+
+    can_manage_role, role_error = validate_manageable_role(interaction.user, role, bot_member)
+    if not can_manage_role:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "add_role_member",
+            target=member,
+            reason=reason,
+            outcome="blocked",
+            details=role_error,
+        )
+        await interaction.response.send_message(role_error, ephemeral=True)
+        return
+
+    if role in member.roles:
+        await interaction.response.send_message(
+            f"ℹ️ {member.mention} already has {role.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    action_reason = (reason or "").strip() or f"Role assigned by {interaction.user} via bot"
+    try:
+        await member.add_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to add role %s to member %s", role, member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "add_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't assign that role. Check `Manage Roles` permission and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to add role %s to member %s", role, member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "add_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while assigning role.",
+        )
+        await interaction.response.send_message("❌ Failed to assign role. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "add_role_member",
+        target=member,
+        reason=action_reason,
+        details=f"Assigned role {role.mention} (`{role.id}`).",
+    )
+    await interaction.response.send_message(
+        f"✅ Assigned {role.mention} to {member.mention}.",
+        ephemeral=True,
+    )
+
+
+@bot.command(name="addrolemember")
+async def add_role_member_prefix(ctx: commands.Context, member: discord.Member, role: discord.Role, *, reason: str = ""):
+    logger.info("!addrolemember invoked by %s target=%s role=%s", ctx.author, member, role)
+    if not await ensure_prefix_command_access(ctx, "add_role_member"):
+        return
+    if ctx.guild is None:
+        await ctx.send("❌ This command can only be used in a server.")
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await ctx.send("❌ Could not resolve bot member in this guild.")
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await ctx.send("❌ I need the `Manage Roles` permission to manage member roles.")
+        return
+
+    can_moderate, member_error = validate_moderation_target(ctx.author, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "add_role_member",
+            target=member,
+            reason=reason.strip() or None,
+            outcome="blocked",
+            details=member_error,
+        )
+        await ctx.send(member_error)
+        return
+
+    can_manage_role, role_error = validate_manageable_role(ctx.author, role, bot_member)
+    if not can_manage_role:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "add_role_member",
+            target=member,
+            reason=reason.strip() or None,
+            outcome="blocked",
+            details=role_error,
+        )
+        await ctx.send(role_error)
+        return
+
+    if role in member.roles:
+        await ctx.send(f"ℹ️ {member} already has {role}.")
+        return
+
+    action_reason = reason.strip() or f"Role assigned by {ctx.author} via bot"
+    try:
+        await member.add_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to add role %s to member %s", role, member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "add_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await ctx.send("❌ I can't assign that role. Check `Manage Roles` permission and role hierarchy.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to add role %s to member %s", role, member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "add_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while assigning role.",
+        )
+        await ctx.send("❌ Failed to assign role. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "add_role_member",
+        target=member,
+        reason=action_reason,
+        details=f"Assigned role {role.mention} (`{role.id}`).",
+    )
+    await ctx.send(f"✅ Assigned {role.mention} to {member.mention}.")
+
+
+@tree.command(
+    name="remove_role_member",
+    description="Remove a role from a member",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(member="Member to update", role="Role to remove", reason="Reason for role removal")
+async def remove_role_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    role: discord.Role,
+    reason: str | None = None,
+):
+    logger.info("/remove_role_member invoked by %s target=%s role=%s", interaction.user, member, role)
+    if not await ensure_interaction_command_access(interaction, "remove_role_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Roles` permission to manage member roles.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, member_error = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "remove_role_member",
+            target=member,
+            reason=reason,
+            outcome="blocked",
+            details=member_error,
+        )
+        await interaction.response.send_message(member_error, ephemeral=True)
+        return
+
+    can_manage_role, role_error = validate_manageable_role(interaction.user, role, bot_member)
+    if not can_manage_role:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "remove_role_member",
+            target=member,
+            reason=reason,
+            outcome="blocked",
+            details=role_error,
+        )
+        await interaction.response.send_message(role_error, ephemeral=True)
+        return
+
+    if role not in member.roles:
+        await interaction.response.send_message(
+            f"ℹ️ {member.mention} does not currently have {role.mention}.",
+            ephemeral=True,
+        )
+        return
+
+    action_reason = (reason or "").strip() or f"Role removed by {interaction.user} via bot"
+    try:
+        await member.remove_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove role %s from member %s", role, member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "remove_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't remove that role. Check `Manage Roles` permission and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to remove role %s from member %s", role, member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "remove_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while removing role.",
+        )
+        await interaction.response.send_message("❌ Failed to remove role. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "remove_role_member",
+        target=member,
+        reason=action_reason,
+        details=f"Removed role {role.mention} (`{role.id}`).",
+    )
+    await interaction.response.send_message(
+        f"✅ Removed {role.mention} from {member.mention}.",
+        ephemeral=True,
+    )
+
+
+@bot.command(name="removerolemember")
+async def remove_role_member_prefix(
+    ctx: commands.Context,
+    member: discord.Member,
+    role: discord.Role,
+    *,
+    reason: str = "",
+):
+    logger.info("!removerolemember invoked by %s target=%s role=%s", ctx.author, member, role)
+    if not await ensure_prefix_command_access(ctx, "remove_role_member"):
+        return
+    if ctx.guild is None:
+        await ctx.send("❌ This command can only be used in a server.")
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        await ctx.send("❌ Could not resolve bot member in this guild.")
+        return
+    if not bot_member.guild_permissions.manage_roles:
+        await ctx.send("❌ I need the `Manage Roles` permission to manage member roles.")
+        return
+
+    can_moderate, member_error = validate_moderation_target(ctx.author, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "remove_role_member",
+            target=member,
+            reason=reason.strip() or None,
+            outcome="blocked",
+            details=member_error,
+        )
+        await ctx.send(member_error)
+        return
+
+    can_manage_role, role_error = validate_manageable_role(ctx.author, role, bot_member)
+    if not can_manage_role:
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "remove_role_member",
+            target=member,
+            reason=reason.strip() or None,
+            outcome="blocked",
+            details=role_error,
+        )
+        await ctx.send(role_error)
+        return
+
+    if role not in member.roles:
+        await ctx.send(f"ℹ️ {member} does not currently have {role}.")
+        return
+
+    action_reason = reason.strip() or f"Role removed by {ctx.author} via bot"
+    try:
+        await member.remove_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove role %s from member %s", role, member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "remove_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        await ctx.send("❌ I can't remove that role. Check `Manage Roles` permission and role hierarchy.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to remove role %s from member %s", role, member)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "remove_role_member",
+            target=member,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while removing role.",
+        )
+        await ctx.send("❌ Failed to remove role. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "remove_role_member",
+        target=member,
+        reason=action_reason,
+        details=f"Removed role {role.mention} (`{role.id}`).",
+    )
+    await ctx.send(f"✅ Removed {role.mention} from {member.mention}.")
+
+
+@tree.command(
+    name="unban_member",
+    description="Unban a user by ID",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(user_id="User ID to unban", reason="Reason for unban")
+async def unban_member_slash(interaction: discord.Interaction, user_id: str, reason: str | None = None):
+    logger.info("/unban_member invoked by %s target=%s", interaction.user, user_id)
+    if not await ensure_interaction_command_access(interaction, "unban_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    target_user_id = parse_user_id_input(user_id)
+    if target_user_id is None:
+        await interaction.response.send_message("❌ Invalid user ID.", ephemeral=True)
+        return
+
+    action_reason = (reason or "").strip() or f"Unbanned by {interaction.user} via bot"
+    try:
+        await interaction.guild.unban(discord.Object(id=target_user_id), reason=action_reason)
+    except discord.NotFound:
+        await interaction.response.send_message(
+            f"❌ User `{target_user_id}` is not currently banned.",
+            ephemeral=True,
+        )
+        return
+    except discord.Forbidden:
+        logger.exception("Missing permission to unban user %s", target_user_id)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "unban_member",
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Ban Members` permission.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't unban users. Check `Ban Members` permission.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to unban user %s", target_user_id)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "unban_member",
+            reason=action_reason,
+            outcome="failed",
+            details=f"Discord API error while unbanning user `{target_user_id}`.",
+        )
+        await interaction.response.send_message("❌ Failed to unban that user. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "unban_member",
+        reason=action_reason,
+        details=f"Unbanned user ID `{target_user_id}`.",
+    )
+    await interaction.response.send_message(f"✅ Unbanned user ID `{target_user_id}`.", ephemeral=True)
+
+
+@bot.command(name="unbanmember")
+async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: str = ""):
+    logger.info("!unbanmember invoked by %s target=%s", ctx.author, user_id)
+    if not await ensure_prefix_command_access(ctx, "unban_member"):
+        return
+    if ctx.guild is None:
+        await ctx.send("❌ This command can only be used in a server.")
+        return
+
+    target_user_id = parse_user_id_input(user_id)
+    if target_user_id is None:
+        await ctx.send("❌ Invalid user ID.")
+        return
+
+    action_reason = reason.strip() or f"Unbanned by {ctx.author} via bot"
+    try:
+        await ctx.guild.unban(discord.Object(id=target_user_id), reason=action_reason)
+    except discord.NotFound:
+        await ctx.send(f"❌ User `{target_user_id}` is not currently banned.")
+        return
+    except discord.Forbidden:
+        logger.exception("Missing permission to unban user %s", target_user_id)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "unban_member",
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Ban Members` permission.",
+        )
+        await ctx.send("❌ I can't unban users. Check `Ban Members` permission.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to unban user %s", target_user_id)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "unban_member",
+            reason=action_reason,
+            outcome="failed",
+            details=f"Discord API error while unbanning user `{target_user_id}`.",
+        )
+        await ctx.send("❌ Failed to unban that user. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "unban_member",
+        reason=action_reason,
+        details=f"Unbanned user ID `{target_user_id}`.",
+    )
+    await ctx.send(f"✅ Unbanned user ID `{target_user_id}`.")
+
+
 @tree.command(name="search", description="Search GL.iNet forum and docs", guild=discord.Object(id=GUILD_ID))
 @app_commands.describe(query="Enter search keywords")
 async def search_slash(interaction: discord.Interaction, query: str):
     logger.info("/search invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3152,6 +4828,8 @@ async def search_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="search")
 async def search_prefix(ctx: commands.Context, *, query: str):
     logger.info("!search invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
@@ -3165,6 +4843,8 @@ async def search_prefix(ctx: commands.Context, *, query: str):
 @app_commands.describe(query="Enter search keywords")
 async def search_forum_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_forum invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_forum"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3177,6 +4857,8 @@ async def search_forum_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="searchforum")
 async def search_forum_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchforum invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_forum"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
@@ -3190,6 +4872,8 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
 @app_commands.describe(query="Enter search keywords")
 async def search_kvm_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_kvm invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_kvm"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3202,6 +4886,8 @@ async def search_kvm_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="searchkvm")
 async def search_kvm_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchkvm invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_kvm"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
@@ -3215,6 +4901,8 @@ async def search_kvm_prefix(ctx: commands.Context, *, query: str):
 @app_commands.describe(query="Enter search keywords")
 async def search_iot_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_iot invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_iot"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3227,6 +4915,8 @@ async def search_iot_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="searchiot")
 async def search_iot_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchiot invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_iot"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")
@@ -3240,6 +4930,8 @@ async def search_iot_prefix(ctx: commands.Context, *, query: str):
 @app_commands.describe(query="Enter search keywords")
 async def search_router_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_router invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_router"):
+        return
     query = query.strip()
     if not query:
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
@@ -3252,6 +4944,8 @@ async def search_router_slash(interaction: discord.Interaction, query: str):
 @bot.command(name="searchrouter")
 async def search_router_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchrouter invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_router"):
+        return
     query = query.strip()
     if not query:
         await ctx.send("❌ Please provide a search query.")

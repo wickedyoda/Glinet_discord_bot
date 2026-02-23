@@ -4,8 +4,9 @@ Discord bot for GL.iNet community operations:
 - Role-bound invite links and 6-digit access codes
 - Search across GL.iNet forum/docs
 - Country code nickname suffix (` - CC`)
-- Moderator actions (ban, kick+prune, timeout)
+- Moderator actions (ban, unban, kick+prune, timeout, role/member management)
 - Moderation + server event logging to a dedicated logs channel
+- SQLite-backed persistent storage (WAL mode) for runtime data
 
 ## Wiki
 
@@ -27,7 +28,7 @@ Discord bot for GL.iNet community operations:
   - Returns a downloadable detailed report file
 
 2. Tag Auto-Replies
-- Message-based tags from `data/tag_responses.json` (example: `!betatest`).
+- Message-based tags from persistent storage (example: `!betatest`).
 - Tags are also exposed as slash commands at startup (dynamic registration).
 - `!list` shows available tag commands.
 
@@ -51,8 +52,12 @@ Discord bot for GL.iNet community operations:
 - `/edit_role`
 - `/delete_role`
 - `/ban_member`, `!banmember`
+- `/unban_member`, `!unbanmember`
 - `/kick_member`, `!kickmember` (includes message prune window, default 72h)
 - `/timeout_member`, `!timeoutmember` (durations like `30m`, `2h`, `1d`)
+- `/untimeout_member`, `!untimeoutmember`
+- `/add_role_member`, `!addrolemember`
+- `/remove_role_member`, `!removerolemember`
 - `/modlog_test`, `!modlogtest` to verify logs channel delivery
 
 6. Logging
@@ -88,6 +93,8 @@ Discord bot for GL.iNet community operations:
 - Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
 - Admin can manage:
   - Bot environment settings (channels, firmware schedule, logging/mod settings, etc.)
+  - Per-command access rules (default/public/custom roles) in web GUI
+  - Bot profile identity (username + server nickname) and avatar
   - GitHub wiki docs link from the web header
   - Admin restart button in the web header (with confirmation)
   - Live Discord channel/role dropdowns (polled from guild) for channel/role settings
@@ -116,8 +123,12 @@ Discord bot for GL.iNet community operations:
 | `/edit_role` | N/A | Moderator role IDs only (see env vars) |
 | `/delete_role` | N/A | Moderator role IDs only (see env vars) |
 | `/ban_member` | `!banmember` | Moderator role IDs only (see env vars) |
+| `/unban_member` | `!unbanmember` | Moderator role IDs only (see env vars) |
 | `/kick_member` | `!kickmember` | Moderator role IDs only (see env vars) |
 | `/timeout_member` | `!timeoutmember` | Moderator role IDs only (see env vars) |
+| `/untimeout_member` | `!untimeoutmember` | Moderator role IDs only (see env vars) |
+| `/add_role_member` | `!addrolemember` | Moderator role IDs only (see env vars) |
+| `/remove_role_member` | `!removerolemember` | Moderator role IDs only (see env vars) |
 | `/modlog_test` | `!modlogtest` | Moderator role IDs only (see env vars) |
 
 ## Environment Variables
@@ -259,13 +270,19 @@ Bot permissions:
 ## Data Files
 
 Stored under `data/` (or `DATA_DIR`):
+- `bot_data.db` (primary SQLite database)
+- `bot.log`
+
+Legacy files are auto-migrated into SQLite on startup if present:
 - `access_role.txt`
 - `role_codes.txt`
 - `invite_roles.json`
 - `tag_responses.json`
-- `bot.log`
 - `firmware_seen.json`
 - `web_users.json`
+- `command_permissions.json`
+
+Migration is merge-only: existing SQLite rows are not overwritten.
 
 ## Security
 

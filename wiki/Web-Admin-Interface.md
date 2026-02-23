@@ -24,14 +24,18 @@ Password-protected admin UI for runtime bot management.
   - Environment-backed settings editor
   - Channel dropdowns for channel fields
   - Role dropdowns for role fields
+- `/admin/command-permissions`
+  - Configure per-command access mode
+  - Default/public/custom role permission support
 - `/admin/tag-responses`
-  - Edit JSON tag map and refresh runtime tag commands
+  - Edit tag map and refresh runtime tag commands
 - `/admin/bulk-role-csv`
   - Upload CSV and run bulk role assignment
 - `/admin/users`
   - Create/delete users and promote/demote admin status
 - `/admin/bot-profile`
   - View bot identity
+  - Update bot username and server nickname (admin-only)
   - Upload bot avatar image
 
 ## Discord Catalog Dropdowns

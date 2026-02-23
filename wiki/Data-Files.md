@@ -1,8 +1,15 @@
 # Data Files
 
-Persistent runtime files are stored under `DATA_DIR` (default `data/`).
+Persistent runtime data is stored under `DATA_DIR` (default `data/`).
 
 ## Files
+
+- `bot_data.db` (primary SQLite database)
+- `bot.log`
+
+## Legacy Migration
+
+If these legacy files exist, they are migrated into SQLite at startup:
 
 - `access_role.txt`
 - `role_codes.txt`
@@ -10,7 +17,9 @@ Persistent runtime files are stored under `DATA_DIR` (default `data/`).
 - `tag_responses.json`
 - `firmware_seen.json`
 - `web_users.json`
-- `bot.log`
+- `command_permissions.json`
+
+Migration is merge-only: existing SQLite records remain unchanged.
 
 ## Purpose
 
@@ -18,4 +27,5 @@ Persistent runtime files are stored under `DATA_DIR` (default `data/`).
 - Tag response map
 - Firmware seen-entry cache
 - Web admin user accounts
+- Command permission policy overrides
 - Runtime logging output
