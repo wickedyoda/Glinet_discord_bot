@@ -1,378 +1,101 @@
 # Discord Invite + Utility Bot
 
 <p align="center">
-  <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="200" />
+  <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
+  <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Logo (Full)" width="240" />
 </p>
 
+Discord bot for GL.iNet community operations with invite/code role access, moderation tools, search helpers, firmware monitoring, and a secured web admin GUI.
 
-Discord bot for GL.iNet community operations:
-- Role-bound invite links and 6-digit access codes
-- Search across GL.iNet forum/docs
-- Country code nickname suffix (` - CC`)
-- Moderator actions (ban, unban, kick+prune, timeout, role/member management)
-- Moderation + server event logging to a dedicated logs channel
-- SQLite-backed persistent storage (WAL mode) for runtime data
+## Documentation
 
-## Wiki
+Detailed feature behavior, deployment options, environment variables, proxy variations, and security guidance are maintained in the wiki.
 
-- Start here: [`wiki/Home.md`](./wiki/Home.md)
-- Feature pages and operational docs live under [`wiki/`](./wiki/)
-- Reverse proxy guide for web GUI: [`wiki/Reverse-Proxy-Web-GUI.md`](./wiki/Reverse-Proxy-Web-GUI.md)
-- Public landing URL: [http://discord.glinet.wickedyoda.com/](http://discord.glinet.wickedyoda.com/)
-- Public wiki URL: [http://discord.glinet.wickedyoda.com/wiki](http://discord.glinet.wickedyoda.com/wiki)
-- Direct GitHub wiki URL: [https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md](https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md)
+- Wiki home: [`wiki/Home.md`](./wiki/Home.md)
+- GitHub wiki page: [https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md](https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md)
+- Public repo landing redirect target: [http://discord.glinet.wickedyoda.com/](http://discord.glinet.wickedyoda.com/)
+- Public wiki redirect target: [http://discord.glinet.wickedyoda.com/wiki](http://discord.glinet.wickedyoda.com/wiki)
 
-## Features
+## Quick Start (Docker)
 
-1. Role Invite/Code Access
-- `/submitrole` generates:
-  - Permanent invite link
-  - 6-digit code
-- Members joining via invite or entering code with `/enter_role` get the mapped role.
-- `/getaccess` gives a default configured role.
-- `/bulk_assign_role_csv` (moderators):
-  - Takes a target role parameter
-  - Takes a `.csv` attachment of Discord names (comma-separated or one-per-line)
-  - Bulk-assigns that role and reports missing/ambiguous members and assignment errors
-  - Returns a downloadable detailed report file
+1. Copy env template:
 
-2. Tag Auto-Replies
-- Message-based tags from persistent storage (example: `!betatest`).
-- Tags are also exposed as slash commands at startup (dynamic registration).
-- `!list` shows available tag commands.
+```bash
+cp .env.example .env
+```
 
-3. Search Commands
-- Combined:
-  - `/search`
-  - `!search`
-- Source-specific:
-  - Forum: `/search_forum`, `!searchforum`
-  - KVM docs: `/search_kvm`, `!searchkvm`
-  - IoT docs: `/search_iot`, `!searchiot`
-  - Router docs v4: `/search_router`, `!searchrouter`
+2. Set required values in `.env`:
 
-4. Country Nickname
-- Set: `/country US` or `!country US`
-- Clear: `/clear_country` or `!clearcountry`
-- Format is always: `display_name - CC` (uppercase country code).
-
-5. Moderator Commands (ID-restricted)
-- `/create_role`
-- `/edit_role`
-- `/delete_role`
-- `/ban_member`, `!banmember`
-- `/unban_member`, `!unbanmember`
-- `/kick_member`, `!kickmember` (includes message prune window, default 72h)
-- `/timeout_member`, `!timeoutmember` (durations like `30m`, `2h`, `1d`)
-- `/untimeout_member`, `!untimeoutmember`
-- `/add_role_member`, `!addrolemember`
-- `/remove_role_member`, `!removerolemember`
-- `/modlog_test`, `!modlogtest` to verify logs channel delivery
-- `/logs` to view recent container error logs (moderator-only, ephemeral)
-
-6. Logging
-- Moderation actions are logged to `MOD_LOG_CHANNEL_ID`.
-- Additional server events logged to same channel:
-  - Message deletions (single + bulk)
-  - Username/global name changes
-  - Avatar changes
-  - Member joins/leaves
-  - Invite creation
-  - Channel/category create/delete
-  - Role creation
-  - Role add/remove on members
-
-7. Firmware Mirror Monitor
-- Polls `https://gl-fw.remotetohome.io/` (or custom URL) on a schedule.
-- Detects newly added firmware rows by model/track/version/files.
-- Posts a notification to `firmware_notification_channel` with:
-  - Model, track, version, date
-  - Download links + SHA256
-  - Release notes excerpt
-- Uses SQLite-backed firmware state in `data/bot_data.db` to persist seen entries across restarts.
-- Legacy `firmware_seen.json` is imported on boot (merge-only; existing DB state is preserved).
-
-8. Web Admin Interface
-- Built-in password-protected web panel for bot management.
-- Login uses email + password.
-- There is no Discord `/login` or `!login` command for creating web users.
-- Password policy is enforced for created/updated users:
-  - Minimum 6 characters, maximum 16 characters
-  - At least 2 numbers
-  - At least 1 uppercase letter
-  - At least 1 symbol
-- No self-signup route; users can only be created by an admin.
-- Supports multiple users (admin and non-admin accounts).
-- On first boot (when no users exist), `WEB_ADMIN_DEFAULT_PASSWORD` must satisfy password policy; startup does not use insecure fallback passwords.
-- Password changes are forced every 90 days for all web users.
-- Users can self-manage account details in **My Account**:
-  - Change password
-  - Change email (with current-password verification)
-  - Update first name, last name, and display name
-- Header identity uses stored display name while keeping email visible.
-- Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
-- Auto-logout timeout is configurable in web settings (`WEB_SESSION_TIMEOUT_MINUTES`) with allowed values 5, 10, 15, 20, 25, or 30 minutes.
-- Login page includes optional "Keep me signed in" for 5 days on the current device.
-- Non-remembered logins continue to expire based on inactivity timeout.
-- Security controls include:
-  - CSRF token enforcement on state-changing web requests
-  - Same-origin POST policy checks
-  - Secure session cookie support for HTTPS proxy deployments
-  - Automatic password-hash upgrades on successful login
-  - Best-effort restrictive file permissions for `.env` and SQLite data
-- Admin can manage:
-  - Dashboard quick-action cards with direct buttons to all web-admin tools
-  - Light/Black theme toggle in the web header (persisted in browser local storage)
-  - Bot environment settings (channels, firmware schedule, logging/mod settings, etc.)
-  - Per-command access rules (default/public/custom roles) in web GUI
-  - Multi-role command restrictions using Discord role-name dropdowns (with multi-select)
-  - Bot profile identity (username + server nickname) and avatar
-  - GitHub wiki docs link from the web header
-  - Admin restart button in the web header (with confirmation)
-  - Live Discord channel/role dropdowns (polled from guild) for channel/role settings
-  - Tag response mappings (saved changes refresh tag slash commands without container reload)
-  - Bulk role assignment from uploaded CSV (with missing/error report)
-  - Web users (create/delete, admin toggle, password reset, and capture first/last/display names)
-
-## Command Reference
-
-| Slash Command | Prefix Command | Access |
-|---|---|---|
-| `/submitrole` | N/A | `Employee`, `Admin`, `Gl.iNet Moderator` role names |
-| `/bulk_assign_role_csv` | N/A | Moderator role IDs only (see env vars) |
-| `/enter_role` | N/A | Any member |
-| `/getaccess` | N/A | Any member |
-| Dynamic tag commands (from persistent storage) | Tag text (e.g. `!betatest`) | Any member |
-| N/A | `!list` | Any member |
-| `/search` | `!search` | Any member |
-| `/search_forum` | `!searchforum` | Any member |
-| `/search_kvm` | `!searchkvm` | Any member |
-| `/search_iot` | `!searchiot` | Any member |
-| `/search_router` | `!searchrouter` | Any member |
-| `/country` | `!country` | Any member |
-| `/clear_country` | `!clearcountry` | Any member |
-| `/create_role` | N/A | Moderator role IDs only (see env vars) |
-| `/edit_role` | N/A | Moderator role IDs only (see env vars) |
-| `/delete_role` | N/A | Moderator role IDs only (see env vars) |
-| `/ban_member` | `!banmember` | Moderator role IDs only (see env vars) |
-| `/unban_member` | `!unbanmember` | Moderator role IDs only (see env vars) |
-| `/kick_member` | `!kickmember` | Moderator role IDs only (see env vars) |
-| `/timeout_member` | `!timeoutmember` | Moderator role IDs only (see env vars) |
-| `/untimeout_member` | `!untimeoutmember` | Moderator role IDs only (see env vars) |
-| `/add_role_member` | `!addrolemember` | Moderator role IDs only (see env vars) |
-| `/remove_role_member` | `!removerolemember` | Moderator role IDs only (see env vars) |
-| `/modlog_test` | `!modlogtest` | Moderator role IDs only (see env vars) |
-| `/logs` | N/A | Moderator role IDs only (see env vars) |
-
-## Environment Variables
-
-Required:
 - `DISCORD_TOKEN`
 - `GUILD_ID`
+- `WEB_ADMIN_DEFAULT_PASSWORD` (required when no web users exist yet)
 
-Optional:
-- `GENERAL_CHANNEL_ID` (used for invite generation; defaults to command channel)
-- `DATA_DIR` (default `data`)
-- `LOG_DIR` (default `/logs`, directory for `bot.log` and `container_errors.log`)
-- `LOG_LEVEL` (default `INFO`)
-- `CONTAINER_LOG_LEVEL` (default `ERROR`, level used for container-wide error log capture)
-- `FORUM_BASE_URL` (default `https://forum.gl-inet.com`)
-- `FORUM_MAX_RESULTS` (default `5`)
-- `DOCS_MAX_RESULTS_PER_SITE` (default `2`)
-- `DOCS_INDEX_TTL_SECONDS` (default `3600`)
-- `SEARCH_RESPONSE_MAX_CHARS` (default `1900`)
-- `KICK_PRUNE_HOURS` (default `72`)
-- `MODERATOR_ROLE_ID` (default `1294957416294645771`)
-- `ADMIN_ROLE_ID` (default `1138302148292116551`)
-- `MOD_LOG_CHANNEL_ID` (default `1311820410269995009`)
-- `CSV_ROLE_ASSIGN_MAX_NAMES` (default `500`)
-- `firmware_notification_channel` (required to enable firmware alerts; channel ID or `<#channel>` mention)
-- `FIRMWARE_FEED_URL` (default `https://gl-fw.remotetohome.io/`)
-- `firmware_check_schedule` (cron, 5-field, UTC; default `*/30 * * * *`)
-- `FIRMWARE_REQUEST_TIMEOUT_SECONDS` (default `30`)
-- `FIRMWARE_RELEASE_NOTES_MAX_CHARS` (default `900`)
-- `WEB_ENABLED` (default `true`)
-- `WEB_BIND_HOST` (default `127.0.0.1` for local non-container runs)
-- `WEB_PORT` (default `8080`, internal container port)
-- `WEB_HOST_PORT` (default `8080`, host mapping used by docker-compose)
-- `WEB_SESSION_TIMEOUT_MINUTES` (default `5`, web GUI auto-logout timeout in minutes; allowed: `5,10,15,20,25,30`)
-- `WEB_PUBLIC_BASE_URL` (optional public URL for reverse-proxy deployments; used for same-origin validation, example: `https://discord-admin.example.com/`)
-- `WEB_RESTART_ENABLED` (default `true`, enables/disables admin restart button in web header)
-- `WEB_GITHUB_WIKI_URL` (default `http://discord.glinet.wickedyoda.com/wiki`, external docs link in web header)
-- `WEB_DISCORD_CATALOG_TTL_SECONDS` (default `120`, cache TTL for polled channel/role dropdown data)
-- `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS` (default `20`, timeout for Discord channel/role catalog fetch)
-- `WEB_BULK_ASSIGN_TIMEOUT_SECONDS` (default `300`, timeout for web CSV role assignment execution)
-- `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES` (default `2097152`, max CSV upload size in bytes for web bulk assignment)
-- `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT` (default `50`, max items shown per section in web bulk-assignment details)
-- `WEB_BOT_PROFILE_TIMEOUT_SECONDS` (default `20`, timeout for loading/updating bot profile actions from web UI)
-- `WEB_AVATAR_MAX_UPLOAD_BYTES` (default `2097152`, max avatar upload size in bytes for bot profile uploads)
-- `WEB_ENV_FILE` (default `.env`)
-- `WEB_ADMIN_DEFAULT_USERNAME` (default admin email used on first run)
-- `WEB_ADMIN_DEFAULT_PASSWORD` (default admin password used on first run; must satisfy password policy)
-- `WEB_ADMIN_SESSION_SECRET` (optional explicit session signing secret)
-- `WEB_SESSION_COOKIE_SECURE` (default `true`, requires HTTPS for session cookies; set `false` only for local HTTP testing)
-- `WEB_TRUST_PROXY_HEADERS` (default `true`, trust forwarded host/proto/IP headers from a trusted reverse proxy)
-- `WEB_ENFORCE_CSRF` (default `true`, enforce CSRF token validation for state-changing requests)
-- `WEB_ENFORCE_SAME_ORIGIN_POSTS` (default `true`, require same-origin POST/PUT/PATCH/DELETE requests)
-- `WEB_HARDEN_FILE_PERMISSIONS` (default `true`, attempt restrictive permissions for `.env`, `data/`, and SQLite files)
+3. Start:
 
-Example `.env`:
-```env
-DISCORD_TOKEN=your_bot_token
-GUILD_ID=your_guild_id
-GENERAL_CHANNEL_ID=your_general_channel_id
-LOG_DIR=/logs
-LOG_LEVEL=INFO
-CONTAINER_LOG_LEVEL=ERROR
-FORUM_BASE_URL=https://forum.gl-inet.com
-FORUM_MAX_RESULTS=5
-DOCS_MAX_RESULTS_PER_SITE=2
-DOCS_INDEX_TTL_SECONDS=3600
-SEARCH_RESPONSE_MAX_CHARS=1900
-KICK_PRUNE_HOURS=72
-MODERATOR_ROLE_ID=1294957416294645771
-ADMIN_ROLE_ID=1138302148292116551
-MOD_LOG_CHANNEL_ID=1311820410269995009
-CSV_ROLE_ASSIGN_MAX_NAMES=500
-firmware_notification_channel=123456789012345678
-FIRMWARE_FEED_URL=https://gl-fw.remotetohome.io/
-firmware_check_schedule=*/30 * * * *
-FIRMWARE_REQUEST_TIMEOUT_SECONDS=30
-FIRMWARE_RELEASE_NOTES_MAX_CHARS=900
-WEB_ENABLED=true
-WEB_BIND_HOST=0.0.0.0
-WEB_PORT=8080
-WEB_HOST_PORT=8080
-WEB_SESSION_TIMEOUT_MINUTES=5
-WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/
-WEB_RESTART_ENABLED=true
-WEB_GITHUB_WIKI_URL=http://discord.glinet.wickedyoda.com/wiki
-WEB_DISCORD_CATALOG_TTL_SECONDS=120
-WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS=20
-WEB_BULK_ASSIGN_TIMEOUT_SECONDS=300
-WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES=2097152
-WEB_BULK_ASSIGN_REPORT_LIST_LIMIT=50
-WEB_BOT_PROFILE_TIMEOUT_SECONDS=20
-WEB_AVATAR_MAX_UPLOAD_BYTES=2097152
-WEB_ENV_FILE=.env
-WEB_ADMIN_DEFAULT_USERNAME=admin@example.com
-WEB_ADMIN_DEFAULT_PASSWORD=use_a_strong_unique_password
-WEB_ADMIN_SESSION_SECRET=replace_with_random_secret
-WEB_SESSION_COOKIE_SECURE=true
-WEB_TRUST_PROXY_HEADERS=true
-WEB_ENFORCE_CSRF=true
-WEB_ENFORCE_SAME_ORIGIN_POSTS=true
-WEB_HARDEN_FILE_PERMISSIONS=true
-```
-
-## Docker
-
-Repository `docker-compose.yml`:
-```yaml
-services:
-  discord_invite_bot:
-    build:
-      context: .
-    container_name: discord_role_bot
-    env_file:
-      - .env
-    environment:
-      - WEB_BIND_HOST=0.0.0.0
-      - WEB_ENABLED=${WEB_ENABLED:-true}
-      - WEB_PORT=${WEB_PORT:-8080}
-      - LOG_DIR=${LOG_DIR:-/logs}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - CONTAINER_LOG_LEVEL=${CONTAINER_LOG_LEVEL:-ERROR}
-      - WEB_PUBLIC_BASE_URL=${WEB_PUBLIC_BASE_URL:-}
-      - WEB_TRUST_PROXY_HEADERS=${WEB_TRUST_PROXY_HEADERS:-true}
-      - WEB_SESSION_COOKIE_SECURE=${WEB_SESSION_COOKIE_SECURE:-true}
-      - WEB_ENFORCE_CSRF=${WEB_ENFORCE_CSRF:-true}
-      - WEB_ENFORCE_SAME_ORIGIN_POSTS=${WEB_ENFORCE_SAME_ORIGIN_POSTS:-true}
-    ports:
-      - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
-    volumes:
-      - ./data:/app/data
-      - ./logs:/logs
-      - ./.env:/app/.env
-    restart: unless-stopped
-```
-
-Run:
 ```bash
 docker compose up -d --build
 ```
 
-View logs:
-```bash
-docker logs -f discord_role_bot
+4. Open web admin:
+
+```text
+http://localhost:8080
 ```
 
-Open web admin:
-```bash
-http://localhost:${WEB_HOST_PORT:-8080}
-```
+## What It Includes
 
-Security note:
-- Default compose mapping binds the web admin UI to localhost only.
-- To expose it externally, intentionally change the port mapping and place it behind HTTPS/reverse-proxy auth.
+- Role access via invite links and 6-digit access codes
+- Bulk CSV role assignment
+- Dynamic tag responses (`!tag` + slash variants)
+- GL.iNet forum/docs search commands
+- Country nickname suffix commands
+- Extended moderation commands and event logging
+- Firmware monitor (baseline + delta notifications)
+- Web admin GUI (user management, command permissions, bot profile, settings)
+- SQLite persistence with legacy merge import on startup
 
-## Discord Requirements
+## Where To Find Details
 
-Bot intents:
-- Message Content Intent
-- Server Members Intent
+- Full command list and role restrictions: [`wiki/Command-Reference.md`](./wiki/Command-Reference.md)
+- Web admin pages and workflows: [`wiki/Web-Admin-Interface.md`](./wiki/Web-Admin-Interface.md)
+- Environment variables (complete): [`wiki/Environment-Variables.md`](./wiki/Environment-Variables.md)
+- Docker and Portainer deployment variants: [`wiki/Docker-and-Portainer-Deploy.md`](./wiki/Docker-and-Portainer-Deploy.md)
+- Reverse proxy setups (Nginx, Caddy, Traefik, Apache, HAProxy): [`wiki/Reverse-Proxy-Web-GUI.md`](./wiki/Reverse-Proxy-Web-GUI.md)
+- Security controls and hardening checklist: [`wiki/Security-Hardening.md`](./wiki/Security-Hardening.md)
+- Data and log file layout: [`wiki/Data-Files.md`](./wiki/Data-Files.md)
 
-Bot permissions:
-- View Channels
-- Send Messages
-- Read Message History
-- Use Application Commands
-- Manage Roles
-- Create Instant Invite
-- Manage Guild (for invite tracking behavior)
-- Manage Messages (for prune + deletion visibility)
-- Kick Members
-- Ban Members
-- Moderate Members
+## Runtime Data and Logs
 
-## Data Files
+- Primary DB: `${DATA_DIR}/bot_data.db`
+- App log: `${LOG_DIR}/bot.log`
+- Error log used by `/logs`: `${LOG_DIR}/container_errors.log`
 
-Stored under data + log paths:
-- `bot_data.db` (primary SQLite database)
-- `${LOG_DIR}/bot.log` (default `/logs/bot.log`)
-- `${LOG_DIR}/container_errors.log` (default `/logs/container_errors.log`, used by `/logs`)
+Defaults:
 
-Legacy files are auto-migrated into SQLite on startup if present:
-- `access_role.txt`
-- `role_codes.txt`
-- `invite_roles.json`
-- `tag_responses.json`
-- `firmware_seen.json`
-- `web_users.json`
-- `command_permissions.json`
-
-Migration is merge-only: existing SQLite rows are not overwritten.
+- `DATA_DIR=data`
+- `LOG_DIR=/logs`
 
 ## Security
 
-- Never commit `.env`.
-- Rotate credentials immediately if exposed.
-- Vulnerability reporting process: [`SECURITY.md`](./SECURITY.md)
-- Discord developer requirements reference: [Discord Developer Terms of Service](https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service)
-- Web/bot hardening actions implemented in this project: [`wiki/Security-Hardening.md`](./wiki/Security-Hardening.md)
-
-## License
-
-This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
-See [`LICENSE`](./LICENSE) for the full text.
-Additional rights/policy summary: [`LICENSE.md`](./LICENSE.md)
+- No public web signup; web users are admin-created.
+- Password policy and 90-day password rotation are enforced.
+- CSRF and session hardening are enabled by default.
+- Deployment hardening guidance: [`wiki/Security-Hardening.md`](./wiki/Security-Hardening.md)
+- Discord developer terms: [https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service](https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service)
 
 ## Contributing
 
-Contributors must provide complete commit and PR descriptions for all changes.
-See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for required format and templates.
+Use complete commit and PR descriptions for all changes.
+
+- Contributor guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
+
+## License
+
+- License text: [`LICENSE`](./LICENSE)
+- Additional rights/policy summary: [`LICENSE.md`](./LICENSE.md)
 
 ## Maintainer
 
-Created and maintained by [WickedYoda](https://wickedyoda.com)  
-Support Discord: https://discord.gg/m6UjX6UhKe
+Created and maintained by [WickedYoda](https://wickedyoda.com)
+
+Support Discord: [https://discord.gg/m6UjX6UhKe](https://discord.gg/m6UjX6UhKe)
