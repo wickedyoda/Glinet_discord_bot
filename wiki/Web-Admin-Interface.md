@@ -13,9 +13,11 @@ Password-protected admin UI for runtime bot management.
 - Login is email/password
 - Login is web-only (`/login` route in the web UI)
 - Auto-logout timeout is configurable in settings (`WEB_SESSION_TIMEOUT_MINUTES`) with 5-minute steps from 5 to 30 minutes
+- Login form includes an optional "Keep me signed in" checkbox that keeps the session for up to 5 days on the current device
 - Theme selector supports `Light` and `Black` modes in the web header
 - Login endpoint includes basic rate limiting to reduce brute-force attempts
 - Security headers are applied (CSP, frame deny, no-sniff, referrer policy)
+- Reverse proxy deployment guide: [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
 
 ## User Model
 
@@ -67,6 +69,7 @@ Password-protected admin UI for runtime bot management.
 - `WEB_PORT`
 - `WEB_HOST_PORT`
 - `WEB_SESSION_TIMEOUT_MINUTES`
+- `WEB_PUBLIC_BASE_URL`
 - `WEB_ENV_FILE`
 - `WEB_ADMIN_DEFAULT_USERNAME`
 - `WEB_ADMIN_DEFAULT_PASSWORD`

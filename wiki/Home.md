@@ -34,6 +34,7 @@ The content mirrors the core `README.md` and splits features into focused pages.
 
 - [Environment Variables](Environment-Variables)
 - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy)
+- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
 - [Data Files](Data-Files)
 - [Security Hardening](Security-Hardening)
 - [Command Reference](Command-Reference)

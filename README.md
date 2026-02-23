@@ -17,6 +17,7 @@ Discord bot for GL.iNet community operations:
 
 - Start here: [`wiki/Home.md`](./wiki/Home.md)
 - Feature pages and operational docs live under [`wiki/`](./wiki/)
+- Reverse proxy guide for web GUI: [`wiki/Reverse-Proxy-Web-GUI.md`](./wiki/Reverse-Proxy-Web-GUI.md)
 - Public landing URL: [http://discord.glinet.wickedyoda.com/](http://discord.glinet.wickedyoda.com/)
 - Public wiki URL: [http://discord.glinet.wickedyoda.com/wiki](http://discord.glinet.wickedyoda.com/wiki)
 - Direct GitHub wiki URL: [https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md](https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md)
@@ -110,6 +111,8 @@ Discord bot for GL.iNet community operations:
 - Header identity uses stored display name while keeping email visible.
 - Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
 - Auto-logout timeout is configurable in web settings (`WEB_SESSION_TIMEOUT_MINUTES`) with allowed values 5, 10, 15, 20, 25, or 30 minutes.
+- Login page includes optional "Keep me signed in" for 5 days on the current device.
+- Non-remembered logins continue to expire based on inactivity timeout.
 - Security controls include:
   - CSRF token enforcement on state-changing web requests
   - Same-origin POST policy checks
@@ -189,6 +192,7 @@ Optional:
 - `WEB_PORT` (default `8080`, internal container port)
 - `WEB_HOST_PORT` (default `8080`, host mapping used by docker-compose)
 - `WEB_SESSION_TIMEOUT_MINUTES` (default `5`, web GUI auto-logout timeout in minutes; allowed: `5,10,15,20,25,30`)
+- `WEB_PUBLIC_BASE_URL` (optional public URL for reverse-proxy deployments; used for same-origin validation, example: `https://discord-admin.example.com/`)
 - `WEB_RESTART_ENABLED` (default `true`, enables/disables admin restart button in web header)
 - `WEB_GITHUB_WIKI_URL` (default `http://discord.glinet.wickedyoda.com/wiki`, external docs link in web header)
 - `WEB_DISCORD_CATALOG_TTL_SECONDS` (default `120`, cache TTL for polled channel/role dropdown data)
@@ -234,6 +238,7 @@ WEB_BIND_HOST=0.0.0.0
 WEB_PORT=8080
 WEB_HOST_PORT=8080
 WEB_SESSION_TIMEOUT_MINUTES=5
+WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/
 WEB_RESTART_ENABLED=true
 WEB_GITHUB_WIKI_URL=http://discord.glinet.wickedyoda.com/wiki
 WEB_DISCORD_CATALOG_TTL_SECONDS=120
