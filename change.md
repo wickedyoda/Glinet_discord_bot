@@ -51,6 +51,10 @@ All notable changes to this project are documented in this file.
   - `WEB_PUBLIC_BASE_URL`
   - forwarded host handling (`X-Forwarded-Host`, `X-Original-Host`, `Forwarded`)
 - Improved local (non-HTTPS localhost) login behavior when secure cookies are enabled.
+- Added explicit web login/security decision logging for troubleshooting:
+  - origin-policy blocks
+  - CSRF validation blocks
+  - login success/failure/rate-limit events
 - Improved login page form semantics and field consistency:
   - associated labels (`for`/`id`)
   - password/email autocomplete attributes
@@ -65,6 +69,7 @@ All notable changes to this project are documented in this file.
 - Same-origin enforcement for state-changing requests with proxy-aware host checks.
 - Secure cookie support and strict cookie settings.
 - Browser security headers hardened; COOP applied only for trustworthy origins (HTTPS/loopback).
+- Added configurable session cookie `SameSite` policy (`WEB_SESSION_COOKIE_SAMESITE`) for reverse-proxy compatibility tuning.
 - File permission hardening for sensitive files/directories where supported.
 - Removed/blocked clear-text password logging patterns flagged by scanning.
 
@@ -72,9 +77,11 @@ All notable changes to this project are documented in this file.
 - Updated `docker-compose.yml` to reflect current runtime/security variables.
 - Added/updated environment examples for new and compatibility variables:
   - `CONTAINER_LOG_LEVEL`
+  - `DISCORD_LOG_LEVEL`
   - `WEB_PUBLIC_BASE_URL`
   - `WEB_TRUST_PROXY_HEADERS`
   - `WEB_SESSION_COOKIE_SECURE`
+  - `WEB_SESSION_COOKIE_SAMESITE`
   - `WEB_ENFORCE_CSRF`
   - `WEB_ENFORCE_SAME_ORIGIN_POSTS`
   - compatibility aliases documented in `.env.example`
