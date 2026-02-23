@@ -1,5 +1,9 @@
 # Web Admin Interface
 
+<p align="center">
+  <img src="../assets/images/glinet-bot-full.png" alt="GL.iNet Bot Full Logo" width="320" />
+</p>
+
 Password-protected admin UI for runtime bot management.
 
 ## Access
@@ -9,11 +13,14 @@ Password-protected admin UI for runtime bot management.
 - Login is email/password
 - Login is web-only (`/login` route in the web UI)
 - Theme selector supports `Light` and `Black` modes in the web header
+- Login endpoint includes basic rate limiting to reduce brute-force attempts
+- Security headers are applied (CSP, frame deny, no-sniff, referrer policy)
 
 ## User Model
 
 - No public signup
 - First-run default admin is created from env values
+- First-run admin creation requires a valid `WEB_ADMIN_DEFAULT_PASSWORD` (no insecure fallback password)
 - Admin can create additional users
 - No Discord `/login` or `!login` command exists for web-user creation
 - Password policy:

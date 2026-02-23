@@ -3,13 +3,22 @@ import os
 import re
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from html import escape
 from pathlib import Path
 
 from croniter import croniter
-from flask import Flask, flash, redirect, render_template_string, request, session, url_for
+from flask import (
+    Flask,
+    flash,
+    redirect,
+    render_template_string,
+    request,
+    session,
+    url_for,
+)
 from werkzeug.security import check_password_hash, generate_password_hash
 
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
@@ -37,44 +46,156 @@ INT_KEYS = {
     "WEB_BOT_PROFILE_TIMEOUT_SECONDS",
     "WEB_AVATAR_MAX_UPLOAD_BYTES",
 }
-SENSITIVE_KEYS = {"DISCORD_TOKEN", "WEB_ADMIN_DEFAULT_PASSWORD", "WEB_ADMIN_SESSION_SECRET"}
+SENSITIVE_KEYS = {
+    "DISCORD_TOKEN",
+    "WEB_ADMIN_DEFAULT_PASSWORD",
+    "WEB_ADMIN_SESSION_SECRET",
+}
 ENV_FIELDS = [
     ("DISCORD_TOKEN", "Discord Token", "Bot token for Discord authentication."),
     ("GUILD_ID", "Guild ID", "Primary guild (server) ID."),
-    ("GENERAL_CHANNEL_ID", "General Channel ID", "Default channel for invite generation."),
+    (
+        "GENERAL_CHANNEL_ID",
+        "General Channel ID",
+        "Default channel for invite generation.",
+    ),
     ("LOG_LEVEL", "Log Level", "Bot log level (DEBUG, INFO, WARNING, ERROR)."),
     ("DATA_DIR", "Data Directory", "Persistent data directory inside container."),
     ("FORUM_BASE_URL", "Forum Base URL", "GL.iNet forum root URL."),
     ("FORUM_MAX_RESULTS", "Forum Max Results", "Max forum links returned per search."),
-    ("DOCS_MAX_RESULTS_PER_SITE", "Docs Max/Site", "Max docs results for each docs source."),
+    (
+        "DOCS_MAX_RESULTS_PER_SITE",
+        "Docs Max/Site",
+        "Max docs results for each docs source.",
+    ),
     ("DOCS_INDEX_TTL_SECONDS", "Docs Index TTL", "Docs index cache TTL in seconds."),
-    ("SEARCH_RESPONSE_MAX_CHARS", "Search Response Limit", "Max chars in search response message."),
-    ("KICK_PRUNE_HOURS", "Kick Prune Hours", "Hours of message history to prune on kick."),
-    ("MODERATOR_ROLE_ID", "Moderator Role ID", "Role ID allowed to run moderation commands."),
+    (
+        "SEARCH_RESPONSE_MAX_CHARS",
+        "Search Response Limit",
+        "Max chars in search response message.",
+    ),
+    (
+        "KICK_PRUNE_HOURS",
+        "Kick Prune Hours",
+        "Hours of message history to prune on kick.",
+    ),
+    (
+        "MODERATOR_ROLE_ID",
+        "Moderator Role ID",
+        "Role ID allowed to run moderation commands.",
+    ),
     ("ADMIN_ROLE_ID", "Admin Role ID", "Additional role ID allowed to moderate."),
-    ("MOD_LOG_CHANNEL_ID", "Mod Log Channel ID", "Channel ID for moderation/server logs."),
-    ("CSV_ROLE_ASSIGN_MAX_NAMES", "CSV Role Max Names", "Max unique names accepted per CSV bulk-assign."),
-    ("firmware_notification_channel", "Firmware Notify Channel", "Channel ID or <#channel> mention for firmware alerts."),
-    ("FIRMWARE_FEED_URL", "Firmware Feed URL", "Source URL used for firmware mirror checks."),
-    ("firmware_check_schedule", "Firmware Cron Schedule", "5-field cron schedule in UTC."),
-    ("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "Firmware Request Timeout", "HTTP timeout for firmware fetch requests."),
-    ("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "Firmware Notes Max Chars", "Max release-notes excerpt size."),
-    ("WEB_ENABLED", "Web UI Enabled", "Set to true/false to enable or disable the web admin UI."),
+    (
+        "MOD_LOG_CHANNEL_ID",
+        "Mod Log Channel ID",
+        "Channel ID for moderation/server logs.",
+    ),
+    (
+        "CSV_ROLE_ASSIGN_MAX_NAMES",
+        "CSV Role Max Names",
+        "Max unique names accepted per CSV bulk-assign.",
+    ),
+    (
+        "firmware_notification_channel",
+        "Firmware Notify Channel",
+        "Channel ID or <#channel> mention for firmware alerts.",
+    ),
+    (
+        "FIRMWARE_FEED_URL",
+        "Firmware Feed URL",
+        "Source URL used for firmware mirror checks.",
+    ),
+    (
+        "firmware_check_schedule",
+        "Firmware Cron Schedule",
+        "5-field cron schedule in UTC.",
+    ),
+    (
+        "FIRMWARE_REQUEST_TIMEOUT_SECONDS",
+        "Firmware Request Timeout",
+        "HTTP timeout for firmware fetch requests.",
+    ),
+    (
+        "FIRMWARE_RELEASE_NOTES_MAX_CHARS",
+        "Firmware Notes Max Chars",
+        "Max release-notes excerpt size.",
+    ),
+    (
+        "WEB_ENABLED",
+        "Web UI Enabled",
+        "Set to true/false to enable or disable the web admin UI.",
+    ),
     ("WEB_BIND_HOST", "Web Bind Host", "Host/IP bind for web admin service."),
-    ("WEB_PORT", "Web Container Port", "Internal HTTP port in the container (default 8080)."),
-    ("WEB_HOST_PORT", "Web Host Port", "Host port mapped to WEB_PORT in Docker compose."),
-    ("WEB_DISCORD_CATALOG_TTL_SECONDS", "Discord Catalog TTL", "Seconds to cache polled Discord channels/roles for dropdowns."),
-    ("WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS", "Discord Catalog Fetch Timeout", "Timeout in seconds when polling Discord for channels/roles."),
-    ("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "Web Bulk Assign Timeout", "Timeout in seconds for web-triggered CSV role assignment."),
-    ("WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", "Web Bulk Assign Max Upload", "Maximum CSV upload size in bytes for web bulk assignment."),
-    ("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", "Web Bulk Assign Report Limit", "Maximum items displayed per section in web bulk-assignment details."),
-    ("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "Web Bot Profile Timeout", "Timeout in seconds for loading/updating bot profile from web UI."),
-    ("WEB_AVATAR_MAX_UPLOAD_BYTES", "Web Avatar Max Upload", "Maximum avatar upload size in bytes for bot profile uploads."),
-    ("WEB_RESTART_ENABLED", "Web Restart Enabled", "Enable admin restart button in the web header."),
-    ("WEB_GITHUB_WIKI_URL", "Web GitHub Wiki URL", "External docs link shown in the web header."),
-    ("WEB_ENV_FILE", "Web Env File Path", "Environment file path used by the web settings editor."),
-    ("WEB_ADMIN_DEFAULT_USERNAME", "Default Admin Email", "Default admin email used for first boot user creation."),
-    ("WEB_ADMIN_DEFAULT_PASSWORD", "Default Admin Password", "Default admin password for first boot user creation."),
+    (
+        "WEB_PORT",
+        "Web Container Port",
+        "Internal HTTP port in the container (default 8080).",
+    ),
+    (
+        "WEB_HOST_PORT",
+        "Web Host Port",
+        "Host port mapped to WEB_PORT in Docker compose.",
+    ),
+    (
+        "WEB_DISCORD_CATALOG_TTL_SECONDS",
+        "Discord Catalog TTL",
+        "Seconds to cache polled Discord channels/roles for dropdowns.",
+    ),
+    (
+        "WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS",
+        "Discord Catalog Fetch Timeout",
+        "Timeout in seconds when polling Discord for channels/roles.",
+    ),
+    (
+        "WEB_BULK_ASSIGN_TIMEOUT_SECONDS",
+        "Web Bulk Assign Timeout",
+        "Timeout in seconds for web-triggered CSV role assignment.",
+    ),
+    (
+        "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES",
+        "Web Bulk Assign Max Upload",
+        "Maximum CSV upload size in bytes for web bulk assignment.",
+    ),
+    (
+        "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT",
+        "Web Bulk Assign Report Limit",
+        "Maximum items displayed per section in web bulk-assignment details.",
+    ),
+    (
+        "WEB_BOT_PROFILE_TIMEOUT_SECONDS",
+        "Web Bot Profile Timeout",
+        "Timeout in seconds for loading/updating bot profile from web UI.",
+    ),
+    (
+        "WEB_AVATAR_MAX_UPLOAD_BYTES",
+        "Web Avatar Max Upload",
+        "Maximum avatar upload size in bytes for bot profile uploads.",
+    ),
+    (
+        "WEB_RESTART_ENABLED",
+        "Web Restart Enabled",
+        "Enable admin restart button in the web header.",
+    ),
+    (
+        "WEB_GITHUB_WIKI_URL",
+        "Web GitHub Wiki URL",
+        "External docs link shown in the web header.",
+    ),
+    (
+        "WEB_ENV_FILE",
+        "Web Env File Path",
+        "Environment file path used by the web settings editor.",
+    ),
+    (
+        "WEB_ADMIN_DEFAULT_USERNAME",
+        "Default Admin Email",
+        "Default admin email used for first boot user creation.",
+    ),
+    (
+        "WEB_ADMIN_DEFAULT_PASSWORD",
+        "Default Admin Password",
+        "Default admin password for first boot user creation.",
+    ),
     ("WEB_ADMIN_SESSION_SECRET", "Web Session Secret", "Flask session signing secret."),
 ]
 
@@ -108,7 +229,9 @@ def _is_valid_email(email: str) -> bool:
     for label in labels:
         if not label or label.startswith("-") or label.endswith("-"):
             return False
-        if any(not (char.isascii() and (char.isalnum() or char == "-")) for char in label):
+        if any(
+            not (char.isascii() and (char.isalnum() or char == "-")) for char in label
+        ):
             return False
     if len(labels[-1]) < 2:
         return False
@@ -199,7 +322,9 @@ def _save_users(users_db_file: Path, users):
         conn.close()
 
 
-def _ensure_default_admin(users_db_file: Path, default_email: str, default_password: str, logger):
+def _ensure_default_admin(
+    users_db_file: Path, default_email: str, default_password: str, logger
+):
     users = _read_users(users_db_file)
     if users:
         return
@@ -210,12 +335,13 @@ def _ensure_default_admin(users_db_file: Path, default_email: str, default_passw
 
     password = default_password or ""
     if _password_policy_errors(password):
-        password = "AA!!123456"
+        message = (
+            "WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet password policy. "
+            "Set a strong password before first boot so the initial admin user can be created securely."
+        )
         if logger:
-            logger.warning(
-                "Invalid WEB_ADMIN_DEFAULT_PASSWORD or missing admin defaults. "
-                "Using fallback default password for first login; change it immediately."
-            )
+            logger.error(message)
+        raise ValueError(message)
 
     now_iso = _now_iso()
     conn = _open_users_db(users_db_file)
@@ -284,16 +410,39 @@ def _validate_env_updates(updated_values: dict):
             except ValueError:
                 errors.append(f"{key} must be an integer.")
         if key == "firmware_check_schedule" and value and not croniter.is_valid(value):
-            errors.append("firmware_check_schedule must be a valid 5-field cron expression.")
-        if key == "firmware_notification_channel" and value and not CHANNEL_ID_PATTERN.fullmatch(value):
-            errors.append("firmware_notification_channel must be numeric ID or <#channel> format.")
+            errors.append(
+                "firmware_check_schedule must be a valid 5-field cron expression."
+            )
+        if (
+            key == "firmware_notification_channel"
+            and value
+            and not CHANNEL_ID_PATTERN.fullmatch(value)
+        ):
+            errors.append(
+                "firmware_notification_channel must be numeric ID or <#channel> format."
+            )
         if key == "WEB_ADMIN_DEFAULT_USERNAME" and value and not _is_valid_email(value):
             errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email.")
         if key == "WEB_ADMIN_DEFAULT_PASSWORD" and value:
             errors.extend(_password_policy_errors(value))
-        if key == "WEB_RESTART_ENABLED" and value.lower() not in {"1", "0", "true", "false", "yes", "no", "on", "off"}:
-            errors.append("WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off).")
-        if key == "WEB_GITHUB_WIKI_URL" and value and not value.startswith(("http://", "https://")):
+        if key == "WEB_RESTART_ENABLED" and value.lower() not in {
+            "1",
+            "0",
+            "true",
+            "false",
+            "yes",
+            "no",
+            "on",
+            "off",
+        }:
+            errors.append(
+                "WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off)."
+            )
+        if (
+            key == "WEB_GITHUB_WIKI_URL"
+            and value
+            and not value.startswith(("http://", "https://"))
+        ):
             errors.append("WEB_GITHUB_WIKI_URL must start with http:// or https://.")
     return errors
 
@@ -322,7 +471,9 @@ def _normalize_select_value(value: str):
     return selected
 
 
-def _render_select_input(name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."):
+def _render_select_input(
+    name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."
+):
     selected = _normalize_select_value(selected_value)
     rows = [f"<option value=''>{escape(placeholder)}</option>"]
     seen = set()
@@ -342,14 +493,12 @@ def _render_select_input(name: str, selected_value: str, options: list[dict], pl
             f"<option value='{escape(selected, quote=True)}' selected>"
             f"Current value (not found): {escape(selected)}</option>"
         )
-    return (
-        f"<select name='{escape(name, quote=True)}'>"
-        + "".join(rows)
-        + "</select>"
-    )
+    return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
 
 
-def _render_multi_select_input(name: str, selected_values, options: list[dict], size: int = 8):
+def _render_multi_select_input(
+    name: str, selected_values, options: list[dict], size: int = 8
+):
     selected_set = set()
     if isinstance(selected_values, str):
         selected_values = [selected_values]
@@ -629,16 +778,45 @@ def create_web_app(
 ):
     app = Flask(__name__)
     app.secret_key = os.getenv("WEB_ADMIN_SESSION_SECRET", "") or secrets.token_hex(32)
+    max_bulk_upload = _get_int_env(
+        "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
+    )
+    max_avatar_upload = _get_int_env(
+        "WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
+    )
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_COOKIE_SAMESITE="Strict",
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+        MAX_CONTENT_LENGTH=max(max_bulk_upload, max_avatar_upload) + (256 * 1024),
     )
+    login_window_seconds = 15 * 60
+    login_max_attempts = 6
+    login_attempts = {}
+
+    @app.after_request
+    def apply_security_headers(response):
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
+        )
+        response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+        response.headers.setdefault(
+            "Content-Security-Policy",
+            "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; "
+            "script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+        )
+        return response
 
     users_file = Path(data_dir) / "bot_data.db"
     users_file.parent.mkdir(parents=True, exist_ok=True)
     env_file = Path(env_file_path)
 
-    _ensure_default_admin(users_file, default_admin_email, default_admin_password, logger)
+    _ensure_default_admin(
+        users_file, default_admin_email, default_admin_password, logger
+    )
     wiki_dir = Path(__file__).resolve().parent / "wiki"
     wiki_dir_resolved = wiki_dir.resolve()
 
@@ -672,11 +850,42 @@ def create_web_app(
         return None
 
     def _github_wiki_url():
-        value = os.getenv("WEB_GITHUB_WIKI_URL", "https://github.com/wickedyoda/Glinet_discord_bot/wiki")
+        value = os.getenv(
+            "WEB_GITHUB_WIKI_URL",
+            "https://github.com/wickedyoda/Glinet_discord_bot/wiki",
+        )
         return str(value or "").strip()
 
     def _restart_enabled():
         return _is_truthy_env_value(os.getenv("WEB_RESTART_ENABLED", "true"))
+
+    def _client_ip():
+        x_forwarded_for = str(request.headers.get("X-Forwarded-For", "")).strip()
+        if x_forwarded_for:
+            parts = [
+                part.strip() for part in x_forwarded_for.split(",") if part.strip()
+            ]
+            if parts:
+                return parts[0]
+        return str(request.remote_addr or "unknown")
+
+    def _prune_login_attempts(client_ip: str):
+        now_ts = time.time()
+        entries = login_attempts.get(client_ip, [])
+        fresh_entries = [ts for ts in entries if (now_ts - ts) < login_window_seconds]
+        if fresh_entries:
+            login_attempts[client_ip] = fresh_entries
+        else:
+            login_attempts.pop(client_ip, None)
+        return fresh_entries
+
+    @app.errorhandler(413)
+    def payload_too_large(_exc):
+        flash("Upload exceeds maximum allowed request size.", "error")
+        user = _current_user()
+        if user and user.get("is_admin"):
+            return redirect(url_for("dashboard"))
+        return redirect(url_for("login"))
 
     def _render_page(title: str, body_html: str, current_email: str, is_admin: bool):
         return _render_layout(
@@ -723,12 +932,24 @@ def create_web_app(
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
+            client_ip = _client_ip()
+            attempts = _prune_login_attempts(client_ip)
+            if len(attempts) >= login_max_attempts:
+                flash("Too many login attempts. Try again in 15 minutes.", "error")
+                return redirect(url_for("login"))
             email = _normalize_email(request.form.get("email", ""))
             password = request.form.get("password", "")
-            user = next((entry for entry in _read_users(users_file) if entry["email"] == email), None)
+            user = next(
+                (entry for entry in _read_users(users_file) if entry["email"] == email),
+                None,
+            )
             if user and check_password_hash(user["password_hash"], password):
+                login_attempts.pop(client_ip, None)
                 session["auth_email"] = user["email"]
+                session.permanent = True
                 return redirect(url_for("dashboard"))
+            attempts.append(time.time())
+            login_attempts[client_ip] = attempts[-login_max_attempts:]
             flash("Invalid email or password.", "error")
 
         return _render_page(
@@ -765,8 +986,16 @@ def create_web_app(
 
         cards = []
 
-        def add_dashboard_card(title: str, description: str, href: str, button_label: str, external: bool = False):
-            link_target = " target='_blank' rel='noopener noreferrer'" if external else ""
+        def add_dashboard_card(
+            title: str,
+            description: str,
+            href: str,
+            button_label: str,
+            external: bool = False,
+        ):
+            link_target = (
+                " target='_blank' rel='noopener noreferrer'" if external else ""
+            )
             cards.append(
                 f"""
                 <div class="card dash-card">
@@ -840,7 +1069,7 @@ def create_web_app(
             <div class="card dash-card">
               <h3>Restart Container</h3>
               <p class="muted">Apply runtime-level changes that require a process restart.</p>
-              <form method="post" action="{escape(url_for('restart_service'), quote=True)}"
+              <form method="post" action="{escape(url_for("restart_service"), quote=True)}"
                 onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
                 <input type="hidden" name="confirm" value="yes" />
                 <button class="btn danger" type="submit">Restart Container</button>
@@ -861,7 +1090,7 @@ def create_web_app(
           {admin_note}
         </div>
         <div class="dash-grid">
-          {''.join(cards)}
+          {"".join(cards)}
           {restart_card}
         </div>
         """
@@ -883,7 +1112,13 @@ def create_web_app(
             if not isinstance(response, dict):
                 flash("Invalid response from restart handler.", "error")
             elif response.get("ok"):
-                flash(response.get("message", "Restart requested. The container will restart shortly."), "success")
+                flash(
+                    response.get(
+                        "message",
+                        "Restart requested. The container will restart shortly.",
+                    ),
+                    "success",
+                )
             else:
                 flash(response.get("error", "Failed to request restart."), "error")
         return redirect(url_for("dashboard"))
@@ -905,7 +1140,9 @@ def create_web_app(
                 "<div class='card'><h2>Documentation</h2>"
                 "<p class='muted'>No wiki pages were found in the runtime image.</p></div>"
             )
-            return _render_page("Documentation", body, user["email"], bool(user.get("is_admin")))
+            return _render_page(
+                "Documentation", body, user["email"], bool(user.get("is_admin"))
+            )
 
         page_rows = []
         for path in page_paths:
@@ -920,7 +1157,9 @@ def create_web_app(
             "<p class='muted'>Browse wiki pages packaged with this bot image.</p>"
             f"<ul>{''.join(page_rows)}</ul></div>"
         )
-        return _render_page("Documentation", body, user["email"], bool(user.get("is_admin")))
+        return _render_page(
+            "Documentation", body, user["email"], bool(user.get("is_admin"))
+        )
 
     @app.route("/admin/documentation/<page_slug>", methods=["GET"])
     @login_required
@@ -932,7 +1171,11 @@ def create_web_app(
         page_path = _get_wiki_page_map().get(page_slug.casefold())
         if page_path is None:
             return {"ok": False, "error": "Documentation page not found."}, 404
-        if not page_path.exists() or not page_path.is_file() or page_path.name.startswith("_"):
+        if (
+            not page_path.exists()
+            or not page_path.is_file()
+            or page_path.name.startswith("_")
+        ):
             return {"ok": False, "error": "Documentation page not found."}, 404
         try:
             resolved = page_path.resolve()
@@ -959,8 +1202,14 @@ def create_web_app(
     @admin_required
     def bot_profile():
         user = _current_user()
-        max_avatar_upload_bytes = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
-        profile = on_get_bot_profile() if callable(on_get_bot_profile) else {"ok": False, "error": "Not configured"}
+        max_avatar_upload_bytes = _get_int_env(
+            "WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
+        )
+        profile = (
+            on_get_bot_profile()
+            if callable(on_get_bot_profile)
+            else {"ok": False, "error": "Not configured"}
+        )
 
         if request.method == "POST":
             action = str(request.form.get("action", "avatar")).strip().lower()
@@ -970,7 +1219,9 @@ def create_web_app(
                 else:
                     username_input = str(request.form.get("bot_name", ""))
                     server_nickname_input = str(request.form.get("server_nickname", ""))
-                    clear_server_nickname = str(request.form.get("clear_server_nickname", "")).strip().lower() in {
+                    clear_server_nickname = str(
+                        request.form.get("clear_server_nickname", "")
+                    ).strip().lower() in {
                         "1",
                         "true",
                         "yes",
@@ -985,12 +1236,23 @@ def create_web_app(
                         user["email"],
                     )
                     if not isinstance(response, dict):
-                        flash("Invalid response from bot profile update handler.", "error")
+                        flash(
+                            "Invalid response from bot profile update handler.", "error"
+                        )
                     elif not response.get("ok"):
-                        flash(response.get("error", "Failed to update bot profile."), "error")
+                        flash(
+                            response.get("error", "Failed to update bot profile."),
+                            "error",
+                        )
                     else:
                         profile = response
-                        flash(str(response.get("message") or "Bot profile updated successfully."), "success")
+                        flash(
+                            str(
+                                response.get("message")
+                                or "Bot profile updated successfully."
+                            ),
+                            "success",
+                        )
             elif action == "avatar":
                 uploaded_file = request.files.get("avatar_file")
                 if uploaded_file is None or not uploaded_file.filename:
@@ -1011,11 +1273,18 @@ def create_web_app(
                     elif not lowered_name.endswith(allowed_extensions):
                         flash("Avatar must be PNG, JPG, JPEG, WEBP, or GIF.", "error")
                     else:
-                        response = on_update_bot_avatar(payload, uploaded_file.filename, user["email"])
+                        response = on_update_bot_avatar(
+                            payload, uploaded_file.filename, user["email"]
+                        )
                         if not isinstance(response, dict):
-                            flash("Invalid response from avatar update handler.", "error")
+                            flash(
+                                "Invalid response from avatar update handler.", "error"
+                            )
                         elif not response.get("ok"):
-                            flash(response.get("error", "Failed to update bot avatar."), "error")
+                            flash(
+                                response.get("error", "Failed to update bot avatar."),
+                                "error",
+                            )
                         else:
                             profile = response
                             flash("Bot avatar updated successfully.", "success")
@@ -1026,10 +1295,18 @@ def create_web_app(
         if isinstance(profile, dict) and profile.get("ok"):
             avatar_url = str(profile.get("avatar_url") or "").strip()
             username = str(profile.get("name") or "unknown")
-            global_name = str(profile.get("global_name") or profile.get("display_name") or "Not set")
-            server_display_name = str(profile.get("server_display_name") or profile.get("display_name") or username)
+            global_name = str(
+                profile.get("global_name") or profile.get("display_name") or "Not set"
+            )
+            server_display_name = str(
+                profile.get("server_display_name")
+                or profile.get("display_name")
+                or username
+            )
             server_nickname = str(profile.get("server_nickname") or "Not set")
-            guild_name = str(profile.get("guild_name") or "Configured guild unavailable")
+            guild_name = str(
+                profile.get("guild_name") or "Configured guild unavailable"
+            )
             avatar_image = (
                 f"<img src='{escape(avatar_url, quote=True)}' alt='Bot avatar' "
                 "style='max-width:160px;max-height:160px;border-radius:12px;border:1px solid #d1d5db;' />"
@@ -1044,12 +1321,16 @@ def create_web_app(
               <p><strong>Server Display Name:</strong> {escape(server_display_name)}</p>
               <p><strong>Server Nickname:</strong> {escape(server_nickname)}</p>
               <p><strong>Guild:</strong> {escape(guild_name)}</p>
-              <p><strong>ID:</strong> <span class="mono">{escape(str(profile.get('id') or 'unknown'))}</span></p>
+              <p><strong>ID:</strong> <span class="mono">{escape(str(profile.get("id") or "unknown"))}</span></p>
               {avatar_image}
             </div>
             """
         else:
-            profile_error = str(profile.get("error") if isinstance(profile, dict) else "Unable to load profile.")
+            profile_error = str(
+                profile.get("error")
+                if isinstance(profile, dict)
+                else "Unable to load profile."
+            )
             profile_html = f"<div class='card'><p class='muted'>Could not load bot profile: {escape(profile_error)}</p></div>"
 
         body = f"""
@@ -1090,16 +1371,22 @@ def create_web_app(
           {profile_html}
         </div>
         """
-        return _render_page("Bot Profile", body, user["email"], bool(user.get("is_admin")))
+        return _render_page(
+            "Bot Profile", body, user["email"], bool(user.get("is_admin"))
+        )
 
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
     @admin_required
     def command_permissions():
         user = _current_user()
         permissions_payload = (
-            on_get_command_permissions() if callable(on_get_command_permissions) else {"ok": False, "error": "Not configured"}
+            on_get_command_permissions()
+            if callable(on_get_command_permissions)
+            else {"ok": False, "error": "Not configured"}
         )
-        discord_catalog = on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        discord_catalog = (
+            on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        )
         role_options = []
         catalog_error = ""
         if isinstance(discord_catalog, dict):
@@ -1115,24 +1402,45 @@ def create_web_app(
                 command_updates = {}
                 for command_key in request.form.getlist("command_key"):
                     selected_role_ids = request.form.getlist(f"role_ids__{command_key}")
-                    manual_role_ids = request.form.get(f"role_ids_text__{command_key}", "")
-                    role_ids_payload = selected_role_ids if role_options else manual_role_ids
-                    if role_options and not selected_role_ids and manual_role_ids.strip():
+                    manual_role_ids = request.form.get(
+                        f"role_ids_text__{command_key}", ""
+                    )
+                    role_ids_payload = (
+                        selected_role_ids if role_options else manual_role_ids
+                    )
+                    if (
+                        role_options
+                        and not selected_role_ids
+                        and manual_role_ids.strip()
+                    ):
                         role_ids_payload = manual_role_ids
                     command_updates[command_key] = {
                         "mode": request.form.get(f"mode__{command_key}", "default"),
                         "role_ids": role_ids_payload,
                     }
-                response = on_save_command_permissions({"commands": command_updates}, user["email"])
+                response = on_save_command_permissions(
+                    {"commands": command_updates}, user["email"]
+                )
                 if not isinstance(response, dict):
-                    flash("Invalid response from command permissions save handler.", "error")
+                    flash(
+                        "Invalid response from command permissions save handler.",
+                        "error",
+                    )
                 elif not response.get("ok"):
-                    flash(response.get("error", "Failed to save command permissions."), "error")
+                    flash(
+                        response.get("error", "Failed to save command permissions."),
+                        "error",
+                    )
                 else:
                     permissions_payload = response
-                    flash(response.get("message", "Command permissions updated."), "success")
+                    flash(
+                        response.get("message", "Command permissions updated."),
+                        "success",
+                    )
 
-        if not isinstance(permissions_payload, dict) or not permissions_payload.get("ok"):
+        if not isinstance(permissions_payload, dict) or not permissions_payload.get(
+            "ok"
+        ):
             error_text = str(
                 permissions_payload.get("error")
                 if isinstance(permissions_payload, dict)
@@ -1142,7 +1450,9 @@ def create_web_app(
                 "<div class='card'><h2>Command Permissions</h2>"
                 f"<p class='muted'>Could not load command permissions: {escape(error_text)}</p></div>"
             )
-            return _render_page("Command Permissions", body, user["email"], bool(user.get("is_admin")))
+            return _render_page(
+                "Command Permissions", body, user["email"], bool(user.get("is_admin"))
+            )
 
         commands = permissions_payload.get("commands", []) or []
         rows = []
@@ -1215,8 +1525,8 @@ def create_web_app(
         <div class="card">
           <h2>Command Permissions</h2>
           <p class="muted">Set access mode per command. Default mode follows built-in behavior. Custom mode requires at least one role ID.</p>
-          <p class="muted">Default named-role gate: {escape(', '.join(str(item) for item in allowed_role_names) or 'None')}</p>
-          <p class="muted">Current moderator role IDs: <span class="mono">{escape(','.join(str(item) for item in moderator_role_ids) or 'None')}</span></p>
+          <p class="muted">Default named-role gate: {escape(", ".join(str(item) for item in allowed_role_names) or "None")}</p>
+          <p class="muted">Current moderator role IDs: <span class="mono">{escape(",".join(str(item) for item in moderator_role_ids) or "None")}</span></p>
           {role_hint_html}
           <form method="post">
             <table>
@@ -1224,7 +1534,7 @@ def create_web_app(
                 <tr><th>Command</th><th>Default Access</th><th>Mode</th><th>Custom Role Selection</th></tr>
               </thead>
               <tbody>
-                {''.join(rows)}
+                {"".join(rows)}
               </tbody>
             </table>
             <div style="margin-top:14px;">
@@ -1233,14 +1543,18 @@ def create_web_app(
           </form>
         </div>
         """
-        return _render_page("Command Permissions", body, user["email"], bool(user.get("is_admin")))
+        return _render_page(
+            "Command Permissions", body, user["email"], bool(user.get("is_admin"))
+        )
 
     @app.route("/admin/settings", methods=["GET", "POST"])
     @admin_required
     def settings():
         user = _current_user()
         file_values = _parse_env_file(env_file)
-        discord_catalog = on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        discord_catalog = (
+            on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        )
         channel_options = []
         role_options = []
         catalog_error = ""
@@ -1315,7 +1629,11 @@ def create_web_app(
             )
         catalog_note = ""
         if channel_options or role_options:
-            guild_info = discord_catalog.get("guild", {}) if isinstance(discord_catalog, dict) else {}
+            guild_info = (
+                discord_catalog.get("guild", {})
+                if isinstance(discord_catalog, dict)
+                else {}
+            )
             guild_name = str(guild_info.get("name") or "unknown")
             guild_id = str(guild_info.get("id") or "unknown")
             catalog_note = (
@@ -1353,9 +1671,13 @@ def create_web_app(
                 if callable(on_save_tag_responses):
                     response = on_save_tag_responses(parsed, user["email"])
                     if not isinstance(response, dict):
-                        raise ValueError("Invalid response from tag response save handler")
+                        raise ValueError(
+                            "Invalid response from tag response save handler"
+                        )
                     if not response.get("ok"):
-                        raise ValueError(str(response.get("error") or "Failed to save tag responses"))
+                        raise ValueError(
+                            str(response.get("error") or "Failed to save tag responses")
+                        )
                 else:
                     path.write_text(json.dumps(parsed, indent=2) + "\n")
                 if callable(on_tag_responses_saved):
@@ -1370,8 +1692,14 @@ def create_web_app(
                 current_mapping = response.get("mapping", {}) or {}
                 current = json.dumps(current_mapping, indent=2) + "\n"
             else:
-                error_text = response.get("error") if isinstance(response, dict) else "Unknown error"
-                flash(f"Could not load tag responses from storage: {error_text}", "error")
+                error_text = (
+                    response.get("error")
+                    if isinstance(response, dict)
+                    else "Unknown error"
+                )
+                flash(
+                    f"Could not load tag responses from storage: {error_text}", "error"
+                )
                 current = "{}\n"
         else:
             if not path.exists():
@@ -1391,16 +1719,24 @@ def create_web_app(
           </form>
         </div>
         """
-        return _render_page("Tag Responses", body, user["email"], bool(user.get("is_admin")))
+        return _render_page(
+            "Tag Responses", body, user["email"], bool(user.get("is_admin"))
+        )
 
     @app.route("/admin/bulk-role-csv", methods=["GET", "POST"])
     @admin_required
     def bulk_role_csv():
         user = _current_user()
         operation_result = None
-        max_upload_bytes = _get_int_env("WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
-        report_list_limit = _get_int_env("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", 50, minimum=1)
-        discord_catalog = on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        max_upload_bytes = _get_int_env(
+            "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
+        )
+        report_list_limit = _get_int_env(
+            "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", 50, minimum=1
+        )
+        discord_catalog = (
+            on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        )
         role_options = []
         catalog_error = ""
         if isinstance(discord_catalog, dict):
@@ -1412,7 +1748,11 @@ def create_web_app(
         if request.method == "POST":
             selected_role_input = request.form.get("role_id_select", "").strip()
             manual_role_input = request.form.get("role_id", "").strip()
-            role_input = selected_role_input if role_options else (manual_role_input or selected_role_input)
+            role_input = (
+                selected_role_input
+                if role_options
+                else (manual_role_input or selected_role_input)
+            )
             uploaded_file = request.files.get("csv_file")
             if not role_input:
                 flash("Role selection is required.", "error")
@@ -1432,7 +1772,9 @@ def create_web_app(
                         "error",
                     )
                 else:
-                    response = on_bulk_assign_role_csv(role_input, payload, uploaded_file.filename, user["email"])
+                    response = on_bulk_assign_role_csv(
+                        role_input, payload, uploaded_file.filename, user["email"]
+                    )
                     if not isinstance(response, dict):
                         flash("Invalid response from bulk assignment handler.", "error")
                     elif not response.get("ok"):
@@ -1446,7 +1788,9 @@ def create_web_app(
         report_html = ""
         if operation_result:
             summary_lines = operation_result.get("summary_lines", [])
-            summary_rows = "".join(f"<div class='mono'>{escape(line)}</div>" for line in summary_lines)
+            summary_rows = "".join(
+                f"<div class='mono'>{escape(line)}</div>" for line in summary_lines
+            )
             summary_html = f"""
             <div class="card">
               <h3>Result Summary</h3>
@@ -1460,9 +1804,15 @@ def create_web_app(
                 values = result_data.get(key, []) or []
                 if not values:
                     return f"<div><h4>{escape(title)} (0)</h4><p class='muted'>None</p></div>"
-                items = "".join(f"<li class='mono'>{escape(value)}</li>" for value in values[:limit])
+                items = "".join(
+                    f"<li class='mono'>{escape(value)}</li>" for value in values[:limit]
+                )
                 overflow = len(values) - limit
-                overflow_note = f"<p class='muted'>... and {overflow} more</p>" if overflow > 0 else ""
+                overflow_note = (
+                    f"<p class='muted'>... and {overflow} more</p>"
+                    if overflow > 0
+                    else ""
+                )
                 return f"<div><h4>{escape(title)} ({len(values)})</h4><ul>{items}</ul>{overflow_note}</div>"
 
             details_html = f"""
@@ -1484,9 +1834,11 @@ def create_web_app(
         role_picker_html = ""
         if role_options:
             role_picker_html = (
-                "<label>Role (from Discord)</label>"
-                + _render_select_input("role_id_select", "", role_options, "Select role...")
-                + "<p class='muted'>Select the target role from your current guild role list.</p>"
+                "<label>Role (Discord list)</label>"
+                + _render_select_input(
+                    "role_id_select", "", role_options, "Choose role..."
+                )
+                + "<p class='muted'>Choose the target role using the current guild role list.</p>"
             )
         elif catalog_error:
             role_picker_html = f"<p class='muted'>Could not load role dropdown: {escape(catalog_error)}</p>"
@@ -1512,7 +1864,9 @@ def create_web_app(
         {details_html}
         {report_html}
         """
-        return _render_page("Bulk Role CSV", body, user["email"], bool(user.get("is_admin")))
+        return _render_page(
+            "Bulk Role CSV", body, user["email"], bool(user.get("is_admin"))
+        )
 
     @app.route("/admin/users", methods=["GET", "POST"])
     @admin_required
@@ -1550,7 +1904,9 @@ def create_web_app(
 
             elif action == "delete":
                 target_email = _normalize_email(request.form.get("email", ""))
-                candidate = [entry for entry in users_data if entry["email"] != target_email]
+                candidate = [
+                    entry for entry in users_data if entry["email"] != target_email
+                ]
                 admin_count = sum(1 for entry in candidate if entry.get("is_admin"))
                 if target_email == user["email"]:
                     flash("You cannot delete your own account.", "error")
@@ -1574,7 +1930,9 @@ def create_web_app(
                     changed = False
                     for entry in users_data:
                         if entry["email"] == target_email:
-                            entry["password_hash"] = generate_password_hash(new_password)
+                            entry["password_hash"] = generate_password_hash(
+                                new_password
+                            )
                             changed = True
                             break
                     if changed:
@@ -1611,7 +1969,7 @@ def create_web_app(
                 <tr>
                   <td class="mono">{escape(email)}</td>
                   <td>{escape(admin_label)}</td>
-                  <td class="mono">{escape(str(entry.get('created_at', 'n/a')))}</td>
+                  <td class="mono">{escape(str(entry.get("created_at", "n/a")))}</td>
                   <td>
                     <form method="post" style="display:inline;">
                       <input type="hidden" name="action" value="toggle_admin" />
@@ -1670,7 +2028,7 @@ def create_web_app(
           <h2>Existing Users</h2>
           <table>
             <thead><tr><th>Email</th><th>Admin</th><th>Created</th><th>Actions</th></tr></thead>
-            <tbody>{''.join(user_rows)}</tbody>
+            <tbody>{"".join(user_rows)}</tbody>
           </table>
         </div>
         """

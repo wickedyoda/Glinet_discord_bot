@@ -5,8 +5,10 @@ services:
     container_name: discord_role_bot
     env_file:
       - .env
+    environment:
+      - WEB_BIND_HOST=0.0.0.0
     ports:
-      - "${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
+      - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
       - ./.env:/app/.env

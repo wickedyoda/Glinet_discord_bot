@@ -1,5 +1,9 @@
 # Discord Invite + Utility Bot Wiki
 
+<p align="center">
+  <img src="../assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
+</p>
+
 This wiki is the documentation hub for the Discord Invite + Utility Bot.
 The content mirrors the core `README.md` and splits features into focused pages.
 

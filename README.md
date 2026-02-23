@@ -1,5 +1,13 @@
 # Discord Invite + Utility Bot
 
+<p align="center">
+  <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="200" />
+</p>
+
+<p align="center">
+  <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Full Logo" width="420" />
+</p>
+
 Discord bot for GL.iNet community operations:
 - Role-bound invite links and 6-digit access codes
 - Search across GL.iNet forum/docs
@@ -92,6 +100,7 @@ Discord bot for GL.iNet community operations:
   - At least 1 symbol
 - No self-signup route; users can only be created by an admin.
 - Supports multiple users (admin and non-admin accounts).
+- On first boot (when no users exist), `WEB_ADMIN_DEFAULT_PASSWORD` must satisfy password policy; startup does not use insecure fallback passwords.
 - Runs in the container on HTTP `WEB_PORT` (default `8080`) and can be host-mapped via `WEB_HOST_PORT`.
 - Admin can manage:
   - Dashboard quick-action cards with direct buttons to all web-admin tools
@@ -162,7 +171,7 @@ Optional:
 - `FIRMWARE_REQUEST_TIMEOUT_SECONDS` (default `30`)
 - `FIRMWARE_RELEASE_NOTES_MAX_CHARS` (default `900`)
 - `WEB_ENABLED` (default `true`)
-- `WEB_BIND_HOST` (default `0.0.0.0`)
+- `WEB_BIND_HOST` (default `127.0.0.1` for local non-container runs)
 - `WEB_PORT` (default `8080`, internal container port)
 - `WEB_HOST_PORT` (default `8080`, host mapping used by docker-compose)
 - `WEB_RESTART_ENABLED` (default `true`, enables/disables admin restart button in web header)
@@ -215,7 +224,7 @@ WEB_BOT_PROFILE_TIMEOUT_SECONDS=20
 WEB_AVATAR_MAX_UPLOAD_BYTES=2097152
 WEB_ENV_FILE=.env
 WEB_ADMIN_DEFAULT_USERNAME=admin@example.com
-WEB_ADMIN_DEFAULT_PASSWORD=AA!!123456
+WEB_ADMIN_DEFAULT_PASSWORD=use_a_strong_unique_password
 WEB_ADMIN_SESSION_SECRET=replace_with_random_secret
 ```
 
@@ -230,8 +239,10 @@ services:
     container_name: discord_role_bot
     env_file:
       - .env
+    environment:
+      - WEB_BIND_HOST=0.0.0.0
     ports:
-      - "${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
+      - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
       - ./.env:/app/.env
@@ -252,6 +263,10 @@ Open web admin:
 ```bash
 http://localhost:${WEB_HOST_PORT:-8080}
 ```
+
+Security note:
+- Default compose mapping binds the web admin UI to localhost only.
+- To expose it externally, intentionally change the port mapping and place it behind HTTPS/reverse-proxy auth.
 
 ## Discord Requirements
 

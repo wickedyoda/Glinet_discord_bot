@@ -43,14 +43,14 @@ This page groups runtime variables by feature area.
 ## Web Admin
 
 - `WEB_ENABLED`
-- `WEB_BIND_HOST`
+- `WEB_BIND_HOST` (default local bind for non-container runs; set to `0.0.0.0` inside container)
 - `WEB_PORT`
 - `WEB_HOST_PORT`
 - `WEB_ENV_FILE`
 - `WEB_RESTART_ENABLED`
 - `WEB_GITHUB_WIKI_URL`
 - `WEB_ADMIN_DEFAULT_USERNAME`
-- `WEB_ADMIN_DEFAULT_PASSWORD`
+- `WEB_ADMIN_DEFAULT_PASSWORD` (required for first boot when no web users exist; must meet password policy)
 - `WEB_ADMIN_SESSION_SECRET`
 - `WEB_DISCORD_CATALOG_TTL_SECONDS`
 - `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS`
