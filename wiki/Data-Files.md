@@ -1,14 +1,17 @@
 # Data Files
 
-Persistent runtime data is stored in `DATA_DIR` (default `data/`).
+Persistent runtime state uses:
+
+- `DATA_DIR` (default `data/`) for database and legacy compatibility files
+- `LOG_DIR` (default `/logs`) for runtime log files
 
 ## File Inventory
 
 | File | Purpose |
 |---|---|
-| `bot_data.db` | Primary SQLite database for runtime and config state |
-| `bot.log` | Application/runtime logs |
-| `container_errors.log` | Error-focused log file used by `/logs` command |
+| `${DATA_DIR}/bot_data.db` | Primary SQLite database for runtime and config state |
+| `${LOG_DIR}/bot.log` | Application/runtime logs |
+| `${LOG_DIR}/container_errors.log` | Error-focused log file used by `/logs` command |
 
 ## SQLite Scope
 
@@ -51,9 +54,9 @@ When enabled (`WEB_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 
 Minimum backup set:
 
-- `data/bot_data.db`
-- `data/bot.log` (optional for auditing)
-- `data/container_errors.log` (optional for incident traces)
+- `${DATA_DIR}/bot_data.db`
+- `${LOG_DIR}/bot.log` (optional for auditing)
+- `${LOG_DIR}/container_errors.log` (optional for incident traces)
 
 For reliable restore:
 
