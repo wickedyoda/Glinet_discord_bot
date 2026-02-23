@@ -40,6 +40,7 @@
 - `/add_role_member`, `!addrolemember`
 - `/remove_role_member`, `!removerolemember`
 - `/modlog_test`, `!modlogtest`
+- `/logs` (moderator-only, ephemeral)
 
 ## Access Rules
 

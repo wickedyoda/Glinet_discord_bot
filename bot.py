@@ -78,6 +78,8 @@ container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
 container_error_handler.setFormatter(formatter)
 root_logger = logging.getLogger()
 root_logger.addHandler(container_error_handler)
+logging.getLogger("discord").setLevel(to_logging_level(LOG_LEVEL))
+logging.getLogger("werkzeug").setLevel(to_logging_level(LOG_LEVEL))
 
 
 def install_global_exception_logging():
@@ -2738,6 +2740,8 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     console_handler.setLevel(to_logging_level(LOG_LEVEL))
     file_handler.setLevel(to_logging_level(LOG_LEVEL))
     container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
+    logging.getLogger("discord").setLevel(to_logging_level(LOG_LEVEL))
+    logging.getLogger("werkzeug").setLevel(to_logging_level(LOG_LEVEL))
 
     GENERAL_CHANNEL_ID = parse_int_setting(
         os.getenv("GENERAL_CHANNEL_ID", GENERAL_CHANNEL_ID),
@@ -5746,4 +5750,4 @@ async def search_router_prefix(ctx: commands.Context, *, query: str):
 
 
 start_web_admin_server()
-bot.run(TOKEN)
+bot.run(TOKEN, log_handler=None)

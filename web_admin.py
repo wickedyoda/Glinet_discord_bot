@@ -708,6 +708,7 @@ def _write_env_file(env_file: Path, values: dict):
 
 def _validate_env_updates(updated_values: dict):
     truthy_values = {"1", "0", "true", "false", "yes", "no", "on", "off"}
+    valid_log_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
     errors = []
     for key, value in updated_values.items():
         if value == "":
@@ -733,6 +734,11 @@ def _validate_env_updates(updated_values: dict):
             errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email.")
         if key == "WEB_ADMIN_DEFAULT_PASSWORD" and value:
             errors.extend(_password_policy_errors(value))
+        if key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL"}:
+            if value.upper() not in valid_log_levels:
+                errors.append(
+                    f"{key} must be one of: DEBUG, INFO, WARNING, ERROR, CRITICAL."
+                )
         if key == "WEB_RESTART_ENABLED" and value.lower() not in truthy_values:
             errors.append(
                 "WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off)."
@@ -1275,11 +1281,17 @@ def create_web_app(
 
     @app.after_request
     def apply_security_headers(response):
+        request_host = _extract_hostname(str(request.host or ""))
+        is_local_request = request_host in {"localhost", "127.0.0.1", "::1"}
+        allow_coop = bool(request.is_secure or is_local_request)
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
         response.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
-        response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        if allow_coop:
+            response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+        else:
+            response.headers.pop("Cross-Origin-Opener-Policy", None)
         response.headers.setdefault(
             "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
         )
@@ -1678,9 +1690,9 @@ def create_web_app(
               <p class="muted">Web GUI login with email/password. Users are created by an admin only.</p>
               <form method="post">
                 <label>Email</label>
-                <input type="text" name="email" placeholder="admin@example.com" required />
+                <input type="email" name="email" placeholder="admin@example.com" autocomplete="username" autocapitalize="none" spellcheck="false" required />
                 <label style="margin-top:10px;display:block;">Password</label>
-                <input type="password" name="password" required />
+                <input type="password" name="password" autocomplete="current-password" required />
                 <label style="margin-top:10px;display:block;">
                   <input type="checkbox" name="remember_login" value="1" />
                   Keep me signed in for {REMEMBER_LOGIN_DAYS} days on this device
@@ -1838,15 +1850,15 @@ def create_web_app(
             <form method="post">
               <input type="hidden" name="action" value="profile" />
               <label>First Name</label>
-              <input type="text" name="first_name" value="{escape(str(user.get("first_name", "")), quote=True)}" required{profile_disabled_attr} />
+              <input type="text" name="first_name" autocomplete="given-name" value="{escape(str(user.get("first_name", "")), quote=True)}" required{profile_disabled_attr} />
               <label style="margin-top:10px;display:block;">Last Name</label>
-              <input type="text" name="last_name" value="{escape(str(user.get("last_name", "")), quote=True)}" required{profile_disabled_attr} />
+              <input type="text" name="last_name" autocomplete="family-name" value="{escape(str(user.get("last_name", "")), quote=True)}" required{profile_disabled_attr} />
               <label style="margin-top:10px;display:block;">Display Name</label>
-              <input type="text" name="display_name" value="{escape(str(user.get("display_name", "")), quote=True)}" required{profile_disabled_attr} />
+              <input type="text" name="display_name" autocomplete="nickname" value="{escape(str(user.get("display_name", "")), quote=True)}" required{profile_disabled_attr} />
               <label style="margin-top:10px;display:block;">Email</label>
-              <input type="text" name="email" value="{escape(str(user.get("email", "")), quote=True)}" required{profile_disabled_attr} />
+              <input type="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" value="{escape(str(user.get("email", "")), quote=True)}" required{profile_disabled_attr} />
               <label style="margin-top:10px;display:block;">Current Password (required to save profile/email)</label>
-              <input id="account_profile_current_password" type="password" name="current_password" required{profile_disabled_attr} />
+              <input id="account_profile_current_password" type="password" name="current_password" autocomplete="current-password" required{profile_disabled_attr} />
               <label style="margin-top:8px;display:block;">
                 <input type="checkbox"
                   onchange="document.getElementById('account_profile_current_password').type=this.checked?'text':'password';"{profile_disabled_attr} />
@@ -1864,11 +1876,11 @@ def create_web_app(
             <form method="post">
               <input type="hidden" name="action" value="password" />
               <label>Current Password</label>
-              <input id="account_password_current" type="password" name="current_password" required />
+              <input id="account_password_current" type="password" name="current_password" autocomplete="current-password" required />
               <label style="margin-top:10px;display:block;">New Password</label>
-              <input id="account_password_new" type="password" name="new_password" required />
+              <input id="account_password_new" type="password" name="new_password" autocomplete="new-password" required />
               <label style="margin-top:10px;display:block;">Confirm New Password</label>
-              <input id="account_password_confirm" type="password" name="confirm_password" required />
+              <input id="account_password_confirm" type="password" name="confirm_password" autocomplete="new-password" required />
               <label style="margin-top:8px;display:block;">
                 <input type="checkbox"
                   onchange="document.getElementById('account_password_current').type=this.checked?'text':'password';document.getElementById('account_password_new').type=this.checked?'text':'password';document.getElementById('account_password_confirm').type=this.checked?'text':'password';" />
@@ -2539,6 +2551,19 @@ def create_web_app(
                     for minutes in SESSION_TIMEOUT_MINUTE_OPTIONS
                 ]
                 select_placeholder = "Select auto logout timeout..."
+            elif key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL"}:
+                safe_level = str(safe_value or "INFO").strip().upper()
+                if safe_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+                    safe_level = "INFO"
+                safe_value = safe_level
+                static_select_options = [
+                    {"value": "DEBUG", "label": "DEBUG"},
+                    {"value": "INFO", "label": "INFO"},
+                    {"value": "WARNING", "label": "WARNING"},
+                    {"value": "ERROR", "label": "ERROR"},
+                    {"value": "CRITICAL", "label": "CRITICAL"},
+                ]
+                select_placeholder = "Select log level..."
             if key == "firmware_notification_channel" or key.endswith("_CHANNEL_ID"):
                 select_options = channel_options
             elif key.endswith("_ROLE_ID"):
@@ -2966,15 +2991,15 @@ def create_web_app(
             <form method="post">
               <input type="hidden" name="action" value="create" />
               <label>First Name</label>
-              <input type="text" name="first_name" required />
+              <input type="text" name="first_name" autocomplete="given-name" required />
               <label style="margin-top:10px;display:block;">Last Name</label>
-              <input type="text" name="last_name" required />
+              <input type="text" name="last_name" autocomplete="family-name" required />
               <label style="margin-top:10px;display:block;">Display Name</label>
-              <input type="text" name="display_name" required />
+              <input type="text" name="display_name" autocomplete="nickname" required />
               <label style="margin-top:10px;display:block;">Email</label>
-              <input type="text" name="email" required />
+              <input type="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" required />
               <label style="margin-top:10px;display:block;">Password</label>
-              <input id="create_user_password" type="password" name="password" required />
+              <input id="create_user_password" type="password" name="password" autocomplete="new-password" required />
               <label style="margin-top:8px;display:block;">
                 <input type="checkbox"
                   onchange="document.getElementById('create_user_password').type=this.checked?'text':'password';" />
@@ -2990,9 +3015,9 @@ def create_web_app(
             <form method="post">
               <input type="hidden" name="action" value="password" />
               <label>User Email</label>
-              <input type="text" name="email" required />
+              <input type="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" required />
               <label style="margin-top:10px;display:block;">New Password</label>
-              <input id="reset_user_password" type="password" name="password" required />
+              <input id="reset_user_password" type="password" name="password" autocomplete="new-password" required />
               <label style="margin-top:8px;display:block;">
                 <input type="checkbox"
                   onchange="document.getElementById('reset_user_password').type=this.checked?'text':'password';" />

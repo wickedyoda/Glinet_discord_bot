@@ -173,6 +173,12 @@ If secure cookies do not persist:
 2. Keep `WEB_SESSION_COOKIE_SECURE=true`.
 3. Confirm `X-Forwarded-Proto` is passed as `https`.
 
+If browser console warns that `Cross-Origin-Opener-Policy` was ignored on login:
+
+1. Serve the web UI over `https://` (or localhost/loopback for local testing).
+2. Verify proxy redirect from `http://` to `https://` is active.
+3. Verify users are not accessing an internal plain-HTTP URL directly.
+
 ## Validation Checklist
 
 - Login works through proxy.

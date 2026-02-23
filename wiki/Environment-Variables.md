@@ -9,6 +9,7 @@ This page groups runtime variables by feature area.
 - `GENERAL_CHANNEL_ID`
 - `DATA_DIR`
 - `LOG_LEVEL`
+- `CONTAINER_LOG_LEVEL`
 
 ## Search / Docs
 
@@ -54,6 +55,11 @@ This page groups runtime variables by feature area.
 - `WEB_ADMIN_DEFAULT_USERNAME`
 - `WEB_ADMIN_DEFAULT_PASSWORD` (required for first boot when no web users exist; must meet password policy)
 - `WEB_ADMIN_SESSION_SECRET`
+- `WEB_SESSION_COOKIE_SECURE`
+- `WEB_TRUST_PROXY_HEADERS`
+- `WEB_ENFORCE_CSRF`
+- `WEB_ENFORCE_SAME_ORIGIN_POSTS`
+- `WEB_HARDEN_FILE_PERMISSIONS`
 - `WEB_DISCORD_CATALOG_TTL_SECONDS`
 - `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS`
 - `WEB_BOT_PROFILE_TIMEOUT_SECONDS`
