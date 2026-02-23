@@ -173,6 +173,7 @@ Required:
 Optional:
 - `GENERAL_CHANNEL_ID` (used for invite generation; defaults to command channel)
 - `DATA_DIR` (default `data`)
+- `LOG_DIR` (default `/logs`, directory for `bot.log` and `container_errors.log`)
 - `LOG_LEVEL` (default `INFO`)
 - `CONTAINER_LOG_LEVEL` (default `ERROR`, level used for container-wide error log capture)
 - `FORUM_BASE_URL` (default `https://forum.gl-inet.com`)
@@ -220,6 +221,7 @@ Example `.env`:
 DISCORD_TOKEN=your_bot_token
 GUILD_ID=your_guild_id
 GENERAL_CHANNEL_ID=your_general_channel_id
+LOG_DIR=/logs
 LOG_LEVEL=INFO
 CONTAINER_LOG_LEVEL=ERROR
 FORUM_BASE_URL=https://forum.gl-inet.com
@@ -278,6 +280,7 @@ services:
       - WEB_BIND_HOST=0.0.0.0
       - WEB_ENABLED=${WEB_ENABLED:-true}
       - WEB_PORT=${WEB_PORT:-8080}
+      - LOG_DIR=${LOG_DIR:-/logs}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CONTAINER_LOG_LEVEL=${CONTAINER_LOG_LEVEL:-ERROR}
       - WEB_PUBLIC_BASE_URL=${WEB_PUBLIC_BASE_URL:-}
@@ -289,6 +292,7 @@ services:
       - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
     volumes:
       - ./data:/app/data
+      - ./logs:/logs
       - ./.env:/app/.env
     restart: unless-stopped
 ```
@@ -333,10 +337,10 @@ Bot permissions:
 
 ## Data Files
 
-Stored under `data/` (or `DATA_DIR`):
+Stored under data + log paths:
 - `bot_data.db` (primary SQLite database)
-- `bot.log`
-- `container_errors.log` (container-wide error log used by `/logs`)
+- `${LOG_DIR}/bot.log` (default `/logs/bot.log`)
+- `${LOG_DIR}/container_errors.log` (default `/logs/container_errors.log`, used by `/logs`)
 
 Legacy files are auto-migrated into SQLite on startup if present:
 - `access_role.txt`

@@ -53,13 +53,28 @@ def to_logging_level(level_name: str):
     return getattr(logging, str(level_name or "INFO").upper(), logging.INFO)
 
 
+def resolve_log_dir(preferred_value: str):
+    preferred = str(preferred_value or "").strip()
+    candidates = [preferred, os.path.join(DATA_DIR, "logs"), DATA_DIR]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            os.makedirs(candidate, exist_ok=True)
+            return candidate
+        except OSError:
+            continue
+    return DATA_DIR
+
+
 # Set up logging to console and persistent file
 LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", "INFO"))
 CONTAINER_LOG_LEVEL = normalize_log_level(
     os.getenv("CONTAINER_LOG_LEVEL", "ERROR"), fallback="ERROR"
 )
-BOT_LOG_FILE = os.path.join(DATA_DIR, "bot.log")
-CONTAINER_ERROR_LOG_FILE = os.path.join(DATA_DIR, "container_errors.log")
+LOG_DIR = resolve_log_dir(os.getenv("LOG_DIR", "/logs"))
+BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
+CONTAINER_ERROR_LOG_FILE = os.path.join(LOG_DIR, "container_errors.log")
 logger = logging.getLogger("invite_bot")
 logger.setLevel(to_logging_level(LOG_LEVEL))
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -81,6 +96,7 @@ root_logger = logging.getLogger()
 root_logger.addHandler(container_error_handler)
 logging.getLogger("discord").setLevel(to_logging_level(LOG_LEVEL))
 logging.getLogger("werkzeug").setLevel(to_logging_level(LOG_LEVEL))
+logger.info("Runtime log files: %s | %s", BOT_LOG_FILE, CONTAINER_ERROR_LOG_FILE)
 
 
 def install_global_exception_logging():

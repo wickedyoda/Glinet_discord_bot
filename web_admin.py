@@ -79,6 +79,7 @@ ENV_FIELDS = [
         "Container-wide error log level (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     ),
     ("DATA_DIR", "Data Directory", "Persistent data directory inside container."),
+    ("LOG_DIR", "Log Directory", "Directory for runtime log files (bot.log, container_errors.log)."),
     ("FORUM_BASE_URL", "Forum Base URL", "GL.iNet forum root URL."),
     ("FORUM_MAX_RESULTS", "Forum Max Results", "Max forum links returned per search."),
     (
