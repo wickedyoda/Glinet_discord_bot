@@ -37,6 +37,7 @@ VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
 SENSITIVE_LOG_VALUE_PATTERN = re.compile(
     r"(?i)\b(password|token|secret|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)"
 )
+REDDIT_SUBREDDIT_PATTERN = re.compile(r"^[A-Za-z0-9_]{2,21}$")
 
 
 def normalize_log_level(raw_value: str, fallback: str = "INFO"):
@@ -65,6 +66,36 @@ def normalize_http_url_setting(raw_value: str, fallback_value: str, setting_name
         "%s is missing URL scheme; normalizing to %s", setting_name, normalized
     )
     return normalized
+
+
+def normalize_reddit_subreddit_setting(
+    raw_value: str, fallback_value: str = "GlInet", setting_name: str = "REDDIT_SUBREDDIT"
+):
+    fallback = str(fallback_value or "GlInet").strip() or "GlInet"
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        return fallback
+
+    lower_candidate = candidate.lower()
+    if lower_candidate.startswith(("http://", "https://")):
+        match = re.search(r"/r/([A-Za-z0-9_]{2,21})(?:/|$)", candidate)
+        candidate = match.group(1) if match else ""
+    elif lower_candidate.startswith("r/"):
+        candidate = candidate[2:]
+    elif lower_candidate.startswith("/r/"):
+        candidate = candidate[3:]
+
+    candidate = candidate.strip().strip("/")
+    if REDDIT_SUBREDDIT_PATTERN.fullmatch(candidate):
+        return candidate
+
+    logger.warning(
+        "Invalid %s value '%s'; using fallback subreddit '%s'",
+        setting_name,
+        raw_value,
+        fallback,
+    )
+    return fallback
 
 
 def resolve_log_dir(preferred_value: str):
@@ -172,6 +203,11 @@ GUILD_ID = int(os.getenv("GUILD_ID"))
 GENERAL_CHANNEL_ID = int(os.getenv("GENERAL_CHANNEL_ID", "0"))
 FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", "https://forum.gl-inet.com").rstrip("/")
 FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
+REDDIT_BASE_URL = "https://www.reddit.com"
+REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(
+    os.getenv("REDDIT_SUBREDDIT", "GlInet"), fallback_value="GlInet"
+)
+REDDIT_MAX_RESULTS = 5
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
@@ -354,6 +390,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "remove_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "logs": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "search": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_reddit": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_forum": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_kvm": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -443,6 +480,10 @@ COMMAND_PERMISSION_METADATA = {
     "search": {
         "label": "/search, !search",
         "description": "Search forum + docs.",
+    },
+    "search_reddit": {
+        "label": "/search_reddit, !searchreddit",
+        "description": "Search configured subreddit on Reddit.",
     },
     "search_forum": {
         "label": "/search_forum, !searchforum",
@@ -2870,6 +2911,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global GENERAL_CHANNEL_ID
     global FORUM_BASE_URL
     global FORUM_MAX_RESULTS
+    global REDDIT_SUBREDDIT
     global DOCS_MAX_RESULTS_PER_SITE
     global DOCS_INDEX_TTL_SECONDS
     global SEARCH_RESPONSE_MAX_CHARS
@@ -2911,6 +2953,10 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", FORUM_BASE_URL).rstrip("/")
     FORUM_MAX_RESULTS = parse_int_setting(
         os.getenv("FORUM_MAX_RESULTS", FORUM_MAX_RESULTS), FORUM_MAX_RESULTS, minimum=1
+    )
+    REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(
+        os.getenv("REDDIT_SUBREDDIT", REDDIT_SUBREDDIT),
+        fallback_value=REDDIT_SUBREDDIT,
     )
     DOCS_MAX_RESULTS_PER_SITE = parse_int_setting(
         os.getenv("DOCS_MAX_RESULTS_PER_SITE", DOCS_MAX_RESULTS_PER_SITE),
@@ -3144,6 +3190,69 @@ def search_forum_links(query: str):
     return links if links else ["No results found."]
 
 
+def search_reddit_posts(query: str):
+    request_headers = {
+        "Accept": "application/json,text/plain,*/*",
+        "User-Agent": "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)",
+    }
+    try:
+        search_endpoint = f"{REDDIT_BASE_URL}/r/{REDDIT_SUBREDDIT}/search.json"
+        response = requests.get(
+            search_endpoint,
+            params={
+                "q": query,
+                "sort": "relevance",
+                "limit": REDDIT_MAX_RESULTS,
+                "t": "all",
+                "raw_json": 1,
+                "restrict_sr": 1,
+            },
+            timeout=10,
+            headers=request_headers,
+        )
+        response.raise_for_status()
+        data = response.json()
+    except requests.HTTPError as exc:
+        status_code = getattr(exc.response, "status_code", None)
+        if status_code == 429:
+            logger.warning("Reddit search rate limited for query: %s", query)
+            return [], "❌ Reddit search is rate-limited right now. Please try again soon."
+        logger.exception("Reddit search HTTP failure for query: %s", query)
+        return [], "❌ Failed to fetch Reddit results."
+    except requests.RequestException:
+        logger.exception("Reddit search request failed for query: %s", query)
+        return [], "❌ Failed to fetch Reddit results."
+    except ValueError:
+        logger.exception("Reddit search returned invalid JSON for query: %s", query)
+        return [], "❌ Reddit returned an invalid response."
+
+    children = ((data or {}).get("data") or {}).get("children", [])
+    if not isinstance(children, list):
+        children = []
+
+    posts = []
+    seen_links = set()
+    for item in children:
+        if not isinstance(item, dict):
+            continue
+        payload = item.get("data", {})
+        if not isinstance(payload, dict):
+            continue
+        permalink = str(payload.get("permalink") or "").strip()
+        if not permalink:
+            continue
+        link = urljoin(REDDIT_BASE_URL, permalink)
+        if link in seen_links:
+            continue
+        title = clean_search_text(str(payload.get("title") or "")).strip()
+        posts.append((title or "Untitled post", link))
+        seen_links.add(link)
+        if len(posts) >= REDDIT_MAX_RESULTS:
+            break
+
+    return posts, ""
+
+
 def normalize_search_terms(query: str):
     raw_terms = [term.lower() for term in re.findall(r"[a-zA-Z0-9]+", query)]
     expanded_terms = []
@@ -3316,6 +3425,24 @@ def build_forum_search_message(query: str):
         lines.extend([f"- {link}" for link in forum_links])
     else:
         lines.append(f"- {forum_results[0]}")
+    return trim_search_message("\n".join(lines))
+
+
+def build_reddit_search_message(query: str):
+    posts, error_message = search_reddit_posts(query)
+    lines = [
+        f"🔎 Reddit results for: `{query}`",
+        "",
+        f"**Top {REDDIT_MAX_RESULTS} posts in r/{REDDIT_SUBREDDIT}**",
+    ]
+    if error_message:
+        lines.append(f"- {error_message}")
+        return trim_search_message("\n".join(lines))
+    if posts:
+        for index, (title, link) in enumerate(posts, start=1):
+            lines.append(f"{index}. {title} - {link}")
+    else:
+        lines.append("- No Reddit results found.")
     return trim_search_message("\n".join(lines))
 
 
@@ -5775,6 +5902,41 @@ async def search_prefix(ctx: commands.Context, *, query: str):
         return
     await ctx.send("🔍 Searching forum + docs...")
     message = await asyncio.to_thread(build_search_message, query)
+    await ctx.send(message)
+
+
+@tree.command(
+    name="search_reddit",
+    description="Search r/GlInet and return top 5 matching posts",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(query="Enter search keywords")
+async def search_reddit_slash(interaction: discord.Interaction, query: str):
+    logger.info("/search_reddit invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_reddit"):
+        return
+    query = query.strip()
+    if not query:
+        await interaction.response.send_message(
+            "❌ Please provide a search query.", ephemeral=True
+        )
+        return
+    await interaction.response.defer(thinking=True)
+    message = await asyncio.to_thread(build_reddit_search_message, query)
+    await interaction.followup.send(message)
+
+
+@bot.command(name="searchreddit")
+async def search_reddit_prefix(ctx: commands.Context, *, query: str):
+    logger.info("!searchreddit invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_reddit"):
+        return
+    query = query.strip()
+    if not query:
+        await ctx.send("❌ Please provide a search query.")
+        return
+    await ctx.send("🔍 Searching Reddit...")
+    message = await asyncio.to_thread(build_reddit_search_message, query)
     await ctx.send(message)
 
 
