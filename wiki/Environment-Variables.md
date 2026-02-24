@@ -33,6 +33,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 |---|---|---|---|
 | `FORUM_BASE_URL` | `https://forum.gl-inet.com` | URL | Forum search base URL |
 | `FORUM_MAX_RESULTS` | `5` | Integer, `>= 1` | Max forum links returned |
+| `REDDIT_SUBREDDIT` | `GlInet` | Subreddit name, URL, or `r/<name>` format | Subreddit used by `/search_reddit` and `!searchreddit` |
 | `DOCS_MAX_RESULTS_PER_SITE` | `2` | Integer, `>= 1` | Max docs results per docs source |
 | `DOCS_INDEX_TTL_SECONDS` | `3600` | Integer, `>= 60` | Docs index cache TTL |
 | `SEARCH_RESPONSE_MAX_CHARS` | `1900` | Integer, `>= 200` | Max chars in search response |

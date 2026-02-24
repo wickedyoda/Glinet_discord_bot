@@ -6,6 +6,10 @@ All notable changes to this project are documented in this file.
 
 ### Added
 - Full web-admin account model with admin-created users only (no Discord `/login` flow).
+- Reddit search commands:
+  - `/search_reddit`
+  - `!searchreddit`
+  - returns top 5 matching posts from configured subreddit (`REDDIT_SUBREDDIT`, default `r/GlInet`)
 - User profile fields for web accounts:
   - first name
   - last name

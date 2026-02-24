@@ -7,6 +7,7 @@ Search GL.iNet forum and documentation sources directly from Discord.
 | Scope | Slash | Prefix | Notes |
 |---|---|---|---|
 | Combined sources | `/search` | `!search` | Forum + docs blend |
+| Reddit only | `/search_reddit` | `!searchreddit` | Top 5 posts from configured subreddit (default `r/GlInet`) |
 | Forum only | `/search_forum` | `!searchforum` | Uses forum base URL |
 | KVM docs | `/search_kvm` | `!searchkvm` | KVM-specific docs index |
 | IoT docs | `/search_iot` | `!searchiot` | IoT-specific docs index |
@@ -31,6 +32,7 @@ Search GL.iNet forum and documentation sources directly from Discord.
 |---|---|---|
 | `FORUM_BASE_URL` | Forum root URL | Source endpoint for forum queries |
 | `FORUM_MAX_RESULTS` | Max forum hits | Higher value increases output volume |
+| `REDDIT_SUBREDDIT` | Reddit source scope | Restricts Reddit search to a single subreddit |
 | `DOCS_MAX_RESULTS_PER_SITE` | Max docs hits per site | Balances breadth and message size |
 | `DOCS_INDEX_TTL_SECONDS` | Docs index cache lifetime | Higher TTL reduces fetch overhead |
 | `SEARCH_RESPONSE_MAX_CHARS` | Response clipping threshold | Prevents oversize Discord messages |
@@ -44,6 +46,7 @@ Search GL.iNet forum and documentation sources directly from Discord.
 ## Example Queries
 
 - `/search gl-mt6000 wireguard`
+- `/search_reddit wireguard setup`
 - `/search_forum mwan issue`
 - `!searchrouter dns over tls`
 - `!searchkvm vlan trunk`

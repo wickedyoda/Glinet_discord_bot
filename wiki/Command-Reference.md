@@ -49,6 +49,8 @@ Web variation:
 |---|---|---|---|---|
 | `/search` | Slash | Member/Public | query text | Combined forum + docs results |
 | `!search` | Prefix | Member/Public | query text | Prefix equivalent of combined search |
+| `/search_reddit` | Slash | Member/Public | query text | Top 5 matches from configured subreddit (default `r/GlInet`) |
+| `!searchreddit` | Prefix | Member/Public | query text | Prefix Reddit search |
 | `/search_forum` | Slash | Member/Public | query text | Forum-only results |
 | `!searchforum` | Prefix | Member/Public | query text | Prefix forum-only search |
 | `/search_kvm` | Slash | Member/Public | query text | KVM docs source |
