@@ -211,6 +211,7 @@ REDDIT_MAX_RESULTS = 5
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
+DISCORD_MESSAGE_SAFE_MAX_CHARS = 1900
 FIRMWARE_FEED_URL = normalize_http_url_setting(
     os.getenv("FIRMWARE_FEED_URL", ""),
     "https://gl-fw.remotetohome.io/",
@@ -1319,6 +1320,24 @@ async def ensure_prefix_command_access(ctx: commands.Context, command_key: str):
         return True
     await ctx.send(build_command_permission_denied_message(command_key, ctx.guild))
     return False
+
+
+async def send_safe_interaction_message(
+    interaction: discord.Interaction, message_text: str, ephemeral: bool = True
+):
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message_text, ephemeral=ephemeral)
+        else:
+            await interaction.response.send_message(message_text, ephemeral=ephemeral)
+        return True
+    except discord.HTTPException:
+        logger.exception(
+            "Failed sending interaction response message for user=%s command=%s",
+            interaction.user,
+            interaction.command.name if interaction.command else "unknown",
+        )
+        return False
 
 
 def build_command_permissions_web_payload():
@@ -3245,7 +3264,7 @@ def search_reddit_posts(query: str):
         if link in seen_links:
             continue
         title = clean_search_text(str(payload.get("title") or "")).strip()
-        posts.append((title or "Untitled post", link))
+        posts.append((make_discord_safe_text(title or "Untitled post"), link))
         seen_links.add(link)
         if len(posts) >= REDDIT_MAX_RESULTS:
             break
@@ -3285,6 +3304,10 @@ def normalize_search_terms(query: str):
 def clean_search_text(value: str):
     no_html = re.sub(r"<[^>]+>", " ", value or "")
     return re.sub(r"\s+", " ", unescape(no_html)).strip()
+
+
+def make_discord_safe_text(value: str):
+    return str(value or "").encode("utf-8", errors="replace").decode("utf-8")
 
 
 def load_docs_index(base_url: str):
@@ -3382,9 +3405,13 @@ def search_docs_links(query: str):
 
 
 def trim_search_message(message: str):
-    if len(message) <= SEARCH_RESPONSE_MAX_CHARS:
+    safe_limit = min(
+        DISCORD_MESSAGE_SAFE_MAX_CHARS,
+        max(200, int(SEARCH_RESPONSE_MAX_CHARS)),
+    )
+    if len(message) <= safe_limit:
         return message
-    trimmed = message[: SEARCH_RESPONSE_MAX_CHARS - 24].rsplit("\n", 1)[0]
+    trimmed = message[: safe_limit - 24].rsplit("\n", 1)[0]
     return f"{trimmed}\n...results truncated."
 
 
@@ -3429,9 +3456,10 @@ def build_forum_search_message(query: str):
 
 
 def build_reddit_search_message(query: str):
+    safe_query = make_discord_safe_text(query)
     posts, error_message = search_reddit_posts(query)
     lines = [
-        f"🔎 Reddit results for: `{query}`",
+        f"🔎 Reddit results for: `{safe_query}`",
         "",
         f"**Top {REDDIT_MAX_RESULTS} posts in r/{REDDIT_SUBREDDIT}**",
     ]
@@ -3515,16 +3543,18 @@ async def on_tree_error(interaction: discord.Interaction, error: app_commands.Ap
         interaction.user,
         exc_info=(type(error), error, error.__traceback__),
     )
-    if interaction.response.is_done():
-        await interaction.followup.send(
-            "❌ An unexpected error occurred while processing that command.",
+    if isinstance(error, app_commands.CommandNotFound):
+        await send_safe_interaction_message(
+            interaction,
+            "❌ This command is still syncing. Please wait 30-60 seconds and try again.",
             ephemeral=True,
         )
-    else:
-        await interaction.response.send_message(
-            "❌ An unexpected error occurred while processing that command.",
-            ephemeral=True,
-        )
+        return
+    await send_safe_interaction_message(
+        interaction,
+        "❌ An unexpected error occurred while processing that command.",
+        ephemeral=True,
+    )
 
 
 @bot.event
@@ -5921,9 +5951,26 @@ async def search_reddit_slash(interaction: discord.Interaction, query: str):
             "❌ Please provide a search query.", ephemeral=True
         )
         return
-    await interaction.response.defer(thinking=True)
-    message = await asyncio.to_thread(build_reddit_search_message, query)
-    await interaction.followup.send(message)
+    try:
+        await interaction.response.defer(thinking=True)
+        message = await asyncio.to_thread(build_reddit_search_message, query)
+        await interaction.followup.send(message)
+    except Exception:
+        logger.exception(
+            "search_reddit command failed for user=%s query=%s",
+            interaction.user,
+            query,
+        )
+        if interaction.response.is_done():
+            await interaction.followup.send(
+                "❌ Failed to fetch Reddit results. Please try again shortly.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.response.send_message(
+                "❌ Failed to fetch Reddit results. Please try again shortly.",
+                ephemeral=True,
+            )
 
 
 @bot.command(name="searchreddit")
@@ -5935,9 +5982,15 @@ async def search_reddit_prefix(ctx: commands.Context, *, query: str):
     if not query:
         await ctx.send("❌ Please provide a search query.")
         return
-    await ctx.send("🔍 Searching Reddit...")
-    message = await asyncio.to_thread(build_reddit_search_message, query)
-    await ctx.send(message)
+    try:
+        await ctx.send("🔍 Searching Reddit...")
+        message = await asyncio.to_thread(build_reddit_search_message, query)
+        await ctx.send(message)
+    except Exception:
+        logger.exception(
+            "searchreddit command failed for user=%s query=%s", ctx.author, query
+        )
+        await ctx.send("❌ Failed to fetch Reddit results. Please try again shortly.")
 
 
 @tree.command(
