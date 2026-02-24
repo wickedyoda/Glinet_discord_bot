@@ -1,5 +1,9 @@
 name: (beta) Build and Publish Docker image 
 
+permissions:
+  contents: read
+  packages: write
+
 on:
   workflow_dispatch:  # Manual trigger from the GitHub UI
   push:
