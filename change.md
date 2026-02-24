@@ -40,6 +40,13 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Migrated persistent runtime data to SQLite (`data/bot_data.db`) with WAL mode and tuned pragmas.
+- Hardened Reddit search command handling:
+  - command now catches runtime/send exceptions and returns a user-safe failure message
+  - Reddit result text is sanitized for Discord-safe output encoding
+  - search output trimming now enforces a hard Discord-safe max length
+- Hardened global slash-command error response behavior:
+  - avoids secondary 40060 "Interaction has already been acknowledged" failures
+  - returns explicit "command is still syncing" feedback for `CommandNotFound`
 - Implemented merge-only legacy import on startup from old `/app/data` files (no overwrite of existing DB rows).
 - Expanded moderation capability coverage for member/role operations and web-driven controls.
 - Enforced stronger password policy globally:
