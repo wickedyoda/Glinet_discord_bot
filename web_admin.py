@@ -4,6 +4,7 @@ import re
 import secrets
 import sqlite3
 import time
+import hashlib
 import ipaddress
 from datetime import datetime, timedelta, timezone
 from functools import wraps
@@ -19,6 +20,7 @@ from flask import (
     redirect,
     render_template_string,
     request,
+    send_file,
     session,
     url_for,
 )
@@ -38,6 +40,7 @@ POST_FORM_TAG_PATTERN = re.compile(
 )
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz"}
+WEB_GUI_TITLE_SUFFIX = "GL.iNet Discord Bot Dashboard"
 INT_KEYS = {
     "GUILD_ID",
     "GENERAL_CHANNEL_ID",
@@ -384,6 +387,14 @@ def _is_admin_user(user: dict | None) -> bool:
 
 def _user_role_label_from_is_admin(is_admin: bool) -> str:
     return "Admin" if bool(is_admin) else "Read-only"
+
+
+def _audit_user_label_from_email(email: str) -> str:
+    normalized_email = _normalize_email(email)
+    if not normalized_email:
+        return "anonymous"
+    digest = hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:12]
+    return f"user_{digest}"
 
 
 def _parse_iso_datetime(raw_value: str):
@@ -990,7 +1001,9 @@ def _render_layout(
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="csrf-token" content="{{ csrf_token }}" />
-  <title>{{ title }}</title>
+  <title>{{ title }} | {{ title_suffix }}</title>
+  <link rel="icon" type="image/png" href="{{ url_for('favicon') }}" />
+  <link rel="apple-touch-icon" href="{{ url_for('favicon') }}" />
   <style>
     * { box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; }
@@ -1286,6 +1299,7 @@ def _render_layout(
 </html>
         """,
         title=title,
+        title_suffix=WEB_GUI_TITLE_SUFFIX,
         body_html=body_html,
         current_email=current_email,
         current_display_name=current_display_name,
@@ -1464,7 +1478,7 @@ def create_web_app(
                 request.endpoint or "unknown",
                 int(getattr(response, "status_code", 0) or 0),
                 _client_ip(),
-                _normalize_email(session.get("auth_email", "")) or "anonymous",
+                _audit_user_label_from_email(session.get("auth_email", "")),
                 duration_ms,
             )
         return response
@@ -1486,6 +1500,7 @@ def create_web_app(
     _ensure_default_admin(
         users_file, default_admin_email, default_admin_password, logger
     )
+    favicon_file = Path(__file__).resolve().parent / "assets" / "images" / "glinet-bot-round.png"
     wiki_dir = Path(__file__).resolve().parent / "wiki"
     wiki_dir_resolved = wiki_dir.resolve()
 
@@ -1906,6 +1921,12 @@ def create_web_app(
     def healthz():
         return {"ok": True}, 200
 
+    @app.route("/favicon.ico", methods=["GET"])
+    def favicon():
+        if favicon_file.exists() and favicon_file.is_file():
+            return send_file(favicon_file, mimetype="image/png", max_age=86400)
+        return ("", 204)
+
     @app.route("/", methods=["GET"])
     def index():
         if _current_user():
@@ -1992,6 +2013,9 @@ def create_web_app(
 
     @app.route("/logout", methods=["GET"])
     def logout():
+        client_ip = _client_ip()
+        login_attempts.pop(client_ip, None)
+        recent_login_success.pop(client_ip, None)
         session.clear()
         return redirect(url_for("login"))
 
@@ -3157,6 +3181,7 @@ def create_web_app(
             if action == "create":
                 email = _normalize_email(request.form.get("email", ""))
                 password = request.form.get("password", "")
+                confirm_password = request.form.get("confirm_password", "")
                 first_name = _clean_profile_text(
                     request.form.get("first_name", ""), max_length=80
                 )
@@ -3180,6 +3205,8 @@ def create_web_app(
                     flash("Display name is required.", "error")
                 elif any(entry["email"] == email for entry in users_data):
                     flash("A user with that email already exists.", "error")
+                elif password != confirm_password:
+                    flash("Password and confirmation must match.", "error")
                 else:
                     password_errors = _password_policy_errors(password)
                     if password_errors:
@@ -3248,24 +3275,30 @@ def create_web_app(
                     str(request.form.get("role", "read_only")).strip().lower()
                 )
                 target_is_admin = requested_role == "admin"
-                changed = False
-                for entry in users_data:
-                    if entry["email"] == target_email:
-                        entry["is_admin"] = target_is_admin
-                        changed = True
-                        break
-                if changed:
-                    if sum(1 for entry in users_data if entry.get("is_admin")) < 1:
-                        flash("At least one admin account must remain.", "error")
-                    else:
-                        _save_users(users_file, users_data)
-                        flash(
-                            f"Updated role for {target_email} to {_user_role_label_from_is_admin(target_is_admin)}.",
-                            "success",
-                        )
-                        users_data = _read_users(users_file)
+                if target_email == user["email"] and not target_is_admin:
+                    flash(
+                        "You cannot set your own account to Read-only. Another admin must do this.",
+                        "error",
+                    )
                 else:
-                    flash("User not found.", "error")
+                    changed = False
+                    for entry in users_data:
+                        if entry["email"] == target_email:
+                            entry["is_admin"] = target_is_admin
+                            changed = True
+                            break
+                    if changed:
+                        if sum(1 for entry in users_data if entry.get("is_admin")) < 1:
+                            flash("At least one admin account must remain.", "error")
+                        else:
+                            _save_users(users_file, users_data)
+                            flash(
+                                f"Updated role for {target_email} to {_user_role_label_from_is_admin(target_is_admin)}.",
+                                "success",
+                            )
+                            users_data = _read_users(users_file)
+                    else:
+                        flash("User not found.", "error")
 
         user_rows = []
         for entry in users_data:
@@ -3274,6 +3307,20 @@ def create_web_app(
             role_label = _user_role_label_from_is_admin(is_admin_entry)
             next_role_value = "read_only" if is_admin_entry else "admin"
             next_role_label = _user_role_label_from_is_admin(next_role_value == "admin")
+            is_self_read_only_demotion = (
+                email == user["email"] and next_role_value == "read_only"
+            )
+            role_button_label = (
+                "Set Read-only (Self blocked)"
+                if is_self_read_only_demotion
+                else f"Set {next_role_label}"
+            )
+            role_button_disabled = " disabled" if is_self_read_only_demotion else ""
+            role_button_title = (
+                " title='You cannot set your own account to Read-only.'"
+                if is_self_read_only_demotion
+                else ""
+            )
             display_name = str(entry.get("display_name") or _default_display_name(email))
             full_name = _clean_profile_text(
                 f"{str(entry.get('first_name') or '')} {str(entry.get('last_name') or '')}",
@@ -3293,7 +3340,7 @@ def create_web_app(
                       <input type="hidden" name="action" value="set_role" />
                       <input type="hidden" name="email" value="{escape(email, quote=True)}" />
                       <input type="hidden" name="role" value="{escape(next_role_value, quote=True)}" />
-                      <button class="btn secondary" type="submit">Set {escape(next_role_label)}</button>
+                      <button class="btn secondary" type="submit"{role_button_disabled}{role_button_title}>{escape(role_button_label)}</button>
                     </form>
                     <form method="post" style="display:inline;margin-left:6px;">
                       <input type="hidden" name="action" value="delete" />
@@ -3322,9 +3369,11 @@ def create_web_app(
               <input type="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" required />
               <label style="margin-top:10px;display:block;">Password</label>
               <input id="create_user_password" type="password" name="password" autocomplete="new-password" required />
+              <label style="margin-top:10px;display:block;">Confirm Password</label>
+              <input id="create_user_password_confirm" type="password" name="confirm_password" autocomplete="new-password" required />
               <label style="margin-top:8px;display:block;">
                 <input type="checkbox"
-                  onchange="document.getElementById('create_user_password').type=this.checked?'text':'password';" />
+                  onchange="document.getElementById('create_user_password').type=this.checked?'text':'password';document.getElementById('create_user_password_confirm').type=this.checked?'text':'password';" />
                 Show password
               </label>
               <label style="margin-top:10px;display:block;">Role</label>
