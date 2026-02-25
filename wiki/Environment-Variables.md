@@ -22,7 +22,8 @@ This page lists all supported environment variables, defaults, and accepted opti
 |---|---|---|---|
 | `GENERAL_CHANNEL_ID` | `0` | Integer, `>= 0` | Used for invite generation fallback |
 | `DATA_DIR` | `data` | Path string | Persistent runtime data directory |
-| `LOG_DIR` | `/logs` | Path string | Directory for `bot.log` and `container_errors.log` |
+| `LOG_DIR` | `/logs` | Path string | Directory for `bot.log`, `container_errors.log`, and `web_gui_audit.log` |
+| `LOG_HARDEN_FILE_PERMISSIONS` | `true` | Boolean | Best-effort log storage hardening (`LOG_DIR` -> `0700`, log files -> `0600`) |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Runtime bot/web verbosity |
 | `CONTAINER_LOG_LEVEL` | `ERROR` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Threshold for `${LOG_DIR}/container_errors.log` |
 | `DISCORD_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Discord/werkzeug logger verbosity (keep `INFO` or higher to avoid verbose payload logs) |
@@ -142,6 +143,7 @@ WEB_ENFORCE_SAME_ORIGIN_POSTS=true
 
 ```env
 LOG_DIR=/logs
+LOG_HARDEN_FILE_PERMISSIONS=true
 LOG_LEVEL=INFO
 CONTAINER_LOG_LEVEL=ERROR
 WEB_HARDEN_FILE_PERMISSIONS=true

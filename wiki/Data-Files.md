@@ -12,6 +12,7 @@ Persistent runtime state uses:
 | `${DATA_DIR}/bot_data.db` | Primary SQLite database for runtime and config state |
 | `${LOG_DIR}/bot.log` | Application/runtime logs |
 | `${LOG_DIR}/container_errors.log` | Error-focused log file used by `/logs` command |
+| `${LOG_DIR}/web_gui_audit.log` | Web GUI interaction audit entries (`WEB_AUDIT ...`) |
 
 ## SQLite Scope
 
@@ -50,6 +51,13 @@ When enabled (`WEB_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 - `data/` directory -> `0700`
 - `bot_data.db` -> `0600`
 
+When enabled (`LOG_HARDEN_FILE_PERMISSIONS=true`), application attempts:
+
+- `${LOG_DIR}` directory -> `0700`
+- `${LOG_DIR}/bot.log` -> `0600`
+- `${LOG_DIR}/container_errors.log` -> `0600`
+- `${LOG_DIR}/web_gui_audit.log` -> `0600`
+
 ## Backup Guidance
 
 Minimum backup set:
@@ -57,6 +65,7 @@ Minimum backup set:
 - `${DATA_DIR}/bot_data.db`
 - `${LOG_DIR}/bot.log` (optional for auditing)
 - `${LOG_DIR}/container_errors.log` (optional for incident traces)
+- `${LOG_DIR}/web_gui_audit.log` (recommended for web admin activity auditing)
 
 For reliable restore:
 

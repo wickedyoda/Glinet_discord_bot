@@ -15,6 +15,7 @@ from croniter import croniter
 from flask import (
     Flask,
     flash,
+    g,
     redirect,
     render_template_string,
     request,
@@ -35,6 +36,8 @@ POST_FORM_TAG_PATTERN = re.compile(
     r"(<form\b[^>]*\bmethod\s*=\s*[\"']?post[\"']?[^>]*>)",
     re.IGNORECASE,
 )
+STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz"}
 INT_KEYS = {
     "GUILD_ID",
     "GENERAL_CHANNEL_ID",
@@ -85,7 +88,16 @@ ENV_FIELDS = [
         "Discord/werkzeug logger level to prevent noisy payload dumps (DEBUG, INFO, WARNING, ERROR, CRITICAL).",
     ),
     ("DATA_DIR", "Data Directory", "Persistent data directory inside container."),
-    ("LOG_DIR", "Log Directory", "Directory for runtime log files (bot.log, container_errors.log)."),
+    (
+        "LOG_DIR",
+        "Log Directory",
+        "Directory for runtime log files (bot.log, container_errors.log, web_gui_audit.log).",
+    ),
+    (
+        "LOG_HARDEN_FILE_PERMISSIONS",
+        "Log Harden File Permissions",
+        "Attempt to enforce restrictive permissions on LOG_DIR and runtime log files.",
+    ),
     ("FORUM_BASE_URL", "Forum Base URL", "GL.iNet forum root URL."),
     ("FORUM_MAX_RESULTS", "Forum Max Results", "Max forum links returned per search."),
     (
@@ -364,6 +376,14 @@ def _default_display_name(email: str) -> str:
     local = re.sub(r"[._-]+", " ", local)
     cleaned = _clean_profile_text(local, max_length=80)
     return cleaned.title() if cleaned else "User"
+
+
+def _is_admin_user(user: dict | None) -> bool:
+    return bool(user and user.get("is_admin"))
+
+
+def _user_role_label_from_is_admin(is_admin: bool) -> str:
+    return "Admin" if bool(is_admin) else "Read-only"
 
 
 def _parse_iso_datetime(raw_value: str):
@@ -1158,7 +1178,7 @@ def _render_layout(
       </div>
       {% if current_email %}
         <nav class="nav-controls">
-          <span class="current-user">{{ current_display_name or current_email }}</span>
+          <span class="current-user">{{ current_display_name or current_email }} ({{ "Admin" if is_admin else "Read-only" }})</span>
           {% if current_display_name and current_display_name != current_email %}
             <span class="current-user-email">({{ current_email }})</span>
           {% endif %}
@@ -1167,22 +1187,26 @@ def _render_layout(
           <select id="nav-page-select" class="nav-select">
             <option value="">Go to page...</option>
             <option value="{{ url_for('account') }}">My Account</option>
-            {% if is_admin %}<option value="{{ url_for('bot_profile') }}">Bot Profile</option>{% endif %}
-            {% if is_admin %}<option value="{{ url_for('command_permissions') }}">Command Permissions</option>{% endif %}
-            {% if is_admin %}<option value="{{ url_for('settings') }}">Settings</option>{% endif %}
+            <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+            <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+            <option value="{{ url_for('settings') }}">Settings</option>
             <option value="{{ url_for('documentation') }}">Documentation</option>
             {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
-            {% if is_admin %}<option value="{{ url_for('tag_responses') }}">Tag Responses</option>{% endif %}
-            {% if is_admin %}<option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>{% endif %}
-            {% if is_admin %}<option value="{{ url_for('users') }}">Users</option>{% endif %}
+            <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+            <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+            <option value="{{ url_for('users') }}">Users</option>
             <option value="{{ url_for('logout') }}">Logout</option>
           </select>
-          {% if is_admin and restart_enabled %}
+          {% if restart_enabled %}
+            {% if is_admin %}
             <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
               <input type="hidden" name="confirm" value="yes" />
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
               <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
             </form>
+            {% else %}
+            <button class="btn danger" type="button" disabled title="Read-only users cannot restart the container">Restart Container</button>
+            {% endif %}
           {% endif %}
         </nav>
       {% endif %}
@@ -1194,6 +1218,9 @@ def _render_layout(
         <div class="flash {{ category }}">{{ message }}</div>
       {% endfor %}
     {% endwith %}
+    {% if current_email and not is_admin %}
+      <div class="flash">Read-only account: you can view all pages, but configuration and management changes are blocked.</div>
+    {% endif %}
     {{ body_html | safe }}
   </div>
   <script>
@@ -1335,6 +1362,11 @@ def create_web_app(
     login_attempts = {}
     recent_login_success = {}
 
+    @app.before_request
+    def mark_request_start():
+        g.request_started_monotonic = time.perf_counter()
+        return None
+
     @app.after_request
     def apply_security_headers(response):
         request_host = _extract_hostname(str(request.host or ""))
@@ -1419,6 +1451,22 @@ def create_web_app(
                             str(request.headers.get("X-Forwarded-Proto", "") or ""),
                             _client_ip(),
                         )
+        if logger and request.endpoint != "healthz":
+            started = getattr(g, "request_started_monotonic", None)
+            if started is None:
+                duration_ms = -1
+            else:
+                duration_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
+            logger.info(
+                "WEB_AUDIT method=%s path=%s endpoint=%s status=%s ip=%s user=%s duration_ms=%s",
+                request.method,
+                request.path,
+                request.endpoint or "unknown",
+                int(getattr(response, "status_code", 0) or 0),
+                _client_ip(),
+                _normalize_email(session.get("auth_email", "")) or "anonymous",
+                duration_ms,
+            )
         return response
 
     users_file = Path(data_dir) / "bot_data.db"
@@ -1660,7 +1708,7 @@ def create_web_app(
 
     @app.before_request
     def enforce_request_security():
-        if request.method not in {"POST", "PUT", "PATCH", "DELETE"}:
+        if request.method not in STATE_CHANGING_METHODS:
             return None
         if request.endpoint == "healthz":
             return None
@@ -1718,6 +1766,38 @@ def create_web_app(
                     return redirect(url_for("dashboard"))
                 return redirect(url_for("login"))
         return None
+
+    @app.before_request
+    def enforce_read_only_write_restrictions():
+        if request.method not in STATE_CHANGING_METHODS:
+            return None
+        if request.endpoint in READ_ONLY_WRITE_EXEMPT_ENDPOINTS:
+            return None
+        user = _current_user()
+        if user is None:
+            return None
+        if _is_admin_user(user):
+            return None
+        if logger:
+            logger.warning(
+                "Blocked write request for read-only user: endpoint=%s method=%s ip=%s email=%s",
+                request.endpoint,
+                request.method,
+                _client_ip(),
+                _normalize_email(user.get("email", "")) or "unknown",
+            )
+        flash("Read-only account: this action is not allowed.", "error")
+        safe_view_endpoints = {
+            "bot_profile",
+            "command_permissions",
+            "settings",
+            "tag_responses",
+            "bulk_role_csv",
+            "users",
+        }
+        if request.endpoint in safe_view_endpoints:
+            return redirect(url_for(str(request.endpoint)))
+        return redirect(url_for("dashboard"))
 
     def _prune_login_attempts(client_ip: str):
         now_ts = time.time()
@@ -2110,7 +2190,7 @@ def create_web_app(
     @login_required
     def dashboard():
         user = _current_user()
-        is_admin = bool(user.get("is_admin"))
+        is_admin = _is_admin_user(user)
 
         cards = []
 
@@ -2143,43 +2223,42 @@ def create_web_app(
             "Open My Account",
         )
 
-        if is_admin:
-            add_dashboard_card(
-                "Bot Profile",
-                "Rename the bot, update server nickname, and upload avatar.",
-                url_for("bot_profile"),
-                "Open Bot Profile",
-            )
-            add_dashboard_card(
-                "Command Permissions",
-                "Set access mode per command and pick restricted roles from Discord role lists.",
-                url_for("command_permissions"),
-                "Open Permissions",
-            )
-            add_dashboard_card(
-                "Settings",
-                "Edit runtime environment settings with channel and role dropdowns.",
-                url_for("settings"),
-                "Open Settings",
-            )
-            add_dashboard_card(
-                "Tag Responses",
-                "Manage dynamic tag-response mappings and refresh runtime commands.",
-                url_for("tag_responses"),
-                "Open Tag Responses",
-            )
-            add_dashboard_card(
-                "Bulk Role CSV",
-                "Upload a CSV of names and assign a role with a detailed result report.",
-                url_for("bulk_role_csv"),
-                "Open Bulk CSV",
-            )
-            add_dashboard_card(
-                "Users",
-                "Create web users, toggle admin rights, and reset passwords.",
-                url_for("users"),
-                "Open Users",
-            )
+        add_dashboard_card(
+            "Bot Profile",
+            "Rename the bot, update server nickname, and upload avatar.",
+            url_for("bot_profile"),
+            "Open Bot Profile",
+        )
+        add_dashboard_card(
+            "Command Permissions",
+            "Set access mode per command and pick restricted roles from Discord role lists.",
+            url_for("command_permissions"),
+            "Open Permissions",
+        )
+        add_dashboard_card(
+            "Settings",
+            "Edit runtime environment settings with channel and role dropdowns.",
+            url_for("settings"),
+            "Open Settings",
+        )
+        add_dashboard_card(
+            "Tag Responses",
+            "Manage dynamic tag-response mappings and refresh runtime commands.",
+            url_for("tag_responses"),
+            "Open Tag Responses",
+        )
+        add_dashboard_card(
+            "Bulk Role CSV",
+            "Upload a CSV of names and assign a role with a detailed result report.",
+            url_for("bulk_role_csv"),
+            "Open Bulk CSV",
+        )
+        add_dashboard_card(
+            "Users",
+            "Create web users, assign Admin/Read-only roles, and reset passwords.",
+            url_for("users"),
+            "Open Users",
+        )
 
         add_dashboard_card(
             "Documentation",
@@ -2199,8 +2278,9 @@ def create_web_app(
             )
 
         restart_card = ""
-        if is_admin and _restart_enabled():
-            restart_card = f"""
+        if _restart_enabled():
+            if is_admin:
+                restart_card = f"""
             <div class="card dash-card">
               <h3>Restart Container</h3>
               <p class="muted">Apply runtime-level changes that require a process restart.</p>
@@ -2209,6 +2289,14 @@ def create_web_app(
                 <input type="hidden" name="confirm" value="yes" />
                 <button class="btn danger" type="submit">Restart Container</button>
               </form>
+            </div>
+            """
+            else:
+                restart_card = """
+            <div class="card dash-card">
+              <h3>Restart Container</h3>
+              <p class="muted">Read-only accounts can view this option but cannot restart the container.</p>
+              <button class="btn danger" type="button" disabled>Restart Container</button>
             </div>
             """
 
@@ -2334,7 +2422,7 @@ def create_web_app(
         return _render_page(title, body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/bot-profile", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def bot_profile():
         user = _current_user()
         max_avatar_upload_bytes = _get_int_env(
@@ -2511,7 +2599,7 @@ def create_web_app(
         )
 
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def command_permissions():
         user = _current_user()
         permissions_payload = (
@@ -2683,7 +2771,7 @@ def create_web_app(
         )
 
     @app.route("/admin/settings", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def settings():
         user = _current_user()
         file_values = _parse_env_file(env_file)
@@ -2844,7 +2932,7 @@ def create_web_app(
         return _render_page("Settings", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/tag-responses", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def tag_responses():
         user = _current_user()
         path = Path(tag_responses_file)
@@ -2915,7 +3003,7 @@ def create_web_app(
         )
 
     @app.route("/admin/bulk-role-csv", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def bulk_role_csv():
         user = _current_user()
         operation_result = None
@@ -3060,7 +3148,7 @@ def create_web_app(
         )
 
     @app.route("/admin/users", methods=["GET", "POST"])
-    @admin_required
+    @login_required
     def users():
         user = _current_user()
         users_data = _read_users(users_file)
@@ -3079,7 +3167,10 @@ def create_web_app(
                 display_name = _clean_profile_text(
                     request.form.get("display_name", ""), max_length=80
                 )
-                is_admin = bool(request.form.get("is_admin"))
+                requested_role = (
+                    str(request.form.get("role", "read_only")).strip().lower()
+                )
+                is_admin = requested_role == "admin"
                 if not _is_valid_email(email):
                     flash("Enter a valid email.", "error")
                 elif not first_name:
@@ -3152,12 +3243,16 @@ def create_web_app(
                     else:
                         flash("User not found.", "error")
 
-            elif action == "toggle_admin":
+            elif action == "set_role":
                 target_email = _normalize_email(request.form.get("email", ""))
+                requested_role = (
+                    str(request.form.get("role", "read_only")).strip().lower()
+                )
+                target_is_admin = requested_role == "admin"
                 changed = False
                 for entry in users_data:
                     if entry["email"] == target_email:
-                        entry["is_admin"] = not entry.get("is_admin")
+                        entry["is_admin"] = target_is_admin
                         changed = True
                         break
                 if changed:
@@ -3165,7 +3260,10 @@ def create_web_app(
                         flash("At least one admin account must remain.", "error")
                     else:
                         _save_users(users_file, users_data)
-                        flash(f"Updated admin role for {target_email}.", "success")
+                        flash(
+                            f"Updated role for {target_email} to {_user_role_label_from_is_admin(target_is_admin)}.",
+                            "success",
+                        )
                         users_data = _read_users(users_file)
                 else:
                     flash("User not found.", "error")
@@ -3173,7 +3271,10 @@ def create_web_app(
         user_rows = []
         for entry in users_data:
             email = entry["email"]
-            admin_label = "Yes" if entry.get("is_admin") else "No"
+            is_admin_entry = bool(entry.get("is_admin"))
+            role_label = _user_role_label_from_is_admin(is_admin_entry)
+            next_role_value = "read_only" if is_admin_entry else "admin"
+            next_role_label = _user_role_label_from_is_admin(next_role_value == "admin")
             display_name = str(entry.get("display_name") or _default_display_name(email))
             full_name = _clean_profile_text(
                 f"{str(entry.get('first_name') or '')} {str(entry.get('last_name') or '')}",
@@ -3185,14 +3286,15 @@ def create_web_app(
                   <td>{escape(display_name)}</td>
                   <td>{escape(full_name or "n/a")}</td>
                   <td class="mono">{escape(email)}</td>
-                  <td>{escape(admin_label)}</td>
+                  <td>{escape(role_label)}</td>
                   <td class="mono">{escape(str(entry.get("password_changed_at", "n/a")))}</td>
                   <td class="mono">{escape(str(entry.get("created_at", "n/a")))}</td>
                   <td>
                     <form method="post" style="display:inline;">
-                      <input type="hidden" name="action" value="toggle_admin" />
+                      <input type="hidden" name="action" value="set_role" />
                       <input type="hidden" name="email" value="{escape(email, quote=True)}" />
-                      <button class="btn secondary" type="submit">Toggle Admin</button>
+                      <input type="hidden" name="role" value="{escape(next_role_value, quote=True)}" />
+                      <button class="btn secondary" type="submit">Set {escape(next_role_label)}</button>
                     </form>
                     <form method="post" style="display:inline;margin-left:6px;">
                       <input type="hidden" name="action" value="delete" />
@@ -3226,7 +3328,11 @@ def create_web_app(
                   onchange="document.getElementById('create_user_password').type=this.checked?'text':'password';" />
                 Show password
               </label>
-              <label style="margin-top:10px;display:block;"><input type="checkbox" name="is_admin" /> Admin user</label>
+              <label style="margin-top:10px;display:block;">Role</label>
+              <select name="role">
+                <option value="read_only">Read-only</option>
+                <option value="admin">Admin</option>
+              </select>
               <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>
               <button class="btn" type="submit">Create User</button>
             </form>
@@ -3251,7 +3357,7 @@ def create_web_app(
         <div class="card">
           <h2>Existing Users</h2>
           <table>
-            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Admin</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Role</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody>{"".join(user_rows)}</tbody>
           </table>
         </div>

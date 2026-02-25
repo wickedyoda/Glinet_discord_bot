@@ -25,6 +25,7 @@ services:
       - WEB_PORT=${WEB_PORT:-8080}
       - WEB_HOST_PORT=${WEB_HOST_PORT:-8080}
       - LOG_DIR=${LOG_DIR:-/logs}
+      - LOG_HARDEN_FILE_PERMISSIONS=${LOG_HARDEN_FILE_PERMISSIONS:-true}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CONTAINER_LOG_LEVEL=${CONTAINER_LOG_LEVEL:-ERROR}
       - WEB_PUBLIC_BASE_URL=${WEB_PUBLIC_BASE_URL:-}
@@ -126,12 +127,14 @@ Persistent log files:
 
 - `${LOG_DIR}/bot.log` (application logs, default `/logs/bot.log`)
 - `${LOG_DIR}/container_errors.log` (error stream used by `/logs`, default `/logs/container_errors.log`)
+- `${LOG_DIR}/web_gui_audit.log` (web admin interaction audit stream, default `/logs/web_gui_audit.log`)
 
 Tune with:
 
 - `LOG_LEVEL`
 - `CONTAINER_LOG_LEVEL`
 - `LOG_DIR`
+- `LOG_HARDEN_FILE_PERMISSIONS` (recommended `true`, enforces `0700` log directory and `0600` log files where supported)
 
 ## Upgrade and Restart Workflow
 
