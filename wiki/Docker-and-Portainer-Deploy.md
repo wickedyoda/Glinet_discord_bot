@@ -126,6 +126,7 @@ Notes:
 Persistent log files:
 
 - `${LOG_DIR}/bot.log` (application logs, default `/logs/bot.log`)
+- `${LOG_DIR}/bot_log.log` (bot channel payload mirror, default `/logs/bot_log.log`)
 - `${LOG_DIR}/container_errors.log` (error stream used by `/logs`, default `/logs/container_errors.log`)
 - `${LOG_DIR}/web_gui_audit.log` (web admin interaction audit stream, default `/logs/web_gui_audit.log`)
 

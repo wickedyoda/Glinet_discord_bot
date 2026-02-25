@@ -20,9 +20,9 @@ This page lists all supported environment variables, defaults, and accepted opti
 
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|
-| `GENERAL_CHANNEL_ID` | `0` | Integer, `>= 0` | Used for invite generation fallback |
+| `BOT_LOG_CHANNEL_ID` | `0` | Integer, `>= 0` | Bot log/activity channel ID (used for invite fallback and bot activity routing) |
 | `DATA_DIR` | `data` | Path string | Persistent runtime data directory |
-| `LOG_DIR` | `/logs` | Path string | Directory for `bot.log`, `container_errors.log`, and `web_gui_audit.log` |
+| `LOG_DIR` | `/logs` | Path string | Directory for `bot.log`, `bot_log.log`, `container_errors.log`, and `web_gui_audit.log` |
 | `LOG_HARDEN_FILE_PERMISSIONS` | `true` | Boolean | Best-effort log storage hardening (`LOG_DIR` -> `0700`, log files -> `0600`) |
 | `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Runtime bot/web verbosity |
 | `CONTAINER_LOG_LEVEL` | `ERROR` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Threshold for `${LOG_DIR}/container_errors.log` |
@@ -103,6 +103,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `FIRMWARE_NOTIFY_CHANNEL_ID` | Fallback for `firmware_notification_channel` | Legacy alias |
 | `FIRMWARE_CHECK_INTERVAL_SECONDS` | Legacy fallback scheduler | Used only when `firmware_check_schedule` is empty |
 | `WEB_ADMIN_DEFAULT_EMAIL` | Preferred over `WEB_ADMIN_DEFAULT_USERNAME` when set | Legacy/admin alias |
+| `GENERAL_CHANNEL_ID` | Fallback for `BOT_LOG_CHANNEL_ID` | Legacy alias |
 
 ## Password Policy (Web Users)
 

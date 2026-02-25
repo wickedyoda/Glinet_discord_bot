@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-02-25] - Bot Channel Logging and Env Rename
+
+### Added
+- New runtime log file `${LOG_DIR}/bot_log.log` for bot-channel payload auditing.
+- `bot_log.log` now records payloads that moderation/server-event handlers send (or attempt to send) to the log channel.
+- Web GUI `/admin/logs` dropdown now includes `bot_log.log`.
+
+### Changed
+- Renamed settings key from `GENERAL_CHANNEL_ID` to `BOT_LOG_CHANNEL_ID` in bot runtime config and web settings UI.
+- Kept backward compatibility by accepting `GENERAL_CHANNEL_ID` as a legacy fallback alias.
+- Updated compose/example/wiki/docs references to include `BOT_LOG_CHANNEL_ID` and `bot_log.log`.
+- Strengthened `/admin/account` password-change validation:
+  - current password explicitly required and verified
+  - new password must be entered twice and match
+  - added client-side mismatch validation before submit
+
 ## [2026-02-23] - Web Admin, Security, and Storage Overhaul
 
 ### Added
@@ -33,6 +49,11 @@ All notable changes to this project are documented in this file.
   - default policy
   - public
   - custom roles (multi-role selection)
+- Web observability page:
+  - runtime snapshot cards for CPU, memory, I/O, network, and uptime
+  - public read-only status URL at `/staus` (`/admin/observability` redirects)
+  - log viewer moved to `/admin/logs` (login required)
+  - log viewer supports dropdown selection and latest 500-line refresh
 - Moderator slash command `/logs` for recent container error log retrieval (ephemeral).
 - Container-wide error log file `data/container_errors.log`.
 - Runtime log-level separation:

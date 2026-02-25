@@ -8,6 +8,7 @@ services:
     environment:
       DISCORD_TOKEN: ${DISCORD_TOKEN:-}
       GUILD_ID: ${GUILD_ID:-}
+      BOT_LOG_CHANNEL_ID: ${BOT_LOG_CHANNEL_ID:-}
       GENERAL_CHANNEL_ID: ${GENERAL_CHANNEL_ID:-0}
       DATA_DIR: ${DATA_DIR:-data}
       LOG_DIR: ${LOG_DIR:-/logs}

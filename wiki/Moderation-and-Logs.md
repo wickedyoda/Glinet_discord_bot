@@ -36,6 +36,7 @@ Moderator tooling for members, roles, and operational incident visibility.
 Tuning variable:
 
 - `CONTAINER_LOG_LEVEL` controls what gets written to error log file.
+- Log-channel payload mirror is written to `${LOG_DIR}/bot_log.log`.
 - Web GUI request auditing is written separately to `${LOG_DIR}/web_gui_audit.log`.
 
 ## Access Control Layers

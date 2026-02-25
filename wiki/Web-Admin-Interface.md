@@ -88,6 +88,20 @@ UI forms include show/hide password toggles and validation feedback.
 - Bot profile and web-session/security settings
 - Auto-logout selection (5 to 30 minutes)
 
+### `/staus` (Public Read-Only Status)
+
+- Runtime observability view in web GUI
+- CPU, memory, I/O, network, and uptime snapshot cards
+- Refresh to fetch latest metrics
+- Public and read-only (no login required)
+- `/admin/observability` redirects to `/staus`
+
+### `/admin/logs` (Login Required)
+
+- Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`)
+- Refresh button to fetch the latest 500 lines
+- Requires web GUI login
+
 ### `/admin/command-permissions`
 
 - Per-command access policy editor
