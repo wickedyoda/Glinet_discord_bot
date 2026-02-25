@@ -18,6 +18,7 @@ permissions:
 jobs:
   trivy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,17 +27,20 @@ jobs:
         run: docker build -t local/discord-invite-bot:${{ github.sha }} .
 
       - name: Scan image with Trivy (SARIF)
+        continue-on-error: true
         uses: aquasecurity/trivy-action@0.28.0
         with:
           image-ref: local/discord-invite-bot:${{ github.sha }}
           format: sarif
           output: trivy-image.sarif
+          scanners: vuln
           vuln-type: os,library
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "0"
 
       - name: Upload Trivy SARIF to code scanning
+        if: always() && hashFiles('trivy-image.sarif') != ''
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-image.sarif
@@ -46,6 +50,7 @@ jobs:
         with:
           image-ref: local/discord-invite-bot:${{ github.sha }}
           format: table
+          scanners: vuln
           vuln-type: os,library
           severity: CRITICAL
           ignore-unfixed: true

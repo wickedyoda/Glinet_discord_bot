@@ -16,7 +16,6 @@ All notable changes to this project are documented in this file.
   - `Secret Scan` (`gitleaks`)
   - `Container Security Scan` (Trivy image scan + SARIF upload + critical gate)
   - `SBOM Generate` (CycloneDX artifact)
-  - `CodeQL` (repo-managed analysis workflow)
   - `OSSF Scorecards` (scheduled security posture reporting)
 
 ### Changed
@@ -35,6 +34,11 @@ All notable changes to this project are documented in this file.
 - Hardened Docker publish workflows:
   - upgraded action versions (`checkout`, `buildx`, `login`, `build-push`)
   - pull-request builds now validate image build without pushing to registry
+- Stabilized `Container Security Scan` workflow:
+  - SARIF generation step is non-blocking and uploads when present
+  - policy failure now comes only from explicit critical-vulnerability gate
+  - Trivy scanning scope limited to vulnerability scanning (`scanners: vuln`)
+- Removed repo-managed `CodeQL` workflow to avoid conflict with GitHub CodeQL default setup.
 
 ## [2026-02-23] - Web Admin, Security, and Storage Overhaul
 
