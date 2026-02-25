@@ -49,6 +49,7 @@ OBSERVABILITY_LOG_OPTIONS = (
     ("container_errors.log", "Container Error Log"),
     ("web_gui_audit.log", "Web GUI Audit Log"),
 )
+AUTO_REFRESH_INTERVAL_OPTIONS = (0, 1, 5, 10, 30, 60, 120)
 LOG_EMAIL_PATTERN = re.compile(
     r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"
 )
@@ -491,6 +492,16 @@ def _resolve_observability_log_paths(log_dir: Path):
             continue
         allowed[filename] = candidate
     return allowed
+
+
+def _parse_auto_refresh_seconds(raw_value, default_value: int = 0):
+    try:
+        parsed = int(str(raw_value or "").strip())
+    except (TypeError, ValueError):
+        return int(default_value)
+    if parsed in AUTO_REFRESH_INTERVAL_OPTIONS:
+        return parsed
+    return int(default_value)
 
 
 def _read_rss_bytes():
@@ -1456,6 +1467,28 @@ def _render_layout(
     .dash-card h3 { margin-top: 0; margin-bottom: 8px; }
     .dash-card p { margin-top: 0; min-height: 50px; }
     .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .metric-card h3 { margin: 0 0 14px; }
+    .metric-card .table-scroll { border-radius: 10px; }
+    .metric-card .table-scroll > table {
+      min-width: 0;
+      width: 100%;
+      table-layout: fixed;
+    }
+    .metric-table td {
+      vertical-align: middle;
+      line-height: 1.35;
+    }
+    .metric-table td:first-child {
+      width: 58%;
+      font-weight: 600;
+    }
+    .metric-table td:last-child {
+      width: 42%;
+      text-align: right;
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    .metric-table tr:last-child td { border-bottom: 0; }
     .table-scroll {
       width: 100%;
       overflow-x: auto;
@@ -2730,6 +2763,23 @@ def create_web_app(
             observability_state,
             observability_started_monotonic,
         )
+        selected_refresh_seconds = _parse_auto_refresh_seconds(
+            request.args.get("refresh", "0"),
+            default_value=0,
+        )
+        refresh_options_html = []
+        for refresh_seconds in AUTO_REFRESH_INTERVAL_OPTIONS:
+            label = (
+                "Manual (off)"
+                if refresh_seconds == 0
+                else f"{refresh_seconds} second{'s' if refresh_seconds != 1 else ''}"
+            )
+            selected_attr = (
+                " selected" if refresh_seconds == selected_refresh_seconds else ""
+            )
+            refresh_options_html.append(
+                f"<option value='{refresh_seconds}'{selected_attr}>{escape(label)}</option>"
+            )
 
         process_cpu_pct = metrics.get("process_cpu_percent")
         process_cpu_pct_text = (
@@ -2755,6 +2805,29 @@ def create_web_app(
             if isinstance(sample_interval, (int, float))
             else "first sample"
         )
+        auto_refresh_note = (
+            f"Auto refresh enabled every {selected_refresh_seconds} second"
+            f"{'s' if selected_refresh_seconds != 1 else ''}."
+            if selected_refresh_seconds > 0
+            else "Auto refresh is disabled."
+        )
+        auto_refresh_script = (
+            f"""
+            <script>
+              (function() {{
+                var intervalMs = {selected_refresh_seconds * 1000};
+                if (intervalMs <= 0) {{
+                  return;
+                }}
+                window.setTimeout(function() {{
+                  window.location.reload();
+                }}, intervalMs);
+              }})();
+            </script>
+            """
+            if selected_refresh_seconds > 0
+            else ""
+        )
 
         body = f"""
         <div class="card">
@@ -2762,12 +2835,22 @@ def create_web_app(
           <p class="muted">Runtime snapshot for process/container activity. Metrics update each time you refresh this page.</p>
           <p class="muted">This page is read-only and safe to share publicly for status visibility. Log viewing requires web GUI login at <span class="mono">/admin/logs</span>.</p>
           <p class="muted">Sample captured: {escape(str(metrics.get("sampled_at") or "n/a"))}. Sample interval: {escape(sample_interval_text)}.</p>
+          <form method="get" action="{escape(url_for("public_observability"), quote=True)}" style="margin-top:10px;">
+            <label for="status_refresh">Auto refresh</label>
+            <select id="status_refresh" name="refresh" onchange="this.form.submit();">
+              {"".join(refresh_options_html)}
+            </select>
+            <noscript>
+              <button class="btn" type="submit" style="margin-left:8px;">Apply</button>
+            </noscript>
+          </form>
+          <p class="muted">{escape(auto_refresh_note)}</p>
         </div>
 
         <div class="grid">
-          <div class="card">
+          <div class="card metric-card">
             <h3>CPU</h3>
-            <table>
+            <table class="metric-table">
               <tbody>
                 <tr><td>Process CPU (delta)</td><td class="mono">{escape(process_cpu_pct_text)}</td></tr>
                 <tr><td>Process CPU time (total)</td><td class="mono">{escape(f"{float(metrics.get('process_cpu_total') or 0.0):.2f}s")}</td></tr>
@@ -2775,9 +2858,9 @@ def create_web_app(
               </tbody>
             </table>
           </div>
-          <div class="card">
+          <div class="card metric-card">
             <h3>Memory</h3>
-            <table>
+            <table class="metric-table">
               <tbody>
                 <tr><td>Process RSS</td><td class="mono">{escape(_format_bytes(metrics.get("rss_bytes")))}</td></tr>
                 <tr><td>Container memory usage</td><td class="mono">{escape(memory_usage_text)}</td></tr>
@@ -2786,9 +2869,9 @@ def create_web_app(
               </tbody>
             </table>
           </div>
-          <div class="card">
+          <div class="card metric-card">
             <h3>I/O</h3>
-            <table>
+            <table class="metric-table">
               <tbody>
                 <tr><td>Read bytes (total)</td><td class="mono">{escape(_format_bytes(metrics.get("io_read_bytes")))}</td></tr>
                 <tr><td>Write bytes (total)</td><td class="mono">{escape(_format_bytes(metrics.get("io_write_bytes")))}</td></tr>
@@ -2797,9 +2880,9 @@ def create_web_app(
               </tbody>
             </table>
           </div>
-          <div class="card">
+          <div class="card metric-card">
             <h3>Network</h3>
-            <table>
+            <table class="metric-table">
               <tbody>
                 <tr><td>RX bytes (total)</td><td class="mono">{escape(_format_bytes(metrics.get("net_rx_bytes")))}</td></tr>
                 <tr><td>TX bytes (total)</td><td class="mono">{escape(_format_bytes(metrics.get("net_tx_bytes")))}</td></tr>
@@ -2808,20 +2891,25 @@ def create_web_app(
               </tbody>
             </table>
           </div>
-          <div class="card">
+          <div class="card metric-card">
             <h3>Uptime</h3>
-            <table>
+            <table class="metric-table">
               <tbody>
                 <tr><td>Process uptime</td><td class="mono">{escape(_format_uptime(metrics.get("uptime_seconds") or 0))}</td></tr>
               </tbody>
             </table>
           </div>
         </div>
+        {auto_refresh_script}
         """
         return body
 
     def _render_log_view():
         log_dir = Path(str(os.getenv("LOG_DIR", "/logs")).strip() or "/logs")
+        selected_refresh_seconds = _parse_auto_refresh_seconds(
+            request.args.get("refresh", "0"),
+            default_value=0,
+        )
         allowed_log_paths = _resolve_observability_log_paths(log_dir)
         log_selection_map = {
             "bot": "bot.log",
@@ -2868,6 +2956,42 @@ def create_web_app(
             options_html.append(
                 f"<option value='{escape(selection_key, quote=True)}'{selected_attr}>{escape(label)} ({escape(file_name)})</option>"
             )
+        refresh_options_html = []
+        for refresh_seconds in AUTO_REFRESH_INTERVAL_OPTIONS:
+            label = (
+                "Manual (off)"
+                if refresh_seconds == 0
+                else f"{refresh_seconds} second{'s' if refresh_seconds != 1 else ''}"
+            )
+            selected_attr = (
+                " selected" if refresh_seconds == selected_refresh_seconds else ""
+            )
+            refresh_options_html.append(
+                f"<option value='{refresh_seconds}'{selected_attr}>{escape(label)}</option>"
+            )
+        auto_refresh_note = (
+            f"Auto refresh enabled every {selected_refresh_seconds} second"
+            f"{'s' if selected_refresh_seconds != 1 else ''}."
+            if selected_refresh_seconds > 0
+            else "Auto refresh is disabled."
+        )
+        auto_refresh_script = (
+            f"""
+            <script>
+              (function() {{
+                var intervalMs = {selected_refresh_seconds * 1000};
+                if (intervalMs <= 0) {{
+                  return;
+                }}
+                window.setTimeout(function() {{
+                  window.location.reload();
+                }}, intervalMs);
+              }})();
+            </script>
+            """
+            if selected_refresh_seconds > 0
+            else ""
+        )
 
         return f"""
         <div class="card">
@@ -2876,17 +3000,23 @@ def create_web_app(
           <p class="muted">Sensitive values are redacted in this preview.</p>
           <form method="get" action="{escape(url_for("admin_logs"), quote=True)}">
             <label for="log">Select log</label>
-            <select id="log" name="log">
+            <select id="log" name="log" onchange="this.form.submit();">
               {"".join(options_html)}
+            </select>
+            <label for="log_refresh" style="margin-left:10px;">Auto refresh</label>
+            <select id="log_refresh" name="refresh" onchange="this.form.submit();">
+              {"".join(refresh_options_html)}
             </select>
             <div style="margin-top:14px;">
               <button class="btn" type="submit">Refresh</button>
             </div>
           </form>
+          <p class="muted">{escape(auto_refresh_note)}</p>
           <div style="margin-top:14px;">
             <textarea readonly style="min-height:520px;">{escape(log_preview)}</textarea>
           </div>
         </div>
+        {auto_refresh_script}
         """
 
     @app.route("/staus", methods=["GET"])
@@ -2904,11 +3034,11 @@ def create_web_app(
 
     @app.route("/status", methods=["GET"])
     def public_observability_alias():
-        return redirect(url_for("public_observability"))
+        return redirect(url_for("public_observability", **request.args.to_dict(flat=True)))
 
     @app.route("/admin/observability", methods=["GET"])
     def observability():
-        return redirect(url_for("public_observability"))
+        return redirect(url_for("public_observability", **request.args.to_dict(flat=True)))
 
     @app.route("/admin/logs", methods=["GET"])
     @login_required
