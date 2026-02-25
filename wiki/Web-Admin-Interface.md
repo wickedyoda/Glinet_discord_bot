@@ -31,7 +31,7 @@ Each web user includes:
 - First name
 - Last name
 - Display name (shown in GUI)
-- Admin flag
+- Role (`Admin` or `Read-only`)
 - Password age metadata (90-day rotation enforcement)
 
 User self-service capabilities:
@@ -46,6 +46,12 @@ Admin-only user management capabilities:
 - Delete users
 - Promote/demote admin users
 - Reset user credentials as needed
+
+Read-only capabilities:
+
+- Can sign in and navigate all admin pages
+- Can view all settings/options/data exposed by the web GUI
+- Cannot apply management/configuration changes (save/update/delete/restart actions are blocked server-side)
 
 No Discord `/login` or `!login` flow exists for web-user creation.
 
@@ -103,7 +109,7 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/users`
 
-- Admin-only account management
+- User and role management (`Admin` / `Read-only`)
 - User creation with password policy enforcement
 - Password visibility toggle in create/reset forms
 
@@ -114,7 +120,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Set server nickname/listing label
 - Upload avatar image
 
-Rename/profile operations are admin-only and web-GUI-only.
+Rename/profile updates are admin-only and web-GUI-only (read-only users can view this page but cannot apply changes).
 
 ## Reverse Proxy Behavior
 
@@ -155,6 +161,7 @@ If behind proxy, ensure forwarded headers include:
 - `WEB_BIND_HOST`
 - `WEB_PORT`
 - `WEB_HOST_PORT`
+- `LOG_HARDEN_FILE_PERMISSIONS`
 - `WEB_SESSION_TIMEOUT_MINUTES`
 - `WEB_PUBLIC_BASE_URL`
 - `WEB_ENV_FILE`

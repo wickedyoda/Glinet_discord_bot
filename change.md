@@ -20,6 +20,9 @@ All notable changes to this project are documented in this file.
   - display name
   - email management with current-password verification
 - Self-service password change flow for existing users.
+- Web GUI user-role model with two account types:
+  - `Admin` (full management/write access)
+  - `Read-only` (view-only across admin pages)
 - Password visibility toggles in user-create/reset/account forms.
 - Optional "keep me signed in" login mode for 5 days.
 - Admin web controls for bot profile:
@@ -44,6 +47,11 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Migrated persistent runtime data to SQLite (`data/bot_data.db`) with WAL mode and tuned pragmas.
+- Logging behavior updated for stronger operations auditing:
+  - log directory resolution now prefers `/logs` when available
+  - added `${LOG_DIR}/web_gui_audit.log` for web GUI interaction audit entries
+  - web admin now writes `WEB_AUDIT` request records (method, path, endpoint, status, ip, user, latency)
+  - added `LOG_HARDEN_FILE_PERMISSIONS` to enforce restrictive log permissions (`/logs` -> `0700`, log files -> `0600`) where supported
 - Improved web-login reliability behind mixed direct/proxy access:
   - CSRF handling now rehydrates login token when missing server-side token and submitted token is present.
   - Session cookie `Secure` flag is now only enforced on effectively HTTPS requests (`request.is_secure` or `X-Forwarded-Proto=https`), preventing HTTP local/proxy lockouts.
@@ -81,6 +89,10 @@ All notable changes to this project are documented in this file.
   - `WEB_PUBLIC_BASE_URL`
   - forwarded host handling (`X-Forwarded-Host`, `X-Original-Host`, `Forwarded`)
 - Improved local (non-HTTPS localhost) login behavior when secure cookies are enabled.
+- Web GUI access model update:
+  - read-only users can open all admin pages and navigation options
+  - all non-exempt write actions are blocked server-side for read-only users
+  - users page now assigns explicit roles (`Admin` / `Read-only`) instead of admin-only toggle language
 - Added explicit web login/security decision logging for troubleshooting:
   - origin-policy blocks
   - CSRF validation blocks

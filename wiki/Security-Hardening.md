@@ -21,6 +21,9 @@ Implemented:
 
 - Web-only account model for GUI administration.
 - No Discord command path for web-user creation.
+- Web user roles:
+  - `Admin` for full configuration and management actions
+  - `Read-only` for view access across admin pages with write actions blocked
 - Password hashing at rest with secure hash method and opportunistic rehash upgrades.
 - Password policy enforcement:
   - 6 to 16 characters
@@ -71,6 +74,7 @@ Implemented:
 - SQLite persistence with WAL and foreign-key enforcement
 - Legacy data imports are merge-only and non-destructive
 - File permission hardening for `.env`, data dir, and DB file
+- Runtime log storage hardening for `/logs` (`0700`) and log files (`0600`)
 - Upload request size limits to reduce abuse surface
 - `/logs` command returns controlled error log excerpts only
 
@@ -84,6 +88,7 @@ Recommended production baseline:
 - Keep `WEB_ENFORCE_CSRF=true`
 - Keep `WEB_ENFORCE_SAME_ORIGIN_POSTS=true`
 - Keep `WEB_SESSION_COOKIE_SECURE=true` when HTTPS is used
+- Keep `LOG_HARDEN_FILE_PERMISSIONS=true`
 - Use strong random `WEB_ADMIN_SESSION_SECRET`
 
 ## Large Guild and Scale Considerations

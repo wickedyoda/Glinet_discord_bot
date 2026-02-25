@@ -4,6 +4,9 @@ FROM python:3.11-slim
 # Set working directory inside container
 WORKDIR /app
 
+# Pre-create runtime directories with restrictive defaults.
+RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs
+
 # Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

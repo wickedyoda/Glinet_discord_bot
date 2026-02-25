@@ -38,6 +38,8 @@ SENSITIVE_LOG_VALUE_PATTERN = re.compile(
     r"(?i)\b(password|token|secret|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)"
 )
 REDDIT_SUBREDDIT_PATTERN = re.compile(r"^[A-Za-z0-9_]{2,21}$")
+TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+FALSY_ENV_VALUES = {"0", "false", "no", "off"}
 
 
 def normalize_log_level(raw_value: str, fallback: str = "INFO"):
@@ -52,6 +54,17 @@ def normalize_log_level(raw_value: str, fallback: str = "INFO"):
 
 def to_logging_level(level_name: str):
     return getattr(logging, str(level_name or "INFO").upper(), logging.INFO)
+
+
+def is_truthy_env_value(raw_value, default_value: bool = True):
+    value = str(raw_value or "").strip().lower()
+    if not value:
+        return bool(default_value)
+    if value in TRUTHY_ENV_VALUES:
+        return True
+    if value in FALSY_ENV_VALUES:
+        return False
+    return bool(default_value)
 
 
 def normalize_http_url_setting(raw_value: str, fallback_value: str, setting_name: str):
@@ -100,16 +113,56 @@ def normalize_reddit_subreddit_setting(
 
 def resolve_log_dir(preferred_value: str):
     preferred = str(preferred_value or "").strip()
-    candidates = [preferred, os.path.join(DATA_DIR, "logs"), DATA_DIR]
+    candidates = ["/logs", preferred, os.path.join(DATA_DIR, "logs"), DATA_DIR]
+    seen = set()
     for candidate in candidates:
         if not candidate:
             continue
+        if candidate in seen:
+            continue
+        seen.add(candidate)
         try:
             os.makedirs(candidate, exist_ok=True)
             return candidate
         except OSError:
             continue
     return DATA_DIR
+
+
+def _chmod_if_possible(path: str, mode: int):
+    try:
+        os.chmod(path, mode)
+        return True
+    except (PermissionError, OSError):
+        return False
+
+
+def ensure_log_storage_security(log_dir: str, log_files, enabled: bool):
+    notices = []
+    if not enabled:
+        return notices
+    if not log_dir:
+        notices.append("LOG_DIR is empty; skipped secure log permission hardening.")
+        return notices
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+    except OSError as exc:
+        notices.append(f"Unable to create LOG_DIR '{log_dir}': {exc}")
+        return notices
+    if not _chmod_if_possible(log_dir, 0o700):
+        notices.append(
+            f"Unable to set secure directory mode on LOG_DIR '{log_dir}' (expected 0700)."
+        )
+    for file_path in log_files:
+        if not file_path:
+            continue
+        if not os.path.exists(file_path):
+            continue
+        if not _chmod_if_possible(file_path, 0o600):
+            notices.append(
+                f"Unable to set secure file mode on log file '{file_path}' (expected 0600)."
+            )
+    return notices
 
 
 # Set up logging to console and persistent file
@@ -120,9 +173,19 @@ CONTAINER_LOG_LEVEL = normalize_log_level(
 DISCORD_LOG_LEVEL = normalize_log_level(
     os.getenv("DISCORD_LOG_LEVEL", "INFO"), fallback="INFO"
 )
+LOG_HARDEN_FILE_PERMISSIONS = is_truthy_env_value(
+    os.getenv("LOG_HARDEN_FILE_PERMISSIONS", "true"),
+    default_value=True,
+)
 LOG_DIR = resolve_log_dir(os.getenv("LOG_DIR", "/logs"))
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 CONTAINER_ERROR_LOG_FILE = os.path.join(LOG_DIR, "container_errors.log")
+WEB_GUI_AUDIT_LOG_FILE = os.path.join(LOG_DIR, "web_gui_audit.log")
+log_permission_notices = ensure_log_storage_security(
+    LOG_DIR,
+    [],
+    LOG_HARDEN_FILE_PERMISSIONS,
+)
 logger = logging.getLogger("invite_bot")
 logger.setLevel(to_logging_level(LOG_LEVEL))
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -137,11 +200,34 @@ file_handler.setLevel(to_logging_level(LOG_LEVEL))
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
 
+
+class WebGuiAuditFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord):
+        try:
+            message = str(record.getMessage() or "")
+        except Exception:
+            return False
+        return message.startswith("WEB_AUDIT ")
+
+
+web_gui_audit_handler = logging.FileHandler(WEB_GUI_AUDIT_LOG_FILE, encoding="utf-8")
+web_gui_audit_handler.setLevel(logging.INFO)
+web_gui_audit_handler.setFormatter(formatter)
+web_gui_audit_handler.addFilter(WebGuiAuditFilter())
+logger.addHandler(web_gui_audit_handler)
+
 container_error_handler = logging.FileHandler(CONTAINER_ERROR_LOG_FILE, encoding="utf-8")
 container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
 container_error_handler.setFormatter(formatter)
 root_logger = logging.getLogger()
 root_logger.addHandler(container_error_handler)
+log_permission_notices.extend(
+    ensure_log_storage_security(
+        LOG_DIR,
+        [BOT_LOG_FILE, CONTAINER_ERROR_LOG_FILE, WEB_GUI_AUDIT_LOG_FILE],
+        LOG_HARDEN_FILE_PERMISSIONS,
+    )
+)
 
 
 def apply_external_logger_levels():
@@ -150,7 +236,28 @@ def apply_external_logger_levels():
 
 
 apply_external_logger_levels()
-logger.info("Runtime log files: %s | %s", BOT_LOG_FILE, CONTAINER_ERROR_LOG_FILE)
+logger.info(
+    "Runtime log files: %s | %s | %s",
+    BOT_LOG_FILE,
+    CONTAINER_ERROR_LOG_FILE,
+    WEB_GUI_AUDIT_LOG_FILE,
+)
+if LOG_DIR != "/logs":
+    logger.warning(
+        "LOG_DIR resolved to %s (not /logs). Set LOG_DIR=/logs to keep logs in /logs.",
+        LOG_DIR,
+    )
+if LOG_HARDEN_FILE_PERMISSIONS:
+    logger.info(
+        "Log permission hardening enabled for LOG_DIR=%s (expected modes: dir 0700, files 0600).",
+        LOG_DIR,
+    )
+else:
+    logger.warning(
+        "Log permission hardening is disabled via LOG_HARDEN_FILE_PERMISSIONS=false."
+    )
+for notice in log_permission_notices:
+    logger.warning("Log storage security: %s", notice)
 
 
 def install_global_exception_logging():

@@ -73,7 +73,7 @@ docker compose build
 - Country nickname suffix commands
 - Extended moderation commands and event logging
 - Firmware monitor (baseline + delta notifications)
-- Web admin GUI (user management, command permissions, bot profile, settings)
+- Web admin GUI (admin/read-only users, command permissions, bot profile, settings)
 - SQLite persistence with legacy merge import on startup
 
 ## Where To Find Details
@@ -91,11 +91,13 @@ docker compose build
 - Primary DB: `${DATA_DIR}/bot_data.db`
 - App log: `${LOG_DIR}/bot.log`
 - Error log used by `/logs`: `${LOG_DIR}/container_errors.log`
+- Web GUI interaction audit log: `${LOG_DIR}/web_gui_audit.log`
 
 Defaults:
 
 - `DATA_DIR=data`
 - `LOG_DIR=/logs`
+- `LOG_HARDEN_FILE_PERMISSIONS=true` (enforces `0700` on log dir and `0600` on log files when possible)
 
 ## Security
 
