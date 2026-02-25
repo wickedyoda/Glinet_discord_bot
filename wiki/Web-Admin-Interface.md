@@ -92,14 +92,14 @@ UI forms include show/hide password toggles and validation feedback.
 
 - Runtime observability view in web GUI
 - CPU, memory, I/O, network, and uptime snapshot cards
-- Refresh to fetch latest metrics
+- Manual refresh plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
 - Public and read-only (no login required)
 - `/admin/observability` redirects to `/staus`
 
 ### `/admin/logs` (Login Required)
 
 - Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`)
-- Refresh button to fetch the latest 500 lines
+- Refresh button plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
 - Requires web GUI login
 
 ### `/admin/command-permissions`

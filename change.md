@@ -8,6 +8,7 @@ All notable changes to this project are documented in this file.
 - New runtime log file `${LOG_DIR}/bot_log.log` for bot-channel payload auditing.
 - `bot_log.log` now records payloads that moderation/server-event handlers send (or attempt to send) to the log channel.
 - Web GUI `/admin/logs` dropdown now includes `bot_log.log`.
+- Auto-refresh interval dropdowns added to `/staus` and `/admin/logs` with `1`, `5`, `10`, `30`, `60`, and `120` second options.
 
 ### Changed
 - Renamed settings key from `GENERAL_CHANNEL_ID` to `BOT_LOG_CHANNEL_ID` in bot runtime config and web settings UI.
@@ -17,6 +18,10 @@ All notable changes to this project are documented in this file.
   - current password explicitly required and verified
   - new password must be entered twice and match
   - added client-side mismatch validation before submit
+- Normalized `/staus` metric card table alignment:
+  - consistent heading spacing
+  - fixed label/value column widths
+  - right-aligned numeric value column for consistent cross-card formatting
 
 ## [2026-02-23] - Web Admin, Security, and Storage Overhaul
 
