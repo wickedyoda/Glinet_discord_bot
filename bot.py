@@ -305,8 +305,31 @@ def install_asyncio_exception_logging(loop: asyncio.AbstractEventLoop):
     loop.set_exception_handler(_asyncio_exception_handler)
     setattr(loop, "_invite_bot_exception_logging", True)
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-GUILD_ID = int(os.getenv("GUILD_ID"))
+
+def get_required_env(name: str):
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        message = (
+            f"Missing required environment variable: {name}. "
+            "Ensure it is set via env_file/environment in your container runtime."
+        )
+        logger.critical(message)
+        raise RuntimeError(message)
+    return str(value).strip()
+
+
+def get_required_int_env(name: str):
+    raw_value = get_required_env(name)
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        message = f"Invalid integer value for required environment variable {name}: {raw_value!r}"
+        logger.critical(message)
+        raise RuntimeError(message) from exc
+
+
+TOKEN = get_required_env("DISCORD_TOKEN")
+GUILD_ID = get_required_int_env("GUILD_ID")
 GENERAL_CHANNEL_ID = int(os.getenv("GENERAL_CHANNEL_ID", "0"))
 FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", "https://forum.gl-inet.com").rstrip("/")
 FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
