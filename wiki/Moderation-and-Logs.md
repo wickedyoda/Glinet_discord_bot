@@ -16,8 +16,16 @@ Moderator tooling for members, roles, and operational incident visibility.
 | Member discipline | `/kick_member` | `!kickmember` | Moderator |
 | Member discipline | `/timeout_member` | `!timeoutmember` | Moderator |
 | Member discipline | `/untimeout_member` | `!untimeoutmember` | Moderator |
+| Channel hygiene | `/prune_messages` | `!prune` | Moderator |
 | Logging test | `/modlog_test` | `!modlogtest` | Moderator |
 | Runtime error logs | `/logs` | none | Moderator |
+
+## `/prune_messages` and `!prune` Behavior
+
+- Removes recent messages in the current channel/thread.
+- Requires amount between `1` and `500`.
+- Skips pinned messages.
+- Logs the moderation action to `MOD_LOG_CHANNEL_ID`.
 
 ## `/logs` Command Behavior
 

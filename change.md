@@ -10,6 +10,10 @@ All notable changes to this project are documented in this file.
   - `/search_reddit`
   - `!searchreddit`
   - returns top 5 matching posts from configured subreddit (`REDDIT_SUBREDDIT`, default `r/GlInet`)
+- General channel prune commands for moderators:
+  - `/prune_messages` (amount 1-500)
+  - `!prune` (amount 1-500)
+  - skips pinned messages and writes moderation logs
 - User profile fields for web accounts:
   - first name
   - last name
@@ -40,6 +44,21 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Migrated persistent runtime data to SQLite (`data/bot_data.db`) with WAL mode and tuned pragmas.
+- Improved web-login reliability behind mixed direct/proxy access:
+  - CSRF handling now rehydrates login token when missing server-side token and submitted token is present.
+  - Session cookie `Secure` flag is now only enforced on effectively HTTPS requests (`request.is_secure` or `X-Forwarded-Proto=https`), preventing HTTP local/proxy lockouts.
+- Explicitly pinned the following commands to moderator/admin default access policy (`MODERATOR_ROLE_ID` + `ADMIN_ROLE_ID`), while still allowing override in web GUI command permissions:
+  - `add_role_member`
+  - `bulk_assign_role_csv`
+  - `ban_member`
+  - `create_role`
+  - `delete_role`
+  - `edit_role`
+  - `kick_member`
+  - `remove_role_member`
+  - `timeout_member`
+  - `unban_member`
+  - `untimeout_member`
 - Hardened Reddit search command handling:
   - command now catches runtime/send exceptions and returns a user-safe failure message
   - Reddit result text is sanitized for Discord-safe output encoding
