@@ -99,6 +99,8 @@ Defaults:
 - `DATA_DIR=data`
 - `LOG_DIR=/logs`
 - `LOG_HARDEN_FILE_PERMISSIONS=true` (enforces `0700` on log dir and `0600` on log files when possible)
+- `LOG_RETENTION_DAYS=90`
+- `LOG_ROTATION_INTERVAL_DAYS=1`
 
 ## Security
 

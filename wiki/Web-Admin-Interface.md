@@ -92,6 +92,7 @@ UI forms include show/hide password toggles and validation feedback.
 
 - Runtime observability view in web GUI
 - CPU, memory, I/O, network, and uptime snapshot cards
+- 24-hour rolling metrics summary (min/avg/max) retained in-memory
 - Manual refresh plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
 - Public and read-only (no login required)
 - `/admin/observability` redirects to `/staus`

@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import os
 import json
 import asyncio
@@ -65,6 +66,17 @@ def is_truthy_env_value(raw_value, default_value: bool = True):
     if value in FALSY_ENV_VALUES:
         return False
     return bool(default_value)
+
+
+def parse_positive_int_env(name: str, default_value: int, minimum: int = 1):
+    raw_value = os.getenv(name, str(default_value))
+    try:
+        parsed = int(str(raw_value).strip())
+    except (TypeError, ValueError):
+        return int(default_value)
+    if parsed < int(minimum):
+        return int(default_value)
+    return parsed
 
 
 def normalize_http_url_setting(raw_value: str, fallback_value: str, setting_name: str):
@@ -165,6 +177,31 @@ def ensure_log_storage_security(log_dir: str, log_files, enabled: bool):
     return notices
 
 
+class SecureTimedRotatingFileHandler(TimedRotatingFileHandler):
+    def __init__(self, filename: str, *, retention_days: int, interval_days: int, **kwargs):
+        safe_interval_days = max(1, int(interval_days))
+        safe_retention_days = max(safe_interval_days, int(retention_days))
+        backup_count = max(1, safe_retention_days // safe_interval_days)
+        super().__init__(
+            filename=filename,
+            when="D",
+            interval=safe_interval_days,
+            backupCount=backup_count,
+            utc=True,
+            **kwargs,
+        )
+        _chmod_if_possible(self.baseFilename, 0o600)
+
+    def _open(self):
+        stream = super()._open()
+        _chmod_if_possible(self.baseFilename, 0o600)
+        return stream
+
+    def doRollover(self):
+        super().doRollover()
+        _chmod_if_possible(self.baseFilename, 0o600)
+
+
 # Set up logging to console and persistent file
 LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", "INFO"))
 CONTAINER_LOG_LEVEL = normalize_log_level(
@@ -176,6 +213,10 @@ DISCORD_LOG_LEVEL = normalize_log_level(
 LOG_HARDEN_FILE_PERMISSIONS = is_truthy_env_value(
     os.getenv("LOG_HARDEN_FILE_PERMISSIONS", "true"),
     default_value=True,
+)
+LOG_RETENTION_DAYS = parse_positive_int_env("LOG_RETENTION_DAYS", 90, minimum=1)
+LOG_ROTATION_INTERVAL_DAYS = parse_positive_int_env(
+    "LOG_ROTATION_INTERVAL_DAYS", 1, minimum=1
 )
 LOG_DIR = resolve_log_dir(os.getenv("LOG_DIR", "/logs"))
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
@@ -196,7 +237,12 @@ console_handler.setLevel(to_logging_level(LOG_LEVEL))
 console_handler.setFormatter(formatter)
 logger.addHandler(console_handler)
 
-file_handler = logging.FileHandler(BOT_LOG_FILE, encoding="utf-8")
+file_handler = SecureTimedRotatingFileHandler(
+    BOT_LOG_FILE,
+    retention_days=LOG_RETENTION_DAYS,
+    interval_days=LOG_ROTATION_INTERVAL_DAYS,
+    encoding="utf-8",
+)
 file_handler.setLevel(to_logging_level(LOG_LEVEL))
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
@@ -204,7 +250,12 @@ logger.addHandler(file_handler)
 bot_channel_logger = logging.getLogger("invite_bot.channel")
 bot_channel_logger.setLevel(logging.INFO)
 bot_channel_logger.propagate = False
-bot_channel_handler = logging.FileHandler(BOT_CHANNEL_LOG_FILE, encoding="utf-8")
+bot_channel_handler = SecureTimedRotatingFileHandler(
+    BOT_CHANNEL_LOG_FILE,
+    retention_days=LOG_RETENTION_DAYS,
+    interval_days=LOG_ROTATION_INTERVAL_DAYS,
+    encoding="utf-8",
+)
 bot_channel_handler.setLevel(logging.INFO)
 bot_channel_handler.setFormatter(formatter)
 bot_channel_logger.addHandler(bot_channel_handler)
@@ -219,13 +270,23 @@ class WebGuiAuditFilter(logging.Filter):
         return message.startswith("WEB_AUDIT ")
 
 
-web_gui_audit_handler = logging.FileHandler(WEB_GUI_AUDIT_LOG_FILE, encoding="utf-8")
+web_gui_audit_handler = SecureTimedRotatingFileHandler(
+    WEB_GUI_AUDIT_LOG_FILE,
+    retention_days=LOG_RETENTION_DAYS,
+    interval_days=LOG_ROTATION_INTERVAL_DAYS,
+    encoding="utf-8",
+)
 web_gui_audit_handler.setLevel(logging.INFO)
 web_gui_audit_handler.setFormatter(formatter)
 web_gui_audit_handler.addFilter(WebGuiAuditFilter())
 logger.addHandler(web_gui_audit_handler)
 
-container_error_handler = logging.FileHandler(CONTAINER_ERROR_LOG_FILE, encoding="utf-8")
+container_error_handler = SecureTimedRotatingFileHandler(
+    CONTAINER_ERROR_LOG_FILE,
+    retention_days=LOG_RETENTION_DAYS,
+    interval_days=LOG_ROTATION_INTERVAL_DAYS,
+    encoding="utf-8",
+)
 container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
 container_error_handler.setFormatter(formatter)
 root_logger = logging.getLogger()
@@ -273,6 +334,11 @@ else:
     )
 for notice in log_permission_notices:
     logger.warning("Log storage security: %s", notice)
+logger.info(
+    "Log rotation enabled: interval=%s day(s), retention=%s day(s).",
+    LOG_ROTATION_INTERVAL_DAYS,
+    LOG_RETENTION_DAYS,
+)
 
 
 def install_global_exception_logging():
