@@ -26,6 +26,8 @@ services:
       - WEB_HOST_PORT=${WEB_HOST_PORT:-8080}
       - LOG_DIR=${LOG_DIR:-/logs}
       - LOG_HARDEN_FILE_PERMISSIONS=${LOG_HARDEN_FILE_PERMISSIONS:-true}
+      - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-90}
+      - LOG_ROTATION_INTERVAL_DAYS=${LOG_ROTATION_INTERVAL_DAYS:-1}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CONTAINER_LOG_LEVEL=${CONTAINER_LOG_LEVEL:-ERROR}
       - WEB_PUBLIC_BASE_URL=${WEB_PUBLIC_BASE_URL:-}
@@ -136,6 +138,8 @@ Tune with:
 - `CONTAINER_LOG_LEVEL`
 - `LOG_DIR`
 - `LOG_HARDEN_FILE_PERMISSIONS` (recommended `true`, enforces `0700` log directory and `0600` log files where supported)
+- `LOG_RETENTION_DAYS` (default `90`)
+- `LOG_ROTATION_INTERVAL_DAYS` (default `1`)
 
 ## Upgrade and Restart Workflow
 

@@ -60,6 +60,12 @@ When enabled (`LOG_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 - `${LOG_DIR}/container_errors.log` -> `0600`
 - `${LOG_DIR}/web_gui_audit.log` -> `0600`
 
+## Log Rotation and Retention
+
+- Runtime logs rotate on a timed schedule (`LOG_ROTATION_INTERVAL_DAYS`, default `1`).
+- Retention is bounded by `LOG_RETENTION_DAYS` (default `90` days).
+- Rotation is UTC-based and keeps only the latest retention window.
+
 ## Backup Guidance
 
 Minimum backup set:

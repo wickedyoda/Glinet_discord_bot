@@ -50,6 +50,8 @@ OBSERVABILITY_LOG_OPTIONS = (
     ("web_gui_audit.log", "Web GUI Audit Log"),
 )
 AUTO_REFRESH_INTERVAL_OPTIONS = (0, 1, 5, 10, 30, 60, 120)
+OBSERVABILITY_HISTORY_RETENTION_HOURS = 24
+OBSERVABILITY_HISTORY_SAMPLE_SECONDS = 60
 LOG_EMAIL_PATTERN = re.compile(
     r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"
 )
@@ -80,6 +82,8 @@ INT_KEYS = {
     "WEB_BOT_PROFILE_TIMEOUT_SECONDS",
     "WEB_AVATAR_MAX_UPLOAD_BYTES",
     "WEB_SESSION_TIMEOUT_MINUTES",
+    "LOG_RETENTION_DAYS",
+    "LOG_ROTATION_INTERVAL_DAYS",
 }
 SENSITIVE_KEYS = {
     "DISCORD_TOKEN",
@@ -115,6 +119,16 @@ ENV_FIELDS = [
         "LOG_HARDEN_FILE_PERMISSIONS",
         "Log Harden File Permissions",
         "Attempt to enforce restrictive permissions on LOG_DIR and runtime log files.",
+    ),
+    (
+        "LOG_RETENTION_DAYS",
+        "Log Retention (Days)",
+        "How many days of rotated logs are retained.",
+    ),
+    (
+        "LOG_ROTATION_INTERVAL_DAYS",
+        "Log Rotation Interval (Days)",
+        "How often log files rotate (in days).",
     ),
     ("FORUM_BASE_URL", "Forum Base URL", "GL.iNet forum root URL."),
     ("FORUM_MAX_RESULTS", "Forum Max Results", "Max forum links returned per search."),
@@ -613,6 +627,59 @@ def _format_rate(delta_bytes: float, delta_seconds: float):
     return f"{_format_bytes(int(max(0, delta_bytes / delta_seconds)))}/s"
 
 
+def _format_observability_stat_value(value: float, value_type: str):
+    if not isinstance(value, (int, float)):
+        return "n/a"
+    if value_type == "percent":
+        return f"{float(value):.2f}%"
+    if value_type == "bytes":
+        return _format_bytes(int(max(0, value)))
+    if value_type == "bytes_per_sec":
+        return f"{_format_bytes(int(max(0, value)))}/s"
+    return f"{float(value):.2f}"
+
+
+def _build_observability_history_summary(history_items: list[dict]):
+    specs = [
+        ("Process CPU (delta)", "process_cpu_percent", "percent"),
+        ("Container memory usage", "memory_percent", "percent"),
+        ("Process RSS", "rss_bytes", "bytes"),
+        ("I/O read rate", "io_read_rate_bps", "bytes_per_sec"),
+        ("I/O write rate", "io_write_rate_bps", "bytes_per_sec"),
+        ("Network RX rate", "net_rx_rate_bps", "bytes_per_sec"),
+        ("Network TX rate", "net_tx_rate_bps", "bytes_per_sec"),
+    ]
+
+    rows = []
+    for label, key, value_type in specs:
+        numeric_values = []
+        for item in history_items:
+            value = item.get(key)
+            if isinstance(value, (int, float)):
+                numeric_values.append(float(value))
+        if not numeric_values:
+            rows.append(
+                {
+                    "label": label,
+                    "min": "n/a",
+                    "avg": "n/a",
+                    "max": "n/a",
+                }
+            )
+            continue
+        rows.append(
+            {
+                "label": label,
+                "min": _format_observability_stat_value(min(numeric_values), value_type),
+                "avg": _format_observability_stat_value(
+                    sum(numeric_values) / len(numeric_values), value_type
+                ),
+                "max": _format_observability_stat_value(max(numeric_values), value_type),
+            }
+        )
+    return rows
+
+
 def _collect_observability_snapshot(state: dict, started_monotonic: float):
     now_mono = time.monotonic()
     process_cpu_total = time.process_time()
@@ -666,6 +733,20 @@ def _collect_observability_snapshot(state: dict, started_monotonic: float):
         ):
             net_tx_rate = net_bytes["tx_bytes"] - prev_net["tx_bytes"]
 
+    io_read_rate_bps = None
+    io_write_rate_bps = None
+    net_rx_rate_bps = None
+    net_tx_rate_bps = None
+    if delta_wall is not None and delta_wall > 0:
+        if isinstance(io_read_rate, (int, float)):
+            io_read_rate_bps = max(0.0, float(io_read_rate) / delta_wall)
+        if isinstance(io_write_rate, (int, float)):
+            io_write_rate_bps = max(0.0, float(io_write_rate) / delta_wall)
+        if isinstance(net_rx_rate, (int, float)):
+            net_rx_rate_bps = max(0.0, float(net_rx_rate) / delta_wall)
+        if isinstance(net_tx_rate, (int, float)):
+            net_tx_rate_bps = max(0.0, float(net_tx_rate) / delta_wall)
+
     state["wall"] = now_mono
     state["process_cpu_total"] = process_cpu_total
     state["io"] = io_bytes
@@ -686,16 +767,21 @@ def _collect_observability_snapshot(state: dict, started_monotonic: float):
         "memory_percent": memory_pct,
         "io_read_bytes": io_bytes.get("read_bytes"),
         "io_write_bytes": io_bytes.get("write_bytes"),
+        "io_read_rate_bps": io_read_rate_bps,
+        "io_write_rate_bps": io_write_rate_bps,
         "io_read_rate": _format_rate(io_read_rate, delta_wall),
         "io_write_rate": _format_rate(io_write_rate, delta_wall),
         "net_rx_bytes": net_bytes.get("rx_bytes"),
         "net_tx_bytes": net_bytes.get("tx_bytes"),
+        "net_rx_rate_bps": net_rx_rate_bps,
+        "net_tx_rate_bps": net_tx_rate_bps,
         "net_rx_rate": _format_rate(net_rx_rate, delta_wall),
         "net_tx_rate": _format_rate(net_tx_rate, delta_wall),
         "uptime_seconds": max(0.0, now_mono - float(started_monotonic or now_mono)),
         "cgroup_cpu_seconds": cgroup_cpu_total,
         "sample_interval_seconds": delta_wall,
         "sampled_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "sampled_at_epoch": time.time(),
     }
 
 
@@ -1490,6 +1576,9 @@ def _render_layout(
       font-variant-numeric: tabular-nums;
     }
     .metric-table tr:last-child td { border-bottom: 0; }
+    .history-table th:not(:first-child),
+    .history-table td:not(:first-child) { text-align: right; }
+    .history-table td:first-child { width: 44%; }
     .table-scroll {
       width: 100%;
       overflow-x: auto;
@@ -1725,6 +1814,45 @@ def create_web_app(
     recent_login_success = {}
     observability_state = {}
     observability_started_monotonic = time.monotonic()
+    observability_lock = threading.Lock()
+    observability_history = deque()
+    observability_history_retention_seconds = (
+        OBSERVABILITY_HISTORY_RETENTION_HOURS * 60 * 60
+    )
+    observability_history_sample_seconds = OBSERVABILITY_HISTORY_SAMPLE_SECONDS
+
+    def _collect_and_store_observability_snapshot():
+        with observability_lock:
+            snapshot = _collect_observability_snapshot(
+                observability_state,
+                observability_started_monotonic,
+            )
+            now_epoch = float(snapshot.get("sampled_at_epoch") or time.time())
+            cutoff_epoch = now_epoch - float(observability_history_retention_seconds)
+            observability_history.append(snapshot)
+            while observability_history:
+                oldest_epoch = float(
+                    observability_history[0].get("sampled_at_epoch") or 0.0
+                )
+                if oldest_epoch >= cutoff_epoch:
+                    break
+                observability_history.popleft()
+            return snapshot, list(observability_history)
+
+    def _observability_sampler_loop():
+        while True:
+            try:
+                _collect_and_store_observability_snapshot()
+            except Exception:
+                if logger:
+                    logger.exception("Observability background sampler failed.")
+            time.sleep(max(1, int(observability_history_sample_seconds)))
+
+    threading.Thread(
+        target=_observability_sampler_loop,
+        name="web_observability_sampler",
+        daemon=True,
+    ).start()
 
     @app.before_request
     def mark_request_start():
@@ -2760,10 +2888,23 @@ def create_web_app(
         return redirect(url_for("dashboard"))
 
     def _render_observability_view(page_title: str):
-        metrics = _collect_observability_snapshot(
-            observability_state,
-            observability_started_monotonic,
-        )
+        metrics, history_items = _collect_and_store_observability_snapshot()
+        history_rows = _build_observability_history_summary(history_items)
+        history_sample_count = len(history_items)
+        history_oldest = history_items[0] if history_items else {}
+        history_newest = history_items[-1] if history_items else {}
+        history_oldest_label = str(history_oldest.get("sampled_at") or "n/a")
+        history_newest_label = str(history_newest.get("sampled_at") or "n/a")
+        history_table_rows = []
+        for row in history_rows:
+            history_table_rows.append(
+                "<tr>"
+                f"<td>{escape(str(row.get('label') or 'n/a'))}</td>"
+                f"<td class='mono'>{escape(str(row.get('min') or 'n/a'))}</td>"
+                f"<td class='mono'>{escape(str(row.get('avg') or 'n/a'))}</td>"
+                f"<td class='mono'>{escape(str(row.get('max') or 'n/a'))}</td>"
+                "</tr>"
+            )
         selected_refresh_seconds = _parse_auto_refresh_seconds(
             request.args.get("refresh", "0"),
             default_value=0,
@@ -2836,6 +2977,7 @@ def create_web_app(
           <p class="muted">Runtime snapshot for process/container activity. Metrics update each time you refresh this page.</p>
           <p class="muted">This page is read-only and safe to share publicly for status visibility. Log viewing requires web GUI login at <span class="mono">/admin/logs</span>.</p>
           <p class="muted">Sample captured: {escape(str(metrics.get("sampled_at") or "n/a"))}. Sample interval: {escape(sample_interval_text)}.</p>
+          <p class="muted">Historical metrics retention: {OBSERVABILITY_HISTORY_RETENTION_HOURS} hours. Collection interval: every {OBSERVABILITY_HISTORY_SAMPLE_SECONDS} seconds.</p>
           <form method="get" action="{escape(url_for("public_observability"), quote=True)}" style="margin-top:10px;">
             <label for="status_refresh">Auto refresh</label>
             <select id="status_refresh" name="refresh" onchange="this.form.submit();">
@@ -2846,6 +2988,19 @@ def create_web_app(
             </noscript>
           </form>
           <p class="muted">{escape(auto_refresh_note)}</p>
+        </div>
+
+        <div class="card metric-card">
+          <h3>Last {OBSERVABILITY_HISTORY_RETENTION_HOURS} Hours Summary</h3>
+          <p class="muted">Samples stored: {history_sample_count}. Window: {escape(history_oldest_label)} to {escape(history_newest_label)}.</p>
+          <table class="metric-table history-table">
+            <thead>
+              <tr><th>Metric</th><th>Min</th><th>Avg</th><th>Max</th></tr>
+            </thead>
+            <tbody>
+              {"".join(history_table_rows)}
+            </tbody>
+          </table>
         </div>
 
         <div class="grid">

@@ -31,6 +31,12 @@ All notable changes to this project are documented in this file.
   - fixed label/value column widths
   - right-aligned numeric value column for consistent cross-card formatting
 - Centered top header menu controls in the web GUI for consistent navigation alignment.
+- Observability metrics now maintain a rolling 24-hour history in memory and display min/avg/max summary on `/staus`.
+- Added background observability sampling every 60 seconds with retention pruning at 24 hours.
+- Runtime log handling switched to timed rotation with retention controls:
+  - default retention `90` days
+  - default rotation interval `1` day
+  - configurable via `LOG_RETENTION_DAYS` and `LOG_ROTATION_INTERVAL_DAYS`
 - Hardened Docker publish workflows:
   - upgraded action versions (`checkout`, `buildx`, `login`, `build-push`)
   - pull-request builds now validate image build without pushing to registry
