@@ -473,16 +473,24 @@ def _read_latest_log_lines(path: Path, line_limit: int = OBSERVABILITY_LOG_LINE_
         return f"Unable to read log file: {exc}"
 
 
-def _safe_log_file_path(log_dir: Path, filename: str):
-    candidate_name = str(filename or "").strip()
-    if not candidate_name:
-        return None
-    target = (log_dir / candidate_name).resolve()
+def _resolve_observability_log_paths(log_dir: Path):
     try:
-        target.relative_to(log_dir.resolve())
-    except (ValueError, OSError):
-        return None
-    return target
+        base_dir = log_dir.resolve()
+    except OSError:
+        return {}
+
+    allowed = {}
+    for filename, _label in OBSERVABILITY_LOG_OPTIONS:
+        safe_name = Path(str(filename)).name
+        if safe_name != filename:
+            continue
+        try:
+            candidate = (base_dir / safe_name).resolve()
+            candidate.relative_to(base_dir)
+        except (ValueError, OSError):
+            continue
+        allowed[filename] = candidate
+    return allowed
 
 
 def _read_rss_bytes():
@@ -2814,15 +2822,36 @@ def create_web_app(
 
     def _render_log_view():
         log_dir = Path(str(os.getenv("LOG_DIR", "/logs")).strip() or "/logs")
-        selected_log = str(
-            request.args.get("log", "container_errors.log") or "container_errors.log"
-        ).strip()
-        allowed_logs = {name: label for name, label in OBSERVABILITY_LOG_OPTIONS}
-        if selected_log not in allowed_logs:
-            selected_log = "container_errors.log"
+        allowed_log_paths = _resolve_observability_log_paths(log_dir)
+        log_selection_map = {
+            "bot": "bot.log",
+            "bot_channel": "bot_log.log",
+            "container_errors": "container_errors.log",
+            "web_gui_audit": "web_gui_audit.log",
+        }
+        label_by_filename = {name: label for name, label in OBSERVABILITY_LOG_OPTIONS}
+        valid_selection_map = {
+            key: filename
+            for key, filename in log_selection_map.items()
+            if filename in allowed_log_paths
+        }
 
-        selected_log_path = _safe_log_file_path(log_dir, selected_log)
-        if selected_log_path is None:
+        requested_selection = str(
+            request.args.get("log", "container_errors") or "container_errors"
+        ).strip()
+        # Backward compatibility for older links that still pass filename.
+        if requested_selection in label_by_filename:
+            reverse_map = {value: key for key, value in log_selection_map.items()}
+            requested_selection = reverse_map.get(requested_selection, "")
+
+        if requested_selection not in valid_selection_map:
+            requested_selection = "container_errors"
+        if requested_selection not in valid_selection_map:
+            requested_selection = next(iter(valid_selection_map.keys()), "")
+
+        selected_log = valid_selection_map.get(requested_selection, "")
+        selected_log_path = allowed_log_paths.get(selected_log)
+        if not selected_log_path:
             log_preview = "Invalid log selection."
         else:
             log_preview = _read_latest_log_lines(
@@ -2831,10 +2860,13 @@ def create_web_app(
             )
 
         options_html = []
-        for file_name, label in OBSERVABILITY_LOG_OPTIONS:
-            selected_attr = " selected" if file_name == selected_log else ""
+        for selection_key, file_name in log_selection_map.items():
+            label = label_by_filename.get(file_name, file_name)
+            if file_name not in allowed_log_paths:
+                continue
+            selected_attr = " selected" if selection_key == requested_selection else ""
             options_html.append(
-                f"<option value='{escape(file_name, quote=True)}'{selected_attr}>{escape(label)} ({escape(file_name)})</option>"
+                f"<option value='{escape(selection_key, quote=True)}'{selected_attr}>{escape(label)} ({escape(file_name)})</option>"
             )
 
         return f"""
