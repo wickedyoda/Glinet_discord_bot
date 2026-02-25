@@ -1,0 +1,40 @@
+name: OSSF Scorecards
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "35 3 * * 1"
+
+permissions:
+  actions: read
+  contents: read
+  id-token: write
+  security-events: write
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run OSSF Scorecards
+        uses: ossf/scorecard-action@v2.3.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_results: true
+
+      - name: Upload Scorecards SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: results.sarif
+
+      - name: Upload Scorecards artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: scorecards-sarif
+          path: results.sarif
