@@ -90,6 +90,8 @@ Web variation:
 | `!timeoutmember` | Prefix | Moderator | member + duration + reason | Prefix equivalent |
 | `/untimeout_member` | Slash | Moderator | member + optional reason | Removes timeout |
 | `!untimeoutmember` | Prefix | Moderator | member + optional reason | Prefix equivalent |
+| `/prune_messages` | Slash | Moderator | amount (1-500) | Removes recent messages in current channel (skips pinned) |
+| `!prune` | Prefix | Moderator | amount (1-500) | Prefix channel prune |
 | `/modlog_test` | Slash | Moderator | none | Sends test log to mod log channel |
 | `!modlogtest` | Prefix | Moderator | none | Prefix equivalent |
 | `/logs` | Slash | Moderator | optional line count | Returns recent container error lines (ephemeral) |

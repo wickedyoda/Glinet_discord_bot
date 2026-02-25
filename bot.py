@@ -369,6 +369,19 @@ COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
 COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
 COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES = "allowed_role_names"
 COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS = "moderator_role_ids"
+MODERATOR_ONLY_COMMAND_KEYS = {
+    "add_role_member",
+    "ban_member",
+    "bulk_assign_role_csv",
+    "create_role",
+    "delete_role",
+    "edit_role",
+    "kick_member",
+    "remove_role_member",
+    "timeout_member",
+    "unban_member",
+    "untimeout_member",
+}
 COMMAND_PERMISSION_DEFAULTS = {
     "list": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "tag_commands": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -389,6 +402,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "unban_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "add_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "remove_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "prune_messages": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "logs": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "search": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_reddit": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -397,6 +411,10 @@ COMMAND_PERMISSION_DEFAULTS = {
     "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
 }
+for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
+    COMMAND_PERMISSION_DEFAULTS[_command_key] = (
+        COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
+    )
 COMMAND_PERMISSION_METADATA = {
     "list": {
         "label": "!list",
@@ -473,6 +491,10 @@ COMMAND_PERMISSION_METADATA = {
     "remove_role_member": {
         "label": "/remove_role_member, !removerolemember",
         "description": "Remove a role from a member.",
+    },
+    "prune_messages": {
+        "label": "/prune_messages, !prune",
+        "description": "Prune recent messages in the current channel.",
     },
     "logs": {
         "label": "/logs",
@@ -2375,6 +2397,25 @@ async def prune_user_messages(guild: discord.Guild, user_id: int, hours: int):
             logger.exception("Failed to prune messages in channel %s", channel.id)
 
     return deleted_count, scanned_channels
+
+
+async def prune_channel_recent_messages(
+    channel: discord.TextChannel | discord.Thread,
+    amount: int,
+    *,
+    reason: str,
+    skip_message_id: int | None = None,
+):
+    safe_amount = max(1, min(500, int(amount)))
+    deleted_messages = await channel.purge(
+        limit=safe_amount,
+        check=lambda message: (
+            not message.pinned and (skip_message_id is None or message.id != skip_message_id)
+        ),
+        bulk=True,
+        reason=reason,
+    )
+    return len(deleted_messages)
 
 
 async def resolve_mod_log_channel(guild: discord.Guild):
@@ -4616,6 +4657,205 @@ async def logs_slash(
         response_header,
         ephemeral=True,
         file=discord.File(io.BytesIO(log_tail.encode("utf-8")), filename=report_name),
+    )
+
+
+@tree.command(
+    name="prune_messages",
+    description="Remove recent messages in the current channel",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(amount="How many recent messages to remove (1-500)")
+async def prune_messages_slash(
+    interaction: discord.Interaction,
+    amount: app_commands.Range[int, 1, 500],
+):
+    logger.info(
+        "/prune_messages invoked by %s amount=%s", interaction.user, int(amount)
+    )
+    if not await ensure_interaction_command_access(interaction, "prune_messages"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
+        return
+    if not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message(
+            "❌ Could not resolve your guild membership for this command.",
+            ephemeral=True,
+        )
+        return
+    if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+        await interaction.response.send_message(
+            "❌ This command can only be used in text channels or threads.",
+            ephemeral=True,
+        )
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = interaction.guild.me or (
+        interaction.guild.get_member(bot_user_id) if bot_user_id else None
+    )
+    if bot_member is None:
+        await interaction.response.send_message(
+            "❌ Could not resolve bot member in this guild.", ephemeral=True
+        )
+        return
+
+    channel = interaction.channel
+    perms = channel.permissions_for(bot_member)
+    if not (perms.view_channel and perms.read_message_history and perms.manage_messages):
+        await interaction.response.send_message(
+            "❌ I need `View Channel`, `Read Message History`, and `Manage Messages` permissions here.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    action_reason = f"Pruned {int(amount)} messages by {interaction.user} via bot"
+    try:
+        deleted_count = await prune_channel_recent_messages(
+            channel,
+            int(amount),
+            reason=action_reason,
+        )
+    except discord.Forbidden:
+        logger.exception(
+            "Missing permission to prune messages in channel %s", channel.id
+        )
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "prune_messages",
+            reason=action_reason,
+            outcome="failed",
+            details=f"Bot missing required message-manage permissions in <#{channel.id}>.",
+        )
+        await interaction.followup.send(
+            "❌ I can't prune messages in this channel due to permission limits.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to prune messages in channel %s", channel.id)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "prune_messages",
+            reason=action_reason,
+            outcome="failed",
+            details=f"Discord API error while pruning in <#{channel.id}>.",
+        )
+        await interaction.followup.send(
+            "❌ Failed to prune messages. Try again.", ephemeral=True
+        )
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "prune_messages",
+        reason=action_reason,
+        details=(
+            f"Pruned {deleted_count} messages in {channel.mention} "
+            f"(requested {int(amount)}; pinned messages skipped)."
+        ),
+    )
+    await interaction.followup.send(
+        (
+            f"✅ Removed **{deleted_count}** messages from {channel.mention}. "
+            f"(Requested {int(amount)}; pinned messages were skipped.)"
+        ),
+        ephemeral=True,
+    )
+
+
+@bot.command(name="prune")
+async def prune_messages_prefix(ctx: commands.Context, amount: str):
+    logger.info("!prune invoked by %s amount=%s", ctx.author, amount)
+    if not await ensure_prefix_command_access(ctx, "prune_messages"):
+        return
+    if ctx.guild is None:
+        await ctx.send("❌ This command can only be used in a server.")
+        return
+    if not isinstance(ctx.channel, (discord.TextChannel, discord.Thread)):
+        await ctx.send("❌ This command can only be used in text channels or threads.")
+        return
+
+    raw_amount = str(amount or "").strip()
+    if not raw_amount.isdigit():
+        await ctx.send("❌ Amount must be a whole number between 1 and 500.")
+        return
+    requested_amount = int(raw_amount)
+    if requested_amount < 1 or requested_amount > 500:
+        await ctx.send("❌ Amount must be between 1 and 500.")
+        return
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = ctx.guild.me or (
+        ctx.guild.get_member(bot_user_id) if bot_user_id else None
+    )
+    if bot_member is None:
+        await ctx.send("❌ Could not resolve bot member in this guild.")
+        return
+
+    channel = ctx.channel
+    perms = channel.permissions_for(bot_member)
+    if not (perms.view_channel and perms.read_message_history and perms.manage_messages):
+        await ctx.send(
+            "❌ I need `View Channel`, `Read Message History`, and `Manage Messages` permissions here."
+        )
+        return
+
+    action_reason = f"Pruned {requested_amount} messages by {ctx.author} via bot"
+    try:
+        deleted_count = await prune_channel_recent_messages(
+            channel,
+            requested_amount,
+            reason=action_reason,
+            skip_message_id=ctx.message.id,
+        )
+    except discord.Forbidden:
+        logger.exception(
+            "Missing permission to prune messages in channel %s", channel.id
+        )
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "prune_messages",
+            reason=action_reason,
+            outcome="failed",
+            details=f"Bot missing required message-manage permissions in <#{channel.id}>.",
+        )
+        await ctx.send("❌ I can't prune messages in this channel due to permission limits.")
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to prune messages in channel %s", channel.id)
+        await send_moderation_log(
+            ctx.guild,
+            ctx.author,
+            "prune_messages",
+            reason=action_reason,
+            outcome="failed",
+            details=f"Discord API error while pruning in <#{channel.id}>.",
+        )
+        await ctx.send("❌ Failed to prune messages. Try again.")
+        return
+
+    await send_moderation_log(
+        ctx.guild,
+        ctx.author,
+        "prune_messages",
+        reason=action_reason,
+        details=(
+            f"Pruned {deleted_count} messages in {channel.mention} "
+            f"(requested {requested_amount}; pinned messages skipped)."
+        ),
+    )
+    await ctx.send(
+        f"✅ Removed **{deleted_count}** messages from {channel.mention}. "
+        f"(Requested {requested_amount}; pinned messages were skipped.)"
     )
 
 

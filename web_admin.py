@@ -1357,7 +1357,11 @@ def create_web_app(
                     )
                 except ValueError:
                     is_local_request = False
-        allow_coop = bool(request.is_secure or is_local_request)
+        forwarded_proto = str(request.headers.get("X-Forwarded-Proto", "")).strip().lower()
+        if "," in forwarded_proto:
+            forwarded_proto = forwarded_proto.split(",", 1)[0].strip().lower()
+        is_effectively_secure = bool(request.is_secure or forwarded_proto == "https")
+        allow_coop = bool(is_effectively_secure or is_local_request)
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "no-referrer")
@@ -1377,32 +1381,44 @@ def create_web_app(
             "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; "
             "script-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
         )
-        if request.is_secure:
+        if is_effectively_secure:
             response.headers.setdefault(
                 "Strict-Transport-Security",
                 "max-age=31536000; includeSubDomains; preload",
             )
 
-        # Allow local non-HTTPS testing to keep login working when secure cookies are enabled.
-        if secure_session_cookie and (not request.is_secure) and is_local_request:
+        # If the effective request scheme is HTTP, strip the Secure flag so
+        # direct/local access can maintain a session. HTTPS requests retain it.
+        if secure_session_cookie and (not is_effectively_secure):
             session_cookie_name = str(app.config.get("SESSION_COOKIE_NAME", "session"))
             set_cookie_headers = response.headers.getlist("Set-Cookie")
             if set_cookie_headers:
                 rewritten_headers = []
+                stripped_secure = False
                 for header_value in set_cookie_headers:
                     rewritten = header_value
                     if rewritten.startswith(f"{session_cookie_name}="):
-                        rewritten = re.sub(
+                        next_value = re.sub(
                             r";\s*Secure(?=;|$)",
                             "",
                             rewritten,
                             flags=re.IGNORECASE,
                         )
+                        if next_value != rewritten:
+                            stripped_secure = True
+                        rewritten = next_value
                     rewritten_headers.append(rewritten)
                 if rewritten_headers != set_cookie_headers:
                     response.headers.pop("Set-Cookie", None)
                     for header_value in rewritten_headers:
                         response.headers.add("Set-Cookie", header_value)
+                    if stripped_secure and logger:
+                        logger.warning(
+                            "Session cookie Secure flag removed for non-HTTPS request: host=%s x_forwarded_proto=%s ip=%s",
+                            str(request.host or ""),
+                            str(request.headers.get("X-Forwarded-Proto", "") or ""),
+                            _client_ip(),
+                        )
         return response
 
     users_file = Path(data_dir) / "bot_data.db"
@@ -1674,6 +1690,16 @@ def create_web_app(
                 request.form.get("csrf_token", "")
                 or request.headers.get("X-CSRF-Token", "")
             ).strip()
+            # Recover login form flow when a prior session token is absent but the
+            # submitted form token is present (for example after cookie loss).
+            if (
+                request.endpoint == "login"
+                and request.method == "POST"
+                and not expected
+                and submitted
+            ):
+                session["csrf_token"] = submitted
+                expected = submitted
             if not expected or not submitted or not secrets.compare_digest(
                 expected, submitted
             ):
