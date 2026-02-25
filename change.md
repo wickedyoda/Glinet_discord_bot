@@ -38,6 +38,7 @@ All notable changes to this project are documented in this file.
   - SARIF generation step is non-blocking and uploads when present
   - policy failure now comes only from explicit critical-vulnerability gate
   - Trivy scanning scope limited to vulnerability scanning (`scanners: vuln`)
+  - switched Trivy execution to direct CLI (`setup-trivy` + `trivy image`) for deterministic exit-code behavior
 - Removed repo-managed `CodeQL` workflow to avoid conflict with GitHub CodeQL default setup.
 
 ## [2026-02-23] - Web Admin, Security, and Storage Overhaul
