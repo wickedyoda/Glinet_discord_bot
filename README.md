@@ -90,6 +90,7 @@ docker compose build
 
 - Primary DB: `${DATA_DIR}/bot_data.db`
 - App log: `${LOG_DIR}/bot.log`
+- Bot channel mirror log: `${LOG_DIR}/bot_log.log`
 - Error log used by `/logs`: `${LOG_DIR}/container_errors.log`
 - Web GUI interaction audit log: `${LOG_DIR}/web_gui_audit.log`
 

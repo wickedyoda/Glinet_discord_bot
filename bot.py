@@ -179,6 +179,7 @@ LOG_HARDEN_FILE_PERMISSIONS = is_truthy_env_value(
 )
 LOG_DIR = resolve_log_dir(os.getenv("LOG_DIR", "/logs"))
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
+BOT_CHANNEL_LOG_FILE = os.path.join(LOG_DIR, "bot_log.log")
 CONTAINER_ERROR_LOG_FILE = os.path.join(LOG_DIR, "container_errors.log")
 WEB_GUI_AUDIT_LOG_FILE = os.path.join(LOG_DIR, "web_gui_audit.log")
 log_permission_notices = ensure_log_storage_security(
@@ -199,6 +200,14 @@ file_handler = logging.FileHandler(BOT_LOG_FILE, encoding="utf-8")
 file_handler.setLevel(to_logging_level(LOG_LEVEL))
 file_handler.setFormatter(formatter)
 logger.addHandler(file_handler)
+
+bot_channel_logger = logging.getLogger("invite_bot.channel")
+bot_channel_logger.setLevel(logging.INFO)
+bot_channel_logger.propagate = False
+bot_channel_handler = logging.FileHandler(BOT_CHANNEL_LOG_FILE, encoding="utf-8")
+bot_channel_handler.setLevel(logging.INFO)
+bot_channel_handler.setFormatter(formatter)
+bot_channel_logger.addHandler(bot_channel_handler)
 
 
 class WebGuiAuditFilter(logging.Filter):
@@ -224,7 +233,12 @@ root_logger.addHandler(container_error_handler)
 log_permission_notices.extend(
     ensure_log_storage_security(
         LOG_DIR,
-        [BOT_LOG_FILE, CONTAINER_ERROR_LOG_FILE, WEB_GUI_AUDIT_LOG_FILE],
+        [
+            BOT_LOG_FILE,
+            BOT_CHANNEL_LOG_FILE,
+            CONTAINER_ERROR_LOG_FILE,
+            WEB_GUI_AUDIT_LOG_FILE,
+        ],
         LOG_HARDEN_FILE_PERMISSIONS,
     )
 )
@@ -237,8 +251,9 @@ def apply_external_logger_levels():
 
 apply_external_logger_levels()
 logger.info(
-    "Runtime log files: %s | %s | %s",
+    "Runtime log files: %s | %s | %s | %s",
     BOT_LOG_FILE,
+    BOT_CHANNEL_LOG_FILE,
     CONTAINER_ERROR_LOG_FILE,
     WEB_GUI_AUDIT_LOG_FILE,
 )
@@ -330,7 +345,19 @@ def get_required_int_env(name: str):
 
 TOKEN = get_required_env("DISCORD_TOKEN")
 GUILD_ID = get_required_int_env("GUILD_ID")
-GENERAL_CHANNEL_ID = int(os.getenv("GENERAL_CHANNEL_ID", "0"))
+_bot_log_channel_raw = os.getenv("BOT_LOG_CHANNEL_ID", os.getenv("GENERAL_CHANNEL_ID", "0"))
+if _bot_log_channel_raw is None or str(_bot_log_channel_raw).strip() == "":
+    _bot_log_channel_raw = os.getenv("GENERAL_CHANNEL_ID", "0")
+try:
+    BOT_LOG_CHANNEL_ID = int(str(_bot_log_channel_raw).strip())
+    if BOT_LOG_CHANNEL_ID < 0:
+        BOT_LOG_CHANNEL_ID = 0
+except (TypeError, ValueError):
+    BOT_LOG_CHANNEL_ID = 0
+if os.getenv("GENERAL_CHANNEL_ID") and not os.getenv("BOT_LOG_CHANNEL_ID"):
+    logger.warning(
+        "GENERAL_CHANNEL_ID is deprecated; migrate to BOT_LOG_CHANNEL_ID."
+    )
 FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", "https://forum.gl-inet.com").rstrip("/")
 FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 REDDIT_BASE_URL = "https://www.reddit.com"
@@ -2549,33 +2576,48 @@ async def prune_channel_recent_messages(
 
 
 async def resolve_mod_log_channel(guild: discord.Guild):
-    channel = guild.get_channel(MOD_LOG_CHANNEL_ID)
+    channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    if channel_id <= 0:
+        logger.warning(
+            "No bot log channel configured. Set BOT_LOG_CHANNEL_ID or MOD_LOG_CHANNEL_ID."
+        )
+        return None
+
+    channel = guild.get_channel(channel_id)
     if channel is None:
-        channel = bot.get_channel(MOD_LOG_CHANNEL_ID)
+        channel = bot.get_channel(channel_id)
     if channel is None:
         try:
-            channel = await bot.fetch_channel(MOD_LOG_CHANNEL_ID)
+            channel = await bot.fetch_channel(channel_id)
         except discord.NotFound:
-            logger.warning("Moderation log channel %s not found", MOD_LOG_CHANNEL_ID)
+            logger.warning("Bot log channel %s not found", channel_id)
             return None
         except discord.Forbidden:
             logger.warning(
-                "No permission to access moderation log channel %s", MOD_LOG_CHANNEL_ID
+                "No permission to access bot log channel %s", channel_id
             )
             return None
         except discord.HTTPException:
-            logger.exception(
-                "Failed to fetch moderation log channel %s", MOD_LOG_CHANNEL_ID
-            )
+            logger.exception("Failed to fetch bot log channel %s", channel_id)
             return None
 
     if isinstance(channel, (discord.TextChannel, discord.Thread)):
         return channel
 
-    logger.warning(
-        "Moderation log channel %s is not a text channel", MOD_LOG_CHANNEL_ID
-    )
+    logger.warning("Bot log channel %s is not a text channel", channel_id)
     return None
+
+
+def record_bot_log_channel_message(event_name: str, channel_id: int, message: str):
+    sanitized_message = SENSITIVE_LOG_VALUE_PATTERN.sub(
+        r"\1=[REDACTED]", str(message or "")
+    ).replace("\n", "\\n")
+    bot_channel_logger.info(
+        "event=%s channel_id=%s payload=%s",
+        event_name,
+        channel_id,
+        sanitized_message,
+    )
 
 
 async def send_moderation_log(
@@ -2587,10 +2629,6 @@ async def send_moderation_log(
     outcome: str = "success",
     details: str | None = None,
 ):
-    channel = await resolve_mod_log_channel(guild)
-    if channel is None:
-        return False
-
     target_text = f"{target} (`{target.id}`)" if target else "N/A"
     reason_text = reason or "N/A"
     details_text = details or "N/A"
@@ -2603,12 +2641,19 @@ async def send_moderation_log(
         f"**Reason:** {reason_text}\n"
         f"**Details:** {details_text}"
     )
+    target_channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    record_bot_log_channel_message("moderation_action", target_channel_id, message)
+
+    channel = await resolve_mod_log_channel(guild)
+    if channel is None:
+        return False
+
     try:
         await channel.send(message)
         return True
     except discord.Forbidden:
         logger.warning(
-            "No permission to send moderation logs to channel %s", MOD_LOG_CHANNEL_ID
+            "No permission to send moderation logs to channel %s", target_channel_id
         )
         return False
     except discord.HTTPException:
@@ -2644,17 +2689,20 @@ def read_recent_log_lines(path: str, max_lines: int):
 
 
 async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
+    message = f"📌 **Server Event:** `{event_name}`\n{details}"
+    target_channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    record_bot_log_channel_message("server_event", target_channel_id, message)
+
     channel = await resolve_mod_log_channel(guild)
     if channel is None:
         return False
 
-    message = f"📌 **Server Event:** `{event_name}`\n{details}"
     try:
         await channel.send(message)
         return True
     except discord.Forbidden:
         logger.warning(
-            "No permission to send server event logs to channel %s", MOD_LOG_CHANNEL_ID
+            "No permission to send server event logs to channel %s", target_channel_id
         )
         return False
     except discord.HTTPException:
@@ -3098,7 +3146,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global LOG_LEVEL
     global CONTAINER_LOG_LEVEL
     global DISCORD_LOG_LEVEL
-    global GENERAL_CHANNEL_ID
+    global BOT_LOG_CHANNEL_ID
     global FORUM_BASE_URL
     global FORUM_MAX_RESULTS
     global REDDIT_SUBREDDIT
@@ -3135,9 +3183,12 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
     apply_external_logger_levels()
 
-    GENERAL_CHANNEL_ID = parse_int_setting(
-        os.getenv("GENERAL_CHANNEL_ID", GENERAL_CHANNEL_ID),
-        GENERAL_CHANNEL_ID,
+    raw_bot_log_channel_id = os.getenv("BOT_LOG_CHANNEL_ID")
+    if raw_bot_log_channel_id is None or str(raw_bot_log_channel_id).strip() == "":
+        raw_bot_log_channel_id = os.getenv("GENERAL_CHANNEL_ID", BOT_LOG_CHANNEL_ID)
+    BOT_LOG_CHANNEL_ID = parse_int_setting(
+        raw_bot_log_channel_id,
+        BOT_LOG_CHANNEL_ID,
         minimum=0,
     )
     FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", FORUM_BASE_URL).rstrip("/")
@@ -4004,7 +4055,7 @@ async def submitrole(interaction: discord.Interaction):
             return
 
         role = msg.role_mentions[0]
-        channel = bot.get_channel(GENERAL_CHANNEL_ID) or interaction.channel
+        channel = bot.get_channel(BOT_LOG_CHANNEL_ID) or interaction.channel
         invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
         code = generate_code()
         save_role_code(code, role.id)
@@ -4687,6 +4738,7 @@ async def modlog_test_slash(interaction: discord.Interaction):
     logger.info("/modlog_test invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "modlog_test"):
         return
+    target_channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
 
     sent = await send_moderation_log(
         interaction.guild,
@@ -4699,12 +4751,12 @@ async def modlog_test_slash(interaction: discord.Interaction):
     )
     if sent:
         await interaction.response.send_message(
-            f"✅ Test moderation log sent to <#{MOD_LOG_CHANNEL_ID}>.",
+            f"✅ Test moderation log sent to <#{target_channel_id}>.",
             ephemeral=True,
         )
     else:
         await interaction.response.send_message(
-            f"❌ Could not send test log to channel ID `{MOD_LOG_CHANNEL_ID}`. "
+            f"❌ Could not send test log to channel ID `{target_channel_id}`. "
             "Check channel ID and bot permissions.",
             ephemeral=True,
         )
@@ -4715,6 +4767,7 @@ async def modlog_test_prefix(ctx: commands.Context):
     logger.info("!modlogtest invoked by %s", ctx.author)
     if not await ensure_prefix_command_access(ctx, "modlog_test"):
         return
+    target_channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
 
     sent = await send_moderation_log(
         ctx.guild,
@@ -4726,10 +4779,10 @@ async def modlog_test_prefix(ctx: commands.Context):
         details="Triggered via !modlogtest",
     )
     if sent:
-        await ctx.send(f"✅ Test moderation log sent to <#{MOD_LOG_CHANNEL_ID}>.")
+        await ctx.send(f"✅ Test moderation log sent to <#{target_channel_id}>.")
     else:
         await ctx.send(
-            f"❌ Could not send test log to channel ID `{MOD_LOG_CHANNEL_ID}`. "
+            f"❌ Could not send test log to channel ID `{target_channel_id}`. "
             "Check channel ID and bot permissions."
         )
 

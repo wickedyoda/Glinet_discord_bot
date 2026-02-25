@@ -105,7 +105,7 @@ For multi-thousand-member guilds:
 1. Restrict access (proxy/firewall) if compromise suspected.
 2. Rotate Discord token and web session secret.
 3. Reset affected web user credentials.
-4. Review `bot.log` and `container_errors.log`.
+4. Review `bot.log`, `bot_log.log`, and `container_errors.log`.
 5. Validate command permission rules and admin roster.
 
 ## Known Limits and Compensating Controls

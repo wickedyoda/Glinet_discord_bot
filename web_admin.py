@@ -6,6 +6,7 @@ import sqlite3
 import time
 import hashlib
 import ipaddress
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 from html import escape
@@ -41,9 +42,22 @@ POST_FORM_TAG_PATTERN = re.compile(
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz"}
 WEB_GUI_TITLE_SUFFIX = "GL.iNet Discord Bot Dashboard"
+OBSERVABILITY_LOG_LINE_LIMIT = 500
+OBSERVABILITY_LOG_OPTIONS = (
+    ("bot.log", "Bot Runtime Log"),
+    ("bot_log.log", "Bot Channel Log"),
+    ("container_errors.log", "Container Error Log"),
+    ("web_gui_audit.log", "Web GUI Audit Log"),
+)
+LOG_EMAIL_PATTERN = re.compile(
+    r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"
+)
+LOG_SECRET_PATTERN = re.compile(
+    r"(?i)\b(discord_token|token|password|authorization|cookie|secret)\b\s*[:=]\s*([^\s,;]+)"
+)
 INT_KEYS = {
     "GUILD_ID",
-    "GENERAL_CHANNEL_ID",
+    "BOT_LOG_CHANNEL_ID",
     "FORUM_MAX_RESULTS",
     "DOCS_MAX_RESULTS_PER_SITE",
     "DOCS_INDEX_TTL_SECONDS",
@@ -75,9 +89,9 @@ ENV_FIELDS = [
     ("DISCORD_TOKEN", "Discord Token", "Bot token for Discord authentication."),
     ("GUILD_ID", "Guild ID", "Primary guild (server) ID."),
     (
-        "GENERAL_CHANNEL_ID",
-        "General Channel ID",
-        "Default channel for invite generation.",
+        "BOT_LOG_CHANNEL_ID",
+        "Bot Log Channel ID",
+        "Primary bot log/activity channel (legacy alias: GENERAL_CHANNEL_ID).",
     ),
     ("LOG_LEVEL", "Log Level", "Bot log level (DEBUG, INFO, WARNING, ERROR)."),
     (
@@ -94,7 +108,7 @@ ENV_FIELDS = [
     (
         "LOG_DIR",
         "Log Directory",
-        "Directory for runtime log files (bot.log, container_errors.log, web_gui_audit.log).",
+        "Directory for runtime log files (bot.log, bot_log.log, container_errors.log, web_gui_audit.log).",
     ),
     (
         "LOG_HARDEN_FILE_PERMISSIONS",
@@ -278,6 +292,9 @@ ENV_FIELDS = [
         "Attempt to enforce restrictive permissions on .env and data files.",
     ),
 ]
+ENV_KEY_ALIASES = {
+    "BOT_LOG_CHANNEL_ID": ("GENERAL_CHANNEL_ID",),
+}
 
 
 def _normalize_email(email: str) -> str:
@@ -395,6 +412,280 @@ def _audit_user_label_from_email(email: str) -> str:
         return "anonymous"
     digest = hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:12]
     return f"user_{digest}"
+
+
+def _format_bytes(value: int):
+    try:
+        size = float(max(0, int(value)))
+    except (TypeError, ValueError):
+        return "n/a"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    idx = 0
+    while size >= 1024.0 and idx < (len(units) - 1):
+        size /= 1024.0
+        idx += 1
+    if idx == 0:
+        return f"{int(size)} {units[idx]}"
+    return f"{size:.2f} {units[idx]}"
+
+
+def _format_uptime(seconds: float):
+    try:
+        total = max(0, int(float(seconds)))
+    except (TypeError, ValueError):
+        return "n/a"
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d {hours}h {minutes}m {secs}s"
+    if hours > 0:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes > 0:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _safe_read_text(path: Path):
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except (PermissionError, OSError):
+        return ""
+
+
+def _sanitize_log_preview(text: str):
+    sanitized = str(text or "")
+    sanitized = LOG_EMAIL_PATTERN.sub("[redacted-email]", sanitized)
+    sanitized = LOG_SECRET_PATTERN.sub(r"\1=[redacted]", sanitized)
+    return sanitized
+
+
+def _read_latest_log_lines(path: Path, line_limit: int = OBSERVABILITY_LOG_LINE_LIMIT):
+    if not path.exists() or not path.is_file():
+        return f"Log file not found: {path}"
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            lines = deque(handle, maxlen=max(1, int(line_limit)))
+        if not lines:
+            return "(log file is empty)"
+        return _sanitize_log_preview("".join(lines))
+    except (PermissionError, OSError) as exc:
+        return f"Unable to read log file: {exc}"
+
+
+def _resolve_observability_log_paths(log_dir: Path):
+    try:
+        base_dir = log_dir.resolve()
+    except OSError:
+        return {}
+
+    allowed = {}
+    for filename, _label in OBSERVABILITY_LOG_OPTIONS:
+        safe_name = Path(str(filename)).name
+        if safe_name != filename:
+            continue
+        try:
+            candidate = (base_dir / safe_name).resolve()
+            candidate.relative_to(base_dir)
+        except (ValueError, OSError):
+            continue
+        allowed[filename] = candidate
+    return allowed
+
+
+def _read_rss_bytes():
+    for line in _safe_read_text(Path("/proc/self/status")).splitlines():
+        if not line.startswith("VmRSS:"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            return int(parts[1]) * 1024
+    return None
+
+
+def _read_process_io_bytes():
+    read_bytes = None
+    write_bytes = None
+    for line in _safe_read_text(Path("/proc/self/io")).splitlines():
+        if ":" not in line:
+            continue
+        key, raw_value = line.split(":", 1)
+        value = raw_value.strip()
+        if not value.isdigit():
+            continue
+        if key.strip() == "read_bytes":
+            read_bytes = int(value)
+        elif key.strip() == "write_bytes":
+            write_bytes = int(value)
+    return {"read_bytes": read_bytes, "write_bytes": write_bytes}
+
+
+def _read_network_bytes():
+    text = _safe_read_text(Path("/proc/net/dev"))
+    if not text:
+        return {"rx_bytes": None, "tx_bytes": None}
+    rx_total = 0
+    tx_total = 0
+    seen_interface = False
+    for line in text.splitlines()[2:]:
+        if ":" not in line:
+            continue
+        name_part, values_part = line.split(":", 1)
+        iface = name_part.strip()
+        if not iface:
+            continue
+        values = values_part.split()
+        if len(values) < 16:
+            continue
+        if iface == "lo":
+            continue
+        if not values[0].isdigit() or not values[8].isdigit():
+            continue
+        rx_total += int(values[0])
+        tx_total += int(values[8])
+        seen_interface = True
+    if not seen_interface:
+        return {"rx_bytes": None, "tx_bytes": None}
+    return {"rx_bytes": rx_total, "tx_bytes": tx_total}
+
+
+def _read_cgroup_memory_usage():
+    v2_usage = Path("/sys/fs/cgroup/memory.current")
+    v2_max = Path("/sys/fs/cgroup/memory.max")
+    if v2_usage.exists():
+        usage_raw = _safe_read_text(v2_usage).strip()
+        max_raw = _safe_read_text(v2_max).strip()
+        usage = int(usage_raw) if usage_raw.isdigit() else None
+        limit = int(max_raw) if max_raw.isdigit() else None
+        return {"usage_bytes": usage, "limit_bytes": limit}
+
+    v1_usage = Path("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+    v1_limit = Path("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    if v1_usage.exists():
+        usage_raw = _safe_read_text(v1_usage).strip()
+        limit_raw = _safe_read_text(v1_limit).strip()
+        usage = int(usage_raw) if usage_raw.isdigit() else None
+        limit = int(limit_raw) if limit_raw.isdigit() else None
+        if limit is not None and limit >= (1 << 60):
+            limit = None
+        return {"usage_bytes": usage, "limit_bytes": limit}
+
+    return {"usage_bytes": None, "limit_bytes": None}
+
+
+def _read_cgroup_cpu_seconds_total():
+    v2 = Path("/sys/fs/cgroup/cpu.stat")
+    if v2.exists():
+        for line in _safe_read_text(v2).splitlines():
+            parts = line.split()
+            if len(parts) != 2 or parts[0] != "usage_usec":
+                continue
+            if parts[1].isdigit():
+                return int(parts[1]) / 1_000_000.0
+        return None
+
+    v1 = Path("/sys/fs/cgroup/cpuacct/cpuacct.usage")
+    if v1.exists():
+        raw = _safe_read_text(v1).strip()
+        if raw.isdigit():
+            return int(raw) / 1_000_000_000.0
+    return None
+
+
+def _format_rate(delta_bytes: float, delta_seconds: float):
+    if (
+        delta_bytes is None
+        or delta_seconds is None
+        or delta_seconds <= 0
+    ):
+        return "n/a"
+    return f"{_format_bytes(int(max(0, delta_bytes / delta_seconds)))}/s"
+
+
+def _collect_observability_snapshot(state: dict, started_monotonic: float):
+    now_mono = time.monotonic()
+    process_cpu_total = time.process_time()
+    io_bytes = _read_process_io_bytes()
+    net_bytes = _read_network_bytes()
+    cgroup_mem = _read_cgroup_memory_usage()
+    cgroup_cpu_total = _read_cgroup_cpu_seconds_total()
+
+    prev_wall = state.get("wall")
+    prev_proc_cpu = state.get("process_cpu_total")
+    prev_io = state.get("io") or {}
+    prev_net = state.get("net") or {}
+
+    delta_wall = (now_mono - prev_wall) if isinstance(prev_wall, float) else None
+
+    process_cpu_percent = None
+    if (
+        delta_wall is not None
+        and delta_wall > 0
+        and isinstance(prev_proc_cpu, float)
+    ):
+        process_cpu_percent = max(
+            0.0, ((process_cpu_total - prev_proc_cpu) / delta_wall) * 100.0
+        )
+
+    io_read_rate = None
+    io_write_rate = None
+    if delta_wall is not None and delta_wall > 0:
+        if (
+            isinstance(io_bytes.get("read_bytes"), int)
+            and isinstance(prev_io.get("read_bytes"), int)
+        ):
+            io_read_rate = io_bytes["read_bytes"] - prev_io["read_bytes"]
+        if (
+            isinstance(io_bytes.get("write_bytes"), int)
+            and isinstance(prev_io.get("write_bytes"), int)
+        ):
+            io_write_rate = io_bytes["write_bytes"] - prev_io["write_bytes"]
+
+    net_rx_rate = None
+    net_tx_rate = None
+    if delta_wall is not None and delta_wall > 0:
+        if (
+            isinstance(net_bytes.get("rx_bytes"), int)
+            and isinstance(prev_net.get("rx_bytes"), int)
+        ):
+            net_rx_rate = net_bytes["rx_bytes"] - prev_net["rx_bytes"]
+        if (
+            isinstance(net_bytes.get("tx_bytes"), int)
+            and isinstance(prev_net.get("tx_bytes"), int)
+        ):
+            net_tx_rate = net_bytes["tx_bytes"] - prev_net["tx_bytes"]
+
+    state["wall"] = now_mono
+    state["process_cpu_total"] = process_cpu_total
+    state["io"] = io_bytes
+    state["net"] = net_bytes
+
+    memory_usage = cgroup_mem.get("usage_bytes")
+    memory_limit = cgroup_mem.get("limit_bytes")
+    memory_pct = None
+    if isinstance(memory_usage, int) and isinstance(memory_limit, int) and memory_limit > 0:
+        memory_pct = (memory_usage / memory_limit) * 100.0
+
+    return {
+        "process_cpu_percent": process_cpu_percent,
+        "process_cpu_total": process_cpu_total,
+        "rss_bytes": _read_rss_bytes(),
+        "memory_usage_bytes": memory_usage,
+        "memory_limit_bytes": memory_limit,
+        "memory_percent": memory_pct,
+        "io_read_bytes": io_bytes.get("read_bytes"),
+        "io_write_bytes": io_bytes.get("write_bytes"),
+        "io_read_rate": _format_rate(io_read_rate, delta_wall),
+        "io_write_rate": _format_rate(io_write_rate, delta_wall),
+        "net_rx_bytes": net_bytes.get("rx_bytes"),
+        "net_tx_bytes": net_bytes.get("tx_bytes"),
+        "net_rx_rate": _format_rate(net_rx_rate, delta_wall),
+        "net_tx_rate": _format_rate(net_tx_rate, delta_wall),
+        "uptime_seconds": max(0.0, now_mono - float(started_monotonic or now_mono)),
+        "cgroup_cpu_seconds": cgroup_cpu_total,
+        "sample_interval_seconds": delta_wall,
+        "sampled_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+    }
 
 
 def _parse_iso_datetime(raw_value: str):
@@ -771,11 +1062,32 @@ def _normalize_url_env_value(value: str):
 
 def _normalize_env_updates(updated_values: dict):
     normalized = dict(updated_values)
+    for preferred_key, legacy_keys in ENV_KEY_ALIASES.items():
+        current_value = str(normalized.get(preferred_key, "") or "").strip()
+        if not current_value:
+            for legacy_key in legacy_keys:
+                legacy_value = str(normalized.get(legacy_key, "") or "").strip()
+                if legacy_value:
+                    normalized[preferred_key] = legacy_value
+                    break
+        for legacy_key in legacy_keys:
+            normalized.pop(legacy_key, None)
     for key in ("WEB_GITHUB_WIKI_URL", "WEB_PUBLIC_BASE_URL", "FIRMWARE_FEED_URL"):
         raw = normalized.get(key, "")
         if raw:
             normalized[key] = _normalize_url_env_value(raw)
     return normalized
+
+
+def _read_env_value(file_values: dict, key: str):
+    direct_value = file_values.get(key, os.getenv(key, ""))
+    if str(direct_value or "").strip():
+        return direct_value
+    for alias_key in ENV_KEY_ALIASES.get(key, ()):
+        alias_value = file_values.get(alias_key, os.getenv(alias_key, ""))
+        if str(alias_value or "").strip():
+            return alias_value
+    return direct_value
 
 
 def _validate_env_updates(updated_values: dict):
@@ -1203,6 +1515,8 @@ def _render_layout(
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('settings') }}">Settings</option>
+            <option value="{{ url_for('public_observability') }}">Observability</option>
+            <option value="{{ url_for('admin_logs') }}">Logs</option>
             <option value="{{ url_for('documentation') }}">Documentation</option>
             {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
             <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
@@ -1375,6 +1689,8 @@ def create_web_app(
     login_max_attempts = 6
     login_attempts = {}
     recent_login_success = {}
+    observability_state = {}
+    observability_started_monotonic = time.monotonic()
 
     @app.before_request
     def mark_request_start():
@@ -2108,12 +2424,25 @@ def create_web_app(
                 confirm_password = request.form.get("confirm_password", "")
 
                 validation_errors = []
-                if not check_password_hash(entry["password_hash"], current_password):
+                if not str(current_password or ""):
+                    validation_errors.append("Current password is required.")
+                elif not check_password_hash(entry["password_hash"], current_password):
                     validation_errors.append("Current password is incorrect.")
-                if new_password != confirm_password:
+                if not str(new_password or ""):
+                    validation_errors.append("New password is required.")
+                if not str(confirm_password or ""):
+                    validation_errors.append("Confirm new password is required.")
+                if (
+                    str(new_password or "")
+                    and str(confirm_password or "")
+                    and new_password != confirm_password
+                ):
                     validation_errors.append("New password and confirmation must match.")
-                validation_errors.extend(_password_policy_errors(new_password))
-                if check_password_hash(entry["password_hash"], new_password):
+                if str(new_password or ""):
+                    validation_errors.extend(_password_policy_errors(new_password))
+                if str(new_password or "") and check_password_hash(
+                    entry["password_hash"], new_password
+                ):
                     validation_errors.append(
                         "New password must be different from the current password."
                     )
@@ -2180,14 +2509,14 @@ def create_web_app(
             <h2>Change Password</h2>
             <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>
             <p class="muted">Password changes are required every {PASSWORD_MAX_AGE_DAYS} days.</p>
-            <form method="post">
+            <form method="post" onsubmit="return validateAccountPasswordChangeForm();">
               <input type="hidden" name="action" value="password" />
               <label>Current Password</label>
               <input id="account_password_current" type="password" name="current_password" autocomplete="current-password" required />
               <label style="margin-top:10px;display:block;">New Password</label>
-              <input id="account_password_new" type="password" name="new_password" autocomplete="new-password" required />
+              <input id="account_password_new" type="password" name="new_password" autocomplete="new-password" required oninput="validateAccountPasswordChangeForm();" />
               <label style="margin-top:10px;display:block;">Confirm New Password</label>
-              <input id="account_password_confirm" type="password" name="confirm_password" autocomplete="new-password" required />
+              <input id="account_password_confirm" type="password" name="confirm_password" autocomplete="new-password" required oninput="validateAccountPasswordChangeForm();" />
               <label style="margin-top:8px;display:block;">
                 <input type="checkbox"
                   onchange="document.getElementById('account_password_current').type=this.checked?'text':'password';document.getElementById('account_password_new').type=this.checked?'text':'password';document.getElementById('account_password_confirm').type=this.checked?'text':'password';" />
@@ -2197,6 +2526,21 @@ def create_web_app(
                 <button class="btn" type="submit">Update Password</button>
               </div>
             </form>
+            <script>
+              function validateAccountPasswordChangeForm() {{
+                var nextInput = document.getElementById('account_password_new');
+                var confirmInput = document.getElementById('account_password_confirm');
+                if (!nextInput || !confirmInput) {{
+                  return true;
+                }}
+                if (confirmInput.value && nextInput.value !== confirmInput.value) {{
+                  confirmInput.setCustomValidity('New password and confirmation must match.');
+                }} else {{
+                  confirmInput.setCustomValidity('');
+                }}
+                return true;
+              }}
+            </script>
           </div>
         </div>
         """
@@ -2263,6 +2607,18 @@ def create_web_app(
             "Edit runtime environment settings with channel and role dropdowns.",
             url_for("settings"),
             "Open Settings",
+        )
+        add_dashboard_card(
+            "Observability",
+            "View container runtime metrics and tail recent log entries.",
+            url_for("public_observability"),
+            "Open Observability",
+        )
+        add_dashboard_card(
+            "Logs",
+            "View recent runtime logs (latest 500 lines) with log file selection.",
+            url_for("admin_logs"),
+            "Open Logs",
         )
         add_dashboard_card(
             "Tag Responses",
@@ -2368,6 +2724,204 @@ def create_web_app(
             else:
                 flash(response.get("error", "Failed to request restart."), "error")
         return redirect(url_for("dashboard"))
+
+    def _render_observability_view(page_title: str):
+        metrics = _collect_observability_snapshot(
+            observability_state,
+            observability_started_monotonic,
+        )
+
+        process_cpu_pct = metrics.get("process_cpu_percent")
+        process_cpu_pct_text = (
+            f"{float(process_cpu_pct):.2f}%"
+            if isinstance(process_cpu_pct, (int, float))
+            else "n/a (refresh again for delta sample)"
+        )
+
+        memory_usage_bytes = metrics.get("memory_usage_bytes")
+        memory_limit_bytes = metrics.get("memory_limit_bytes")
+        memory_pct = metrics.get("memory_percent")
+        memory_usage_text = _format_bytes(memory_usage_bytes)
+        memory_limit_text = _format_bytes(memory_limit_bytes)
+        memory_pct_text = (
+            f"{float(memory_pct):.2f}%"
+            if isinstance(memory_pct, (int, float))
+            else "n/a"
+        )
+
+        sample_interval = metrics.get("sample_interval_seconds")
+        sample_interval_text = (
+            f"{float(sample_interval):.2f}s"
+            if isinstance(sample_interval, (int, float))
+            else "first sample"
+        )
+
+        body = f"""
+        <div class="card">
+          <h2>{escape(page_title)}</h2>
+          <p class="muted">Runtime snapshot for process/container activity. Metrics update each time you refresh this page.</p>
+          <p class="muted">This page is read-only and safe to share publicly for status visibility. Log viewing requires web GUI login at <span class="mono">/admin/logs</span>.</p>
+          <p class="muted">Sample captured: {escape(str(metrics.get("sampled_at") or "n/a"))}. Sample interval: {escape(sample_interval_text)}.</p>
+        </div>
+
+        <div class="grid">
+          <div class="card">
+            <h3>CPU</h3>
+            <table>
+              <tbody>
+                <tr><td>Process CPU (delta)</td><td class="mono">{escape(process_cpu_pct_text)}</td></tr>
+                <tr><td>Process CPU time (total)</td><td class="mono">{escape(f"{float(metrics.get('process_cpu_total') or 0.0):.2f}s")}</td></tr>
+                <tr><td>Container CPU time (cgroup)</td><td class="mono">{escape(f"{float(metrics.get('cgroup_cpu_seconds') or 0.0):.2f}s" if metrics.get('cgroup_cpu_seconds') is not None else "n/a")}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Memory</h3>
+            <table>
+              <tbody>
+                <tr><td>Process RSS</td><td class="mono">{escape(_format_bytes(metrics.get("rss_bytes")))}</td></tr>
+                <tr><td>Container memory usage</td><td class="mono">{escape(memory_usage_text)}</td></tr>
+                <tr><td>Container memory limit</td><td class="mono">{escape(memory_limit_text)}</td></tr>
+                <tr><td>Memory usage percent</td><td class="mono">{escape(memory_pct_text)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>I/O</h3>
+            <table>
+              <tbody>
+                <tr><td>Read bytes (total)</td><td class="mono">{escape(_format_bytes(metrics.get("io_read_bytes")))}</td></tr>
+                <tr><td>Write bytes (total)</td><td class="mono">{escape(_format_bytes(metrics.get("io_write_bytes")))}</td></tr>
+                <tr><td>Read rate</td><td class="mono">{escape(str(metrics.get("io_read_rate") or "n/a"))}</td></tr>
+                <tr><td>Write rate</td><td class="mono">{escape(str(metrics.get("io_write_rate") or "n/a"))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Network</h3>
+            <table>
+              <tbody>
+                <tr><td>RX bytes (total)</td><td class="mono">{escape(_format_bytes(metrics.get("net_rx_bytes")))}</td></tr>
+                <tr><td>TX bytes (total)</td><td class="mono">{escape(_format_bytes(metrics.get("net_tx_bytes")))}</td></tr>
+                <tr><td>RX rate</td><td class="mono">{escape(str(metrics.get("net_rx_rate") or "n/a"))}</td></tr>
+                <tr><td>TX rate</td><td class="mono">{escape(str(metrics.get("net_tx_rate") or "n/a"))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card">
+            <h3>Uptime</h3>
+            <table>
+              <tbody>
+                <tr><td>Process uptime</td><td class="mono">{escape(_format_uptime(metrics.get("uptime_seconds") or 0))}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        """
+        return body
+
+    def _render_log_view():
+        log_dir = Path(str(os.getenv("LOG_DIR", "/logs")).strip() or "/logs")
+        allowed_log_paths = _resolve_observability_log_paths(log_dir)
+        log_selection_map = {
+            "bot": "bot.log",
+            "bot_channel": "bot_log.log",
+            "container_errors": "container_errors.log",
+            "web_gui_audit": "web_gui_audit.log",
+        }
+        label_by_filename = {name: label for name, label in OBSERVABILITY_LOG_OPTIONS}
+        valid_selection_map = {
+            key: filename
+            for key, filename in log_selection_map.items()
+            if filename in allowed_log_paths
+        }
+
+        requested_selection = str(
+            request.args.get("log", "container_errors") or "container_errors"
+        ).strip()
+        # Backward compatibility for older links that still pass filename.
+        if requested_selection in label_by_filename:
+            reverse_map = {value: key for key, value in log_selection_map.items()}
+            requested_selection = reverse_map.get(requested_selection, "")
+
+        if requested_selection not in valid_selection_map:
+            requested_selection = "container_errors"
+        if requested_selection not in valid_selection_map:
+            requested_selection = next(iter(valid_selection_map.keys()), "")
+
+        selected_log = valid_selection_map.get(requested_selection, "")
+        selected_log_path = allowed_log_paths.get(selected_log)
+        if not selected_log_path:
+            log_preview = "Invalid log selection."
+        else:
+            log_preview = _read_latest_log_lines(
+                selected_log_path,
+                line_limit=OBSERVABILITY_LOG_LINE_LIMIT,
+            )
+
+        options_html = []
+        for selection_key, file_name in log_selection_map.items():
+            label = label_by_filename.get(file_name, file_name)
+            if file_name not in allowed_log_paths:
+                continue
+            selected_attr = " selected" if selection_key == requested_selection else ""
+            options_html.append(
+                f"<option value='{escape(selection_key, quote=True)}'{selected_attr}>{escape(label)} ({escape(file_name)})</option>"
+            )
+
+        return f"""
+        <div class="card">
+          <h2>Log Viewer</h2>
+          <p class="muted">Login required. Showing the most recent {OBSERVABILITY_LOG_LINE_LIMIT} lines from {escape(selected_log)}.</p>
+          <p class="muted">Sensitive values are redacted in this preview.</p>
+          <form method="get" action="{escape(url_for("admin_logs"), quote=True)}">
+            <label for="log">Select log</label>
+            <select id="log" name="log">
+              {"".join(options_html)}
+            </select>
+            <div style="margin-top:14px;">
+              <button class="btn" type="submit">Refresh</button>
+            </div>
+          </form>
+          <div style="margin-top:14px;">
+            <textarea readonly style="min-height:520px;">{escape(log_preview)}</textarea>
+          </div>
+        </div>
+        """
+
+    @app.route("/staus", methods=["GET"])
+    def public_observability():
+        body = _render_observability_view(
+            page_title="Status Observability",
+        )
+        return _render_page(
+            "Status",
+            body,
+            "",
+            False,
+            "",
+        )
+
+    @app.route("/status", methods=["GET"])
+    def public_observability_alias():
+        return redirect(url_for("public_observability"))
+
+    @app.route("/admin/observability", methods=["GET"])
+    def observability():
+        return redirect(url_for("public_observability"))
+
+    @app.route("/admin/logs", methods=["GET"])
+    @login_required
+    def admin_logs():
+        user = _current_user()
+        body = _render_log_view()
+        return _render_page(
+            "Log Viewer",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
 
     @app.route("/admin/documentation", methods=["GET"])
     @login_required
@@ -2820,7 +3374,7 @@ def create_web_app(
         if request.method == "POST":
             updated_values = {}
             for key, _, _ in ENV_FIELDS:
-                current = file_values.get(key, os.getenv(key, ""))
+                current = _read_env_value(file_values, key)
                 if key in SENSITIVE_KEYS:
                     submitted = request.form.get(key, "")
                     updated_values[key] = submitted if submitted else current
@@ -2841,6 +3395,10 @@ def create_web_app(
                     else:
                         final_values[key] = value
                         os.environ[key] = value
+                for legacy_keys in ENV_KEY_ALIASES.values():
+                    for legacy_key in legacy_keys:
+                        final_values.pop(legacy_key, None)
+                        os.environ.pop(legacy_key, None)
                 _write_env_file(env_file, final_values)
                 effective_timeout_minutes = _normalize_session_timeout_minutes(
                     final_values.get(
@@ -2857,7 +3415,7 @@ def create_web_app(
 
         rows = []
         for key, label, description in ENV_FIELDS:
-            value = file_values.get(key, os.getenv(key, ""))
+            value = _read_env_value(file_values, key)
             safe_value = "" if key in SENSITIVE_KEYS else value
             placeholder = "•••••• (unchanged if blank)" if key in SENSITIVE_KEYS else ""
             input_type = "password" if key in SENSITIVE_KEYS else "text"
