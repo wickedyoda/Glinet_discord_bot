@@ -1393,8 +1393,9 @@ def _render_layout(
       top: 0;
       z-index: 10;
     }
-    .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: flex-end; }
-    .nav-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .header-brand { min-width: 170px; }
+    .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; flex: 1; }
+    .nav-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
     .nav-controls a { text-decoration: none; }
     .current-user { color: var(--muted); font-size: 0.95rem; }
     .current-user-email { color: var(--muted); font-size: 0.85rem; }
@@ -1504,10 +1505,10 @@ def _render_layout(
     @media (max-width: 900px) {
       .grid { grid-template-columns: 1fr; }
       .dash-grid { grid-template-columns: 1fr; }
-      header { padding: 10px 12px; align-items: flex-start; }
+      header { padding: 10px 12px; align-items: center; }
       .wrap { margin: 14px auto; padding: 0 10px; }
       .card { padding: 14px; }
-      .header-right { width: 100%; justify-content: flex-start; }
+      .header-right { width: 100%; justify-content: center; }
       .nav-controls { width: 100%; display: grid; grid-template-columns: 1fr; }
       .nav-select { width: 100%; max-width: 100%; min-width: 0; }
       .nav-controls .btn { width: 100%; }
@@ -1528,7 +1529,7 @@ def _render_layout(
 </head>
 <body data-theme="black">
   <header>
-    <div><strong>Discord Bot Admin</strong></div>
+    <div class="header-brand"><strong>Discord Bot Admin</strong></div>
     <div class="header-right">
       <div class="theme-switch" aria-label="Theme selector">
         <button type="button" class="theme-btn" data-theme-choice="light">Light</button>

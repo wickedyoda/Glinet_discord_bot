@@ -1,0 +1,49 @@
+name: CI Integrity
+
+on:
+  pull_request:
+    branches:
+      - main
+      - beta
+  push:
+    branches:
+      - main
+      - beta
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install ruff pytest
+
+      - name: Run critical Ruff checks
+        run: ruff check --select E9,F63,F7,F82 .
+
+      - name: Compile Python sources
+        run: python -m py_compile bot.py web_admin.py
+
+      - name: Run tests if present
+        shell: bash
+        run: |
+          if find . -type f \( -name "test_*.py" -o -name "*_test.py" \) | grep -q .; then
+            pytest -q
+          else
+            echo "No tests discovered; skipping pytest."
+          fi

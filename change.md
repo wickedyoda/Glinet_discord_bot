@@ -9,6 +9,15 @@ All notable changes to this project are documented in this file.
 - `bot_log.log` now records payloads that moderation/server-event handlers send (or attempt to send) to the log channel.
 - Web GUI `/admin/logs` dropdown now includes `bot_log.log`.
 - Auto-refresh interval dropdowns added to `/staus` and `/admin/logs` with `1`, `5`, `10`, `30`, `60`, and `120` second options.
+- New GitHub Actions workflows for integrity and security:
+  - `CI Integrity` (critical Ruff checks, Python compile checks, optional pytest discovery)
+  - `Dependency Review` (PR dependency risk gate)
+  - `Python Vulnerability Scan` (`pip-audit` on requirements)
+  - `Secret Scan` (`gitleaks`)
+  - `Container Security Scan` (Trivy image scan + SARIF upload + critical gate)
+  - `SBOM Generate` (CycloneDX artifact)
+  - `CodeQL` (repo-managed analysis workflow)
+  - `OSSF Scorecards` (scheduled security posture reporting)
 
 ### Changed
 - Renamed settings key from `GENERAL_CHANNEL_ID` to `BOT_LOG_CHANNEL_ID` in bot runtime config and web settings UI.
@@ -22,6 +31,10 @@ All notable changes to this project are documented in this file.
   - consistent heading spacing
   - fixed label/value column widths
   - right-aligned numeric value column for consistent cross-card formatting
+- Centered top header menu controls in the web GUI for consistent navigation alignment.
+- Hardened Docker publish workflows:
+  - upgraded action versions (`checkout`, `buildx`, `login`, `build-push`)
+  - pull-request builds now validate image build without pushing to registry
 
 ## [2026-02-23] - Web Admin, Security, and Storage Overhaul
 
