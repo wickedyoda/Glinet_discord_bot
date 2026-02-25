@@ -1780,11 +1780,10 @@ def create_web_app(
             return None
         if logger:
             logger.warning(
-                "Blocked write request for read-only user: endpoint=%s method=%s ip=%s email=%s",
+                "Blocked write request for read-only user: endpoint=%s method=%s ip=%s",
                 request.endpoint,
                 request.method,
                 _client_ip(),
-                _normalize_email(user.get("email", "")) or "unknown",
             )
         flash("Read-only account: this action is not allowed.", "error")
         safe_view_endpoints = {
