@@ -26,18 +26,21 @@ jobs:
       - name: Build Docker image
         run: docker build -t local/discord-invite-bot:${{ github.sha }} .
 
-      - name: Scan image with Trivy (SARIF)
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@v0.2.1
+
+      - name: Generate Trivy SARIF report
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: local/discord-invite-bot:${{ github.sha }}
-          format: sarif
-          output: trivy-image.sarif
-          scanners: vuln
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
+        run: |
+          trivy image \
+            --format sarif \
+            --output trivy-image.sarif \
+            --scanners vuln \
+            --vuln-type os,library \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 0 \
+            local/discord-invite-bot:${{ github.sha }}
 
       - name: Upload Trivy SARIF to code scanning
         if: always() && hashFiles('trivy-image.sarif') != ''
@@ -46,12 +49,12 @@ jobs:
           sarif_file: trivy-image.sarif
 
       - name: Enforce Trivy policy (critical vulnerabilities)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: local/discord-invite-bot:${{ github.sha }}
-          format: table
-          scanners: vuln
-          vuln-type: os,library
-          severity: CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+        run: |
+          trivy image \
+            --format table \
+            --scanners vuln \
+            --vuln-type os,library \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            local/discord-invite-bot:${{ github.sha }}
