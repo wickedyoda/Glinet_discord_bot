@@ -767,6 +767,14 @@ tag_command_names = set()
 docs_index_cache = {}
 firmware_monitor_task = None
 web_admin_thread = None
+web_admin_supervisor_lock = threading.Lock()
+web_admin_restart_events = deque()
+web_admin_pending_critical_alerts = deque()
+WEB_ADMIN_RESTART_MAX_ATTEMPTS = 5
+WEB_ADMIN_RESTART_WINDOW_SECONDS = 10 * 60
+WEB_ADMIN_RESTART_DELAY_SECONDS = 2
+WEB_ADMIN_CRITICAL_SHUTDOWN_DELAY_SECONDS = 10 * 60
+web_admin_shutdown_scheduled = False
 discord_catalog_cache = {"fetched_at": 0.0, "data": None}
 BOT_SERVER_NICKNAME_UNSET = object()
 command_permissions_lock = threading.Lock()
@@ -3390,6 +3398,147 @@ def refresh_tag_responses_from_web():
         )
 
 
+def _record_web_admin_stop_event():
+    now = time.time()
+    with web_admin_supervisor_lock:
+        cutoff = now - WEB_ADMIN_RESTART_WINDOW_SECONDS
+        while web_admin_restart_events and web_admin_restart_events[0] < cutoff:
+            web_admin_restart_events.popleft()
+        web_admin_restart_events.append(now)
+        return len(web_admin_restart_events)
+
+
+async def _shutdown_container_after_delay(delay_seconds: int, reason: str):
+    safe_delay = max(1, int(delay_seconds))
+    logger.critical(
+        "Container shutdown scheduled in %s seconds: %s",
+        safe_delay,
+        reason,
+    )
+    await asyncio.sleep(safe_delay)
+    logger.critical("Shutting down container process now: %s", reason)
+    os._exit(1)
+
+
+def _schedule_web_admin_critical_shutdown(reason: str):
+    global web_admin_shutdown_scheduled
+    with web_admin_supervisor_lock:
+        if web_admin_shutdown_scheduled:
+            return
+        web_admin_shutdown_scheduled = True
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        logger.critical(
+            "Bot event loop unavailable; forcing immediate shutdown: %s",
+            reason,
+        )
+        os._exit(1)
+        return
+
+    def _create_shutdown_task():
+        asyncio.create_task(
+            _shutdown_container_after_delay(
+                WEB_ADMIN_CRITICAL_SHUTDOWN_DELAY_SECONDS, reason
+            ),
+            name="web_admin_critical_shutdown",
+        )
+
+    loop.call_soon_threadsafe(_create_shutdown_task)
+
+
+async def _send_web_admin_critical_alert(message: str):
+    channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    if channel_id <= 0:
+        logger.critical(
+            "Web admin critical alert could not be sent: no bot log channel configured."
+        )
+        return False
+
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except discord.NotFound:
+            logger.critical(
+                "Web admin critical alert could not be sent: bot log channel %s not found.",
+                channel_id,
+            )
+            return False
+        except discord.Forbidden:
+            logger.critical(
+                "Web admin critical alert could not be sent: missing access to bot log channel %s.",
+                channel_id,
+            )
+            return False
+        except discord.HTTPException:
+            logger.exception(
+                "Web admin critical alert could not be sent: failed to fetch bot log channel %s.",
+                channel_id,
+            )
+            return False
+
+    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        logger.critical(
+            "Web admin critical alert could not be sent: bot log channel %s is not text-based.",
+            channel_id,
+        )
+        return False
+
+    alert_message = f"🚨 **Critical:** {message}"
+    try:
+        await channel.send(alert_message)
+        _schedule_web_admin_critical_shutdown(message)
+        return True
+    except discord.Forbidden:
+        logger.critical(
+            "Web admin critical alert could not be sent: missing send permission in bot log channel %s.",
+            channel_id,
+        )
+        return False
+    except discord.HTTPException:
+        logger.exception("Failed to send web admin critical alert to channel %s.", channel_id)
+        return False
+
+
+def _dispatch_web_admin_critical_alert(message: str):
+    channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    record_bot_log_channel_message("web_admin_critical", channel_id, message)
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        with web_admin_supervisor_lock:
+            web_admin_pending_critical_alerts.append(message)
+        logger.critical(
+            "Web admin critical alert queued: bot event loop unavailable."
+        )
+        return
+
+    future = asyncio.run_coroutine_threadsafe(
+        _send_web_admin_critical_alert(message),
+        loop,
+    )
+
+    def _on_complete(done_future):
+        try:
+            sent = bool(done_future.result())
+            if not sent:
+                logger.critical(
+                    "Web admin critical alert dispatch completed but was not delivered."
+                )
+        except Exception:
+            logger.exception("Web admin critical alert dispatch failed.")
+
+    future.add_done_callback(_on_complete)
+
+
+async def _flush_web_admin_pending_critical_alerts():
+    pending_messages = []
+    with web_admin_supervisor_lock:
+        while web_admin_pending_critical_alerts:
+            pending_messages.append(web_admin_pending_critical_alerts.popleft())
+    for message in pending_messages:
+        await _send_web_admin_critical_alert(message)
+
+
 def start_web_admin_server():
     global web_admin_thread
     if not WEB_ENABLED:
@@ -3399,31 +3548,59 @@ def start_web_admin_server():
         return
 
     def runner():
-        try:
-            start_web_admin_interface(
-                host=WEB_BIND_HOST,
-                port=WEB_PORT,
-                data_dir=DATA_DIR,
-                env_file_path=WEB_ENV_FILE,
-                tag_responses_file=TAG_RESPONSES_FILE,
-                default_admin_email=WEB_ADMIN_DEFAULT_EMAIL,
-                default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
-                on_env_settings_saved=refresh_runtime_settings_from_env,
-                on_tag_responses_saved=refresh_tag_responses_from_web,
-                on_get_tag_responses=run_web_get_tag_responses,
-                on_save_tag_responses=run_web_save_tag_responses,
-                on_bulk_assign_role_csv=run_web_bulk_role_assignment,
-                on_get_discord_catalog=run_web_get_discord_catalog,
-                on_get_command_permissions=run_web_get_command_permissions,
-                on_save_command_permissions=run_web_update_command_permissions,
-                on_get_bot_profile=run_web_get_bot_profile,
-                on_update_bot_profile=run_web_update_bot_profile,
-                on_update_bot_avatar=run_web_update_bot_avatar,
-                on_request_restart=run_web_request_restart,
-                logger=logger,
+        global web_admin_thread
+        while True:
+            stop_reason = "stopped"
+            try:
+                start_web_admin_interface(
+                    host=WEB_BIND_HOST,
+                    port=WEB_PORT,
+                    data_dir=DATA_DIR,
+                    env_file_path=WEB_ENV_FILE,
+                    tag_responses_file=TAG_RESPONSES_FILE,
+                    default_admin_email=WEB_ADMIN_DEFAULT_EMAIL,
+                    default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
+                    on_env_settings_saved=refresh_runtime_settings_from_env,
+                    on_tag_responses_saved=refresh_tag_responses_from_web,
+                    on_get_tag_responses=run_web_get_tag_responses,
+                    on_save_tag_responses=run_web_save_tag_responses,
+                    on_bulk_assign_role_csv=run_web_bulk_role_assignment,
+                    on_get_discord_catalog=run_web_get_discord_catalog,
+                    on_get_command_permissions=run_web_get_command_permissions,
+                    on_save_command_permissions=run_web_update_command_permissions,
+                    on_get_bot_profile=run_web_get_bot_profile,
+                    on_update_bot_profile=run_web_update_bot_profile,
+                    on_update_bot_avatar=run_web_update_bot_avatar,
+                    on_request_restart=run_web_request_restart,
+                    logger=logger,
+                )
+                stop_reason = "stopped unexpectedly without exception"
+                logger.error("Web admin interface stopped unexpectedly")
+            except Exception:
+                stop_reason = "crashed with exception"
+                logger.exception("Web admin interface stopped unexpectedly")
+
+            stop_events = _record_web_admin_stop_event()
+            if stop_events > WEB_ADMIN_RESTART_MAX_ATTEMPTS:
+                critical_message = (
+                    "Web admin interface stopped repeatedly and hit restart limit: "
+                    f"{stop_events} stops within {WEB_ADMIN_RESTART_WINDOW_SECONDS // 60} minutes. "
+                    "Automatic restarts halted. Container shutdown scheduled in 10 minutes."
+                )
+                logger.critical(critical_message)
+                _dispatch_web_admin_critical_alert(critical_message)
+                break
+
+            logger.warning(
+                "Web admin %s. Restarting (%s/%s) within %s-minute window.",
+                stop_reason,
+                stop_events,
+                WEB_ADMIN_RESTART_MAX_ATTEMPTS,
+                WEB_ADMIN_RESTART_WINDOW_SECONDS // 60,
             )
-        except Exception:
-            logger.exception("Web admin interface stopped unexpectedly")
+            time.sleep(WEB_ADMIN_RESTART_DELAY_SECONDS)
+
+        web_admin_thread = None
 
     web_admin_thread = threading.Thread(target=runner, name="web_admin", daemon=True)
     web_admin_thread.start()
@@ -3792,6 +3969,7 @@ async def on_ready():
     global firmware_monitor_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
     logger.info("Logged in as %s", bot.user.name)
+    await _flush_web_admin_pending_critical_alerts()
     guild = bot.get_guild(GUILD_ID)
     if callable(globals().get("register_tag_commands")):
         register_tag_commands()
