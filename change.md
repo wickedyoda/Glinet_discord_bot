@@ -37,6 +37,12 @@ All notable changes to this project are documented in this file.
   - default retention `90` days
   - default rotation interval `1` day
   - configurable via `LOG_RETENTION_DAYS` and `LOG_ROTATION_INTERVAL_DAYS`
+- Web admin runtime supervision added:
+  - auto-restarts web admin when it stops unexpectedly
+  - allows up to 5 restarts within 10 minutes
+  - when limit is exceeded, halts restarts and posts a critical alert to the bot log channel
+  - if Discord loop is not ready yet, alert is queued and delivered on bot `on_ready`
+  - after critical alert is posted, container shutdown is scheduled after 10 minutes
 - Hardened Docker publish workflows:
   - upgraded action versions (`checkout`, `buildx`, `login`, `build-push`)
   - pull-request builds now validate image build without pushing to registry
