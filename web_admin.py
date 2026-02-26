@@ -640,7 +640,7 @@ def _format_observability_stat_value(value: float, value_type: str):
     return f"{float(value):.2f}"
 
 
-def _build_observability_history_summary(history_items: list[dict]):
+def _build_observability_history_summary(history_items: list[dict], current_snapshot: dict):
     specs = [
         ("Process CPU (delta)", "process_cpu_percent", "percent"),
         ("Container memory usage", "memory_percent", "percent"),
@@ -662,6 +662,10 @@ def _build_observability_history_summary(history_items: list[dict]):
             rows.append(
                 {
                     "label": label,
+                    "current": _format_observability_stat_value(
+                        current_snapshot.get(key),
+                        value_type,
+                    ),
                     "min": "n/a",
                     "avg": "n/a",
                     "max": "n/a",
@@ -671,6 +675,10 @@ def _build_observability_history_summary(history_items: list[dict]):
         rows.append(
             {
                 "label": label,
+                "current": _format_observability_stat_value(
+                    current_snapshot.get(key),
+                    value_type,
+                ),
                 "min": _format_observability_stat_value(min(numeric_values), value_type),
                 "avg": _format_observability_stat_value(
                     sum(numeric_values) / len(numeric_values), value_type
@@ -2890,7 +2898,7 @@ def create_web_app(
 
     def _render_observability_view(page_title: str):
         metrics, history_items = _collect_and_store_observability_snapshot()
-        history_rows = _build_observability_history_summary(history_items)
+        history_rows = _build_observability_history_summary(history_items, metrics)
         history_sample_count = len(history_items)
         history_oldest = history_items[0] if history_items else {}
         history_newest = history_items[-1] if history_items else {}
@@ -2901,6 +2909,7 @@ def create_web_app(
             history_table_rows.append(
                 "<tr>"
                 f"<td>{escape(str(row.get('label') or 'n/a'))}</td>"
+                f"<td class='mono'>{escape(str(row.get('current') or 'n/a'))}</td>"
                 f"<td class='mono'>{escape(str(row.get('min') or 'n/a'))}</td>"
                 f"<td class='mono'>{escape(str(row.get('avg') or 'n/a'))}</td>"
                 f"<td class='mono'>{escape(str(row.get('max') or 'n/a'))}</td>"
@@ -2996,7 +3005,7 @@ def create_web_app(
           <p class="muted">Samples stored: {history_sample_count}. Window: {escape(history_oldest_label)} to {escape(history_newest_label)}.</p>
           <table class="metric-table history-table">
             <thead>
-              <tr><th>Metric</th><th>Min</th><th>Avg</th><th>Max</th></tr>
+              <tr><th>Metric</th><th>Current</th><th>Min</th><th>Avg</th><th>Max</th></tr>
             </thead>
             <tbody>
               {"".join(history_table_rows)}
