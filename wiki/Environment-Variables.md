@@ -77,7 +77,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `WEB_BIND_HOST` | `127.0.0.1` | Host/IP string | Use `0.0.0.0` in container deployments |
 | `WEB_PORT` | `8080` | Integer port | Internal web service port |
 | `WEB_HOST_PORT` | `8080` | Integer port | Compose host mapping variable |
-| `WEB_SESSION_TIMEOUT_MINUTES` | `5` | `5`, `10`, `15`, `20`, `25`, `30` | Inactivity timeout for non-remembered sessions |
+| `WEB_SESSION_TIMEOUT_MINUTES` | `60` | `60` | Inactivity timeout for all users (including remember-login sessions) |
 | `WEB_PUBLIC_BASE_URL` | empty | URL with `http://` or `https://` | External URL used for origin checks behind proxy |
 | `WEB_ENV_FILE` | `.env` | Path string | Env file path used by web settings editor |
 | `WEB_RESTART_ENABLED` | `true` | Boolean | Enables admin restart button |
