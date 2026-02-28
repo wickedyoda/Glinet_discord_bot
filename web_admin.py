@@ -35,7 +35,8 @@ REMEMBER_LOGIN_DAYS = 5
 AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
 PASSWORD_HASH_METHOD = "pbkdf2:sha256:600000"
-SESSION_TIMEOUT_MINUTE_OPTIONS = tuple(range(5, 31, 5))
+SESSION_TIMEOUT_MINUTE_OPTIONS = (60,)
+WEB_INACTIVITY_TIMEOUT_MINUTES = 60
 POST_FORM_TAG_PATTERN = re.compile(
     r"(<form\b[^>]*\bmethod\s*=\s*[\"']?post[\"']?[^>]*>)",
     re.IGNORECASE,
@@ -209,7 +210,7 @@ ENV_FIELDS = [
     (
         "WEB_SESSION_TIMEOUT_MINUTES",
         "Web Auto Logout (Minutes)",
-        "Session inactivity timeout in minutes (5, 10, 15, 20, 25, or 30).",
+        "Session inactivity timeout in minutes (fixed at 60).",
     ),
     (
         "WEB_DISCORD_CATALOG_TTL_SECONDS",
@@ -379,7 +380,7 @@ def _password_hash_needs_upgrade(password_hash: str) -> bool:
     return not str(password_hash or "").startswith(f"{PASSWORD_HASH_METHOD}$")
 
 
-def _normalize_session_timeout_minutes(raw_value, default_value: int = 5) -> int:
+def _normalize_session_timeout_minutes(raw_value, default_value: int = WEB_INACTIVITY_TIMEOUT_MINUTES) -> int:
     try:
         parsed = int(str(raw_value).strip())
     except (TypeError, ValueError):
@@ -1250,9 +1251,7 @@ def _validate_env_updates(updated_values: dict):
         if key == "WEB_SESSION_TIMEOUT_MINUTES":
             parsed = _normalize_session_timeout_minutes(value, default_value=-1)
             if parsed == -1:
-                errors.append(
-                    "WEB_SESSION_TIMEOUT_MINUTES must be one of: 5, 10, 15, 20, 25, 30."
-                )
+                errors.append("WEB_SESSION_TIMEOUT_MINUTES must be 60.")
         if (
             key == "WEB_GITHUB_WIKI_URL"
             and value
@@ -1805,8 +1804,8 @@ def create_web_app(
         os.getenv("WEB_HARDEN_FILE_PERMISSIONS", "true")
     )
     web_session_timeout_minutes = _normalize_session_timeout_minutes(
-        os.getenv("WEB_SESSION_TIMEOUT_MINUTES", "5"),
-        default_value=5,
+        os.getenv("WEB_SESSION_TIMEOUT_MINUTES", str(WEB_INACTIVITY_TIMEOUT_MINUTES)),
+        default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
     )
     session_timeout_state = {"minutes": web_session_timeout_minutes}
     app.config.update(
@@ -2087,8 +2086,8 @@ def create_web_app(
 
     def _session_timeout_minutes():
         return _normalize_session_timeout_minutes(
-            session_timeout_state.get("minutes", 5),
-            default_value=5,
+            session_timeout_state.get("minutes", WEB_INACTIVITY_TIMEOUT_MINUTES),
+            default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
         )
 
     def _is_active_auth_session():
@@ -2122,12 +2121,12 @@ def create_web_app(
                 _clear_auth_session()
                 flash("Your saved login expired. Please log in again.", "error")
                 return False
-        else:
-            inactivity_limit = timedelta(minutes=_session_timeout_minutes())
-            if (now_dt - last_seen_dt) > inactivity_limit:
-                _clear_auth_session()
-                flash("You were logged out due to inactivity.", "error")
-                return False
+
+        inactivity_limit = timedelta(minutes=_session_timeout_minutes())
+        if (now_dt - last_seen_dt) > inactivity_limit:
+            _clear_auth_session()
+            flash("You were logged out due to inactivity.", "error")
+            return False
 
         session["auth_mode"] = mode
         session["auth_last_seen"] = now_dt.isoformat()
@@ -3699,9 +3698,12 @@ def create_web_app(
                 effective_timeout_minutes = _normalize_session_timeout_minutes(
                     final_values.get(
                         "WEB_SESSION_TIMEOUT_MINUTES",
-                        os.getenv("WEB_SESSION_TIMEOUT_MINUTES", "5"),
+                        os.getenv(
+                            "WEB_SESSION_TIMEOUT_MINUTES",
+                            str(WEB_INACTIVITY_TIMEOUT_MINUTES),
+                        ),
                     ),
-                    default_value=5,
+                    default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
                 )
                 session_timeout_state["minutes"] = effective_timeout_minutes
                 if callable(on_env_settings_saved):
@@ -3720,7 +3722,10 @@ def create_web_app(
             select_placeholder = "Select..."
             if key == "WEB_SESSION_TIMEOUT_MINUTES":
                 safe_value = str(
-                    _normalize_session_timeout_minutes(safe_value or "5", default_value=5)
+                    _normalize_session_timeout_minutes(
+                        safe_value or str(WEB_INACTIVITY_TIMEOUT_MINUTES),
+                        default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
+                    )
                 )
                 static_select_options = [
                     {"value": str(minutes), "label": f"{minutes} minutes"}
