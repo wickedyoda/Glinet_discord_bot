@@ -47,6 +47,7 @@ Web variation:
 
 | Command | Type | Default Access | Parameters | Notes |
 |---|---|---|---|---|
+| `/help` | Slash | Member/Public | none | Quick summary of bot capabilities + link to GitHub wiki for advanced options |
 | `/search` | Slash | Member/Public | query text | Combined forum + docs results |
 | `!search` | Prefix | Member/Public | query text | Prefix equivalent of combined search |
 | `/search_reddit` | Slash | Member/Public | query text | Top 5 matches from configured subreddit (default `r/GlInet`) |

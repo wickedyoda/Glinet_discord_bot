@@ -26,8 +26,15 @@ jobs:
       - name: Build Docker image
         run: docker build -t local/discord-invite-bot:${{ github.sha }} .
 
-      - name: Set up Trivy
-        uses: aquasecurity/setup-trivy@v0.2.1
+      - name: Install Trivy CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+          trivy --version
 
       - name: Generate Trivy SARIF report
         continue-on-error: true
