@@ -40,6 +40,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `DOCS_MAX_RESULTS_PER_SITE` | `2` | Integer, `>= 1` | Max docs results per docs source |
 | `DOCS_INDEX_TTL_SECONDS` | `3600` | Integer, `>= 60` | Docs index cache TTL |
 | `SEARCH_RESPONSE_MAX_CHARS` | `1900` | Integer, `>= 200` | Max chars in search response |
+| `BOT_HELP_WIKI_URL` | `https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md` | URL with `http://` or `https://` | Link target shown in `/help` for advanced docs |
 
 ## Moderation
 
