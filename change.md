@@ -9,6 +9,8 @@ All notable changes to this project are documented in this file.
 - `bot_log.log` now records payloads that moderation/server-event handlers send (or attempt to send) to the log channel.
 - Web GUI `/admin/logs` dropdown now includes `bot_log.log`.
 - Auto-refresh interval dropdowns added to `/staus` and `/admin/logs` with `1`, `5`, `10`, `30`, `60`, and `120` second options.
+- Public slash command `/help` with a short capabilities summary and a direct link to the GitHub wiki for advanced options.
+- New `BOT_HELP_WIKI_URL` setting support (with GitHub wiki default) for the `/help` command link target.
 - New GitHub Actions workflows for integrity and security:
   - `CI Integrity` (critical Ruff checks, Python compile checks, optional pytest discovery)
   - `Dependency Review` (PR dependency risk gate)
