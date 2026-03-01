@@ -435,6 +435,11 @@ DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
 DISCORD_MESSAGE_SAFE_MAX_CHARS = 1900
+BOT_HELP_WIKI_URL = normalize_http_url_setting(
+    os.getenv("BOT_HELP_WIKI_URL", ""),
+    "https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md",
+    "BOT_HELP_WIKI_URL",
+)
 FIRMWARE_FEED_URL = normalize_http_url_setting(
     os.getenv("FIRMWARE_FEED_URL", ""),
     "https://gl-fw.remotetohome.io/",
@@ -607,6 +612,7 @@ MODERATOR_ONLY_COMMAND_KEYS = {
 }
 COMMAND_PERMISSION_DEFAULTS = {
     "list": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "help": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "tag_commands": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "submitrole": COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
     "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
@@ -642,6 +648,10 @@ COMMAND_PERMISSION_METADATA = {
     "list": {
         "label": "!list",
         "description": "Show available tag commands.",
+    },
+    "help": {
+        "label": "/help",
+        "description": "Show quick bot capabilities and wiki link.",
     },
     "tag_commands": {
         "label": "Dynamic Tag Commands",
@@ -3939,6 +3949,22 @@ def build_reddit_search_message(query: str):
     return trim_search_message("\n".join(lines))
 
 
+def build_help_message():
+    lines = [
+        "🤖 **Bot Quick Help**",
+        "",
+        "Use this bot for:",
+        "- Role access and invites (`/submitrole`, `/enter_role`, `/getaccess`)",
+        "- Search (`/search`, `/search_reddit`, `/search_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
+        "- Country nickname tools (`/country`, `/clear_country`)",
+        "- Tag shortcuts (`!list` and dynamic slash tag commands)",
+        "- Moderation and member/role management (restricted by role/permissions)",
+        "",
+        f"📚 Advanced options and full docs: {BOT_HELP_WIKI_URL}",
+    ]
+    return trim_search_message("\n".join(lines))
+
+
 def build_docs_site_search_message(query: str, site_key: str):
     site_info = DOCS_SITE_MAP.get(site_key)
     if not site_info:
@@ -6565,6 +6591,18 @@ async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: st
         details=f"Unbanned user ID `{target_user_id}`.",
     )
     await ctx.send(f"✅ Unbanned user ID `{target_user_id}`.")
+
+
+@tree.command(
+    name="help",
+    description="Quick bot help and link to advanced docs",
+    guild=discord.Object(id=GUILD_ID),
+)
+async def help_slash(interaction: discord.Interaction):
+    logger.info("/help invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "help"):
+        return
+    await interaction.response.send_message(build_help_message())
 
 
 @tree.command(
