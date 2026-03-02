@@ -24,6 +24,7 @@ All notable changes to this project are documented in this file.
 - Renamed settings key from `GENERAL_CHANNEL_ID` to `BOT_LOG_CHANNEL_ID` in bot runtime config and web settings UI.
 - Kept backward compatibility by accepting `GENERAL_CHANNEL_ID` as a legacy fallback alias.
 - Updated compose/example/wiki/docs references to include `BOT_LOG_CHANNEL_ID` and `bot_log.log`.
+- Updated legal-policy documentation links to the new WickedYoda Terms of Service + Privacy Policy page (`https://wickedyoda.com/?p=3460`).
 - Strengthened `/admin/account` password-change validation:
   - current password explicitly required and verified
   - new password must be entered twice and match
