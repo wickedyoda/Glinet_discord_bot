@@ -24,9 +24,10 @@ Per WickedYoda policy, non-code branded content and media assets are treated as 
 
 Primary policy source:
 
-- `https://wickedyoda.com/?page_id=3`
+- `https://wickedyoda.com/?p=3460`
+  - Posted: March 2, 2026
 
-This includes disclaimer, copyright, product review disclosure, non-association, and privacy statements across WickedYoda-owned properties.
+This includes Discord bot Terms of Service and Privacy Policy coverage for this project.
 
 ## Non-Affiliation Clarification
 

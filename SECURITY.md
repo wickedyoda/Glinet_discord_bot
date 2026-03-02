@@ -34,9 +34,10 @@ Do not open public issues for unpatched security vulnerabilities.
 
 ## Security and Privacy Baseline
 
-Aligned with the WickedYoda site privacy and policy statement at:
+Aligned with the project legal terms and privacy policy at:
 
-- `https://wickedyoda.com/?page_id=3`
+- `https://wickedyoda.com/?p=3460`
+  - Posted: March 2, 2026
 - Discord Developer Terms of Service:
   - `https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service`
 - Discord Data Privacy FAQ for Developers:
