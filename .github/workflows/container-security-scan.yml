@@ -19,6 +19,8 @@ jobs:
   trivy:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -40,10 +42,11 @@ jobs:
         continue-on-error: true
         run: |
           trivy image \
+            --db-repository "${TRIVY_DB_REPOSITORY}" \
             --format sarif \
             --output trivy-image.sarif \
             --scanners vuln \
-            --vuln-type os,library \
+            --pkg-types os,library \
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 0 \
@@ -58,9 +61,10 @@ jobs:
       - name: Enforce Trivy policy (critical vulnerabilities)
         run: |
           trivy image \
+            --db-repository "${TRIVY_DB_REPOSITORY}" \
             --format table \
             --scanners vuln \
-            --vuln-type os,library \
+            --pkg-types os,library \
             --severity CRITICAL \
             --ignore-unfixed \
             --exit-code 1 \
