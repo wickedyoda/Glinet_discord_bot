@@ -40,6 +40,10 @@ All notable changes to this project are documented in this file.
   - default retention `90` days
   - default rotation interval `1` day
   - configurable via `LOG_RETENTION_DAYS` and `LOG_ROTATION_INTERVAL_DAYS`
+- Updated packaging dependencies to address vulnerability findings:
+  - pinned `wheel` to `0.46.2`
+  - pinned `jaraco.context` to `6.1.0`
+  - Docker build now upgrades `pip`/`setuptools`/`wheel`/`jaraco.context` before installing app requirements
 - Web admin runtime supervision added:
   - auto-restarts web admin when it stops unexpectedly
   - allows up to 5 restarts within 10 minutes
