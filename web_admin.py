@@ -52,6 +52,14 @@ OBSERVABILITY_LOG_OPTIONS = (
     ("web_gui_audit.log", "Web GUI Audit Log"),
 )
 AUTO_REFRESH_INTERVAL_OPTIONS = (0, 1, 5, 10, 30, 60, 120)
+REDDIT_FEED_SCHEDULE_OPTIONS = (
+    ("*/5 * * * *", "Every 5 minutes"),
+    ("*/10 * * * *", "Every 10 minutes"),
+    ("*/15 * * * *", "Every 15 minutes"),
+    ("*/30 * * * *", "Every 30 minutes"),
+    ("0 * * * *", "Every hour"),
+    ("0 */2 * * *", "Every 2 hours"),
+)
 OBSERVABILITY_HISTORY_RETENTION_HOURS = 24
 OBSERVABILITY_HISTORY_SAMPLE_SECONDS = 60
 LOG_EMAIL_PATTERN = re.compile(
@@ -190,6 +198,11 @@ ENV_FIELDS = [
         "FIRMWARE_RELEASE_NOTES_MAX_CHARS",
         "Firmware Notes Max Chars",
         "Max release-notes excerpt size.",
+    ),
+    (
+        "REDDIT_FEED_CHECK_SCHEDULE",
+        "Reddit Feed Schedule",
+        "5-field cron schedule in UTC for Reddit feed polling.",
     ),
     (
         "WEB_ENABLED",
@@ -1213,6 +1226,10 @@ def _validate_env_updates(updated_values: dict):
             errors.append(
                 "firmware_check_schedule must be a valid 5-field cron expression."
             )
+        if key == "REDDIT_FEED_CHECK_SCHEDULE" and value and not croniter.is_valid(value):
+            errors.append(
+                "REDDIT_FEED_CHECK_SCHEDULE must be a valid 5-field cron expression."
+            )
         if (
             key == "firmware_notification_channel"
             and value
@@ -1645,6 +1662,7 @@ def _render_layout(
             <option value="{{ url_for('account') }}">My Account</option>
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+            <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('settings') }}">Settings</option>
             <option value="{{ url_for('public_observability') }}">Observability</option>
             <option value="{{ url_for('admin_logs') }}">Logs</option>
@@ -1769,6 +1787,8 @@ def create_web_app(
     on_get_discord_catalog=None,
     on_get_command_permissions=None,
     on_save_command_permissions=None,
+    on_get_reddit_feeds=None,
+    on_manage_reddit_feeds=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -2290,6 +2310,7 @@ def create_web_app(
         safe_view_endpoints = {
             "bot_profile",
             "command_permissions",
+            "reddit_feeds",
             "settings",
             "tag_responses",
             "bulk_role_csv",
@@ -2771,6 +2792,12 @@ def create_web_app(
             "Set access mode per command and pick restricted roles from Discord role lists.",
             url_for("command_permissions"),
             "Open Permissions",
+        )
+        add_dashboard_card(
+            "Reddit Feeds",
+            "Map subreddit feeds to Discord channels and schedule automatic post checks.",
+            url_for("reddit_feeds"),
+            "Open Reddit Feeds",
         )
         add_dashboard_card(
             "Settings",
@@ -3470,6 +3497,282 @@ def create_web_app(
             "Bot Profile", body, user["email"], bool(user.get("is_admin"))
         )
 
+    @app.route("/admin/reddit-feeds", methods=["GET", "POST"])
+    @login_required
+    def reddit_feeds():
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        file_values = _parse_env_file(env_file)
+        current_schedule = str(
+            file_values.get(
+                "REDDIT_FEED_CHECK_SCHEDULE",
+                os.getenv("REDDIT_FEED_CHECK_SCHEDULE", "*/30 * * * *"),
+            )
+            or "*/30 * * * *"
+        ).strip()
+        if not croniter.is_valid(current_schedule):
+            current_schedule = "*/30 * * * *"
+
+        discord_catalog = (
+            on_get_discord_catalog() if callable(on_get_discord_catalog) else None
+        )
+        channel_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                channel_options = discord_catalog.get("channels", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
+        text_channel_options = [
+            option
+            for option in channel_options
+            if str(option.get("type") or "").strip().lower() == "text"
+        ]
+        channel_labels = {
+            str(option.get("id") or "").strip(): str(
+                option.get("label") or option.get("name") or option.get("id") or "Unknown"
+            )
+            for option in text_channel_options
+            if str(option.get("id") or "").strip()
+        }
+
+        payload = (
+            on_get_reddit_feeds()
+            if callable(on_get_reddit_feeds)
+            else {"ok": False, "error": "Reddit feed callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if action == "schedule":
+                selected_schedule = str(
+                    request.form.get("reddit_feed_schedule") or ""
+                ).strip()
+                allowed_schedules = {value for value, _ in REDDIT_FEED_SCHEDULE_OPTIONS}
+                if selected_schedule not in allowed_schedules:
+                    flash("Choose a valid Reddit feed schedule option.", "error")
+                else:
+                    file_values["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
+                    os.environ["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
+                    _write_env_file(env_file, file_values)
+                    if callable(on_env_settings_saved):
+                        on_env_settings_saved(
+                            {"REDDIT_FEED_CHECK_SCHEDULE": selected_schedule}
+                        )
+                    current_schedule = selected_schedule
+                    flash("Reddit feed schedule updated.", "success")
+            elif not callable(on_manage_reddit_feeds):
+                flash("Reddit feed update callback is not configured.", "error")
+            else:
+                callback_payload = {"action": action}
+                if action == "add":
+                    selected_channel_id = str(
+                        request.form.get("channel_id", "")
+                    ).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip()
+                        for option in text_channel_options
+                        if str(option.get("id") or "").strip()
+                    }
+                    if (
+                        selected_channel_id
+                        and valid_text_channel_ids
+                        and selected_channel_id not in valid_text_channel_ids
+                    ):
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["subreddit"] = request.form.get(
+                            "subreddit", ""
+                        )
+                        callback_payload["channel_id"] = selected_channel_id
+                elif action == "toggle":
+                    callback_payload["feed_id"] = request.form.get("feed_id", "")
+                    callback_payload["enabled"] = request.form.get("enabled", "")
+                elif action == "delete":
+                    callback_payload["feed_id"] = request.form.get("feed_id", "")
+                else:
+                    flash("Invalid Reddit feed action.", "error")
+                    callback_payload = None
+
+                if callback_payload is not None:
+                    response = on_manage_reddit_feeds(callback_payload, user["email"])
+                    if not isinstance(response, dict):
+                        flash("Invalid response from Reddit feed handler.", "error")
+                    elif response.get("ok"):
+                        payload = response
+                        flash(
+                            str(response.get("message") or "Reddit feed updated."),
+                            "success",
+                        )
+                    else:
+                        flash(
+                            str(response.get("error") or "Failed to update Reddit feeds."),
+                            "error",
+                        )
+
+            payload = (
+                on_get_reddit_feeds()
+                if callable(on_get_reddit_feeds)
+                else {"ok": False, "error": "Reddit feed callbacks are not configured."}
+            )
+
+        feeds = payload.get("feeds", []) if isinstance(payload, dict) else []
+        feeds_error = (
+            str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        )
+        schedule_select_html = _render_fixed_select_input(
+            "reddit_feed_schedule",
+            current_schedule,
+            [
+                {"value": value, "label": label}
+                for value, label in REDDIT_FEED_SCHEDULE_OPTIONS
+            ],
+            placeholder="Select Reddit poll interval...",
+        )
+        channel_select_html = _render_select_input(
+            "channel_id",
+            "",
+            text_channel_options,
+            placeholder="Select a Discord text channel...",
+        )
+        feed_rows = []
+        for feed in feeds:
+            feed_id = str(feed.get("id") or "")
+            subreddit = str(feed.get("subreddit") or "").strip()
+            channel_id = str(feed.get("channel_id") or "").strip()
+            enabled = bool(feed.get("enabled"))
+            last_checked_at = str(feed.get("last_checked_at") or "Never")
+            last_posted_at = str(feed.get("last_posted_at") or "Never")
+            last_error = str(feed.get("last_error") or "").strip()
+            status_label = "Enabled" if enabled else "Disabled"
+            if last_error:
+                status_label = f"{status_label} | {last_error}"
+            channel_label = channel_labels.get(
+                channel_id, f"Unknown channel ({channel_id or 'not set'})"
+            )
+            action_html = ""
+            if is_admin:
+                toggle_label = "Disable" if enabled else "Enable"
+                toggle_value = "0" if enabled else "1"
+                action_html = f"""
+                <div class="dash-actions">
+                  <form method="post" style="display:inline;">
+                    <input type="hidden" name="action" value="toggle" />
+                    <input type="hidden" name="feed_id" value="{escape(feed_id, quote=True)}" />
+                    <input type="hidden" name="enabled" value="{escape(toggle_value, quote=True)}" />
+                    <button class="btn secondary" type="submit">{escape(toggle_label)}</button>
+                  </form>
+                  <form method="post" style="display:inline;" onsubmit="return confirm('Delete this Reddit feed subscription?');">
+                    <input type="hidden" name="action" value="delete" />
+                    <input type="hidden" name="feed_id" value="{escape(feed_id, quote=True)}" />
+                    <button class="btn danger" type="submit">Delete</button>
+                  </form>
+                </div>
+                """
+            else:
+                action_html = (
+                    "<div class='dash-actions'>"
+                    "<button class='btn secondary' type='button' disabled>Enable/Disable</button>"
+                    "<button class='btn danger' type='button' disabled>Delete</button>"
+                    "</div>"
+                )
+            feed_rows.append(
+                f"""
+                <tr>
+                  <td><strong>r/{escape(subreddit)}</strong></td>
+                  <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
+                  <td>{'Yes' if enabled else 'No'}</td>
+                  <td class="muted">{escape(last_checked_at)}</td>
+                  <td class="muted">{escape(last_posted_at)}</td>
+                  <td class="muted">{escape(status_label)}</td>
+                  <td>{action_html}</td>
+                </tr>
+                """
+            )
+
+        catalog_note = ""
+        if text_channel_options:
+            catalog_note = (
+                f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord for feed targets.</p>"
+            )
+        elif catalog_error:
+            catalog_note = (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+            )
+        else:
+            catalog_note = (
+                "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+
+        management_note = (
+            "<p class='muted'>Add subreddit watchers here and the bot will post new Reddit submissions to the selected Discord channel.</p>"
+            if is_admin
+            else "<p class='muted'>Read-only account: you can view feed mappings and schedule, but cannot change them.</p>"
+        )
+        add_disabled_attr = ""
+        add_disabled_note = ""
+        if not text_channel_options:
+            add_disabled_attr = " disabled"
+            add_disabled_note = (
+                "<p class='muted'>A Discord text channel must be available before you can add a Reddit feed.</p>"
+            )
+
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Reddit Feed Schedule</h2>
+            <p class="muted">Choose how often the bot polls Reddit for new posts. Default is every 30 minutes.</p>
+            <form method="post">
+              <input type="hidden" name="action" value="schedule" />
+              <label>Polling interval</label>
+              {schedule_select_html}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{'' if is_admin else ' disabled'}>Save Schedule</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Add Reddit Feed</h2>
+            {management_note}
+            {catalog_note}
+            {add_disabled_note}
+            <form method="post">
+              <input type="hidden" name="action" value="add" />
+              <label>Subreddit</label>
+              <input type="text" name="subreddit" placeholder="GlInet or https://www.reddit.com/r/GlInet/" required{add_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {channel_select_html}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{add_disabled_attr if is_admin else ' disabled'}>Add Feed</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured Reddit Feeds</h2>
+          <p class="muted">New subscriptions establish a baseline on first check and only post newer Reddit submissions after that.</p>
+          {f"<p class='muted'>Could not load feeds: {escape(feeds_error)}</p>" if feeds_error else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Subreddit</th>
+                <th>Discord Channel</th>
+                <th>Enabled</th>
+                <th>Last Checked</th>
+                <th>Last Posted</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {''.join(feed_rows) if feed_rows else "<tr><td colspan='7' class='muted'>No Reddit feeds are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page("Reddit Feeds", body, user["email"], bool(user.get("is_admin")))
+
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
     @login_required
     def command_permissions():
@@ -3732,6 +4035,12 @@ def create_web_app(
                     for minutes in SESSION_TIMEOUT_MINUTE_OPTIONS
                 ]
                 select_placeholder = "Select auto logout timeout..."
+            elif key == "REDDIT_FEED_CHECK_SCHEDULE":
+                static_select_options = [
+                    {"value": value, "label": label}
+                    for value, label in REDDIT_FEED_SCHEDULE_OPTIONS
+                ]
+                select_placeholder = "Select Reddit polling interval..."
             elif key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL", "DISCORD_LOG_LEVEL"}:
                 safe_level = str(safe_value or "INFO").strip().upper()
                 if safe_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
@@ -4290,6 +4599,8 @@ def start_web_admin_interface(
     on_get_discord_catalog=None,
     on_get_command_permissions=None,
     on_save_command_permissions=None,
+    on_get_reddit_feeds=None,
+    on_manage_reddit_feeds=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -4310,6 +4621,8 @@ def start_web_admin_interface(
         on_get_discord_catalog=on_get_discord_catalog,
         on_get_command_permissions=on_get_command_permissions,
         on_save_command_permissions=on_save_command_permissions,
+        on_get_reddit_feeds=on_get_reddit_feeds,
+        on_manage_reddit_feeds=on_manage_reddit_feeds,
         on_get_bot_profile=on_get_bot_profile,
         on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,

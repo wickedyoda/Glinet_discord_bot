@@ -73,6 +73,7 @@ docker compose build
 - Country nickname suffix commands
 - Extended moderation commands and event logging
 - Firmware monitor (baseline + delta notifications)
+- Web-managed Reddit feed posting for new subreddit submissions
 - Web admin GUI (admin/read-only users, command permissions, bot profile, settings)
 - SQLite persistence with legacy merge import on startup
 

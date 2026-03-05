@@ -73,6 +73,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Dedicated dashboard link is shown beside the dropdown.
 - Dashboard includes direct action buttons/cards for major admin workflows.
 - Mobile layout is responsive for smaller screens and touch interaction.
+- Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
 
 ## Admin Pages and Capabilities
 
@@ -109,6 +110,14 @@ UI forms include show/hide password toggles and validation feedback.
 - Modes: `default`, `public`, `custom_roles`
 - Multi-select role dropdown by role name
 - Manual role-ID entry fallback if catalog is incomplete
+
+### `/admin/reddit-feeds`
+
+- Add a subreddit feed using a subreddit name or Reddit `/r/` URL
+- Pick the target Discord text channel from a live dropdown
+- Global Reddit polling interval dropdown (default every 30 minutes)
+- Feed list shows enabled state, last checked time, last posted time, and last error
+- New subscriptions baseline existing posts first, then only publish newer Reddit submissions
 
 ### `/admin/tag-responses`
 
