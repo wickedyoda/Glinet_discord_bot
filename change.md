@@ -11,6 +11,11 @@ All notable changes to this project are documented in this file.
 - Auto-refresh interval dropdowns added to `/staus` and `/admin/logs` with `1`, `5`, `10`, `30`, `60`, and `120` second options.
 - Public slash command `/help` with a short capabilities summary and a direct link to the GitHub wiki for advanced options.
 - New `BOT_HELP_WIKI_URL` setting support (with GitHub wiki default) for the `/help` command link target.
+- New web-admin Reddit feed management page:
+  - add subreddit-to-channel mappings
+  - choose target Discord text channels from a dropdown
+  - enable/disable/delete feed subscriptions
+  - set Reddit polling interval from a dropdown (default every 30 minutes)
 - New GitHub Actions workflows for integrity and security:
   - `CI Integrity` (critical Ruff checks, Python compile checks, optional pytest discovery)
   - `Dependency Review` (PR dependency risk gate)
@@ -24,6 +29,7 @@ All notable changes to this project are documented in this file.
 - Renamed settings key from `GENERAL_CHANNEL_ID` to `BOT_LOG_CHANNEL_ID` in bot runtime config and web settings UI.
 - Kept backward compatibility by accepting `GENERAL_CHANNEL_ID` as a legacy fallback alias.
 - Updated compose/example/wiki/docs references to include `BOT_LOG_CHANNEL_ID` and `bot_log.log`.
+- Added `REDDIT_FEED_CHECK_SCHEDULE` to runtime config/docs and wired env changes to restart the Reddit feed monitor loop.
 - Updated legal-policy documentation links to the new WickedYoda Terms of Service + Privacy Policy page (`https://wickedyoda.com/?p=3460`).
 - Strengthened `/admin/account` password-change validation:
   - current password explicitly required and verified

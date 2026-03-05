@@ -41,6 +41,14 @@ SENSITIVE_LOG_VALUE_PATTERN = re.compile(
 REDDIT_SUBREDDIT_PATTERN = re.compile(r"^[A-Za-z0-9_]{2,21}$")
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 FALSY_ENV_VALUES = {"0", "false", "no", "off"}
+REDDIT_REQUEST_USER_AGENT = (
+    "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
+)
+DEFAULT_REDDIT_FEED_CHECK_SCHEDULE = "*/30 * * * *"
+REDDIT_FEED_FETCH_LIMIT = 10
+REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
+REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
+REDDIT_FEED_MAX_POSTS_PER_RUN = 5
 
 
 def normalize_log_level(raw_value: str, fallback: str = "INFO"):
@@ -93,13 +101,10 @@ def normalize_http_url_setting(raw_value: str, fallback_value: str, setting_name
     return normalized
 
 
-def normalize_reddit_subreddit_setting(
-    raw_value: str, fallback_value: str = "GlInet", setting_name: str = "REDDIT_SUBREDDIT"
-):
-    fallback = str(fallback_value or "GlInet").strip() or "GlInet"
+def normalize_reddit_subreddit_name(raw_value: str):
     candidate = str(raw_value or "").strip()
     if not candidate:
-        return fallback
+        return ""
 
     lower_candidate = candidate.lower()
     if lower_candidate.startswith(("http://", "https://")):
@@ -113,14 +118,25 @@ def normalize_reddit_subreddit_setting(
     candidate = candidate.strip().strip("/")
     if REDDIT_SUBREDDIT_PATTERN.fullmatch(candidate):
         return candidate
+    return ""
 
-    logger.warning(
-        "Invalid %s value '%s'; using fallback subreddit '%s'",
-        setting_name,
-        raw_value,
-        fallback,
-    )
-    return fallback
+
+def normalize_reddit_subreddit_setting(
+    raw_value: str, fallback_value: str = "GlInet", setting_name: str = "REDDIT_SUBREDDIT"
+):
+    fallback = str(fallback_value or "GlInet").strip() or "GlInet"
+    candidate = normalize_reddit_subreddit_name(raw_value)
+    if not candidate:
+        if not str(raw_value or "").strip():
+            return fallback
+        logger.warning(
+            "Invalid %s value '%s'; using fallback subreddit '%s'",
+            setting_name,
+            raw_value,
+            fallback,
+        )
+        return fallback
+    return candidate
 
 
 def resolve_log_dir(preferred_value: str):
@@ -431,6 +447,10 @@ REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(
     os.getenv("REDDIT_SUBREDDIT", "GlInet"), fallback_value="GlInet"
 )
 REDDIT_MAX_RESULTS = 5
+REDDIT_FEED_CHECK_SCHEDULE = (
+    str(os.getenv("REDDIT_FEED_CHECK_SCHEDULE", DEFAULT_REDDIT_FEED_CHECK_SCHEDULE)).strip()
+    or DEFAULT_REDDIT_FEED_CHECK_SCHEDULE
+)
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
 SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
@@ -776,6 +796,7 @@ tag_responses_mtime = None
 tag_command_names = set()
 docs_index_cache = {}
 firmware_monitor_task = None
+reddit_feed_monitor_task = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
 web_admin_restart_events = deque()
@@ -872,6 +893,29 @@ def ensure_db_schema():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS reddit_feed_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subreddit TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                last_checked_at TEXT NOT NULL DEFAULT '',
+                last_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                UNIQUE(subreddit, channel_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS reddit_feed_seen_posts (
+                feed_id INTEGER NOT NULL,
+                post_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(feed_id, post_id),
+                FOREIGN KEY(feed_id) REFERENCES reddit_feed_subscriptions(id) ON DELETE CASCADE
+            );
+
             CREATE TABLE IF NOT EXISTS web_users (
                 email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
@@ -888,6 +932,12 @@ def ensure_db_schema():
 
             CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
             CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
+            CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
+                ON reddit_feed_subscriptions(subreddit);
+            CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
+                ON reddit_feed_subscriptions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_reddit_feed_seen_posts_feed_id
+                ON reddit_feed_seen_posts(feed_id);
             """
         )
         conn.commit()
@@ -922,6 +972,221 @@ def db_kv_delete(key: str):
     conn = get_db_connection()
     with db_lock:
         conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
+        conn.commit()
+
+
+def list_reddit_feed_subscriptions(enabled_only: bool = False):
+    conn = get_db_connection()
+    query = (
+        "SELECT id, subreddit, channel_id, enabled, created_at, updated_at, "
+        "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error "
+        "FROM reddit_feed_subscriptions"
+    )
+    params = ()
+    if enabled_only:
+        query += " WHERE enabled = 1"
+    query += " ORDER BY subreddit COLLATE NOCASE ASC, channel_id ASC, id ASC"
+    with db_lock:
+        rows = conn.execute(query, params).fetchall()
+    feeds = []
+    for row in rows:
+        feeds.append(
+            {
+                "id": int(row["id"]),
+                "subreddit": str(row["subreddit"] or ""),
+                "channel_id": int(row["channel_id"] or 0),
+                "enabled": bool(row["enabled"]),
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+                "created_by_email": str(row["created_by_email"] or ""),
+                "updated_by_email": str(row["updated_by_email"] or ""),
+                "last_checked_at": str(row["last_checked_at"] or ""),
+                "last_posted_at": str(row["last_posted_at"] or ""),
+                "last_error": str(row["last_error"] or ""),
+            }
+        )
+    return feeds
+
+
+def get_reddit_feed_subscription(feed_id: int):
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            """
+            SELECT id, subreddit, channel_id, enabled, created_at, updated_at,
+                   created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error
+            FROM reddit_feed_subscriptions
+            WHERE id = ?
+            """,
+            (int(feed_id),),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "subreddit": str(row["subreddit"] or ""),
+        "channel_id": int(row["channel_id"] or 0),
+        "enabled": bool(row["enabled"]),
+        "created_at": str(row["created_at"] or ""),
+        "updated_at": str(row["updated_at"] or ""),
+        "created_by_email": str(row["created_by_email"] or ""),
+        "updated_by_email": str(row["updated_by_email"] or ""),
+        "last_checked_at": str(row["last_checked_at"] or ""),
+        "last_posted_at": str(row["last_posted_at"] or ""),
+        "last_error": str(row["last_error"] or ""),
+    }
+
+
+def create_reddit_feed_subscription(subreddit: str, channel_id: int, actor_email: str):
+    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold()
+    if not cleaned_subreddit:
+        raise ValueError("Enter a valid subreddit name or /r/ URL.")
+    safe_channel_id = int(channel_id)
+    if safe_channel_id <= 0:
+        raise ValueError("Choose a valid Discord channel.")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO reddit_feed_subscriptions (
+                subreddit,
+                channel_id,
+                enabled,
+                created_at,
+                updated_at,
+                created_by_email,
+                updated_by_email
+            )
+            VALUES (?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                cleaned_subreddit,
+                safe_channel_id,
+                now_iso,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                str(actor_email or "").strip().lower(),
+            ),
+        )
+        conn.commit()
+
+
+def set_reddit_feed_subscription_enabled(feed_id: int, enabled: bool, actor_email: str):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            """
+            UPDATE reddit_feed_subscriptions
+            SET enabled = ?, updated_at = ?, updated_by_email = ?, last_error = ''
+            WHERE id = ?
+            """,
+            (
+                1 if enabled else 0,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                int(feed_id),
+            ),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def delete_reddit_feed_subscription(feed_id: int):
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            "DELETE FROM reddit_feed_subscriptions WHERE id = ?",
+            (int(feed_id),),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def load_reddit_feed_seen_post_ids(feed_id: int):
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(
+            "SELECT post_id FROM reddit_feed_seen_posts WHERE feed_id = ?",
+            (int(feed_id),),
+        ).fetchall()
+    return {str(row["post_id"]) for row in rows if row["post_id"]}
+
+
+def merge_reddit_feed_seen_post_ids(feed_id: int, post_ids):
+    normalized_ids = []
+    seen = set()
+    for raw_post_id in post_ids or []:
+        post_id = str(raw_post_id or "").strip()
+        if not post_id or post_id in seen:
+            continue
+        seen.add(post_id)
+        normalized_ids.append(post_id)
+    if not normalized_ids:
+        return
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        for post_id in normalized_ids:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO reddit_feed_seen_posts (feed_id, post_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (int(feed_id), post_id, now_iso),
+            )
+        conn.execute(
+            """
+            DELETE FROM reddit_feed_seen_posts
+            WHERE feed_id = ?
+              AND rowid NOT IN (
+                SELECT rowid
+                FROM reddit_feed_seen_posts
+                WHERE feed_id = ?
+                ORDER BY created_at DESC, post_id DESC
+                LIMIT ?
+              )
+            """,
+            (
+                int(feed_id),
+                int(feed_id),
+                REDDIT_FEED_SEEN_POST_RETENTION_LIMIT,
+            ),
+        )
+        conn.commit()
+
+
+def update_reddit_feed_runtime_status(
+    feed_id: int,
+    *,
+    last_checked_at: str = "",
+    last_posted_at: str = "",
+    last_error: str = "",
+):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            UPDATE reddit_feed_subscriptions
+            SET updated_at = ?,
+                last_checked_at = CASE WHEN ? != '' THEN ? ELSE last_checked_at END,
+                last_posted_at = CASE WHEN ? != '' THEN ? ELSE last_posted_at END,
+                last_error = ?
+            WHERE id = ?
+            """,
+            (
+                now_iso,
+                str(last_checked_at or "").strip(),
+                str(last_checked_at or "").strip(),
+                str(last_posted_at or "").strip(),
+                str(last_posted_at or "").strip(),
+                str(last_error or "").strip(),
+                int(feed_id),
+            ),
+        )
         conn.commit()
 
 
@@ -1680,6 +1945,67 @@ def run_web_update_command_permissions(payload: dict, actor_email: str):
     response = build_command_permissions_web_payload()
     response["message"] = "Command permissions updated."
     logger.info("Command permissions updated via web admin")
+    return response
+
+
+def build_reddit_feeds_web_payload():
+    return {
+        "ok": True,
+        "feeds": list_reddit_feed_subscriptions(enabled_only=False),
+    }
+
+
+def run_web_get_reddit_feeds():
+    try:
+        return build_reddit_feeds_web_payload()
+    except Exception:
+        logger.exception("Failed to build Reddit feeds payload for web admin")
+        return {
+            "ok": False,
+            "error": "Unexpected error while loading Reddit feeds.",
+        }
+
+
+def run_web_manage_reddit_feeds(payload: dict, actor_email: str):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid Reddit feed payload."}
+
+    action = str(payload.get("action") or "").strip().lower()
+    try:
+        if action == "add":
+            subreddit = str(payload.get("subreddit") or "")
+            channel_id = int(str(payload.get("channel_id") or "0").strip())
+            create_reddit_feed_subscription(subreddit, channel_id, actor_email)
+            message = f"Reddit feed added for r/{normalize_reddit_subreddit_name(subreddit)}."
+        elif action == "toggle":
+            feed_id = int(str(payload.get("feed_id") or "0").strip())
+            enabled = str(payload.get("enabled") or "").strip().lower() in TRUTHY_ENV_VALUES
+            if not set_reddit_feed_subscription_enabled(feed_id, enabled, actor_email):
+                return {"ok": False, "error": "Reddit feed entry was not found."}
+            message = (
+                "Reddit feed enabled." if enabled else "Reddit feed disabled."
+            )
+        elif action == "delete":
+            feed_id = int(str(payload.get("feed_id") or "0").strip())
+            if not delete_reddit_feed_subscription(feed_id):
+                return {"ok": False, "error": "Reddit feed entry was not found."}
+            message = "Reddit feed deleted."
+        else:
+            return {"ok": False, "error": "Invalid Reddit feed action."}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except sqlite3.IntegrityError:
+        return {
+            "ok": False,
+            "error": "That subreddit/channel feed already exists.",
+        }
+    except Exception:
+        logger.exception("Failed to manage Reddit feeds from web admin")
+        return {"ok": False, "error": "Failed to update Reddit feeds."}
+
+    logger.info("Reddit feeds updated via web admin action=%s", action)
+    response = build_reddit_feeds_web_payload()
+    response["message"] = message
     return response
 
 
@@ -3226,6 +3552,243 @@ def schedule_firmware_monitor_restart():
     loop.call_soon_threadsafe(restart_firmware_monitor_task)
 
 
+async def resolve_reddit_feed_channel(channel_id: int):
+    if int(channel_id or 0) <= 0:
+        return None, "channel_id_not_configured"
+
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.NotFound:
+            return None, "channel_not_found"
+        except discord.Forbidden:
+            return None, "channel_access_forbidden"
+        except discord.HTTPException:
+            logger.exception("Failed to fetch Reddit feed channel %s", channel_id)
+            return None, "channel_fetch_http_error"
+
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel, ""
+    return None, "channel_not_text"
+
+
+async def process_reddit_feed_subscription(feed: dict):
+    feed_id = int(feed.get("id") or 0)
+    subreddit = str(feed.get("subreddit") or "").strip()
+    channel_id = int(feed.get("channel_id") or 0)
+    checked_at = datetime.now(timezone.utc).isoformat()
+
+    try:
+        normalized_subreddit, posts = await asyncio.to_thread(
+            fetch_reddit_subreddit_new_posts, subreddit
+        )
+    except LookupError:
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error="Invalid subreddit value.",
+        )
+        logger.warning("Reddit feed %s has invalid subreddit value '%s'", feed_id, subreddit)
+        return
+    except requests.HTTPError as exc:
+        status_code = getattr(exc.response, "status_code", None)
+        error_text = (
+            "Subreddit not found."
+            if status_code == 404
+            else "Reddit is rate limiting requests."
+            if status_code == 429
+            else f"Reddit HTTP error ({status_code or 'unknown'})."
+        )
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error=error_text,
+        )
+        logger.warning(
+            "Reddit feed check failed for r/%s (feed_id=%s, channel_id=%s, status=%s)",
+            subreddit,
+            feed_id,
+            channel_id,
+            status_code,
+        )
+        return
+    except requests.RequestException:
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error="Request to Reddit failed.",
+        )
+        logger.exception("Reddit feed request failed for r/%s", subreddit)
+        return
+    except ValueError:
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error="Reddit returned invalid JSON.",
+        )
+        logger.exception("Reddit feed returned invalid JSON for r/%s", subreddit)
+        return
+    except Exception:
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error="Unexpected Reddit feed processing error.",
+        )
+        logger.exception("Unexpected Reddit feed failure for r/%s", subreddit)
+        return
+
+    current_post_ids = [str(post.get("id") or "").strip() for post in posts if post.get("id")]
+    seen_post_ids = load_reddit_feed_seen_post_ids(feed_id)
+    if not seen_post_ids:
+        merge_reddit_feed_seen_post_ids(feed_id, current_post_ids)
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error="",
+        )
+        logger.info(
+            "Reddit feed baseline initialized for r/%s -> channel %s with %d posts",
+            normalized_subreddit,
+            channel_id,
+            len(current_post_ids),
+        )
+        return
+
+    new_posts = [post for post in posts if str(post.get("id") or "").strip() not in seen_post_ids]
+    if not new_posts:
+        merge_reddit_feed_seen_post_ids(feed_id, current_post_ids)
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error="",
+        )
+        return
+
+    channel, channel_error = await resolve_reddit_feed_channel(channel_id)
+    if channel is None:
+        error_messages = {
+            "channel_id_not_configured": "Target channel is not configured.",
+            "channel_not_found": "Target channel was not found.",
+            "channel_access_forbidden": "Bot cannot access the target channel.",
+            "channel_fetch_http_error": "Discord API error while loading target channel.",
+            "channel_not_text": "Target channel is not a text channel.",
+        }
+        error_text = error_messages.get(channel_error, "Target channel is unavailable.")
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error=error_text,
+        )
+        logger.warning(
+            "Reddit feed notifications paused for r/%s (feed_id=%s): %s",
+            normalized_subreddit,
+            feed_id,
+            error_text,
+        )
+        return
+
+    posted_ids = []
+    try:
+        for post in new_posts[:REDDIT_FEED_MAX_POSTS_PER_RUN]:
+            await channel.send(format_reddit_feed_post_message(normalized_subreddit, post))
+            posted_ids.append(str(post.get("id") or "").strip())
+    except discord.Forbidden:
+        merge_reddit_feed_seen_post_ids(feed_id, posted_ids)
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error="Bot does not have permission to post in the target channel.",
+        )
+        logger.warning(
+            "No permission to post Reddit feed updates in channel %s for r/%s",
+            channel.id,
+            normalized_subreddit,
+        )
+        return
+    except discord.HTTPException:
+        merge_reddit_feed_seen_post_ids(feed_id, posted_ids)
+        update_reddit_feed_runtime_status(
+            feed_id,
+            last_checked_at=checked_at,
+            last_error="Discord API error while posting Reddit feed update.",
+        )
+        logger.exception("Failed posting Reddit feed update for r/%s", normalized_subreddit)
+        return
+
+    merge_reddit_feed_seen_post_ids(feed_id, current_post_ids)
+    posted_at = datetime.now(timezone.utc).isoformat()
+    update_reddit_feed_runtime_status(
+        feed_id,
+        last_checked_at=checked_at,
+        last_posted_at=posted_at,
+        last_error="",
+    )
+    if len(new_posts) > REDDIT_FEED_MAX_POSTS_PER_RUN:
+        logger.info(
+            "Reddit feed for r/%s found %d new posts; posted %d and marked the remainder as seen.",
+            normalized_subreddit,
+            len(new_posts),
+            REDDIT_FEED_MAX_POSTS_PER_RUN,
+        )
+    else:
+        logger.info(
+            "Reddit feed posted %d new posts for r/%s into channel %s",
+            len(posted_ids),
+            normalized_subreddit,
+            channel.id,
+        )
+
+
+async def check_reddit_feed_updates_once():
+    feeds = list_reddit_feed_subscriptions(enabled_only=True)
+    if not feeds:
+        return
+    for feed in feeds:
+        await process_reddit_feed_subscription(feed)
+
+
+async def reddit_feed_monitor_loop():
+    if not croniter.is_valid(REDDIT_FEED_CHECK_SCHEDULE):
+        logger.error(
+            "Reddit feed monitor disabled: invalid REDDIT_FEED_CHECK_SCHEDULE '%s'",
+            REDDIT_FEED_CHECK_SCHEDULE,
+        )
+        return
+
+    logger.info(
+        "Reddit feed monitor active: checking subscriptions on cron '%s' (UTC)",
+        REDDIT_FEED_CHECK_SCHEDULE,
+    )
+    await check_reddit_feed_updates_once()
+
+    while not bot.is_closed():
+        now_utc = datetime.now(timezone.utc)
+        next_run_utc = croniter(REDDIT_FEED_CHECK_SCHEDULE, now_utc).get_next(datetime)
+        wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
+        logger.debug(
+            "Next Reddit feed check scheduled for %s UTC", next_run_utc.isoformat()
+        )
+        await asyncio.sleep(wait_seconds)
+        await check_reddit_feed_updates_once()
+
+
+def restart_reddit_feed_monitor_task():
+    global reddit_feed_monitor_task
+    if reddit_feed_monitor_task is not None and not reddit_feed_monitor_task.done():
+        reddit_feed_monitor_task.cancel()
+    reddit_feed_monitor_task = asyncio.create_task(
+        reddit_feed_monitor_loop(), name="reddit_feed_monitor"
+    )
+
+
+def schedule_reddit_feed_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_reddit_feed_monitor_task)
+
+
 def refresh_runtime_settings_from_env(_updated_values=None):
     global LOG_LEVEL
     global CONTAINER_LOG_LEVEL
@@ -3244,6 +3807,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global FIRMWARE_FEED_URL
     global FIRMWARE_NOTIFY_CHANNEL_ID
     global FIRMWARE_CHECK_SCHEDULE
+    global REDDIT_FEED_CHECK_SCHEDULE
     global FIRMWARE_REQUEST_TIMEOUT_SECONDS
     global FIRMWARE_RELEASE_NOTES_MAX_CHARS
     global WEB_DISCORD_CATALOG_TTL_SECONDS
@@ -3350,6 +3914,17 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         logger.warning(
             "Ignoring invalid firmware_check_schedule value: %s", candidate_schedule
         )
+    candidate_reddit_schedule = (
+        str(os.getenv("REDDIT_FEED_CHECK_SCHEDULE", REDDIT_FEED_CHECK_SCHEDULE)).strip()
+        or REDDIT_FEED_CHECK_SCHEDULE
+    )
+    if croniter.is_valid(candidate_reddit_schedule):
+        REDDIT_FEED_CHECK_SCHEDULE = candidate_reddit_schedule
+    else:
+        logger.warning(
+            "Ignoring invalid REDDIT_FEED_CHECK_SCHEDULE value: %s",
+            candidate_reddit_schedule,
+        )
     FIRMWARE_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
         os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", FIRMWARE_REQUEST_TIMEOUT_SECONDS),
         FIRMWARE_REQUEST_TIMEOUT_SECONDS,
@@ -3393,6 +3968,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     discord_catalog_cache["fetched_at"] = 0.0
     discord_catalog_cache["data"] = None
     schedule_firmware_monitor_restart()
+    schedule_reddit_feed_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
@@ -3578,6 +4154,8 @@ def start_web_admin_server():
                     on_get_discord_catalog=run_web_get_discord_catalog,
                     on_get_command_permissions=run_web_get_command_permissions,
                     on_save_command_permissions=run_web_update_command_permissions,
+                    on_get_reddit_feeds=run_web_get_reddit_feeds,
+                    on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
@@ -3620,7 +4198,7 @@ def search_forum_links(query: str):
     search_url = f"{FORUM_BASE_URL}/search.json"
     request_headers = {
         "Accept": "application/json,text/plain,*/*",
-        "User-Agent": "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
     }
 
     def extract_topic_links(payload: dict):
@@ -3687,7 +4265,7 @@ def search_forum_links(query: str):
 def search_reddit_posts(query: str):
     request_headers = {
         "Accept": "application/json,text/plain,*/*",
-        "User-Agent": "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
     }
     try:
         search_endpoint = f"{REDDIT_BASE_URL}/r/{REDDIT_SUBREDDIT}/search.json"
@@ -3745,6 +4323,75 @@ def search_reddit_posts(query: str):
             break
 
     return posts, ""
+
+
+def fetch_reddit_subreddit_new_posts(subreddit: str):
+    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold()
+    if not cleaned_subreddit:
+        raise LookupError("Invalid subreddit.")
+
+    response = requests.get(
+        f"{REDDIT_BASE_URL}/r/{cleaned_subreddit}/new.json",
+        params={"limit": REDDIT_FEED_FETCH_LIMIT, "raw_json": 1},
+        timeout=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
+        headers={
+            "Accept": "application/json,text/plain,*/*",
+            "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        },
+    )
+    response.raise_for_status()
+    data = response.json()
+    children = ((data or {}).get("data") or {}).get("children", [])
+    if not isinstance(children, list):
+        children = []
+
+    posts = []
+    seen_ids = set()
+    for item in children:
+        if not isinstance(item, dict):
+            continue
+        payload = item.get("data", {})
+        if not isinstance(payload, dict):
+            continue
+        post_id = str(payload.get("id") or "").strip()
+        permalink = str(payload.get("permalink") or "").strip()
+        if not post_id or not permalink or post_id in seen_ids:
+            continue
+        posts.append(
+            {
+                "id": post_id,
+                "title": make_discord_safe_text(
+                    clean_search_text(str(payload.get("title") or "")).strip()
+                    or "Untitled post"
+                ),
+                "link": urljoin(REDDIT_BASE_URL, permalink),
+                "author": make_discord_safe_text(
+                    clean_search_text(str(payload.get("author") or "unknown")).strip()
+                    or "unknown"
+                ),
+                "created_utc": int(float(payload.get("created_utc") or 0.0)),
+            }
+        )
+        seen_ids.add(post_id)
+
+    posts.sort(key=lambda item: (item.get("created_utc") or 0, item.get("id") or ""))
+    return cleaned_subreddit, posts
+
+
+def format_reddit_feed_post_message(subreddit: str, post: dict):
+    title = str(post.get("title") or "Untitled post").strip()
+    author = str(post.get("author") or "unknown").strip() or "unknown"
+    link = str(post.get("link") or "").strip()
+    created_utc = int(post.get("created_utc") or 0)
+    timestamp_text = f"<t:{created_utc}:R>" if created_utc > 0 else "just now"
+    lines = [
+        f"**New Reddit post in r/{subreddit}**",
+        title,
+        f"Posted by `u/{author}` {timestamp_text}",
+    ]
+    if link:
+        lines.append(link)
+    return trim_discord_message("\n".join(lines))
 
 
 def normalize_search_terms(query: str):
@@ -3993,6 +4640,7 @@ invite_uses = {}
 @bot.event
 async def on_ready():
     global firmware_monitor_task
+    global reddit_feed_monitor_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
     logger.info("Logged in as %s", bot.user.name)
     await _flush_web_admin_pending_critical_alerts()
@@ -4018,6 +4666,10 @@ async def on_ready():
     if firmware_monitor_task is None or firmware_monitor_task.done():
         firmware_monitor_task = asyncio.create_task(
             firmware_monitor_loop(), name="firmware_monitor"
+        )
+    if reddit_feed_monitor_task is None or reddit_feed_monitor_task.done():
+        reddit_feed_monitor_task = asyncio.create_task(
+            reddit_feed_monitor_loop(), name="reddit_feed_monitor"
         )
 
 
