@@ -48,12 +48,12 @@ Web variation:
 | Command | Type | Default Access | Parameters | Notes |
 |---|---|---|---|---|
 | `/help` | Slash | Member/Public | none | Quick summary of bot capabilities + link to GitHub wiki for advanced options |
-| `/search` | Slash | Member/Public | query text | Combined forum + docs results |
-| `!search` | Prefix | Member/Public | query text | Prefix equivalent of combined search |
 | `/search_reddit` | Slash | Member/Public | query text | Top 5 matches from configured subreddit (default `r/GlInet`) |
 | `!searchreddit` | Prefix | Member/Public | query text | Prefix Reddit search |
 | `/search_forum` | Slash | Member/Public | query text | Forum-only results |
 | `!searchforum` | Prefix | Member/Public | query text | Prefix forum-only search |
+| `/search_openwrt_forum` | Slash | Member/Public | query text | Top 10 matches from [forum.openwrt.org](https://forum.openwrt.org/) |
+| `!searchopenwrtforum` | Prefix | Member/Public | query text | Prefix OpenWrt forum search |
 | `/search_kvm` | Slash | Member/Public | query text | KVM docs source |
 | `!searchkvm` | Prefix | Member/Public | query text | Prefix KVM docs search |
 | `/search_iot` | Slash | Member/Public | query text | IoT docs source |

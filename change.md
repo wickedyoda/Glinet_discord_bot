@@ -2,6 +2,20 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-12] - Search Command Cleanup
+
+### Added
+- New OpenWrt forum search commands:
+  - `/search_openwrt_forum`
+  - `!searchopenwrtforum`
+  - returns the top 10 links from `https://forum.openwrt.org/`
+
+### Changed
+- Removed the combined all-resources search commands:
+  - `/search`
+  - `!search`
+- Updated command help and wiki docs to reflect the source-specific search model.
+
 ## [2026-02-25] - Bot Channel Logging and Env Rename
 
 ### Added
