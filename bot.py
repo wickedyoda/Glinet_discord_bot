@@ -442,6 +442,8 @@ if os.getenv("GENERAL_CHANNEL_ID") and not os.getenv("BOT_LOG_CHANNEL_ID"):
     )
 FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", "https://forum.gl-inet.com").rstrip("/")
 FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
+OPENWRT_FORUM_BASE_URL = "https://forum.openwrt.org"
+OPENWRT_FORUM_MAX_RESULTS = 10
 REDDIT_BASE_URL = "https://www.reddit.com"
 REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(
     os.getenv("REDDIT_SUBREDDIT", "GlInet"), fallback_value="GlInet"
@@ -584,7 +586,6 @@ DOCS_SITE_MAP = {
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
     "router": ("Router Docs v4", "https://docs.gl-inet.com/router/en/4"),
 }
-DOCS_SOURCES = [DOCS_SITE_MAP["kvm"], DOCS_SITE_MAP["iot"], DOCS_SITE_MAP["router"]]
 
 ROLE_FILE = os.path.join(DATA_DIR, "access_role.txt")
 INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
@@ -653,9 +654,9 @@ COMMAND_PERMISSION_DEFAULTS = {
     "remove_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "prune_messages": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "logs": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
-    "search": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_reddit": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_forum": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_openwrt_forum": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_kvm": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -753,10 +754,6 @@ COMMAND_PERMISSION_METADATA = {
         "label": "/logs",
         "description": "View recent container error log entries.",
     },
-    "search": {
-        "label": "/search, !search",
-        "description": "Search forum + docs.",
-    },
     "search_reddit": {
         "label": "/search_reddit, !searchreddit",
         "description": "Search configured subreddit on Reddit.",
@@ -764,6 +761,10 @@ COMMAND_PERMISSION_METADATA = {
     "search_forum": {
         "label": "/search_forum, !searchforum",
         "description": "Search forum only.",
+    },
+    "search_openwrt_forum": {
+        "label": "/search_openwrt_forum, !searchopenwrtforum",
+        "description": "Search the OpenWrt forum only.",
     },
     "search_kvm": {
         "label": "/search_kvm, !searchkvm",
@@ -4194,8 +4195,14 @@ def start_web_admin_server():
     web_admin_thread.start()
 
 
-def search_forum_links(query: str):
-    search_url = f"{FORUM_BASE_URL}/search.json"
+def search_discourse_links(
+    *,
+    base_url: str,
+    query: str,
+    max_results: int,
+    source_name: str,
+):
+    search_url = f"{base_url.rstrip('/')}/search.json"
     request_headers = {
         "Accept": "application/json,text/plain,*/*",
         "User-Agent": REDDIT_REQUEST_USER_AGENT,
@@ -4214,11 +4221,11 @@ def search_forum_links(query: str):
                 continue
             slug = topic.get("slug")
             if slug:
-                links.append(f"{FORUM_BASE_URL}/t/{slug}/{topic_id}")
+                links.append(f"{base_url.rstrip('/')}/t/{slug}/{topic_id}")
             else:
-                links.append(f"{FORUM_BASE_URL}/t/{topic_id}")
+                links.append(f"{base_url.rstrip('/')}/t/{topic_id}")
             seen_topic_ids.add(topic_id)
-            if len(links) >= FORUM_MAX_RESULTS:
+            if len(links) >= max_results:
                 return links
 
         # Some responses may include posts but omit topic metadata.
@@ -4229,9 +4236,9 @@ def search_forum_links(query: str):
             topic_id = post.get("topic_id")
             if not topic_id or topic_id in seen_topic_ids:
                 continue
-            links.append(f"{FORUM_BASE_URL}/t/{topic_id}")
+            links.append(f"{base_url.rstrip('/')}/t/{topic_id}")
             seen_topic_ids.add(topic_id)
-            if len(links) >= FORUM_MAX_RESULTS:
+            if len(links) >= max_results:
                 break
         return links
 
@@ -4244,22 +4251,40 @@ def search_forum_links(query: str):
     except requests.HTTPError as exc:
         status_code = getattr(exc.response, "status_code", None)
         if status_code == 429:
-            logger.warning("Forum search rate limited for query: %s", query)
+            logger.warning("%s search rate limited for query: %s", source_name, query)
             return [
-                "❌ Forum search is rate-limited right now. Please try again in a minute."
+                f"❌ {source_name} search is rate-limited right now. Please try again in a minute."
             ]
-        logger.exception("Forum search HTTP failure for query: %s", query)
-        return ["❌ Failed to fetch forum results."]
+        logger.exception("%s search HTTP failure for query: %s", source_name, query)
+        return [f"❌ Failed to fetch {source_name} results."]
     except requests.RequestException:
-        logger.exception("Forum search request failed for query: %s", query)
-        return ["❌ Failed to fetch forum results."]
+        logger.exception("%s search request failed for query: %s", source_name, query)
+        return [f"❌ Failed to fetch {source_name} results."]
     except ValueError:
-        logger.exception("Forum search returned invalid JSON for query: %s", query)
-        return ["❌ Forum returned an invalid response."]
+        logger.exception("%s search returned invalid JSON for query: %s", source_name, query)
+        return [f"❌ {source_name} returned an invalid response."]
 
     links = extract_topic_links(data)
 
     return links if links else ["No results found."]
+
+
+def search_forum_links(query: str):
+    return search_discourse_links(
+        base_url=FORUM_BASE_URL,
+        query=query,
+        max_results=FORUM_MAX_RESULTS,
+        source_name="GL.iNet forum",
+    )
+
+
+def search_openwrt_forum_links(query: str):
+    return search_discourse_links(
+        base_url=OPENWRT_FORUM_BASE_URL,
+        query=query,
+        max_results=OPENWRT_FORUM_MAX_RESULTS,
+        source_name="OpenWrt forum",
+    )
 
 
 def search_reddit_posts(query: str):
@@ -4519,13 +4544,6 @@ def search_docs_site_links(query: str, base_url: str):
     return ranked[:DOCS_MAX_RESULTS_PER_SITE]
 
 
-def search_docs_links(query: str):
-    by_site = {}
-    for site_name, base_url in DOCS_SOURCES:
-        by_site[site_name] = search_docs_site_links(query, base_url)
-    return by_site
-
-
 def trim_search_message(message: str):
     safe_limit = min(
         DISCORD_MESSAGE_SAFE_MAX_CHARS,
@@ -4537,38 +4555,24 @@ def trim_search_message(message: str):
     return f"{trimmed}\n...results truncated."
 
 
-def build_search_message(query: str):
+def build_forum_search_message(query: str):
     forum_results = search_forum_links(query)
-    docs_results = search_docs_links(query)
-
-    lines = [f"🔎 Results for: `{query}`", "", "**Forum**"]
+    lines = [f"🔎 Forum results for: `{query}`", "", "**Forum**"]
     forum_links = [item for item in forum_results if item.startswith("http")]
     if forum_links:
         lines.extend([f"- {link}" for link in forum_links])
     else:
         lines.append(f"- {forum_results[0]}")
-
-    lines.append("")
-    lines.append("**Docs**")
-    docs_found = 0
-    for site_name, _ in DOCS_SOURCES:
-        site_results = docs_results.get(site_name, [])
-        if not site_results:
-            continue
-        docs_found += len(site_results)
-        lines.append(f"{site_name}:")
-        for _, title, link in site_results:
-            lines.append(f"- {title} - {link}")
-
-    if docs_found == 0:
-        lines.append("No matching docs results found.")
-
     return trim_search_message("\n".join(lines))
 
 
-def build_forum_search_message(query: str):
-    forum_results = search_forum_links(query)
-    lines = [f"🔎 Forum results for: `{query}`", "", "**Forum**"]
+def build_openwrt_forum_search_message(query: str):
+    forum_results = search_openwrt_forum_links(query)
+    lines = [
+        f"🔎 OpenWrt forum results for: `{query}`",
+        "",
+        f"**Top {OPENWRT_FORUM_MAX_RESULTS} OpenWrt forum results**",
+    ]
     forum_links = [item for item in forum_results if item.startswith("http")]
     if forum_links:
         lines.extend([f"- {link}" for link in forum_links])
@@ -4602,7 +4606,7 @@ def build_help_message():
         "",
         "Use this bot for:",
         "- Role access and invites (`/submitrole`, `/enter_role`, `/getaccess`)",
-        "- Search (`/search`, `/search_reddit`, `/search_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
+        "- Search (`/search_reddit`, `/search_forum`, `/search_openwrt_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
         "- Country nickname tools (`/country`, `/clear_country`)",
         "- Tag shortcuts (`!list` and dynamic slash tag commands)",
         "- Moderation and member/role management (restricted by role/permissions)",
@@ -7258,41 +7262,6 @@ async def help_slash(interaction: discord.Interaction):
 
 
 @tree.command(
-    name="search",
-    description="Search GL.iNet forum and docs",
-    guild=discord.Object(id=GUILD_ID),
-)
-@app_commands.describe(query="Enter search keywords")
-async def search_slash(interaction: discord.Interaction, query: str):
-    logger.info("/search invoked by %s with query %s", interaction.user, query)
-    if not await ensure_interaction_command_access(interaction, "search"):
-        return
-    query = query.strip()
-    if not query:
-        await interaction.response.send_message(
-            "❌ Please provide a search query.", ephemeral=True
-        )
-        return
-    await interaction.response.defer(thinking=True)
-    message = await asyncio.to_thread(build_search_message, query)
-    await interaction.followup.send(message)
-
-
-@bot.command(name="search")
-async def search_prefix(ctx: commands.Context, *, query: str):
-    logger.info("!search invoked by %s with query %s", ctx.author, query)
-    if not await ensure_prefix_command_access(ctx, "search"):
-        return
-    query = query.strip()
-    if not query:
-        await ctx.send("❌ Please provide a search query.")
-        return
-    await ctx.send("🔍 Searching forum + docs...")
-    message = await asyncio.to_thread(build_search_message, query)
-    await ctx.send(message)
-
-
-@tree.command(
     name="search_reddit",
     description="Search r/GlInet and return top 5 matching posts",
     guild=discord.Object(id=GUILD_ID),
@@ -7382,6 +7351,47 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
         return
     await ctx.send("🔍 Searching forum...")
     message = await asyncio.to_thread(build_forum_search_message, query)
+    await ctx.send(message)
+
+
+@tree.command(
+    name="search_openwrt_forum",
+    description="Search the OpenWrt forum and return top 10 links",
+    guild=discord.Object(id=GUILD_ID),
+)
+@app_commands.describe(query="Enter search keywords")
+async def search_openwrt_forum_slash(
+    interaction: discord.Interaction, query: str
+):
+    logger.info(
+        "/search_openwrt_forum invoked by %s with query %s", interaction.user, query
+    )
+    if not await ensure_interaction_command_access(
+        interaction, "search_openwrt_forum"
+    ):
+        return
+    query = query.strip()
+    if not query:
+        await interaction.response.send_message(
+            "❌ Please provide a search query.", ephemeral=True
+        )
+        return
+    await interaction.response.defer(thinking=True)
+    message = await asyncio.to_thread(build_openwrt_forum_search_message, query)
+    await interaction.followup.send(message)
+
+
+@bot.command(name="searchopenwrtforum")
+async def search_openwrt_forum_prefix(ctx: commands.Context, *, query: str):
+    logger.info("!searchopenwrtforum invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_openwrt_forum"):
+        return
+    query = query.strip()
+    if not query:
+        await ctx.send("❌ Please provide a search query.")
+        return
+    await ctx.send("🔍 Searching OpenWrt forum...")
+    message = await asyncio.to_thread(build_openwrt_forum_search_message, query)
     await ctx.send(message)
 
 

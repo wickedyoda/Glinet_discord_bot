@@ -6,9 +6,9 @@ Search GL.iNet forum and documentation sources directly from Discord.
 
 | Scope | Slash | Prefix | Notes |
 |---|---|---|---|
-| Combined sources | `/search` | `!search` | Forum + docs blend |
 | Reddit only | `/search_reddit` | `!searchreddit` | Top 5 posts from configured subreddit (default `r/GlInet`) |
 | Forum only | `/search_forum` | `!searchforum` | Uses forum base URL |
+| OpenWrt forum only | `/search_openwrt_forum` | `!searchopenwrtforum` | Returns top 10 OpenWrt forum links |
 | KVM docs | `/search_kvm` | `!searchkvm` | KVM-specific docs index |
 | IoT docs | `/search_iot` | `!searchiot` | IoT-specific docs index |
 | Router docs v4 | `/search_router` | `!searchrouter` | Router docs source |
@@ -22,9 +22,9 @@ Search GL.iNet forum and documentation sources directly from Discord.
 
 ## Source Variations
 
-- Combined search prioritizes mixed relevance across sources.
 - Source-specific commands reduce noise for focused technical searches.
-- Forum URL is configurable for alternate mirror/base paths.
+- GL.iNet forum search uses the configurable forum base URL.
+- OpenWrt forum search is fixed to [forum.openwrt.org](https://forum.openwrt.org/).
 
 ## Caching and Performance
 
@@ -45,9 +45,9 @@ Search GL.iNet forum and documentation sources directly from Discord.
 
 ## Example Queries
 
-- `/search gl-mt6000 wireguard`
 - `/search_reddit wireguard setup`
 - `/search_forum mwan issue`
+- `/search_openwrt_forum mwan3 policy routing`
 - `!searchrouter dns over tls`
 - `!searchkvm vlan trunk`
 

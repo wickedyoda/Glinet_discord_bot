@@ -13,7 +13,7 @@ Core capabilities:
 - Role-bound invite links and 6-digit access code flows
 - Bulk CSV role assignment with rich result reporting
 - Tag auto-replies and dynamic slash command generation
-- GL.iNet forum/docs search helpers (combined and source-specific)
+- Source-specific search helpers for GL.iNet forums, OpenWrt forums, Reddit, and docs
 - Country suffix nickname utilities
 - Moderation tooling for members, roles, and event logs
 - Firmware feed monitor with scheduled notification delivery

@@ -69,7 +69,7 @@ docker compose build
 - Role access via invite links and 6-digit access codes
 - Bulk CSV role assignment
 - Dynamic tag responses (`!tag` + slash variants)
-- GL.iNet forum/docs search commands
+- Source-specific search commands for GL.iNet forums, OpenWrt forums, Reddit, and docs
 - Country nickname suffix commands
 - Extended moderation commands and event logging
 - Firmware monitor (baseline + delta notifications)
