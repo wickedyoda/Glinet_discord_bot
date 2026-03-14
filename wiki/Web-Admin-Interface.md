@@ -69,6 +69,8 @@ UI forms include show/hide password toggles and validation feedback.
 
 ## Navigation and Layout
 
+- Main page lists the Discord servers the bot is currently in.
+- Select a server first, then open the server dashboard for guild-scoped admin actions.
 - Top menu uses dropdown-based section navigation.
 - Dedicated dashboard link is shown beside the dropdown.
 - Dashboard includes direct action buttons/cards for major admin workflows.
@@ -79,13 +81,19 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin`
 
-- Dashboard overview
-- Quick links to settings, users, moderation tooling, and logs-related actions
+- Server selector / entry page
+- Lists every Discord server the bot can currently access
+- Sets the active server context used by guild-scoped admin pages
+
+### `/admin/dashboard`
+
+- Server dashboard overview
+- Quick links to settings, users, moderation tooling, and logs-related actions for the selected server
 
 ### `/admin/settings`
 
-- Environment-backed settings editor
-- Live dropdowns for known channel and role fields
+- Global environment-backed settings editor
+- Live dropdowns for known channel and role fields load from the currently selected server
 - Bot profile and web-session/security settings
 - Auto-logout selection (5 to 30 minutes)
 
@@ -106,13 +114,14 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/command-permissions`
 
-- Per-command access policy editor
+- Per-command access policy editor for the selected server
 - Modes: `default`, `public`, `custom_roles`
 - Multi-select role dropdown by role name
 - Manual role-ID entry fallback if catalog is incomplete
 
 ### `/admin/reddit-feeds`
 
+- Scoped to the selected server
 - Add a subreddit feed using a subreddit name or Reddit `/r/` URL
 - Pick the target Discord text channel from a live dropdown
 - Global Reddit polling interval dropdown (default every 30 minutes)
@@ -127,6 +136,7 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/bulk-role-csv`
 
+- Scoped to the selected server
 - CSV upload and target-role selection
 - Assignment execution with timeout protections
 - Structured results with unmatched/ambiguous/failure sections
@@ -141,10 +151,25 @@ UI forms include show/hide password toggles and validation feedback.
 
 - Read bot identity
 - Rename bot username
-- Set server nickname/listing label
+- Set server nickname/listing label for the selected server
 - Upload avatar image
 
 Rename/profile updates are admin-only and web-GUI-only (read-only users can view this page but cannot apply changes).
+
+Scope notes:
+
+- Guild-scoped:
+  - `/admin/dashboard`
+  - `/admin/command-permissions`
+  - `/admin/reddit-feeds`
+  - `/admin/bulk-role-csv`
+  - server nickname in `/admin/bot-profile`
+- Global:
+  - `.env` settings in `/admin/settings`
+  - bot username/avatar in `/admin/bot-profile`
+  - web users
+  - tag responses
+  - logs and observability
 
 ## Reverse Proxy Behavior
 
