@@ -2,6 +2,22 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-14] - Web GUI Guild Selection
+
+### Added
+- New web GUI server-selection landing page at `/admin`.
+- Guild-scoped server dashboard at `/admin/dashboard`.
+- Web GUI now lists the Discord servers the bot is in and lets the user select which server to manage.
+
+### Changed
+- Web GUI guild-scoped pages now use the selected Discord server context:
+  - bot profile server nickname
+  - command permissions
+  - Reddit feed mappings
+  - bulk role CSV assignment
+- Command permissions and Reddit feed subscriptions are now stored in SQLite per guild instead of globally.
+- Global `.env` settings remain global, but Discord role/channel dropdowns now load from the selected server.
+
 ## [2026-03-12] - Search Command Cleanup
 
 ### Added
