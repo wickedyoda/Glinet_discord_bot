@@ -43,7 +43,7 @@ POST_FORM_TAG_PATTERN = re.compile(
 )
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "select_guild"}
-WEB_GUI_TITLE_SUFFIX = "GL.iNet Discord Bot Dashboard"
+WEB_GUI_TITLE_SUFFIX = "WickedYoda'sLittleHelper Dashboard"
 OBSERVABILITY_LOG_LINE_LIMIT = 500
 OBSERVABILITY_LOG_OPTIONS = (
     ("bot.log", "Bot Runtime Log"),
@@ -3632,7 +3632,7 @@ def create_web_app(
             <form method="post">
               <input type="hidden" name="action" value="identity" />
               <label>Bot username (global)</label>
-              <input type="text" name="bot_name" placeholder="Leave blank to keep current username" />
+              <input type="text" name="bot_name" placeholder="WickedYoda'sLittleHelper" />
               <label style="margin-top:10px;display:block;">Server nickname (this guild)</label>
               <input type="text" name="server_nickname" placeholder="Leave blank to keep current nickname" />
               <label style="margin-top:10px;display:block;">
