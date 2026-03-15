@@ -807,10 +807,10 @@ WEB_ADMIN_RESTART_WINDOW_SECONDS = 10 * 60
 WEB_ADMIN_RESTART_DELAY_SECONDS = 2
 WEB_ADMIN_CRITICAL_SHUTDOWN_DELAY_SECONDS = 10 * 60
 web_admin_shutdown_scheduled = False
-discord_catalog_cache = {}
+discord_catalog_cache = {"fetched_at": 0.0, "data": None}
 BOT_SERVER_NICKNAME_UNSET = object()
 command_permissions_lock = threading.Lock()
-command_permissions_cache = {}
+command_permissions_cache = {"mtime": None, "rules": {}}
 db_lock = threading.RLock()
 db_connection = None
 FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS = 3600
@@ -840,15 +840,6 @@ def parse_firmware_channel_id(raw_value, default_value):
         return int(value) if value else default_value
     except ValueError:
         return default_value
-
-
-def normalize_target_guild_id(raw_value, default_value: int | None = None):
-    fallback = GUILD_ID if default_value is None else int(default_value)
-    try:
-        guild_id = int(str(raw_value).strip())
-    except (TypeError, ValueError, AttributeError):
-        return fallback
-    return guild_id if guild_id > 0 else fallback
 
 
 def get_db_connection():
@@ -897,17 +888,14 @@ def ensure_db_schema():
             );
 
             CREATE TABLE IF NOT EXISTS command_permissions (
-                guild_id INTEGER NOT NULL DEFAULT 0,
-                command_key TEXT NOT NULL,
+                command_key TEXT PRIMARY KEY,
                 mode TEXT NOT NULL,
                 role_ids_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                PRIMARY KEY (guild_id, command_key)
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS reddit_feed_subscriptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id INTEGER NOT NULL DEFAULT 0,
                 subreddit TEXT NOT NULL,
                 channel_id INTEGER NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
@@ -918,7 +906,7 @@ def ensure_db_schema():
                 last_checked_at TEXT NOT NULL DEFAULT '',
                 last_posted_at TEXT NOT NULL DEFAULT '',
                 last_error TEXT NOT NULL DEFAULT '',
-                UNIQUE(guild_id, subreddit, channel_id)
+                UNIQUE(subreddit, channel_id)
             );
 
             CREATE TABLE IF NOT EXISTS reddit_feed_seen_posts (
@@ -949,111 +937,9 @@ def ensure_db_schema():
                 ON reddit_feed_subscriptions(subreddit);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
                 ON reddit_feed_subscriptions(enabled);
-            CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
-                ON reddit_feed_subscriptions(guild_id);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_seen_posts_feed_id
                 ON reddit_feed_seen_posts(feed_id);
             """
-        )
-        command_permission_columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()
-        }
-        if "guild_id" not in command_permission_columns:
-            conn.executescript(
-                """
-                CREATE TABLE command_permissions_new (
-                    guild_id INTEGER NOT NULL,
-                    command_key TEXT NOT NULL,
-                    mode TEXT NOT NULL,
-                    role_ids_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (guild_id, command_key)
-                );
-                INSERT INTO command_permissions_new (
-                    guild_id,
-                    command_key,
-                    mode,
-                    role_ids_json,
-                    updated_at
-                )
-                SELECT 0, command_key, mode, role_ids_json, updated_at
-                FROM command_permissions;
-                DROP TABLE command_permissions;
-                ALTER TABLE command_permissions_new RENAME TO command_permissions;
-                """
-            )
-
-        reddit_feed_columns = {
-            str(row["name"])
-            for row in conn.execute(
-                "PRAGMA table_info(reddit_feed_subscriptions)"
-            ).fetchall()
-        }
-        if "guild_id" not in reddit_feed_columns:
-            conn.executescript(
-                """
-                CREATE TABLE reddit_feed_subscriptions_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    guild_id INTEGER NOT NULL,
-                    subreddit TEXT NOT NULL,
-                    channel_id INTEGER NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    created_by_email TEXT NOT NULL DEFAULT '',
-                    updated_by_email TEXT NOT NULL DEFAULT '',
-                    last_checked_at TEXT NOT NULL DEFAULT '',
-                    last_posted_at TEXT NOT NULL DEFAULT '',
-                    last_error TEXT NOT NULL DEFAULT '',
-                    UNIQUE(guild_id, subreddit, channel_id)
-                );
-                INSERT INTO reddit_feed_subscriptions_new (
-                    id,
-                    guild_id,
-                    subreddit,
-                    channel_id,
-                    enabled,
-                    created_at,
-                    updated_at,
-                    created_by_email,
-                    updated_by_email,
-                    last_checked_at,
-                    last_posted_at,
-                    last_error
-                )
-                SELECT
-                    id,
-                    0,
-                    subreddit,
-                    channel_id,
-                    enabled,
-                    created_at,
-                    updated_at,
-                    created_by_email,
-                    updated_by_email,
-                    last_checked_at,
-                    last_posted_at,
-                    last_error
-                FROM reddit_feed_subscriptions;
-                DROP TABLE reddit_feed_subscriptions;
-                ALTER TABLE reddit_feed_subscriptions_new RENAME TO reddit_feed_subscriptions;
-                CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
-                    ON reddit_feed_subscriptions(subreddit);
-                CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
-                    ON reddit_feed_subscriptions(enabled);
-                CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
-                    ON reddit_feed_subscriptions(guild_id);
-                """
-            )
-
-        conn.execute(
-            "UPDATE command_permissions SET guild_id = ? WHERE guild_id = 0",
-            (GUILD_ID,),
-        )
-        conn.execute(
-            "UPDATE reddit_feed_subscriptions SET guild_id = ? WHERE guild_id = 0",
-            (GUILD_ID,),
         )
         conn.commit()
 
@@ -1090,33 +976,24 @@ def db_kv_delete(key: str):
         conn.commit()
 
 
-def list_reddit_feed_subscriptions(
-    enabled_only: bool = False, guild_id: int | None = None
-):
+def list_reddit_feed_subscriptions(enabled_only: bool = False):
     conn = get_db_connection()
     query = (
-        "SELECT id, guild_id, subreddit, channel_id, enabled, created_at, updated_at, "
+        "SELECT id, subreddit, channel_id, enabled, created_at, updated_at, "
         "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error "
         "FROM reddit_feed_subscriptions"
     )
-    where_clauses = []
-    params = []
-    if guild_id is not None:
-        where_clauses.append("guild_id = ?")
-        params.append(normalize_target_guild_id(guild_id))
+    params = ()
     if enabled_only:
-        where_clauses.append("enabled = 1")
-    if where_clauses:
-        query += " WHERE " + " AND ".join(where_clauses)
+        query += " WHERE enabled = 1"
     query += " ORDER BY subreddit COLLATE NOCASE ASC, channel_id ASC, id ASC"
     with db_lock:
-        rows = conn.execute(query, tuple(params)).fetchall()
+        rows = conn.execute(query, params).fetchall()
     feeds = []
     for row in rows:
         feeds.append(
             {
                 "id": int(row["id"]),
-                "guild_id": int(row["guild_id"] or 0),
                 "subreddit": str(row["subreddit"] or ""),
                 "channel_id": int(row["channel_id"] or 0),
                 "enabled": bool(row["enabled"]),
@@ -1137,7 +1014,7 @@ def get_reddit_feed_subscription(feed_id: int):
     with db_lock:
         row = conn.execute(
             """
-            SELECT id, guild_id, subreddit, channel_id, enabled, created_at, updated_at,
+            SELECT id, subreddit, channel_id, enabled, created_at, updated_at,
                    created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error
             FROM reddit_feed_subscriptions
             WHERE id = ?
@@ -1148,7 +1025,6 @@ def get_reddit_feed_subscription(feed_id: int):
         return None
     return {
         "id": int(row["id"]),
-        "guild_id": int(row["guild_id"] or 0),
         "subreddit": str(row["subreddit"] or ""),
         "channel_id": int(row["channel_id"] or 0),
         "enabled": bool(row["enabled"]),
@@ -1162,13 +1038,10 @@ def get_reddit_feed_subscription(feed_id: int):
     }
 
 
-def create_reddit_feed_subscription(
-    guild_id: int, subreddit: str, channel_id: int, actor_email: str
-):
+def create_reddit_feed_subscription(subreddit: str, channel_id: int, actor_email: str):
     cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold()
     if not cleaned_subreddit:
         raise ValueError("Enter a valid subreddit name or /r/ URL.")
-    safe_guild_id = normalize_target_guild_id(guild_id)
     safe_channel_id = int(channel_id)
     if safe_channel_id <= 0:
         raise ValueError("Choose a valid Discord channel.")
@@ -1178,7 +1051,6 @@ def create_reddit_feed_subscription(
         conn.execute(
             """
             INSERT INTO reddit_feed_subscriptions (
-                guild_id,
                 subreddit,
                 channel_id,
                 enabled,
@@ -1187,10 +1059,9 @@ def create_reddit_feed_subscription(
                 created_by_email,
                 updated_by_email
             )
-            VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+            VALUES (?, ?, 1, ?, ?, ?, ?)
             """,
             (
-                safe_guild_id,
                 cleaned_subreddit,
                 safe_channel_id,
                 now_iso,
@@ -1635,16 +1506,10 @@ def register_tag_commands():
 
         def make_tag_reply(tag_key: str):
             async def tag_reply(interaction: discord.Interaction):
-                if not can_use_command(
-                    interaction.user,
-                    "tag_commands",
-                    guild_id=interaction.guild.id if interaction.guild else None,
-                ):
+                if not can_use_command(interaction.user, "tag_commands"):
                     await interaction.response.send_message(
                         build_command_permission_denied_message(
-                            "tag_commands",
-                            interaction.guild,
-                            guild_id=interaction.guild.id if interaction.guild else None,
+                            "tag_commands", interaction.guild
                         ),
                         ephemeral=True,
                     )
@@ -1842,25 +1707,17 @@ def normalize_command_permission_rule(raw_rule):
     }
 
 
-def load_command_permission_rules(guild_id: int | None = None):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+def load_command_permission_rules():
+    global command_permissions_cache
     with command_permissions_lock:
-        cache_entry = command_permissions_cache.get(safe_guild_id, {})
-        version = (
-            db_kv_get(f"command_permissions_updated_at:{safe_guild_id}") or "bootstrap"
-        )
-        if cache_entry.get("mtime") == version:
-            return cache_entry.get("rules", {})
+        version = db_kv_get("command_permissions_updated_at") or "bootstrap"
+        if command_permissions_cache.get("mtime") == version:
+            return command_permissions_cache.get("rules", {})
 
         conn = get_db_connection()
         with db_lock:
             rows = conn.execute(
-                """
-                SELECT command_key, mode, role_ids_json
-                FROM command_permissions
-                WHERE guild_id = ?
-                """,
-                (safe_guild_id,),
+                "SELECT command_key, mode, role_ids_json FROM command_permissions"
             ).fetchall()
         normalized_rules = {}
         for row in rows:
@@ -1875,17 +1732,11 @@ def load_command_permission_rules(guild_id: int | None = None):
                 {"mode": row["mode"], "role_ids": role_ids_payload}
             )
 
-        command_permissions_cache[safe_guild_id] = {
-            "mtime": version,
-            "rules": normalized_rules,
-        }
+        command_permissions_cache = {"mtime": version, "rules": normalized_rules}
         return normalized_rules
 
 
-def save_command_permission_rules(
-    rules: dict, actor_email: str = "", guild_id: int | None = None
-):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+def save_command_permission_rules(rules: dict, actor_email: str = ""):
     safe_rules = {}
     for command_key, raw_rule in (rules or {}).items():
         if command_key not in COMMAND_PERMISSION_DEFAULTS:
@@ -1899,24 +1750,14 @@ def save_command_permission_rules(
     conn = get_db_connection()
     with command_permissions_lock:
         with db_lock:
-            conn.execute(
-                "DELETE FROM command_permissions WHERE guild_id = ?",
-                (safe_guild_id,),
-            )
+            conn.execute("DELETE FROM command_permissions")
             for command_key, normalized_rule in safe_rules.items():
                 conn.execute(
                     """
-                    INSERT INTO command_permissions (
-                        guild_id,
-                        command_key,
-                        mode,
-                        role_ids_json,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO command_permissions (command_key, mode, role_ids_json, updated_at)
+                    VALUES (?, ?, ?, ?)
                     """,
                     (
-                        safe_guild_id,
                         command_key,
                         normalized_rule["mode"],
                         json.dumps(normalized_rule["role_ids"]),
@@ -1924,23 +1765,18 @@ def save_command_permission_rules(
                     ),
                 )
             conn.commit()
-        db_kv_set(f"command_permissions_updated_at:{safe_guild_id}", updated_at)
-        db_kv_set(
-            f"command_permissions_updated_by:{safe_guild_id}",
-            actor_email or "unknown",
-        )
-        command_permissions_cache[safe_guild_id] = {
-            "mtime": updated_at,
-            "rules": safe_rules,
-        }
+        db_kv_set("command_permissions_updated_at", updated_at)
+        db_kv_set("command_permissions_updated_by", actor_email or "unknown")
+        command_permissions_cache["mtime"] = updated_at
+        command_permissions_cache["rules"] = safe_rules
     return safe_rules
 
 
-def resolve_command_permission_state(command_key: str, guild_id: int | None = None):
+def resolve_command_permission_state(command_key: str):
     default_policy = COMMAND_PERMISSION_DEFAULTS.get(
         command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC
     )
-    rule = load_command_permission_rules(guild_id=guild_id).get(
+    rule = load_command_permission_rules().get(
         command_key,
         {"mode": COMMAND_PERMISSION_MODE_DEFAULT, "role_ids": []},
     )
@@ -1958,14 +1794,8 @@ def member_has_any_role_id(member: discord.Member | discord.User, role_ids: list
     return any(role_id in member_role_ids for role_id in role_ids)
 
 
-def can_use_command(
-    member: discord.Member | discord.User,
-    command_key: str,
-    guild_id: int | None = None,
-):
-    default_policy, mode, role_ids = resolve_command_permission_state(
-        command_key, guild_id=guild_id
-    )
+def can_use_command(member: discord.Member | discord.User, command_key: str):
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key)
 
     if mode == COMMAND_PERMISSION_MODE_PUBLIC:
         return True
@@ -1982,13 +1812,9 @@ def can_use_command(
 
 
 def build_command_permission_denied_message(
-    command_key: str,
-    guild: discord.Guild | None = None,
-    guild_id: int | None = None,
+    command_key: str, guild: discord.Guild | None = None
 ):
-    default_policy, mode, role_ids = resolve_command_permission_state(
-        command_key, guild_id=guild_id or (guild.id if guild else None)
-    )
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key)
     if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
         if guild is None or not role_ids:
             return "❌ You do not have one of the roles allowed to use this command."
@@ -2009,27 +1835,19 @@ def build_command_permission_denied_message(
 async def ensure_interaction_command_access(
     interaction: discord.Interaction, command_key: str
 ):
-    guild_id = interaction.guild.id if interaction.guild else None
-    if can_use_command(interaction.user, command_key, guild_id=guild_id):
+    if can_use_command(interaction.user, command_key):
         return True
     await interaction.response.send_message(
-        build_command_permission_denied_message(
-            command_key, interaction.guild, guild_id=guild_id
-        ),
+        build_command_permission_denied_message(command_key, interaction.guild),
         ephemeral=True,
     )
     return False
 
 
 async def ensure_prefix_command_access(ctx: commands.Context, command_key: str):
-    guild_id = ctx.guild.id if ctx.guild else None
-    if can_use_command(ctx.author, command_key, guild_id=guild_id):
+    if can_use_command(ctx.author, command_key):
         return True
-    await ctx.send(
-        build_command_permission_denied_message(
-            command_key, ctx.guild, guild_id=guild_id
-        )
-    )
+    await ctx.send(build_command_permission_denied_message(command_key, ctx.guild))
     return False
 
 
@@ -2051,9 +1869,8 @@ async def send_safe_interaction_message(
         return False
 
 
-def build_command_permissions_web_payload(guild_id: int):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    rules = load_command_permission_rules(guild_id=safe_guild_id)
+def build_command_permissions_web_payload():
+    rules = load_command_permission_rules()
     commands_payload = []
     for command_key, metadata in COMMAND_PERMISSION_METADATA.items():
         default_policy = COMMAND_PERMISSION_DEFAULTS.get(
@@ -2075,16 +1892,15 @@ def build_command_permissions_web_payload(guild_id: int):
         )
     return {
         "ok": True,
-        "guild_id": safe_guild_id,
         "commands": commands_payload,
         "allowed_role_names": sorted(DEFAULT_ALLOWED_ROLE_NAMES),
         "moderator_role_ids": sorted(MODERATOR_ROLE_IDS),
     }
 
 
-def run_web_get_command_permissions(guild_id: int):
+def run_web_get_command_permissions():
     try:
-        return build_command_permissions_web_payload(guild_id)
+        return build_command_permissions_web_payload()
     except Exception:
         logger.exception("Failed to build command permissions payload for web admin")
         return {
@@ -2093,7 +1909,7 @@ def run_web_get_command_permissions(guild_id: int):
         }
 
 
-def run_web_update_command_permissions(payload: dict, actor_email: str, guild_id: int):
+def run_web_update_command_permissions(payload: dict, actor_email: str):
     if not isinstance(payload, dict):
         return {
             "ok": False,
@@ -2122,33 +1938,27 @@ def run_web_update_command_permissions(payload: dict, actor_email: str, guild_id
         return {"ok": False, "error": " ".join(validation_errors)}
 
     try:
-        save_command_permission_rules(
-            updated_rules,
-            actor_email=actor_email,
-            guild_id=normalize_target_guild_id(guild_id),
-        )
+        save_command_permission_rules(updated_rules, actor_email=actor_email)
     except Exception:
         logger.exception("Failed to save command permissions from web admin")
         return {"ok": False, "error": "Failed to save command permissions."}
 
-    response = build_command_permissions_web_payload(guild_id)
+    response = build_command_permissions_web_payload()
     response["message"] = "Command permissions updated."
     logger.info("Command permissions updated via web admin")
     return response
 
 
-def build_reddit_feeds_web_payload(guild_id: int):
+def build_reddit_feeds_web_payload():
     return {
         "ok": True,
-        "feeds": list_reddit_feed_subscriptions(
-            enabled_only=False, guild_id=normalize_target_guild_id(guild_id)
-        ),
+        "feeds": list_reddit_feed_subscriptions(enabled_only=False),
     }
 
 
-def run_web_get_reddit_feeds(guild_id: int):
+def run_web_get_reddit_feeds():
     try:
-        return build_reddit_feeds_web_payload(guild_id)
+        return build_reddit_feeds_web_payload()
     except Exception:
         logger.exception("Failed to build Reddit feeds payload for web admin")
         return {
@@ -2157,25 +1967,19 @@ def run_web_get_reddit_feeds(guild_id: int):
         }
 
 
-def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
+def run_web_manage_reddit_feeds(payload: dict, actor_email: str):
     if not isinstance(payload, dict):
         return {"ok": False, "error": "Invalid Reddit feed payload."}
 
     action = str(payload.get("action") or "").strip().lower()
-    safe_guild_id = normalize_target_guild_id(guild_id)
     try:
         if action == "add":
             subreddit = str(payload.get("subreddit") or "")
             channel_id = int(str(payload.get("channel_id") or "0").strip())
-            create_reddit_feed_subscription(
-                safe_guild_id, subreddit, channel_id, actor_email
-            )
+            create_reddit_feed_subscription(subreddit, channel_id, actor_email)
             message = f"Reddit feed added for r/{normalize_reddit_subreddit_name(subreddit)}."
         elif action == "toggle":
             feed_id = int(str(payload.get("feed_id") or "0").strip())
-            feed = get_reddit_feed_subscription(feed_id)
-            if feed is None or int(feed.get("guild_id") or 0) != safe_guild_id:
-                return {"ok": False, "error": "Reddit feed entry was not found."}
             enabled = str(payload.get("enabled") or "").strip().lower() in TRUTHY_ENV_VALUES
             if not set_reddit_feed_subscription_enabled(feed_id, enabled, actor_email):
                 return {"ok": False, "error": "Reddit feed entry was not found."}
@@ -2184,9 +1988,6 @@ def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
             )
         elif action == "delete":
             feed_id = int(str(payload.get("feed_id") or "0").strip())
-            feed = get_reddit_feed_subscription(feed_id)
-            if feed is None or int(feed.get("guild_id") or 0) != safe_guild_id:
-                return {"ok": False, "error": "Reddit feed entry was not found."}
             if not delete_reddit_feed_subscription(feed_id):
                 return {"ok": False, "error": "Reddit feed entry was not found."}
             message = "Reddit feed deleted."
@@ -2204,7 +2005,7 @@ def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
         return {"ok": False, "error": "Failed to update Reddit feeds."}
 
     logger.info("Reddit feeds updated via web admin action=%s", action)
-    response = build_reddit_feeds_web_payload(safe_guild_id)
+    response = build_reddit_feeds_web_payload()
     response["message"] = message
     return response
 
@@ -2516,41 +2317,10 @@ async def process_bulk_role_assignment_payload(
     return result, None
 
 
-async def fetch_web_managed_guilds_async():
-    guilds = []
-    for guild in sorted(bot.guilds, key=lambda item: item.name.casefold()):
-        icon_url = str(guild.icon.url) if guild.icon else ""
-        guilds.append(
-            {
-                "id": str(guild.id),
-                "name": guild.name,
-                "icon_url": icon_url,
-                "member_count": int(guild.member_count or len(guild.members) or 0),
-                "is_primary": guild.id == GUILD_ID,
-            }
-        )
-    return {"ok": True, "guilds": guilds, "primary_guild_id": str(GUILD_ID)}
-
-
-def run_web_get_guilds():
-    loop = getattr(bot, "loop", None)
-    if loop is None or not loop.is_running():
-        return {"ok": False, "error": "Bot loop is not running yet."}
-    future = asyncio.run_coroutine_threadsafe(fetch_web_managed_guilds_async(), loop)
-    try:
-        return future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        return {"ok": False, "error": "Timed out fetching bot guild list."}
-    except Exception:
-        logger.exception("Unexpected failure while fetching bot guild list")
-        return {"ok": False, "error": "Unexpected error while loading guild list."}
-
-
 async def run_web_bulk_role_assignment_async(
-    guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str
+    role_input: str, payload: bytes, filename: str, actor_email: str
 ):
-    guild = bot.get_guild(normalize_target_guild_id(guild_id))
+    guild = bot.get_guild(GUILD_ID)
     if guild is None:
         return {"ok": False, "error": "Guild is not currently available to the bot."}
 
@@ -2609,7 +2379,7 @@ async def run_web_bulk_role_assignment_async(
 
 
 def run_web_bulk_role_assignment(
-    guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str
+    role_input: str, payload: bytes, filename: str, actor_email: str
 ):
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
@@ -2618,9 +2388,7 @@ def run_web_bulk_role_assignment(
             "error": "Bot loop is not running yet. Try again in a few seconds.",
         }
     future = asyncio.run_coroutine_threadsafe(
-        run_web_bulk_role_assignment_async(
-            guild_id, role_input, payload, filename, actor_email
-        ),
+        run_web_bulk_role_assignment_async(role_input, payload, filename, actor_email),
         loop,
     )
     try:
@@ -2639,11 +2407,10 @@ def run_web_bulk_role_assignment(
         }
 
 
-async def fetch_discord_catalog_async(guild_id: int):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    guild = bot.get_guild(safe_guild_id)
+async def fetch_discord_catalog_async():
+    guild = bot.get_guild(GUILD_ID)
     if guild is None:
-        return {"ok": False, "error": "Selected guild is not available in bot cache."}
+        return {"ok": False, "error": "Configured guild is not available in bot cache."}
 
     channels = []
     source_channels = list(guild.channels)
@@ -2711,14 +2478,12 @@ async def fetch_discord_catalog_async(guild_id: int):
     }
 
 
-def run_web_get_discord_catalog(guild_id: int):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+def run_web_get_discord_catalog():
     now = time.time()
-    cached_entry = discord_catalog_cache.get(safe_guild_id) or {}
-    cached = cached_entry.get("data")
+    cached = discord_catalog_cache.get("data")
     if (
         cached
-        and now - float(cached_entry.get("fetched_at", 0.0))
+        and now - discord_catalog_cache.get("fetched_at", 0.0)
         < WEB_DISCORD_CATALOG_TTL_SECONDS
     ):
         return cached
@@ -2727,9 +2492,7 @@ def run_web_get_discord_catalog(guild_id: int):
     if loop is None or not loop.is_running():
         return {"ok": False, "error": "Bot loop is not running yet."}
 
-    future = asyncio.run_coroutine_threadsafe(
-        fetch_discord_catalog_async(safe_guild_id), loop
-    )
+    future = asyncio.run_coroutine_threadsafe(fetch_discord_catalog_async(), loop)
     try:
         data = future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
@@ -2743,16 +2506,17 @@ def run_web_get_discord_catalog(guild_id: int):
         }
 
     if isinstance(data, dict) and data.get("ok"):
-        discord_catalog_cache[safe_guild_id] = {"fetched_at": now, "data": data}
+        discord_catalog_cache["fetched_at"] = now
+        discord_catalog_cache["data"] = data
     return data
 
 
-async def fetch_bot_profile_async(guild_id: int):
+async def fetch_bot_profile_async():
     current_user = bot.user
     if current_user is None:
         return {"ok": False, "error": "Bot user is not ready yet."}
 
-    guild = bot.get_guild(normalize_target_guild_id(guild_id))
+    guild = bot.get_guild(GUILD_ID)
     bot_member = None
     if guild is not None:
         bot_member = guild.me or guild.get_member(current_user.id)
@@ -2838,14 +2602,14 @@ def validate_bot_profile_change_request(
     return normalized_username, nickname_target, None
 
 
-async def resolve_configured_guild_bot_member(guild_id: int):
+async def resolve_configured_guild_bot_member():
     current_user = bot.user
     if current_user is None:
         return None, None, "Bot user is not ready yet."
 
-    guild = bot.get_guild(normalize_target_guild_id(guild_id))
+    guild = bot.get_guild(GUILD_ID)
     if guild is None:
-        return None, None, "Selected guild is not currently available to the bot."
+        return None, None, "Configured guild is not currently available to the bot."
 
     bot_member = guild.me or guild.get_member(current_user.id)
     if bot_member is None:
@@ -2862,10 +2626,7 @@ async def resolve_configured_guild_bot_member(guild_id: int):
 
 
 async def apply_bot_profile_updates_async(
-    guild_id: int,
-    username: str | None,
-    server_nickname,
-    actor_label: str,
+    username: str | None, server_nickname, actor_label: str
 ):
     current_user = bot.user
     if current_user is None:
@@ -2890,9 +2651,7 @@ async def apply_bot_profile_updates_async(
                 )
 
     if server_nickname is not BOT_SERVER_NICKNAME_UNSET:
-        _, bot_member, member_error = await resolve_configured_guild_bot_member(
-            guild_id
-        )
+        _, bot_member, member_error = await resolve_configured_guild_bot_member()
         if member_error:
             errors.append(member_error)
         else:
@@ -2921,7 +2680,7 @@ async def apply_bot_profile_updates_async(
                         "Failed to update server nickname due to a Discord API error."
                     )
 
-    profile = await fetch_bot_profile_async(guild_id)
+    profile = await fetch_bot_profile_async()
     result = {
         "ok": False,
         "updated_username": updated_username,
@@ -2964,12 +2723,12 @@ async def apply_bot_profile_updates_async(
     return result
 
 
-def run_web_get_bot_profile(guild_id: int):
+def run_web_get_bot_profile():
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
         return {"ok": False, "error": "Bot loop is not running yet."}
 
-    future = asyncio.run_coroutine_threadsafe(fetch_bot_profile_async(guild_id), loop)
+    future = asyncio.run_coroutine_threadsafe(fetch_bot_profile_async(), loop)
     try:
         return future.result(timeout=WEB_BOT_PROFILE_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
@@ -3008,7 +2767,6 @@ async def run_web_update_bot_avatar_async(payload: bytes, actor_email: str):
 
 
 async def run_web_update_bot_profile_async(
-    guild_id: int,
     username: str | None,
     server_nickname: str | None,
     clear_server_nickname: bool,
@@ -3025,7 +2783,6 @@ async def run_web_update_bot_profile_async(
         return {"ok": False, "error": validation_error}
 
     result = await apply_bot_profile_updates_async(
-        guild_id=normalize_target_guild_id(guild_id),
         username=normalized_username,
         server_nickname=nickname_target,
         actor_label=f"web admin {actor_email}",
@@ -3040,7 +2797,6 @@ async def run_web_update_bot_profile_async(
 
 
 def run_web_update_bot_profile(
-    guild_id: int,
     username: str | None,
     server_nickname: str | None,
     clear_server_nickname: bool,
@@ -3055,11 +2811,7 @@ def run_web_update_bot_profile(
 
     future = asyncio.run_coroutine_threadsafe(
         run_web_update_bot_profile_async(
-            guild_id,
-            username,
-            server_nickname,
-            clear_server_nickname,
-            actor_email,
+            username, server_nickname, clear_server_nickname, actor_email
         ),
         loop,
     )
@@ -4214,7 +3966,8 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     )
 
     docs_index_cache.clear()
-    discord_catalog_cache.clear()
+    discord_catalog_cache["fetched_at"] = 0.0
+    discord_catalog_cache["data"] = None
     schedule_firmware_monitor_restart()
     schedule_reddit_feed_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
@@ -4394,7 +4147,6 @@ def start_web_admin_server():
                     tag_responses_file=TAG_RESPONSES_FILE,
                     default_admin_email=WEB_ADMIN_DEFAULT_EMAIL,
                     default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
-                    on_get_guilds=run_web_get_guilds,
                     on_env_settings_saved=refresh_runtime_settings_from_env,
                     on_tag_responses_saved=refresh_tag_responses_from_web,
                     on_get_tag_responses=run_web_get_tag_responses,
@@ -5190,11 +4942,7 @@ async def on_message(message: discord.Message):
             return
         response = get_tag_responses().get(tag)
         if response:
-            if can_use_command(
-                message.author,
-                "tag_commands",
-                guild_id=message.guild.id if message.guild else None,
-            ):
+            if can_use_command(message.author, "tag_commands"):
                 await message.channel.send(response)
     await bot.process_commands(message)
 

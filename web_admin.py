@@ -42,7 +42,7 @@ POST_FORM_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "select_guild"}
+READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz"}
 WEB_GUI_TITLE_SUFFIX = "GL.iNet Discord Bot Dashboard"
 OBSERVABILITY_LOG_LINE_LIMIT = 500
 OBSERVABILITY_LOG_OPTIONS = (
@@ -1424,7 +1424,6 @@ def _render_layout(
     current_display_name: str,
     csrf_token: str,
     is_admin: bool,
-    current_guild_name: str = "",
     github_wiki_url: str = "",
     restart_enabled: bool = False,
 ):
@@ -1656,13 +1655,10 @@ def _render_layout(
           {% if current_display_name and current_display_name != current_email %}
             <span class="current-user-email">({{ current_email }})</span>
           {% endif %}
-          {% if current_guild_name %}<span class="current-user">Server: {{ current_guild_name }}</span>{% endif %}
-          <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
           <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
           <label class="sr-only" for="nav-page-select">Open page</label>
           <select id="nav-page-select" class="nav-select">
             <option value="">Go to page...</option>
-            <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('account') }}">My Account</option>
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
@@ -1772,7 +1768,6 @@ def _render_layout(
         current_display_name=current_display_name,
         csrf_token=csrf_token,
         is_admin=is_admin,
-        current_guild_name=current_guild_name,
         github_wiki_url=github_wiki_url,
         restart_enabled=restart_enabled,
     )
@@ -1784,7 +1779,6 @@ def create_web_app(
     tag_responses_file: str,
     default_admin_email: str,
     default_admin_password: str,
-    on_get_guilds=None,
     on_env_settings_saved=None,
     on_get_tag_responses=None,
     on_save_tag_responses=None,
@@ -2047,67 +2041,6 @@ def create_web_app(
                 return user
         return None
 
-    def _load_available_guilds():
-        payload = on_get_guilds() if callable(on_get_guilds) else None
-        if not isinstance(payload, dict) or not payload.get("ok"):
-            return [], str(payload.get("error") or "") if isinstance(payload, dict) else ""
-        guilds = payload.get("guilds", []) or []
-        normalized = []
-        for entry in guilds:
-            if not isinstance(entry, dict):
-                continue
-            guild_id = str(entry.get("id") or "").strip()
-            guild_name = str(entry.get("name") or "").strip()
-            if not guild_id or not guild_name:
-                continue
-            normalized.append(
-                {
-                    "id": guild_id,
-                    "name": guild_name,
-                    "icon_url": str(entry.get("icon_url") or "").strip(),
-                    "member_count": int(entry.get("member_count") or 0),
-                    "is_primary": bool(entry.get("is_primary")),
-                }
-            )
-        normalized.sort(key=lambda item: item["name"].casefold())
-        return normalized, ""
-
-    def _selected_guild_id():
-        selected = str(session.get("selected_guild_id", "")).strip()
-        guilds, _error_text = _load_available_guilds()
-        valid_ids = {str(entry.get("id") or "").strip() for entry in guilds}
-        if selected and selected in valid_ids:
-            return selected
-        if selected and selected not in valid_ids:
-            session.pop("selected_guild_id", None)
-        return ""
-
-    def _selected_guild():
-        selected_id = _selected_guild_id()
-        if not selected_id:
-            return None
-        guilds, _error_text = _load_available_guilds()
-        for entry in guilds:
-            if str(entry.get("id") or "").strip() == selected_id:
-                return entry
-        return None
-
-    def _set_selected_guild_id(guild_id: str):
-        selected = str(guild_id or "").strip()
-        guilds, _error_text = _load_available_guilds()
-        valid_ids = {str(entry.get("id") or "").strip() for entry in guilds}
-        if selected and selected in valid_ids:
-            session["selected_guild_id"] = selected
-            return True
-        session.pop("selected_guild_id", None)
-        return False
-
-    def _require_selected_guild_redirect():
-        if _selected_guild() is not None:
-            return None
-        flash("Select a Discord server before opening that page.", "error")
-        return redirect(url_for("guilds_page"))
-
     def _github_wiki_url():
         value = os.getenv(
             "WEB_GITHUB_WIKI_URL",
@@ -2153,7 +2086,6 @@ def create_web_app(
         session.pop("auth_last_seen", None)
         session.pop("auth_remember_until", None)
         session.pop("force_password_change_notice_shown", None)
-        session.pop("selected_guild_id", None)
 
     def _set_auth_session(email: str, remember_login: bool):
         now_dt = datetime.now(timezone.utc)
@@ -2436,7 +2368,6 @@ def create_web_app(
                     break
         if not resolved_display_name and normalized_email:
             resolved_display_name = _default_display_name(normalized_email)
-        current_guild = _selected_guild() if normalized_email else None
         return _render_layout(
             title,
             _inject_csrf_token_inputs(body_html, csrf_token),
@@ -2444,9 +2375,6 @@ def create_web_app(
             resolved_display_name,
             csrf_token,
             is_admin,
-            current_guild_name=(
-                str(current_guild.get("name") or "") if isinstance(current_guild, dict) else ""
-            ),
             github_wiki_url=_github_wiki_url(),
             restart_enabled=_restart_enabled(),
         )
@@ -2509,7 +2437,7 @@ def create_web_app(
     @app.route("/", methods=["GET"])
     def index():
         if _current_user():
-            return redirect(url_for("guilds_page"))
+            return redirect(url_for("dashboard"))
         return redirect(url_for("login"))
 
     @app.route("/login", methods=["GET", "POST"])
@@ -2560,7 +2488,7 @@ def create_web_app(
                         "error",
                     )
                     return redirect(url_for("account"))
-                return redirect(url_for("guilds_page"))
+                return redirect(url_for("dashboard"))
             attempts.append(time.time())
             login_attempts[client_ip] = attempts[-login_max_attempts:]
             flash("Invalid email or password.", "error")
@@ -2818,99 +2746,9 @@ def create_web_app(
 
     @app.route("/admin", methods=["GET"])
     @login_required
-    def guilds_page():
-        user = _current_user()
-        is_admin = _is_admin_user(user)
-        guilds, guild_error = _load_available_guilds()
-        selected_guild_id = _selected_guild_id()
-        selected_guild = _selected_guild()
-
-        cards = []
-        for guild in guilds:
-            guild_id = str(guild.get("id") or "")
-            guild_name = str(guild.get("name") or "Unknown Server")
-            member_count = int(guild.get("member_count") or 0)
-            icon_url = str(guild.get("icon_url") or "").strip()
-            is_selected = guild_id == selected_guild_id
-            primary_note = (
-                "<p class='muted'>Primary configured guild</p>"
-                if guild.get("is_primary")
-                else ""
-            )
-            icon_html = (
-                f"<img src='{escape(icon_url, quote=True)}' alt='{escape(guild_name)} icon' "
-                "style='width:56px;height:56px;border-radius:14px;border:1px solid var(--border);object-fit:cover;' />"
-                if icon_url
-                else "<div style='width:56px;height:56px;border-radius:14px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-weight:700;'>#</div>"
-            )
-            cards.append(
-                f"""
-                <div class="card dash-card">
-                  <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;">
-                    {icon_html}
-                    <div>
-                      <h3 style="margin:0 0 6px;">{escape(guild_name)}</h3>
-                      <div class="muted mono">{escape(guild_id)}</div>
-                    </div>
-                  </div>
-                  <p class="muted">Members: {member_count}</p>
-                  {primary_note}
-                  <form method="post" action="{escape(url_for("select_guild"), quote=True)}">
-                    <input type="hidden" name="guild_id" value="{escape(guild_id, quote=True)}" />
-                    <button class="btn" type="submit"{' disabled' if is_selected else ''}>{'Currently Selected' if is_selected else 'Manage This Server'}</button>
-                  </form>
-                </div>
-                """
-            )
-
-        selected_note = ""
-        if isinstance(selected_guild, dict):
-            selected_note = (
-                f"<p>Current server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong> "
-                f"(<span class='mono'>{escape(str(selected_guild.get('id') or ''))}</span>). "
-                f"<a href='{escape(url_for('dashboard'), quote=True)}'>Open dashboard</a>.</p>"
-            )
-        error_html = (
-            f"<p class='muted'>Could not load guild list: {escape(guild_error)}</p>"
-            if guild_error
-            else ""
-        )
-        body = f"""
-        <div class="card">
-          <h2>Discord Servers</h2>
-          <p>Select the Discord server you want to manage in the web GUI. Guild-scoped pages use the selected server context.</p>
-          {selected_note}
-          {error_html}
-        </div>
-        <div class="dash-grid">
-          {"".join(cards) if cards else "<div class='card'><p class='muted'>No Discord servers are available to this bot right now.</p></div>"}
-        </div>
-        """
-        return _render_page("Servers", body, user["email"], is_admin)
-
-    @app.route("/admin/select-guild", methods=["POST"])
-    @login_required
-    def select_guild():
-        guild_id = str(request.form.get("guild_id", "")).strip()
-        if not guild_id:
-            flash("Choose a Discord server first.", "error")
-            return redirect(url_for("guilds_page"))
-        if not _set_selected_guild_id(guild_id):
-            flash("That Discord server is no longer available to the bot.", "error")
-            return redirect(url_for("guilds_page"))
-        flash("Discord server context updated.", "success")
-        return redirect(url_for("dashboard"))
-
-    @app.route("/admin/dashboard", methods=["GET"])
-    @login_required
     def dashboard():
         user = _current_user()
         is_admin = _is_admin_user(user)
-        selection_redirect = _require_selected_guild_redirect()
-        if selection_redirect is not None:
-            return selection_redirect
-        selected_guild = _selected_guild()
-        selected_guild_name = str(selected_guild.get("name") or "selected server")
 
         cards = []
 
@@ -3047,7 +2885,7 @@ def create_web_app(
         body = f"""
         <div class="card">
           <h2>Dashboard</h2>
-          <p>Quick actions for the selected server: <strong>{escape(selected_guild_name)}</strong>.</p>
+          <p>Quick actions for all available web interface functions.</p>
           {admin_note}
         </div>
         <div class="dash-grid">
@@ -3486,16 +3324,11 @@ def create_web_app(
     @login_required
     def bot_profile():
         user = _current_user()
-        selection_redirect = _require_selected_guild_redirect()
-        if selection_redirect is not None:
-            return selection_redirect
-        selected_guild = _selected_guild() or {}
-        selected_guild_id = str(selected_guild.get("id") or "")
         max_avatar_upload_bytes = _get_int_env(
             "WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
         )
         profile = (
-            on_get_bot_profile(selected_guild_id)
+            on_get_bot_profile()
             if callable(on_get_bot_profile)
             else {"ok": False, "error": "Not configured"}
         )
@@ -3519,7 +3352,6 @@ def create_web_app(
                     username_value = username_input.strip() or None
                     server_nickname_value = server_nickname_input.strip() or None
                     response = on_update_bot_profile(
-                        selected_guild_id,
                         username_value,
                         server_nickname_value,
                         clear_server_nickname,
@@ -3627,7 +3459,7 @@ def create_web_app(
         <div class="grid">
           <div class="card">
             <h2>Bot Identity</h2>
-            <p class="muted">Set bot username and the server nickname used in <strong>{escape(str(selected_guild.get("name") or "this server"))}</strong>.</p>
+            <p class="muted">Set bot username and server nickname for how the bot appears in Discord.</p>
             <p class="muted">Discord may rate-limit username changes.</p>
             <form method="post">
               <input type="hidden" name="action" value="identity" />
@@ -3670,11 +3502,6 @@ def create_web_app(
     def reddit_feeds():
         user = _current_user()
         is_admin = _is_admin_user(user)
-        selection_redirect = _require_selected_guild_redirect()
-        if selection_redirect is not None:
-            return selection_redirect
-        selected_guild = _selected_guild() or {}
-        selected_guild_id = str(selected_guild.get("id") or "")
         file_values = _parse_env_file(env_file)
         current_schedule = str(
             file_values.get(
@@ -3687,9 +3514,7 @@ def create_web_app(
             current_schedule = "*/30 * * * *"
 
         discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog)
-            else None
+            on_get_discord_catalog() if callable(on_get_discord_catalog) else None
         )
         channel_options = []
         catalog_error = ""
@@ -3712,7 +3537,7 @@ def create_web_app(
         }
 
         payload = (
-            on_get_reddit_feeds(selected_guild_id)
+            on_get_reddit_feeds()
             if callable(on_get_reddit_feeds)
             else {"ok": False, "error": "Reddit feed callbacks are not configured."}
         )
@@ -3771,9 +3596,7 @@ def create_web_app(
                     callback_payload = None
 
                 if callback_payload is not None:
-                    response = on_manage_reddit_feeds(
-                        callback_payload, user["email"], selected_guild_id
-                    )
+                    response = on_manage_reddit_feeds(callback_payload, user["email"])
                     if not isinstance(response, dict):
                         flash("Invalid response from Reddit feed handler.", "error")
                     elif response.get("ok"):
@@ -3789,7 +3612,7 @@ def create_web_app(
                         )
 
             payload = (
-                on_get_reddit_feeds(selected_guild_id)
+                on_get_reddit_feeds()
                 if callable(on_get_reddit_feeds)
                 else {"ok": False, "error": "Reddit feed callbacks are not configured."}
             )
@@ -3911,7 +3734,6 @@ def create_web_app(
           </div>
           <div class="card">
             <h2>Add Reddit Feed</h2>
-            <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
             {management_note}
             {catalog_note}
             {add_disabled_note}
@@ -3955,20 +3777,13 @@ def create_web_app(
     @login_required
     def command_permissions():
         user = _current_user()
-        selection_redirect = _require_selected_guild_redirect()
-        if selection_redirect is not None:
-            return selection_redirect
-        selected_guild = _selected_guild() or {}
-        selected_guild_id = str(selected_guild.get("id") or "")
         permissions_payload = (
-            on_get_command_permissions(selected_guild_id)
+            on_get_command_permissions()
             if callable(on_get_command_permissions)
             else {"ok": False, "error": "Not configured"}
         )
         discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog)
-            else None
+            on_get_discord_catalog() if callable(on_get_discord_catalog) else None
         )
         role_options = []
         catalog_error = ""
@@ -4002,7 +3817,7 @@ def create_web_app(
                         "role_ids": role_ids_payload,
                     }
                 response = on_save_command_permissions(
-                    {"commands": command_updates}, user["email"], selected_guild_id
+                    {"commands": command_updates}, user["email"]
                 )
                 if not isinstance(response, dict):
                     flash(
@@ -4107,7 +3922,6 @@ def create_web_app(
         body = f"""
         <div class="card">
           <h2>Command Permissions</h2>
-          <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
           <p class="muted">Set access mode per command. Default mode follows built-in behavior. Custom mode requires at least one role ID.</p>
           <p class="muted">Default named-role gate: {escape(", ".join(str(item) for item in allowed_role_names) or "None")}</p>
           <p class="muted">Current moderator role IDs: <span class="mono">{escape(",".join(str(item) for item in moderator_role_ids) or "None")}</span></p>
@@ -4135,8 +3949,6 @@ def create_web_app(
     @login_required
     def settings():
         user = _current_user()
-        selected_guild = _selected_guild() or {}
-        selected_guild_id = str(selected_guild.get("id") or "")
         file_values = _parse_env_file(env_file)
         normalized_file_values = _normalize_env_updates(file_values)
         if normalized_file_values != file_values:
@@ -4145,9 +3957,7 @@ def create_web_app(
             for key, value in file_values.items():
                 os.environ[key] = value
         discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog) and selected_guild_id
-            else None
+            on_get_discord_catalog() if callable(on_get_discord_catalog) else None
         )
         channel_options = []
         role_options = []
@@ -4306,13 +4116,8 @@ def create_web_app(
         body = (
             "<div class='card'><h2>Environment Settings</h2>"
             "<p class='muted'>These map to runtime bot settings and persist in .env.</p>"
-            + (
-                f"<p class='muted'>Discord dropdown data is loaded from the selected server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong>.</p>"
-                if selected_guild_id
-                else "<p class='muted'>Select a Discord server to populate live channel and role dropdowns.</p>"
-            )
-            + f"{catalog_note}"
-            + "<form method='post'><table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
+            f"{catalog_note}"
+            "<form method='post'><table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table><div style='margin-top:14px;'><button class='btn' type='submit'>Save Settings</button></div></form></div>"
         )
         return _render_page("Settings", body, user["email"], bool(user.get("is_admin")))
@@ -4392,11 +4197,6 @@ def create_web_app(
     @login_required
     def bulk_role_csv():
         user = _current_user()
-        selection_redirect = _require_selected_guild_redirect()
-        if selection_redirect is not None:
-            return selection_redirect
-        selected_guild = _selected_guild() or {}
-        selected_guild_id = str(selected_guild.get("id") or "")
         operation_result = None
         max_upload_bytes = _get_int_env(
             "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
@@ -4405,9 +4205,7 @@ def create_web_app(
             "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", 50, minimum=1
         )
         discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog)
-            else None
+            on_get_discord_catalog() if callable(on_get_discord_catalog) else None
         )
         role_options = []
         catalog_error = ""
@@ -4445,11 +4243,7 @@ def create_web_app(
                     )
                 else:
                     response = on_bulk_assign_role_csv(
-                        selected_guild_id,
-                        role_input,
-                        payload,
-                        uploaded_file.filename,
-                        user["email"],
+                        role_input, payload, uploaded_file.filename, user["email"]
                     )
                     if not isinstance(response, dict):
                         flash("Invalid response from bulk assignment handler.", "error")
@@ -4524,7 +4318,6 @@ def create_web_app(
         body = f"""
         <div class="card">
           <h2>Bulk Assign Role from CSV</h2>
-          <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
           <p class="muted">Upload a CSV of Discord names (comma-separated or one-per-line), and assign all matched members to the specified role.</p>
           <p class="muted">Current upload limit: {max_upload_bytes} bytes. Current per-section display limit: {report_list_limit} entries.</p>
           <form method="post" enctype="multipart/form-data">
@@ -4798,7 +4591,6 @@ def start_web_admin_interface(
     tag_responses_file: str,
     default_admin_email: str,
     default_admin_password: str,
-    on_get_guilds=None,
     on_env_settings_saved=None,
     on_get_tag_responses=None,
     on_save_tag_responses=None,
@@ -4821,7 +4613,6 @@ def start_web_admin_interface(
         tag_responses_file=tag_responses_file,
         default_admin_email=default_admin_email,
         default_admin_password=default_admin_password,
-        on_get_guilds=on_get_guilds,
         on_env_settings_saved=on_env_settings_saved,
         on_get_tag_responses=on_get_tag_responses,
         on_save_tag_responses=on_save_tag_responses,
