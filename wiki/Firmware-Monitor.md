@@ -10,7 +10,7 @@ Scheduled monitor for new firmware entries from GL.iNet firmware feed pages.
   - new firmware entries
   - changed firmware entries (same model/track/version, updated metadata)
 - Posts a short summary notification to configured Discord channel.
-- Stores seen IDs and signature snapshots in the configured database backend to avoid repeat alerts.
+- Stores seen IDs and signature snapshots in SQLite to avoid repeat alerts.
 
 ## Source and Schedule
 
@@ -49,7 +49,7 @@ Summary includes:
 
 ## Persistence and Migration
 
-- Primary storage: MySQL by default, or `${DB_SQLITE_PATH}` when SQLite mode is used
+- Primary storage: SQLite (`data/bot_data.db`)
 - Legacy import source: `data/firmware_seen.json` on startup
 - Import mode: merge-only, no overwrite of existing DB state
 - First run after enabling signature snapshots initializes baseline and suppresses historical spam alerts.
