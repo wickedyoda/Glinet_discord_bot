@@ -9,17 +9,15 @@ Persistent runtime state uses:
 
 | File | Purpose |
 |---|---|
-| `MySQL database (${DB_NAME})` | Primary runtime and config state store when `DB_BACKEND=mysql` |
-| `${DATA_DIR}/bot_data.db` | SQLite fallback database and import source when `DB_BACKEND=sqlite` or `DB_IMPORT_SQLITE_ON_BOOT=true` |
+| `${DATA_DIR}/bot_data.db` | Primary SQLite database for runtime and config state |
 | `${LOG_DIR}/bot.log` | Application/runtime logs |
 | `${LOG_DIR}/bot_log.log` | Mirror of payloads sent (or attempted) to bot log channels |
 | `${LOG_DIR}/container_errors.log` | Error-focused log file used by `/logs` command |
 | `${LOG_DIR}/web_gui_audit.log` | Web GUI interaction audit entries (`WEB_AUDIT ...`) |
-| `${LOG_DIR}/web_probe.log` | Anonymous unknown-route `404` web probe entries (`WEB_PROBE ...`) |
 
-## Database Scope
+## SQLite Scope
 
-The primary database stores core persistent entities, including:
+`bot_data.db` stores core persistent entities, including:
 
 - Invite/role mapping state
 - Tag responses
@@ -30,7 +28,7 @@ The primary database stores core persistent entities, including:
 
 ## Legacy Import on Boot
 
-Legacy JSON/text files are imported at startup if present:
+Legacy files are imported at startup if present:
 
 - `access_role.txt`
 - `role_codes.txt`
@@ -43,14 +41,8 @@ Legacy JSON/text files are imported at startup if present:
 Import strategy:
 
 - Merge-only
-- Never overwrites existing database records
+- Never overwrites existing SQLite records
 - Allows migration continuity while preserving newer DB data
-
-When `DB_BACKEND=mysql` and `DB_IMPORT_SQLITE_ON_BOOT=true`:
-
-- `${DB_SQLITE_PATH}` is treated as a migration source
-- each supported table is imported only if the matching MySQL table is empty
-- existing MySQL rows are not overwritten
 
 ## File and Permission Hardening
 
@@ -58,7 +50,7 @@ When enabled (`WEB_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 
 - `.env` -> `0600`
 - `data/` directory -> `0700`
-- `bot_data.db` -> `0600` when SQLite storage is in use
+- `bot_data.db` -> `0600`
 
 When enabled (`LOG_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 
@@ -67,7 +59,6 @@ When enabled (`LOG_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 - `${LOG_DIR}/bot_log.log` -> `0600`
 - `${LOG_DIR}/container_errors.log` -> `0600`
 - `${LOG_DIR}/web_gui_audit.log` -> `0600`
-- `${LOG_DIR}/web_probe.log` -> `0600`
 
 ## Log Rotation and Retention
 
@@ -79,13 +70,11 @@ When enabled (`LOG_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 
 Minimum backup set:
 
-- MySQL volume backup for `${DB_NAME}` when using MySQL
-- `${DATA_DIR}/bot_data.db` when using SQLite or preserving the SQLite import source
+- `${DATA_DIR}/bot_data.db`
 - `${LOG_DIR}/bot.log` (optional for auditing)
 - `${LOG_DIR}/bot_log.log` (recommended for channel-post audit trails)
 - `${LOG_DIR}/container_errors.log` (optional for incident traces)
 - `${LOG_DIR}/web_gui_audit.log` (recommended for web admin activity auditing)
-- `${LOG_DIR}/web_probe.log` (useful for monitoring internet scan noise separately from operator actions)
 
 For reliable restore:
 
@@ -96,9 +85,9 @@ For reliable restore:
 
 ## Performance Notes
 
-- MySQL is the default deployment backend for better concurrent write behavior and service separation.
-- SQLite remains available as a fallback backend and migration source.
-- Keep database volumes on reliable storage and back them up independently from logs.
+- SQLite provides low-overhead persistence suitable for single-container deployments.
+- WAL mode is used for better concurrency and durability tradeoff.
+- Keep data volume on reliable storage to reduce corruption risk.
 
 ## Related Pages
 

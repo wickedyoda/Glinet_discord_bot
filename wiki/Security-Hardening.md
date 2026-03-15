@@ -71,7 +71,7 @@ Implemented:
 
 ## Data Security and Storage Controls
 
-- MySQL persistence by default, with SQLite fallback/import support for migration continuity
+- SQLite persistence with WAL and foreign-key enforcement
 - Legacy data imports are merge-only and non-destructive
 - File permission hardening for `.env`, data dir, and DB file
 - Runtime log storage hardening for `/logs` (`0700`) and log files (`0600`)

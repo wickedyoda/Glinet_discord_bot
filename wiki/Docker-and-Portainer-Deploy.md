@@ -13,35 +13,13 @@ Deployment guide for local Docker Compose, Portainer stacks, and proxy-fronted p
 
 ```yaml
 services:
-  mysql:
-    image: mysql:8.4
-    environment:
-      - MYSQL_DATABASE=${DB_NAME:-discord_bot}
-      - MYSQL_USER=${DB_USER:-discord_bot}
-      - MYSQL_PASSWORD=${DB_PASSWORD:-change_me}
-      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD:-change_me_root}
-    volumes:
-      - mysql_data:/var/lib/mysql
-    restart: unless-stopped
-
   discord_invite_bot:
     build:
       context: .
     container_name: discord_role_bot
-    depends_on:
-      mysql:
-        condition: service_healthy
     env_file:
       - .env
     environment:
-      - DB_BACKEND=${DB_BACKEND:-mysql}
-      - DB_HOST=${DB_HOST:-mysql}
-      - DB_PORT=${DB_PORT:-3306}
-      - DB_NAME=${DB_NAME:-discord_bot}
-      - DB_USER=${DB_USER:-discord_bot}
-      - DB_PASSWORD=${DB_PASSWORD:-change_me}
-      - DB_IMPORT_SQLITE_ON_BOOT=${DB_IMPORT_SQLITE_ON_BOOT:-true}
-      - DB_SQLITE_PATH=${DB_SQLITE_PATH:-/app/data/bot_data.db}
       - WEB_BIND_HOST=0.0.0.0
       - WEB_ENABLED=${WEB_ENABLED:-true}
       - WEB_PORT=${WEB_PORT:-8080}
@@ -64,9 +42,6 @@ services:
       - ./logs:/logs
       - ./.env:/app/.env
     restart: unless-stopped
-
-volumes:
-  mysql_data:
 ```
 
 Run:
@@ -83,7 +58,6 @@ Recommended adjustments:
 - Set `WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/`.
 - Keep `WEB_SESSION_COOKIE_SECURE=true`.
 - Keep CSRF and same-origin checks enabled.
-- Keep `DB_BACKEND=mysql` and do not expose the MySQL port publicly.
 
 Example host mapping:
 
@@ -108,7 +82,6 @@ Example image:
 Recommended persistent volume:
 
 - `/root/docker/linkbot/data:/app/data`
-- MySQL named volume or bind mount for `/var/lib/mysql`
 
 ## Variation D: Image-Only Deploy
 
@@ -149,7 +122,6 @@ Notes:
 - App listens on `WEB_PORT` inside container.
 - Host published port controlled by `WEB_HOST_PORT` in compose mapping.
 - Public exposure should happen via reverse proxy, not direct open port.
-- MySQL should remain on the internal Docker network only.
 
 ## Logs and Diagnostics
 
@@ -159,7 +131,6 @@ Persistent log files:
 - `${LOG_DIR}/bot_log.log` (bot channel payload mirror, default `/logs/bot_log.log`)
 - `${LOG_DIR}/container_errors.log` (error stream used by `/logs`, default `/logs/container_errors.log`)
 - `${LOG_DIR}/web_gui_audit.log` (web admin interaction audit stream, default `/logs/web_gui_audit.log`)
-- `${LOG_DIR}/web_probe.log` (anonymous unknown-route `404` scan/probe traffic, default `/logs/web_probe.log`)
 
 Tune with:
 
@@ -174,7 +145,6 @@ Tune with:
 
 1. Pull latest image or code.
 2. Review `.env`/compose changes.
-   - If moving from SQLite, leave `${DB_SQLITE_PATH}` mounted and keep `DB_IMPORT_SQLITE_ON_BOOT=true` for the first MySQL boot.
 3. Recreate container:
    - `docker compose up -d --build`
 4. Check logs:

@@ -38,7 +38,6 @@ Tuning variable:
 - `CONTAINER_LOG_LEVEL` controls what gets written to error log file.
 - Log-channel payload mirror is written to `${LOG_DIR}/bot_log.log`.
 - Web GUI request auditing is written separately to `${LOG_DIR}/web_gui_audit.log`.
-- Anonymous unknown-route `404` web scan traffic is written separately to `${LOG_DIR}/web_probe.log`.
 
 ## Access Control Layers
 

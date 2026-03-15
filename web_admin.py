@@ -2,6 +2,7 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import time
 import threading
 import hashlib
@@ -28,8 +29,6 @@ from flask import (
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from db_backend import get_table_columns, is_mysql_backend, open_database_connection
-
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
 PASSWORD_MAX_AGE_DAYS = 90
 REMEMBER_LOGIN_DAYS = 5
@@ -51,7 +50,6 @@ OBSERVABILITY_LOG_OPTIONS = (
     ("bot_log.log", "Bot Channel Log"),
     ("container_errors.log", "Container Error Log"),
     ("web_gui_audit.log", "Web GUI Audit Log"),
-    ("web_probe.log", "Web Probe Log"),
 )
 AUTO_REFRESH_INTERVAL_OPTIONS = (0, 1, 5, 10, 30, 60, 120)
 REDDIT_FEED_SCHEDULE_OPTIONS = (
@@ -853,7 +851,8 @@ def _now_iso():
 
 
 def _ensure_users_table_columns(conn):
-    columns = get_table_columns(conn, "web_users")
+    rows = conn.execute("PRAGMA table_info(web_users)").fetchall()
+    columns = {str(row["name"]) for row in rows}
     alter_statements = []
     if "first_name" not in columns:
         alter_statements.append(
@@ -937,40 +936,27 @@ def _ensure_users_table_columns(conn):
 
 
 def _open_users_db(users_db_file: Path):
-    conn = open_database_connection()
-    if not is_mysql_backend():
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
+    conn = sqlite3.connect(str(users_db_file), timeout=30)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA foreign_keys=ON;")
     conn.execute(
-        (
-            """
-            CREATE TABLE IF NOT EXISTS web_users (
-                email VARCHAR(255) PRIMARY KEY,
-                password_hash TEXT NOT NULL,
-                is_admin INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-            if is_mysql_backend()
-            else """
-            CREATE TABLE IF NOT EXISTS web_users (
-                email TEXT PRIMARY KEY,
-                password_hash TEXT NOT NULL,
-                is_admin INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
+        """
+        CREATE TABLE IF NOT EXISTS web_users (
+            email TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            is_admin INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
         )
+        """
     )
     _ensure_users_table_columns(conn)
-    if not is_mysql_backend():
-        try:
-            os.chmod(users_db_file, 0o600)
-        except (PermissionError, OSError):
-            pass
+    try:
+        os.chmod(users_db_file, 0o600)
+    except (PermissionError, OSError):
+        pass
     return conn
 
 
@@ -1997,26 +1983,14 @@ def create_web_app(
                 duration_ms = -1
             else:
                 duration_ms = int(max(0.0, (time.perf_counter() - started) * 1000.0))
-            endpoint_name = request.endpoint or "unknown"
-            status_code = int(getattr(response, "status_code", 0) or 0)
-            user_label = _audit_user_label_from_email(session.get("auth_email", ""))
-            log_prefix = "WEB_AUDIT"
-            if (
-                request.method in {"GET", "HEAD"}
-                and endpoint_name == "unknown"
-                and status_code == 404
-                and user_label == "anonymous"
-            ):
-                log_prefix = "WEB_PROBE"
             logger.info(
-                "%s method=%s path=%s endpoint=%s status=%s ip=%s user=%s duration_ms=%s",
-                log_prefix,
+                "WEB_AUDIT method=%s path=%s endpoint=%s status=%s ip=%s user=%s duration_ms=%s",
                 request.method,
                 request.path,
-                endpoint_name,
-                status_code,
+                request.endpoint or "unknown",
+                int(getattr(response, "status_code", 0) or 0),
                 _client_ip(),
-                user_label,
+                _audit_user_label_from_email(session.get("auth_email", "")),
                 duration_ms,
             )
         return response
