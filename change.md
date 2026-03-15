@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Changed
 - Upgraded `cryptography` from `46.0.1` to `46.0.5` to address `CVE-2026-26007` / `GHSA-r6ph-v2qm-q3c2`.
 - Updated Docker dependency bootstrap to require `cryptography>=46.0.5` during image build.
+- Updated the Docker image build to refresh Debian base packages and apply security upgrades for `libc-bin` and `libc6`, addressing `CVE-2026-0861`.
 
 ## [2026-03-15] - Feature Parity Merge from WickedYodaDiscordBot
 
