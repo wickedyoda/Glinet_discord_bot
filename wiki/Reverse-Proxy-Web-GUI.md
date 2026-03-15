@@ -1,0 +1,240 @@
+# Reverse Proxy Web GUI
+
+Use this guide when exposing the web admin UI through a reverse proxy.
+
+## Goals
+
+- Terminate HTTPS at the proxy.
+- Forward the original host/protocol headers correctly.
+- Keep CSRF and same-origin protections enabled.
+- Avoid direct public exposure of the container port.
+- Optionally keep the bot's built-in HTTPS listener on `8081` for local/TLS fallback testing.
+
+## Supported Proxy Patterns
+
+- Single-host local reverse proxy (Nginx/Caddy/Apache/HAProxy)
+- Container-native edge routing (Traefik)
+- Nginx Proxy Manager UI-based configuration
+- DNS-proxied frontends (for example Cloudflare DNS/proxy) in front of your reverse proxy
+
+## Required Environment Settings
+
+Set these values in `.env`:
+
+```env
+WEB_ENABLED=true
+WEB_BIND_HOST=0.0.0.0
+WEB_PORT=8080
+WEB_HTTPS_ENABLED=true
+WEB_HTTPS_PORT=8081
+WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/
+WEB_TRUST_PROXY_HEADERS=true
+WEB_SESSION_COOKIE_SECURE=true
+WEB_SESSION_COOKIE_SAMESITE=Lax
+WEB_ENFORCE_CSRF=true
+WEB_ENFORCE_SAME_ORIGIN_POSTS=true
+```
+
+Notes:
+- `WEB_PUBLIC_BASE_URL` must match the external URL users open in their browser.
+- Keep a trailing slash on `WEB_PUBLIC_BASE_URL` for consistency.
+- Leave `WEB_TRUST_PROXY_HEADERS=true` only when the proxy is trusted and under your control.
+- If no TLS files exist, the bot generates a self-signed certificate in `${DATA_DIR}/ssl/`.
+- Replace `${DATA_DIR}/ssl/tls.crt` and `${DATA_DIR}/ssl/tls.key` with your own certificate and key if you want the built-in HTTPS listener to be browser-trusted.
+
+## Docker/Network Recommendation
+
+- Bind the app to an internal network only.
+- Expose the web admin service to the proxy, not directly to the internet.
+- If you must publish a host port, restrict it via firewall or localhost bind.
+
+Example (localhost-only mapping):
+
+```yaml
+ports:
+  - "127.0.0.1:8080:8080"
+  - "127.0.0.1:8081:8081"
+```
+
+## Nginx Example
+
+Replace `discord-admin.example.com` with your real domain.
+
+```nginx
+server {
+    listen 80;
+    server_name discord-admin.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name discord-admin.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/discord-admin.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/discord-admin.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Real-IP $remote_addr;
+
+        proxy_read_timeout 60s;
+        proxy_connect_timeout 10s;
+    }
+}
+```
+
+## Nginx Proxy Manager (NPM) Variation
+
+Minimum NPM settings:
+
+1. Domain Names: `discord-admin.example.com`
+2. Scheme/Forward Hostname: `http` -> upstream host running bot web service
+3. Forward Port: `8080` (or your mapped local port)
+4. Enable Websockets Support
+5. Enable Block Common Exploits
+6. SSL tab: Force SSL + HTTP/2 + HSTS (and include subdomains only if appropriate for your domain design)
+
+Advanced header requirement:
+
+- Preserve `Host` and forward `X-Forwarded-*` headers.
+- Most NPM defaults handle this; custom advanced config can be used if needed.
+
+## Caddy Example
+
+```caddy
+discord-admin.example.com {
+    reverse_proxy 127.0.0.1:8080 {
+        header_up Host {host}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Real-IP {remote_host}
+    }
+}
+```
+
+## Traefik Example (Docker Labels)
+
+```yaml
+services:
+  bot:
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.bot-web.rule=Host(`discord-admin.example.com`)"
+      - "traefik.http.routers.bot-web.entrypoints=websecure"
+      - "traefik.http.routers.bot-web.tls=true"
+      - "traefik.http.services.bot-web.loadbalancer.server.port=8080"
+      - "traefik.http.middlewares.bot-web-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.bot-web.middlewares=bot-web-headers"
+```
+
+If you terminate TLS at Traefik, keep router entrypoint on your HTTPS entrypoint (commonly `websecure`).
+
+## Cloudflare-Fronted Variation (Optional)
+
+If DNS is proxied by Cloudflare (or similar CDN proxy):
+
+- Keep origin proxy to app over trusted private path where possible.
+- Ensure final browser origin still matches `WEB_PUBLIC_BASE_URL`.
+- Keep `X-Forwarded-Proto=https` at the app boundary.
+- Avoid mixing multiple public hostnames unless each is explicitly allowed by configuration.
+
+## Apache HTTPD Example
+
+Enable modules:
+
+- `proxy`
+- `proxy_http`
+- `ssl`
+- `headers`
+- `rewrite`
+
+Virtual host example:
+
+```apache
+<VirtualHost *:80>
+    ServerName discord-admin.example.com
+    RewriteEngine On
+    RewriteRule ^/(.*)$ https://discord-admin.example.com/$1 [R=301,L]
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName discord-admin.example.com
+
+    SSLEngine on
+    SSLCertificateFile /etc/letsencrypt/live/discord-admin.example.com/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/discord-admin.example.com/privkey.pem
+
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader set X-Forwarded-Host "%{HTTP_HOST}s"
+
+    ProxyPass / http://127.0.0.1:8080/
+    ProxyPassReverse / http://127.0.0.1:8080/
+</VirtualHost>
+```
+
+## HAProxy Example
+
+```haproxy
+frontend https_in
+    bind *:443 ssl crt /etc/letsencrypt/live/discord-admin.example.com/haproxy.pem
+    mode http
+    option forwardfor
+    http-request set-header X-Forwarded-Proto https
+    http-request set-header X-Forwarded-Host %[req.hdr(host)]
+    use_backend bot_web if { hdr(host) -i discord-admin.example.com }
+
+backend bot_web
+    mode http
+    server bot_local 127.0.0.1:8080 check
+```
+
+## Troubleshooting
+
+If login fails with `Blocked request due to origin policy.`:
+
+1. Confirm `WEB_PUBLIC_BASE_URL` matches the exact external host users access.
+2. Confirm proxy forwards `Host` and `X-Forwarded-Host`.
+3. Confirm `WEB_TRUST_PROXY_HEADERS=true`.
+4. Confirm browser is using the same domain as `WEB_PUBLIC_BASE_URL`.
+
+If secure cookies do not persist:
+
+1. Confirm users access the site over `https://`.
+2. Keep `WEB_SESSION_COOKIE_SECURE=true`.
+3. Confirm `X-Forwarded-Proto` is passed as `https`.
+
+If login POST returns `302` then immediately loads `/login` again:
+
+1. Confirm `WEB_PUBLIC_BASE_URL` matches the exact host users open.
+2. Confirm proxy forwards `Host`, `X-Forwarded-Host`, and `X-Forwarded-Proto`.
+3. Use `WEB_SESSION_COOKIE_SAMESITE=Lax` for proxy compatibility (switch to `Strict` after stable if desired).
+4. Confirm the upstream target in `proxy_pass` is `http://...:8080` (not `https://` to the container).
+
+If browser console warns that `Cross-Origin-Opener-Policy` was ignored on login:
+
+1. Serve the web UI over `https://` (or localhost/loopback for local testing).
+2. Verify proxy redirect from `http://` to `https://` is active.
+3. Verify users are not accessing an internal plain-HTTP URL directly.
+
+## Validation Checklist
+
+- Login works through proxy.
+- POST actions (save settings, create users, update profile) succeed.
+- No origin-policy errors in logs.
+- Cookies show `HttpOnly`, `Secure`, and `SameSite=Strict`.
+- Direct container port is not publicly reachable.
+
+## Related Pages
+
+- [Web Admin Interface](Web-Admin-Interface)
+- [Environment Variables](Environment-Variables)
+- [Security Hardening](Security-Hardening)
