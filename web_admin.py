@@ -3,6 +3,7 @@ import os
 import re
 import secrets
 import sqlite3
+import ssl
 import time
 import threading
 import hashlib
@@ -15,6 +16,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from croniter import croniter
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 from flask import (
     Flask,
     flash,
@@ -27,6 +32,7 @@ from flask import (
     url_for,
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.serving import make_server
 from werkzeug.security import check_password_hash, generate_password_hash
 
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
@@ -84,6 +90,8 @@ INT_KEYS = {
     "FIRMWARE_RELEASE_NOTES_MAX_CHARS",
     "WEB_PORT",
     "WEB_HOST_PORT",
+    "WEB_HTTPS_PORT",
+    "WEB_HTTPS_HOST_PORT",
     "WEB_DISCORD_CATALOG_TTL_SECONDS",
     "WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS",
     "WEB_BULK_ASSIGN_TIMEOUT_SECONDS",
@@ -216,9 +224,19 @@ ENV_FIELDS = [
         "Internal HTTP port in the container (default 8080).",
     ),
     (
+        "WEB_HTTPS_PORT",
+        "Web HTTPS Port",
+        "Internal HTTPS port in the container (default 8081).",
+    ),
+    (
         "WEB_HOST_PORT",
         "Web Host Port",
         "Host port mapped to WEB_PORT in Docker compose.",
+    ),
+    (
+        "WEB_HTTPS_HOST_PORT",
+        "Web HTTPS Host Port",
+        "Host port mapped to WEB_HTTPS_PORT in Docker compose.",
     ),
     (
         "WEB_SESSION_TIMEOUT_MINUTES",
@@ -269,6 +287,31 @@ ENV_FIELDS = [
         "WEB_PUBLIC_BASE_URL",
         "Web Public Base URL",
         "Public external base URL used behind reverse proxies (for origin validation).",
+    ),
+    (
+        "WEB_HTTPS_ENABLED",
+        "Web HTTPS Enabled",
+        "Enable the built-in HTTPS listener alongside HTTP.",
+    ),
+    (
+        "WEB_SSL_DIR",
+        "Web SSL Directory",
+        "Directory used to store the HTTPS certificate and key (defaults to DATA_DIR/ssl).",
+    ),
+    (
+        "WEB_SSL_CERT_FILE",
+        "Web SSL Cert File",
+        "Certificate filename or absolute path. Defaults to tls.crt inside WEB_SSL_DIR.",
+    ),
+    (
+        "WEB_SSL_KEY_FILE",
+        "Web SSL Key File",
+        "Private key filename or absolute path. Defaults to tls.key inside WEB_SSL_DIR.",
+    ),
+    (
+        "WEB_SSL_COMMON_NAME",
+        "Web SSL Common Name",
+        "Hostname used when generating the default self-signed certificate.",
     ),
     (
         "WEB_GITHUB_WIKI_URL",
@@ -1199,6 +1242,122 @@ def _normalize_env_updates(updated_values: dict):
     return normalized
 
 
+def _chmod_if_possible(path: Path, mode: int):
+    try:
+        os.chmod(path, mode)
+        return True
+    except (PermissionError, OSError):
+        return False
+
+
+def _get_web_ssl_dir(data_dir: str) -> Path:
+    configured = str(os.getenv("WEB_SSL_DIR", "")).strip()
+    if configured:
+        candidate = Path(configured)
+        if not candidate.is_absolute():
+            candidate = Path(data_dir) / candidate
+        return candidate
+    return Path(data_dir) / "ssl"
+
+
+def _resolve_ssl_file_path(ssl_dir: Path, raw_value: str, default_name: str) -> Path:
+    cleaned = str(raw_value or "").strip()
+    if not cleaned:
+        return ssl_dir / default_name
+    candidate = Path(cleaned)
+    if candidate.is_absolute():
+        return candidate
+    return ssl_dir / candidate
+
+
+def _build_self_signed_certificate(cert_path: Path, key_path: Path, common_name: str):
+    safe_common_name = (common_name or "localhost").strip() or "localhost"
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "WickedYoda Bot"),
+            x509.NameAttribute(NameOID.COMMON_NAME, safe_common_name),
+        ]
+    )
+    san_entries = [x509.DNSName("localhost"), x509.DNSName(safe_common_name)]
+    try:
+        san_entries.append(x509.IPAddress(ipaddress.ip_address("127.0.0.1")))
+    except ValueError:
+        pass
+    try:
+        san_entries.append(x509.IPAddress(ipaddress.ip_address(safe_common_name)))
+    except ValueError:
+        parsed_host = urlparse(safe_common_name).hostname if "://" in safe_common_name else None
+        if parsed_host:
+            san_entries.append(x509.DNSName(parsed_host))
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=5))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=825))
+        .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+
+
+def _ensure_https_ssl_context(data_dir: str, harden_file_permissions: bool, logger=None):
+    ssl_dir = _get_web_ssl_dir(data_dir)
+    ssl_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = _resolve_ssl_file_path(
+        ssl_dir, os.getenv("WEB_SSL_CERT_FILE", ""), "tls.crt"
+    )
+    key_path = _resolve_ssl_file_path(
+        ssl_dir, os.getenv("WEB_SSL_KEY_FILE", ""), "tls.key"
+    )
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cert_exists = cert_path.exists()
+    key_exists = key_path.exists()
+    generated = False
+    if cert_exists != key_exists:
+        raise ValueError(
+            f"Both TLS files must exist together. cert={cert_path} key={key_path}"
+        )
+    if not cert_exists and not key_exists:
+        common_name = (
+            str(os.getenv("WEB_SSL_COMMON_NAME", "")).strip()
+            or urlparse(str(os.getenv("WEB_PUBLIC_BASE_URL", "")).strip()).hostname
+            or "localhost"
+        )
+        _build_self_signed_certificate(cert_path, key_path, common_name)
+        generated = True
+        if logger:
+            logger.warning(
+                "Generated default self-signed HTTPS certificate at %s and %s. Replace these files with your own trusted certificate if desired.",
+                cert_path,
+                key_path,
+            )
+
+    if harden_file_permissions:
+        _chmod_if_possible(ssl_dir, 0o700)
+        _chmod_if_possible(cert_path, 0o600)
+        _chmod_if_possible(key_path, 0o600)
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    return context, cert_path, key_path, generated
+
+
 def _read_env_value(file_values: dict, key: str):
     direct_value = file_values.get(key, os.getenv(key, ""))
     if str(direct_value or "").strip():
@@ -1261,6 +1420,7 @@ def _validate_env_updates(updated_values: dict):
             "WEB_ENFORCE_CSRF",
             "WEB_ENFORCE_SAME_ORIGIN_POSTS",
             "WEB_HARDEN_FILE_PERMISSIONS",
+            "WEB_HTTPS_ENABLED",
         } and value.lower() not in truthy_values:
             errors.append(
                 f"{key} must be true/false (or 1/0, yes/no, on/off)."
@@ -1667,7 +1827,8 @@ def _render_layout(
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-            <option value="{{ url_for('settings') }}">Settings</option>
+            <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+            <option value="{{ url_for('settings') }}">Global Settings</option>
             <option value="{{ url_for('public_observability') }}">Observability</option>
             <option value="{{ url_for('admin_logs') }}">Logs</option>
             <option value="{{ url_for('documentation') }}">Documentation</option>
@@ -1785,6 +1946,8 @@ def create_web_app(
     default_admin_email: str,
     default_admin_password: str,
     on_get_guilds=None,
+    on_get_guild_settings=None,
+    on_save_guild_settings=None,
     on_env_settings_saved=None,
     on_get_tag_responses=None,
     on_save_tag_responses=None,
@@ -2003,6 +2166,9 @@ def create_web_app(
             os.chmod(users_file.parent, 0o700)
         except (PermissionError, OSError):
             pass
+        ssl_dir = _get_web_ssl_dir(data_dir)
+        if ssl_dir.exists():
+            _chmod_if_possible(ssl_dir, 0o700)
         if env_file.exists():
             try:
                 os.chmod(env_file, 0o600)
@@ -2962,10 +3128,16 @@ def create_web_app(
             "Open Reddit Feeds",
         )
         add_dashboard_card(
+            "Guild Settings",
+            "Set server-specific channels and role-based defaults for the selected Discord server.",
+            url_for("guild_settings"),
+            "Open Guild Settings",
+        )
+        add_dashboard_card(
             "Settings",
-            "Edit runtime environment settings with channel and role dropdowns.",
+            "Edit global runtime environment settings shared across all Discord servers.",
             url_for("settings"),
-            "Open Settings",
+            "Open Global Settings",
         )
         add_dashboard_card(
             "Observability",
@@ -4131,6 +4303,159 @@ def create_web_app(
             "Command Permissions", body, user["email"], bool(user.get("is_admin"))
         )
 
+    @app.route("/admin/guild-settings", methods=["GET", "POST"])
+    @login_required
+    def guild_settings():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Guild settings callbacks are not configured."}
+        )
+        discord_catalog = (
+            on_get_discord_catalog(selected_guild_id)
+            if callable(on_get_discord_catalog)
+            else None
+        )
+        channel_options = []
+        role_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                channel_options = discord_catalog.get("channels", []) or []
+                role_options = discord_catalog.get("roles", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
+        text_channel_options = [
+            option
+            for option in channel_options
+            if str(option.get("type") or "").strip().lower() == "text"
+        ]
+
+        if request.method == "POST":
+            if not callable(on_save_guild_settings):
+                flash("Guild settings save callback is not configured.", "error")
+            else:
+                payload = {
+                    "bot_log_channel_id": request.form.get("bot_log_channel_id", ""),
+                    "mod_log_channel_id": request.form.get("mod_log_channel_id", ""),
+                    "firmware_notify_channel_id": request.form.get(
+                        "firmware_notify_channel_id", ""
+                    ),
+                    "access_role_id": request.form.get("access_role_id", ""),
+                }
+                response = on_save_guild_settings(
+                    payload, user["email"], selected_guild_id
+                )
+                if not isinstance(response, dict):
+                    flash("Invalid response from guild settings handler.", "error")
+                elif not response.get("ok"):
+                    flash(
+                        str(response.get("error") or "Failed to update guild settings."),
+                        "error",
+                    )
+                else:
+                    settings_payload = response
+                    flash(
+                        str(response.get("message") or "Guild settings updated."),
+                        "success",
+                    )
+
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            error_text = (
+                str(settings_payload.get("error") or "Unable to load guild settings.")
+                if isinstance(settings_payload, dict)
+                else "Unable to load guild settings."
+            )
+            body = (
+                "<div class='card'><h2>Guild Settings</h2>"
+                f"<p class='muted'>Could not load guild settings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
+
+        current_settings = settings_payload.get("settings", {}) or {}
+        effective_settings = settings_payload.get("effective", {}) or {}
+        catalog_note = ""
+        if text_channel_options or role_options:
+            catalog_note = (
+                f"<p class='muted'>Loaded live Discord options from <strong>{escape(guild_name)}</strong>. "
+                f"Text channels: {len(text_channel_options)}; Roles: {len(role_options)}.</p>"
+            )
+        elif catalog_error:
+            catalog_note = (
+                f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
+            )
+
+        bot_log_select = _render_select_input(
+            "bot_log_channel_id",
+            str(current_settings.get("bot_log_channel_id") or ""),
+            text_channel_options,
+            placeholder="Use global fallback",
+        )
+        mod_log_select = _render_select_input(
+            "mod_log_channel_id",
+            str(current_settings.get("mod_log_channel_id") or ""),
+            text_channel_options,
+            placeholder="Use global fallback",
+        )
+        firmware_select = _render_select_input(
+            "firmware_notify_channel_id",
+            str(current_settings.get("firmware_notify_channel_id") or ""),
+            text_channel_options,
+            placeholder="Use global fallback",
+        )
+        access_role_select = _render_select_input(
+            "access_role_id",
+            str(current_settings.get("access_role_id") or ""),
+            role_options,
+            placeholder="No self-assign role",
+        )
+
+        body = f"""
+        <div class="card">
+          <h2>Guild Settings</h2>
+          <p class="muted">These values apply only to <strong>{escape(guild_name)}</strong>. Leave a field blank to use the global fallback.</p>
+          {catalog_note}
+          <form method="post">
+            <table>
+              <thead><tr><th>Setting</th><th>Configured Value</th><th>Effective Value</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>Bot Log Channel</strong><div class="muted mono">bot_log_channel_id</div></td>
+                  <td>{bot_log_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("bot_log_channel_id") or ""))}</td>
+                </tr>
+                <tr>
+                  <td><strong>Moderation Log Channel</strong><div class="muted mono">mod_log_channel_id</div></td>
+                  <td>{mod_log_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("mod_log_channel_id") or ""))}</td>
+                </tr>
+                <tr>
+                  <td><strong>Firmware Notify Channel</strong><div class="muted mono">firmware_notify_channel_id</div></td>
+                  <td>{firmware_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("firmware_notify_channel_id") or ""))}</td>
+                </tr>
+                <tr>
+                  <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
+                  <td>{access_role_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("access_role_id") or ""))}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style="margin-top:14px;">
+              <button class="btn" type="submit">Save Guild Settings</button>
+            </div>
+          </form>
+        </div>
+        """
+        return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
+
     @app.route("/admin/settings", methods=["GET", "POST"])
     @login_required
     def settings():
@@ -4304,8 +4629,8 @@ def create_web_app(
             catalog_note = f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
 
         body = (
-            "<div class='card'><h2>Environment Settings</h2>"
-            "<p class='muted'>These map to runtime bot settings and persist in .env.</p>"
+            "<div class='card'><h2>Global Environment Settings</h2>"
+            "<p class='muted'>These map to runtime bot settings shared across all Discord servers and persist in .env.</p>"
             + (
                 f"<p class='muted'>Discord dropdown data is loaded from the selected server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong>.</p>"
                 if selected_guild_id
@@ -4315,12 +4640,18 @@ def create_web_app(
             + "<form method='post'><table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table><div style='margin-top:14px;'><button class='btn' type='submit'>Save Settings</button></div></form></div>"
         )
-        return _render_page("Settings", body, user["email"], bool(user.get("is_admin")))
+        return _render_page("Global Settings", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/tag-responses", methods=["GET", "POST"])
     @login_required
     def tag_responses():
         user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        selected_guild_name = str(selected_guild.get("name") or "Unknown")
         path = Path(tag_responses_file)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -4334,7 +4665,9 @@ def create_web_app(
                     if not isinstance(key, str) or not isinstance(value, str):
                         raise ValueError("All tag keys/values must be strings")
                 if callable(on_save_tag_responses):
-                    response = on_save_tag_responses(parsed, user["email"])
+                    response = on_save_tag_responses(
+                        parsed, user["email"], selected_guild_id
+                    )
                     if not isinstance(response, dict):
                         raise ValueError(
                             "Invalid response from tag response save handler"
@@ -4346,13 +4679,13 @@ def create_web_app(
                 else:
                     path.write_text(json.dumps(parsed, indent=2) + "\n")
                 if callable(on_tag_responses_saved):
-                    on_tag_responses_saved()
+                    on_tag_responses_saved(selected_guild_id)
                 flash("Tag responses updated.", "success")
             except Exception as exc:
                 flash(f"Invalid tag JSON: {exc}", "error")
 
         if callable(on_get_tag_responses):
-            response = on_get_tag_responses()
+            response = on_get_tag_responses(selected_guild_id)
             if isinstance(response, dict) and response.get("ok"):
                 current_mapping = response.get("mapping", {}) or {}
                 current = json.dumps(current_mapping, indent=2) + "\n"
@@ -4375,7 +4708,7 @@ def create_web_app(
         body = f"""
         <div class="card">
           <h2>Tag Responses</h2>
-          <p class="muted">Edit the tag-to-response JSON mapping used by slash and message tag commands.</p>
+          <p class="muted">Edit the tag-to-response JSON mapping used by slash and message tag commands in <strong>{escape(selected_guild_name)}</strong>.</p>
           <form method="post">
             <textarea name="tag_json">{escaped_current}</textarea>
             <div style="margin-top:14px;">
@@ -4793,12 +5126,16 @@ def create_web_app(
 def start_web_admin_interface(
     host: str,
     port: int,
+    https_port: int,
+    https_enabled: bool,
     data_dir: str,
     env_file_path: str,
     tag_responses_file: str,
     default_admin_email: str,
     default_admin_password: str,
     on_get_guilds=None,
+    on_get_guild_settings=None,
+    on_save_guild_settings=None,
     on_env_settings_saved=None,
     on_get_tag_responses=None,
     on_save_tag_responses=None,
@@ -4822,6 +5159,8 @@ def start_web_admin_interface(
         default_admin_email=default_admin_email,
         default_admin_password=default_admin_password,
         on_get_guilds=on_get_guilds,
+        on_get_guild_settings=on_get_guild_settings,
+        on_save_guild_settings=on_save_guild_settings,
         on_env_settings_saved=on_env_settings_saved,
         on_get_tag_responses=on_get_tag_responses,
         on_save_tag_responses=on_save_tag_responses,
@@ -4838,6 +5177,55 @@ def start_web_admin_interface(
         on_request_restart=on_request_restart,
         logger=logger,
     )
+    servers = []
+    threads = []
+
+    def _serve_forever(server, name: str):
+        thread = threading.Thread(target=server.serve_forever, name=name, daemon=True)
+        thread.start()
+        threads.append(thread)
+        return thread
+
+    http_server = make_server(host, port, app, threaded=True)
+    servers.append(http_server)
+    _serve_forever(http_server, "web_admin_http")
     if logger:
         logger.info("Starting web admin interface on http://%s:%s", host, port)
-    app.run(host=host, port=port, debug=False, use_reloader=False)
+
+    if https_enabled:
+        ssl_context, cert_path, key_path, generated = _ensure_https_ssl_context(
+            data_dir=data_dir,
+            harden_file_permissions=_is_truthy_env_value(
+                os.getenv("WEB_HARDEN_FILE_PERMISSIONS", "true")
+            ),
+            logger=logger,
+        )
+        https_server = make_server(
+            host, https_port, app, threaded=True, ssl_context=ssl_context
+        )
+        servers.append(https_server)
+        _serve_forever(https_server, "web_admin_https")
+        if logger:
+            logger.info(
+                "Starting web admin interface on https://%s:%s using cert=%s key=%s%s",
+                host,
+                https_port,
+                cert_path,
+                key_path,
+                " (generated self-signed)" if generated else "",
+            )
+
+    try:
+        while True:
+            for thread in threads:
+                if not thread.is_alive():
+                    raise RuntimeError(
+                        f"Web admin listener thread stopped unexpectedly: {thread.name}"
+                    )
+            time.sleep(1)
+    finally:
+        for server in servers:
+            try:
+                server.shutdown()
+            except Exception:
+                pass

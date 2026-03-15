@@ -10,6 +10,9 @@ Persistent runtime state uses:
 | File | Purpose |
 |---|---|
 | `${DATA_DIR}/bot_data.db` | Primary SQLite database for runtime and config state |
+| `${DATA_DIR}/ssl/` | HTTPS certificate directory used by the built-in web listener |
+| `${DATA_DIR}/ssl/tls.crt` | Built-in HTTPS certificate (generated self-signed if missing) |
+| `${DATA_DIR}/ssl/tls.key` | Built-in HTTPS private key (generated self-signed if missing) |
 | `${LOG_DIR}/bot.log` | Application/runtime logs |
 | `${LOG_DIR}/bot_log.log` | Mirror of payloads sent (or attempted) to bot log channels |
 | `${LOG_DIR}/container_errors.log` | Error-focused log file used by `/logs` command |
@@ -51,6 +54,8 @@ When enabled (`WEB_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 - `.env` -> `0600`
 - `data/` directory -> `0700`
 - `bot_data.db` -> `0600`
+- `${DATA_DIR}/ssl/` -> `0700`
+- TLS certificate/key -> `0600`
 
 When enabled (`LOG_HARDEN_FILE_PERMISSIONS=true`), application attempts:
 

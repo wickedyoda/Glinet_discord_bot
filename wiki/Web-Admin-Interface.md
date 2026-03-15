@@ -9,7 +9,10 @@ Password-protected admin UI for runtime bot and policy management.
 ## Access and Session Model
 
 - Default bind: `WEB_BIND_HOST=127.0.0.1`, `WEB_PORT=8080`
+- Built-in HTTPS bind: `WEB_HTTPS_PORT=8081`
 - Typical container bind: `WEB_BIND_HOST=0.0.0.0` with host/proxy controls
+- If no TLS files exist, the bot generates a self-signed certificate under `${DATA_DIR}/ssl/`.
+- Replace `${DATA_DIR}/ssl/tls.crt` and `${DATA_DIR}/ssl/tls.key` with your own files if you want a browser-trusted HTTPS listener.
 - Login uses email + password (web-only account model)
 - Optional "Keep me signed in" extends session to 5 days on device
 - Inactivity timeout is configurable: 5 to 30 minutes in 5-minute steps
@@ -76,6 +79,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Dashboard includes direct action buttons/cards for major admin workflows.
 - Mobile layout is responsive for smaller screens and touch interaction.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
+- Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 
 ## Admin Pages and Capabilities
 
@@ -89,6 +93,16 @@ UI forms include show/hide password toggles and validation feedback.
 
 - Server dashboard overview
 - Quick links to settings, users, moderation tooling, and logs-related actions for the selected server
+
+### `/admin/guild-settings`
+
+- Scoped to the selected server
+- Per-guild overrides for:
+  - bot log channel
+  - moderation log channel
+  - firmware notify channel
+  - self-assign access role
+- Blank values fall back to the global runtime environment settings
 
 ### `/admin/settings`
 
@@ -130,7 +144,7 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/tag-responses`
 
-- JSON tag editor
+- JSON tag editor scoped to the selected server
 - Save + runtime reload
 - Dynamic slash refresh trigger (restart not required)
 

@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-15] - Dual Web GUI HTTP/HTTPS Listeners
+
+### Added
+- Built-in HTTPS listener for the web GUI on port `8081` alongside HTTP on `8080`.
+- Automatic self-signed certificate generation in `${DATA_DIR}/ssl/` when no user-provided TLS files exist.
+- Configurable TLS file locations and HTTPS port environment variables.
+
+### Changed
+- Docker packaging now exposes both `8080` and `8081`.
+- Compose and environment examples now include HTTPS listener variables and port mappings.
+- Wiki documentation now describes the generated default certificate and how to replace it with a trusted certificate.
+
+## [2026-03-15] - Multi-Guild Runtime Expansion
+
+### Added
+- New `/admin/guild-settings` page in the web GUI for selected-server overrides.
+- Per-guild web-managed settings for:
+  - bot log channel
+  - moderation log channel
+  - firmware notification channel
+  - self-assign access role
+
+### Changed
+- Slash-command sync now runs per joined guild instead of only the primary configured guild.
+- Dynamic tag responses are now stored per guild and refreshed per guild.
+- Invite-role mappings and 6-digit access codes are now stored per guild.
+- Server-event and moderation log routing now resolves per guild before falling back to global environment values.
+- Firmware notifications now resolve configured channels across joined guilds instead of assuming a single primary guild.
+- Web GUI tag-response editing now uses the selected guild context instead of one global JSON mapping.
+- Global environment settings remain shared, but guild-owned settings are now split out from the global settings page.
+
 ## [2026-03-15] - Bot Identity Naming
 
 ### Changed
