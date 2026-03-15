@@ -1089,8 +1089,6 @@ def ensure_db_schema():
                 ON reddit_feed_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_seen_posts_feed_id
                 ON reddit_feed_seen_posts(feed_id);
-            CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_guild_id
-                ON youtube_subscriptions(guild_id);
             CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_enabled
                 ON youtube_subscriptions(enabled);
             """
@@ -1243,6 +1241,76 @@ def ensure_db_schema():
             """
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
                 ON reddit_feed_subscriptions(guild_id)
+            """
+        )
+
+        youtube_subscription_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(youtube_subscriptions)").fetchall()}
+        if "guild_id" not in youtube_subscription_columns:
+            conn.executescript(
+                """
+                CREATE TABLE youtube_subscriptions_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    source_url TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    channel_title TEXT NOT NULL,
+                    target_channel_id INTEGER NOT NULL,
+                    target_channel_name TEXT NOT NULL,
+                    last_video_id TEXT NOT NULL DEFAULT '',
+                    last_video_title TEXT NOT NULL DEFAULT '',
+                    last_published_at TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    created_by_email TEXT NOT NULL DEFAULT '',
+                    updated_by_email TEXT NOT NULL DEFAULT '',
+                    UNIQUE(guild_id, channel_id, target_channel_id)
+                );
+                INSERT INTO youtube_subscriptions_new (
+                    id,
+                    guild_id,
+                    source_url,
+                    channel_id,
+                    channel_title,
+                    target_channel_id,
+                    target_channel_name,
+                    last_video_id,
+                    last_video_title,
+                    last_published_at,
+                    enabled,
+                    created_at,
+                    updated_at,
+                    created_by_email,
+                    updated_by_email
+                )
+                SELECT
+                    id,
+                    0,
+                    source_url,
+                    channel_id,
+                    channel_title,
+                    target_channel_id,
+                    target_channel_name,
+                    last_video_id,
+                    last_video_title,
+                    last_published_at,
+                    enabled,
+                    created_at,
+                    updated_at,
+                    created_by_email,
+                    updated_by_email
+                FROM youtube_subscriptions;
+                DROP TABLE youtube_subscriptions;
+                ALTER TABLE youtube_subscriptions_new RENAME TO youtube_subscriptions;
+                CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_enabled
+                    ON youtube_subscriptions(enabled);
+                """
+            )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_guild_id
+                ON youtube_subscriptions(guild_id)
             """
         )
 
