@@ -1,0 +1,74 @@
+name: Container Security Scan
+
+on:
+  pull_request:
+    branches:
+      - main
+      - beta
+  push:
+    branches:
+      - main
+      - beta
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  trivy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Build Docker image
+        run: docker build -t local/discord-invite-bot:${{ github.sha }} .
+
+      - name: Install Trivy CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | gpg --dearmor | sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+          trivy --version
+
+      - name: Generate Trivy SARIF report
+        continue-on-error: true
+        run: |
+          trivy image \
+            --db-repository "${TRIVY_DB_REPOSITORY}" \
+            --format sarif \
+            --output trivy-image.sarif \
+            --scanners vuln \
+            --pkg-types os,library \
+            --severity HIGH,CRITICAL \
+            --ignore-unfixed \
+            --exit-code 0 \
+            local/discord-invite-bot:${{ github.sha }}
+
+      - name: Upload Trivy SARIF to code scanning
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+
+      - name: Enforce Trivy policy (critical vulnerabilities)
+        run: |
+          trivy image \
+            --db-repository "${TRIVY_DB_REPOSITORY}" \
+            --format table \
+            --scanners vuln \
+            --pkg-types os,library \
+            --severity CRITICAL \
+            --ignore-unfixed \
+            --exit-code 1 \
+            local/discord-invite-bot:${{ github.sha }}

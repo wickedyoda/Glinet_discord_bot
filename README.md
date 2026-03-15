@@ -1,209 +1,133 @@
-# Discord Invite + Utility Bot
+# WickedYoda'sLittleHelper
 
-Discord bot for GL.iNet community operations:
-- Role-bound invite links and 6-digit access codes
-- Search across GL.iNet forum/docs
-- Country code nickname suffix (` - CC`)
-- Moderator actions (ban, kick+prune, timeout)
-- Moderation + server event logging to a dedicated logs channel
+<p align="center">
+  <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
+  <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Logo (Full)" width="240" />
+</p>
 
-## Features
+Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper` identity, with invite/code role access, moderation tools, search helpers, firmware monitoring, and a secured web admin GUI.
 
-1. Role Invite/Code Access
-- `/submitrole` generates:
-  - Permanent invite link
-  - 6-digit code
-- Members joining via invite or entering code with `/enter_role` get the mapped role.
-- `/getaccess` gives a default configured role.
-- `/bulk_assign_role_csv` (moderators) prompts for:
-  - A target role mention
-  - A CSV upload of Discord names (comma-separated)
-  Then bulk-assigns that role and reports unmatched/ambiguous names.
+## Documentation
 
-2. Tag Auto-Replies
-- Message-based tags from `data/tag_responses.json` (example: `!betatest`).
-- Tags are also exposed as slash commands at startup (dynamic registration).
-- `!list` shows available tag commands.
+Detailed feature behavior, deployment options, environment variables, proxy variations, and security guidance are maintained in the wiki.
 
-3. Search Commands
-- Combined:
-  - `/search`
-  - `!search`
-- Source-specific:
-  - Forum: `/search_forum`, `!searchforum`
-  - KVM docs: `/search_kvm`, `!searchkvm`
-  - IoT docs: `/search_iot`, `!searchiot`
-  - Router docs v4: `/search_router`, `!searchrouter`
+- Wiki home: [`wiki/Home.md`](./wiki/Home.md)
+- GitHub wiki page: [https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md](https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md)
+- Public repo landing redirect target: [http://discord.glinet.wickedyoda.com/](http://discord.glinet.wickedyoda.com/)
+- Public wiki redirect target: [http://discord.glinet.wickedyoda.com/wiki](http://discord.glinet.wickedyoda.com/wiki)
 
-4. Country Nickname
-- Set: `/country US` or `!country US`
-- Clear: `/clear_country` or `!clearcountry`
-- Format is always: `display_name - CC` (uppercase country code).
+## Quick Start (Docker)
 
-5. Moderator Commands (ID-restricted)
-- `/ban_member`, `!banmember`
-- `/kick_member`, `!kickmember` (includes message prune window, default 72h)
-- `/timeout_member`, `!timeoutmember` (durations like `30m`, `2h`, `1d`)
-- `/modlog_test`, `!modlogtest` to verify logs channel delivery
+1. Copy env template:
 
-6. Logging
-- Moderation actions are logged to `MOD_LOG_CHANNEL_ID`.
-- Additional server events logged to same channel:
-  - Message deletions (single + bulk)
-  - Username/global name changes
-  - Avatar changes
-  - Member joins/leaves
-  - Invite creation
-  - Channel/category create/delete
-  - Role creation
-  - Role add/remove on members
+```bash
+cp .env.example .env
+```
 
-7. Firmware Mirror Monitor
-- Polls `https://gl-fw.remotetohome.io/` (or custom URL) on a schedule.
-- Detects newly added firmware rows by model/track/version/files.
-- Posts a notification to `firmware_notification_channel` with:
-  - Model, track, version, date
-  - Download links + SHA256
-  - Release notes excerpt
-- Uses `data/firmware_seen.json` to persist seen entries across restarts.
+2. Set required values in `.env`:
 
-## Command Reference
-
-| Slash Command | Prefix Command | Access |
-|---|---|---|
-| `/submitrole` | N/A | `Employee`, `Admin`, `Gl.iNet Moderator` role names |
-| `/bulk_assign_role_csv` | N/A | Moderator role IDs only (see env vars) |
-| `/enter_role` | N/A | Any member |
-| `/getaccess` | N/A | Any member |
-| Dynamic tag commands (from JSON) | Tag text (e.g. `!betatest`) | Any member |
-| N/A | `!list` | Any member |
-| `/search` | `!search` | Any member |
-| `/search_forum` | `!searchforum` | Any member |
-| `/search_kvm` | `!searchkvm` | Any member |
-| `/search_iot` | `!searchiot` | Any member |
-| `/search_router` | `!searchrouter` | Any member |
-| `/country` | `!country` | Any member |
-| `/clear_country` | `!clearcountry` | Any member |
-| `/ban_member` | `!banmember` | Moderator role IDs only (see env vars) |
-| `/kick_member` | `!kickmember` | Moderator role IDs only (see env vars) |
-| `/timeout_member` | `!timeoutmember` | Moderator role IDs only (see env vars) |
-| `/modlog_test` | `!modlogtest` | Moderator role IDs only (see env vars) |
-
-## Environment Variables
-
-Required:
 - `DISCORD_TOKEN`
 - `GUILD_ID`
+- `WEB_ADMIN_DEFAULT_PASSWORD` (required when no web users exist yet)
 
-Optional:
-- `GENERAL_CHANNEL_ID` (used for invite generation; defaults to command channel)
-- `DATA_DIR` (default `data`)
-- `LOG_LEVEL` (default `INFO`)
-- `FORUM_BASE_URL` (default `https://forum.gl-inet.com`)
-- `FORUM_MAX_RESULTS` (default `5`)
-- `DOCS_MAX_RESULTS_PER_SITE` (default `2`)
-- `DOCS_INDEX_TTL_SECONDS` (default `3600`)
-- `SEARCH_RESPONSE_MAX_CHARS` (default `1900`)
-- `KICK_PRUNE_HOURS` (default `72`)
-- `MODERATOR_ROLE_ID` (default `1294957416294645771`)
-- `ADMIN_ROLE_ID` (default `1138302148292116551`)
-- `MOD_LOG_CHANNEL_ID` (default `1311820410269995009`)
-- `CSV_ROLE_ASSIGN_MAX_NAMES` (default `500`)
-- `firmware_notification_channel` (required to enable firmware alerts; channel ID or `<#channel>` mention)
-- `FIRMWARE_FEED_URL` (default `https://gl-fw.remotetohome.io/`)
-- `firmware_check_schedule` (cron, 5-field, UTC; default `*/30 * * * *`)
-- `FIRMWARE_REQUEST_TIMEOUT_SECONDS` (default `30`)
-- `FIRMWARE_RELEASE_NOTES_MAX_CHARS` (default `900`)
+3. Start:
 
-Example `.env`:
-```env
-DISCORD_TOKEN=your_bot_token
-GUILD_ID=your_guild_id
-GENERAL_CHANNEL_ID=your_general_channel_id
-LOG_LEVEL=INFO
-FORUM_BASE_URL=https://forum.gl-inet.com
-FORUM_MAX_RESULTS=5
-DOCS_MAX_RESULTS_PER_SITE=2
-DOCS_INDEX_TTL_SECONDS=3600
-SEARCH_RESPONSE_MAX_CHARS=1900
-KICK_PRUNE_HOURS=72
-MODERATOR_ROLE_ID=1294957416294645771
-ADMIN_ROLE_ID=1138302148292116551
-MOD_LOG_CHANNEL_ID=1311820410269995009
-CSV_ROLE_ASSIGN_MAX_NAMES=500
-firmware_notification_channel=123456789012345678
-FIRMWARE_FEED_URL=https://gl-fw.remotetohome.io/
-firmware_check_schedule=*/30 * * * *
-FIRMWARE_REQUEST_TIMEOUT_SECONDS=30
-FIRMWARE_RELEASE_NOTES_MAX_CHARS=900
-```
-
-## Docker
-
-Repository `docker-compose.yml`:
-```yaml
-version: "3.9"
-services:
-  discord-bot:
-    build:
-      context: .
-    container_name: discord_role_bot
-    env_file: .env
-    volumes:
-      - ./data:/app/data
-    restart: unless-stopped
-```
-
-Run:
 ```bash
 docker compose up -d --build
 ```
 
-View logs:
-```bash
-docker logs -f discord_role_bot
+4. Open web admin:
+
+```text
+http://localhost:8080
+https://localhost:8081
 ```
 
-## Discord Requirements
+If no certificate is present, the bot generates a default self-signed certificate in `${DATA_DIR}/ssl/`. Replace the generated files with your own certificate and key if you want a browser-trusted deployment.
 
-Bot intents:
-- Message Content Intent
-- Server Members Intent
+## Architecture Support
 
-Bot permissions:
-- View Channels
-- Send Messages
-- Read Message History
-- Use Application Commands
-- Manage Roles
-- Create Instant Invite
-- Manage Guild (for invite tracking behavior)
-- Manage Messages (for prune + deletion visibility)
-- Kick Members
-- Ban Members
-- Moderate Members
+- Native local builds (`docker compose up -d --build`) run on the host architecture (Apple Silicon `arm64` or Intel/AMD `amd64`).
+- Published GHCR images are built as a multi-arch manifest for:
+  - `linux/amd64`
+  - `linux/arm64`
+- Optional multi-arch publish command:
 
-## Data Files
+```bash
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t ghcr.io/<owner>/discord_invite_bot:multiarch-test \
+  --push \
+  .
+```
 
-Stored under `data/` (or `DATA_DIR`):
-- `access_role.txt`
-- `role_codes.txt`
-- `invite_roles.json`
-- `tag_responses.json`
-- `bot.log`
-- `firmware_seen.json`
+- Optional host-native local test image command:
+
+```bash
+docker compose build
+```
+
+## What It Includes
+
+- Role access via invite links and 6-digit access codes
+- Bulk CSV role assignment
+- Dynamic tag responses (`!tag` + slash variants)
+- Source-specific search commands for GL.iNet forums, OpenWrt forums, Reddit, and docs
+- Country nickname suffix commands
+- Extended moderation commands and event logging
+- Firmware monitor (baseline + delta notifications)
+- Web-managed Reddit feed posting for new subreddit submissions
+- Web admin GUI with server selection, guild-scoped management pages, and per-guild channel/tag/invite settings
+- SQLite persistence with legacy merge import on startup
+
+## Where To Find Details
+
+- Full command list and role restrictions: [`wiki/Command-Reference.md`](./wiki/Command-Reference.md)
+- Web admin pages and workflows: [`wiki/Web-Admin-Interface.md`](./wiki/Web-Admin-Interface.md)
+- Environment variables (complete): [`wiki/Environment-Variables.md`](./wiki/Environment-Variables.md)
+- Docker and Portainer deployment variants: [`wiki/Docker-and-Portainer-Deploy.md`](./wiki/Docker-and-Portainer-Deploy.md)
+- Reverse proxy setups (Nginx, Caddy, Traefik, Apache, HAProxy): [`wiki/Reverse-Proxy-Web-GUI.md`](./wiki/Reverse-Proxy-Web-GUI.md)
+- Security controls and hardening checklist: [`wiki/Security-Hardening.md`](./wiki/Security-Hardening.md)
+- Data and log file layout: [`wiki/Data-Files.md`](./wiki/Data-Files.md)
+
+## Runtime Data and Logs
+
+- Primary DB: `${DATA_DIR}/bot_data.db`
+- App log: `${LOG_DIR}/bot.log`
+- Bot channel mirror log: `${LOG_DIR}/bot_log.log`
+- Error log used by `/logs`: `${LOG_DIR}/container_errors.log`
+- Web GUI interaction audit log: `${LOG_DIR}/web_gui_audit.log`
+
+Defaults:
+
+- `DATA_DIR=data`
+- `LOG_DIR=/logs`
+- `LOG_HARDEN_FILE_PERMISSIONS=true` (enforces `0700` on log dir and `0600` on log files when possible)
+- `LOG_RETENTION_DAYS=90`
+- `LOG_ROTATION_INTERVAL_DAYS=1`
 
 ## Security
 
-- Never commit `.env`.
-- Rotate credentials immediately if exposed.
+- No public web signup; web users are admin-created.
+- Password policy and 90-day password rotation are enforced.
+- CSRF and session hardening are enabled by default.
+- Deployment hardening guidance: [`wiki/Security-Hardening.md`](./wiki/Security-Hardening.md)
+- Project Terms of Service and Privacy Policy: [https://wickedyoda.com/?p=3460](https://wickedyoda.com/?p=3460)
+- Discord developer terms: [https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service](https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service)
+
+## Contributing
+
+Use complete commit and PR descriptions for all changes.
+
+- Contributor guide: [`CONTRIBUTING.md`](./CONTRIBUTING.md)
 
 ## License
 
-This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
-See [`LICENSE`](./LICENSE) for the full text.
+- License text: [`LICENSE`](./LICENSE)
+- Additional rights/policy summary: [`LICENSE.md`](./LICENSE.md)
 
 ## Maintainer
 
-Created and maintained by [WickedYoda](https://wickedyoda.com)  
-Support Discord: https://discord.gg/m6UjX6UhKe
+Created and maintained by [WickedYoda](https://wickedyoda.com)
+
+Support Discord: [https://discord.gg/m6UjX6UhKe](https://discord.gg/m6UjX6UhKe)
