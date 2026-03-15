@@ -61,6 +61,17 @@ Web variation:
 | `/search_router` | Slash | Member/Public | query text | Router docs v4 source |
 | `!searchrouter` | Prefix | Member/Public | query text | Prefix router docs search |
 
+## Utility Commands
+
+| Command | Type | Default Access | Parameters | Notes |
+|---|---|---|---|---|
+| `/ping` | Slash | Member/Public | none | Basic bot responsiveness check |
+| `/sayhi` | Slash | Member/Public | none | Sends a short greeting |
+| `/happy` | Slash | Member/Public | none | Sends a random puppy image when enabled |
+| `/shorten` | Slash | Member/Public | `url` | Creates a shortened URL using the configured shortener |
+| `/expand` | Slash | Member/Public | shortened URL or code | Expands a shortened URL |
+| `/uptime` | Slash | Member/Public | none | Reads the configured uptime/status summary when enabled |
+
 ## Country Nickname Commands
 
 | Command | Type | Default Access | Parameters | Notes |

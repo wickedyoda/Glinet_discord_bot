@@ -4,7 +4,7 @@
   <img src="../assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
 </p>
 
-This wiki is the complete operations and feature reference for the Discord Invite + Utility Bot.
+This wiki is the complete operations and feature reference for `WickedYoda'sLittleHelper`.
 
 ## Platform Summary
 
@@ -14,10 +14,13 @@ Core capabilities:
 - Bulk CSV role assignment with rich result reporting
 - Tag auto-replies and dynamic slash command generation
 - Source-specific search helpers for GL.iNet forums, OpenWrt forums, Reddit, and docs
+- Utility commands for ping, uptime/status, URL shortening/expansion, and quick greeting/image helpers
 - Country suffix nickname utilities
 - Moderation tooling for members, roles, and event logs
 - Firmware feed monitor with scheduled notification delivery
-- Secure web admin interface with per-command permissions and user management
+- YouTube feed monitor with channel-to-Discord posting
+- Secure web admin interface with per-command permissions, action history, YouTube subscriptions, and user management
+- Multi-guild admin model with optional managed-guild allowlist filtering
 - SQLite-backed persistence with legacy merge imports on startup
 
 ## Read by Goal

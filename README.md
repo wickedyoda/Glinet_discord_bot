@@ -5,7 +5,7 @@
   <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Logo (Full)" width="240" />
 </p>
 
-Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper` identity, with invite/code role access, moderation tools, search helpers, firmware monitoring, and a secured web admin GUI.
+Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper` identity, with invite/code role access, moderation tools, search helpers, firmware and YouTube monitoring, utility commands, and a secured multi-guild web admin GUI.
 
 ## Documentation
 
@@ -71,14 +71,18 @@ docker compose build
 
 - Role access via invite links and 6-digit access codes
 - Bulk CSV role assignment
-- Dynamic tag responses (`!tag` + slash variants)
+- Dynamic guild-scoped tag responses (`!tag` + slash variants)
 - Source-specific search commands for GL.iNet forums, OpenWrt forums, Reddit, and docs
+- Utility commands for `ping`, uptime/status, URL shortening/expansion, and quick image/greeting helpers
 - Country nickname suffix commands
 - Extended moderation commands and event logging
 - Firmware monitor (baseline + delta notifications)
+- YouTube subscription monitor with channel-to-Discord posting
 - Web-managed Reddit feed posting for new subreddit submissions
-- Web admin GUI with server selection, guild-scoped management pages, and per-guild channel/tag/invite settings
+- Web admin GUI with server selection, guild-scoped management pages, action history, YouTube subscriptions, and per-guild channel/tag/invite settings
+- Optional guild allowlist mode for multi-guild deployments and public invites
 - SQLite persistence with legacy merge import on startup
+- Local verification tooling for lint, tests, security checks, and Docker builds
 
 ## Where To Find Details
 
@@ -87,6 +91,7 @@ docker compose build
 - Environment variables (complete): [`wiki/Environment-Variables.md`](./wiki/Environment-Variables.md)
 - Docker and Portainer deployment variants: [`wiki/Docker-and-Portainer-Deploy.md`](./wiki/Docker-and-Portainer-Deploy.md)
 - Reverse proxy setups (Nginx, Caddy, Traefik, Apache, HAProxy): [`wiki/Reverse-Proxy-Web-GUI.md`](./wiki/Reverse-Proxy-Web-GUI.md)
+- Developer verification workflow: [`scripts/verify.sh`](./scripts/verify.sh)
 - Security controls and hardening checklist: [`wiki/Security-Hardening.md`](./wiki/Security-Hardening.md)
 - Data and log file layout: [`wiki/Data-Files.md`](./wiki/Data-Files.md)
 
