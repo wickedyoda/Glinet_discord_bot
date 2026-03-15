@@ -10,7 +10,7 @@ Tag responses provide quick reusable replies via prefix and dynamic slash comman
 
 ## Data Model
 
-- Tags are key/value entries persisted in SQLite.
+- Tags are key/value entries persisted in the configured database backend.
 - Keys become both lookup keys and slash command names.
 - Values are plain response text.
 

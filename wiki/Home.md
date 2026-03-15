@@ -18,7 +18,7 @@ Core capabilities:
 - Moderation tooling for members, roles, and event logs
 - Firmware feed monitor with scheduled notification delivery
 - Secure web admin interface with per-command permissions and user management
-- SQLite-backed persistence with legacy merge imports on startup
+- MySQL-backed persistence by default with SQLite fallback/import support
 
 ## Read by Goal
 
