@@ -25,9 +25,9 @@ services:
     restart: unless-stopped
 
   discord_invite_bot:
-    image: ${BOT_IMAGE:-ghcr.io/wickedyoda/discord_invite_bot}:${BOT_IMAGE_TAG:-latest}
+    build:
+      context: .
     container_name: discord_role_bot
-    pull_policy: always
     depends_on:
       mysql:
         condition: service_healthy
@@ -72,8 +72,7 @@ volumes:
 Run:
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose up -d --build
 ```
 
 ## Variation B: Reverse Proxy Fronted (Production)
@@ -105,11 +104,6 @@ When Portainer cannot access local `.env` path:
 Example image:
 
 - `ghcr.io/wickedyoda/discord_invite_bot:latest`
-
-Optional image override env vars:
-
-- `BOT_IMAGE`
-- `BOT_IMAGE_TAG`
 
 Recommended persistent volume:
 

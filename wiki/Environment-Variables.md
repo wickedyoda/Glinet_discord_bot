@@ -20,8 +20,6 @@ This page lists all supported environment variables, defaults, and accepted opti
 
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|
-| `BOT_IMAGE` | `ghcr.io/wickedyoda/discord_invite_bot` | GHCR image reference | Compose image repository override |
-| `BOT_IMAGE_TAG` | `latest` | Image tag string | Compose image tag override |
 | `BOT_LOG_CHANNEL_ID` | `0` | Integer, `>= 0` | Bot log/activity channel ID (used for invite fallback and bot activity routing) |
 | `DATA_DIR` | `data` | Path string | Persistent runtime data directory |
 | `LOG_DIR` | `/logs` | Path string | Directory for `bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`, and `web_probe.log` |
