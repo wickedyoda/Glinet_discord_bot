@@ -75,7 +75,7 @@ docker compose build
 - Firmware monitor (baseline + delta notifications)
 - Web-managed Reddit feed posting for new subreddit submissions
 - Web admin GUI with server selection and guild-scoped management pages
-- MySQL persistence by default with SQLite fallback and startup import support
+- SQLite persistence with legacy merge import on startup
 
 ## Where To Find Details
 
@@ -89,13 +89,11 @@ docker compose build
 
 ## Runtime Data and Logs
 
-- Primary DB backend: `MySQL 8`
-- SQLite fallback/import source: `${DATA_DIR}/bot_data.db`
+- Primary DB: `${DATA_DIR}/bot_data.db`
 - App log: `${LOG_DIR}/bot.log`
 - Bot channel mirror log: `${LOG_DIR}/bot_log.log`
 - Error log used by `/logs`: `${LOG_DIR}/container_errors.log`
 - Web GUI interaction audit log: `${LOG_DIR}/web_gui_audit.log`
-- Anonymous unknown-route 404 probe log: `${LOG_DIR}/web_probe.log`
 
 Defaults:
 

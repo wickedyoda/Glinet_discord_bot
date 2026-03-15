@@ -25,20 +25,9 @@ from dotenv import load_dotenv
 import requests
 from bs4 import BeautifulSoup
 from croniter import croniter
+from web_admin import start_web_admin_interface
 
 load_dotenv()
-
-from db_backend import (
-    DB_INTEGRITY_ERROR,
-    get_database_backend,
-    index_exists,
-    get_sqlite_db_path,
-    get_table_columns,
-    is_mysql_backend,
-    open_database_connection,
-    table_exists,
-)
-from web_admin import start_web_admin_interface
 
 # Directory to persist data files. This folder is mounted as a Docker volume
 # so codes and invites survive container rebuilds.
@@ -250,7 +239,6 @@ BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 BOT_CHANNEL_LOG_FILE = os.path.join(LOG_DIR, "bot_log.log")
 CONTAINER_ERROR_LOG_FILE = os.path.join(LOG_DIR, "container_errors.log")
 WEB_GUI_AUDIT_LOG_FILE = os.path.join(LOG_DIR, "web_gui_audit.log")
-WEB_PROBE_LOG_FILE = os.path.join(LOG_DIR, "web_probe.log")
 log_permission_notices = ensure_log_storage_security(
     LOG_DIR,
     [],
@@ -260,28 +248,9 @@ logger = logging.getLogger("invite_bot")
 logger.setLevel(to_logging_level(LOG_LEVEL))
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-
-class MessagePrefixFilter(logging.Filter):
-    def __init__(self, prefix: str, include: bool = True):
-        super().__init__()
-        self.prefix = str(prefix or "")
-        self.include = bool(include)
-
-    def filter(self, record: logging.LogRecord):
-        try:
-            message = str(record.getMessage() or "")
-        except Exception:
-            return False
-        matches = message.startswith(self.prefix)
-        return matches if self.include else not matches
-
-
-exclude_web_probe_filter = MessagePrefixFilter("WEB_PROBE ", include=False)
-
 console_handler = logging.StreamHandler()
 console_handler.setLevel(to_logging_level(LOG_LEVEL))
 console_handler.setFormatter(formatter)
-console_handler.addFilter(exclude_web_probe_filter)
 logger.addHandler(console_handler)
 
 file_handler = SecureTimedRotatingFileHandler(
@@ -292,7 +261,6 @@ file_handler = SecureTimedRotatingFileHandler(
 )
 file_handler.setLevel(to_logging_level(LOG_LEVEL))
 file_handler.setFormatter(formatter)
-file_handler.addFilter(exclude_web_probe_filter)
 logger.addHandler(file_handler)
 
 bot_channel_logger = logging.getLogger("invite_bot.channel")
@@ -309,6 +277,15 @@ bot_channel_handler.setFormatter(formatter)
 bot_channel_logger.addHandler(bot_channel_handler)
 
 
+class WebGuiAuditFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord):
+        try:
+            message = str(record.getMessage() or "")
+        except Exception:
+            return False
+        return message.startswith("WEB_AUDIT ")
+
+
 web_gui_audit_handler = SecureTimedRotatingFileHandler(
     WEB_GUI_AUDIT_LOG_FILE,
     retention_days=LOG_RETENTION_DAYS,
@@ -317,19 +294,8 @@ web_gui_audit_handler = SecureTimedRotatingFileHandler(
 )
 web_gui_audit_handler.setLevel(logging.INFO)
 web_gui_audit_handler.setFormatter(formatter)
-web_gui_audit_handler.addFilter(MessagePrefixFilter("WEB_AUDIT "))
+web_gui_audit_handler.addFilter(WebGuiAuditFilter())
 logger.addHandler(web_gui_audit_handler)
-
-web_probe_handler = SecureTimedRotatingFileHandler(
-    WEB_PROBE_LOG_FILE,
-    retention_days=LOG_RETENTION_DAYS,
-    interval_days=LOG_ROTATION_INTERVAL_DAYS,
-    encoding="utf-8",
-)
-web_probe_handler.setLevel(logging.INFO)
-web_probe_handler.setFormatter(formatter)
-web_probe_handler.addFilter(MessagePrefixFilter("WEB_PROBE "))
-logger.addHandler(web_probe_handler)
 
 container_error_handler = SecureTimedRotatingFileHandler(
     CONTAINER_ERROR_LOG_FILE,
@@ -339,7 +305,6 @@ container_error_handler = SecureTimedRotatingFileHandler(
 )
 container_error_handler.setLevel(to_logging_level(CONTAINER_LOG_LEVEL))
 container_error_handler.setFormatter(formatter)
-container_error_handler.addFilter(exclude_web_probe_filter)
 root_logger = logging.getLogger()
 root_logger.addHandler(container_error_handler)
 log_permission_notices.extend(
@@ -350,7 +315,6 @@ log_permission_notices.extend(
             BOT_CHANNEL_LOG_FILE,
             CONTAINER_ERROR_LOG_FILE,
             WEB_GUI_AUDIT_LOG_FILE,
-            WEB_PROBE_LOG_FILE,
         ],
         LOG_HARDEN_FILE_PERMISSIONS,
     )
@@ -364,26 +328,12 @@ def apply_external_logger_levels():
 
 apply_external_logger_levels()
 logger.info(
-    "Runtime log files: %s | %s | %s | %s | %s",
+    "Runtime log files: %s | %s | %s | %s",
     BOT_LOG_FILE,
     BOT_CHANNEL_LOG_FILE,
     CONTAINER_ERROR_LOG_FILE,
     WEB_GUI_AUDIT_LOG_FILE,
-    WEB_PROBE_LOG_FILE,
 )
-_startup_db_backend = get_database_backend()
-_startup_sqlite_path = get_sqlite_db_path()
-if _startup_db_backend == "mysql":
-    logger.info(
-        "Database backend: mysql host=%s port=%s db=%s import_sqlite_on_boot=%s sqlite_source=%s",
-        str(os.getenv("DB_HOST", "mysql")).strip() or "mysql",
-        str(os.getenv("DB_PORT", "3306")).strip() or "3306",
-        str(os.getenv("DB_NAME", "discord_bot")).strip() or "discord_bot",
-        is_truthy_env_value(os.getenv("DB_IMPORT_SQLITE_ON_BOOT", "true")),
-        _startup_sqlite_path,
-    )
-else:
-    logger.info("Database backend: sqlite path=%s", _startup_sqlite_path)
 if LOG_DIR != "/logs":
     logger.warning(
         "LOG_DIR resolved to %s (not /logs). Set LOG_DIR=/logs to keep logs in /logs.",
@@ -644,21 +594,8 @@ INVITE_ROLE_FILE = os.path.join(DATA_DIR, "invite_roles.json")
 TAG_RESPONSES_FILE = os.path.join(DATA_DIR, "tag_responses.json")
 FIRMWARE_STATE_FILE = os.path.join(DATA_DIR, "firmware_seen.json")
 COMMAND_PERMISSIONS_FILE = os.path.join(DATA_DIR, "command_permissions.json")
-DB_BACKEND = get_database_backend()
-DB_FILE = get_sqlite_db_path()
+DB_FILE = os.path.join(DATA_DIR, "bot_data.db")
 WEB_USERS_FILE = os.path.join(DATA_DIR, "web_users.json")
-DB_HOST = str(os.getenv("DB_HOST", "mysql")).strip() or "mysql"
-try:
-    DB_PORT = int(str(os.getenv("DB_PORT", "3306")).strip())
-except ValueError:
-    DB_PORT = 3306
-DB_NAME = str(os.getenv("DB_NAME", "discord_bot")).strip() or "discord_bot"
-DB_USER = str(os.getenv("DB_USER", "discord_bot")).strip() or "discord_bot"
-DB_PASSWORD = str(os.getenv("DB_PASSWORD", "")).strip()
-DB_CHARSET = str(os.getenv("DB_CHARSET", "utf8mb4")).strip() or "utf8mb4"
-DB_IMPORT_SQLITE_ON_BOOT = is_truthy_env_value(
-    os.getenv("DB_IMPORT_SQLITE_ON_BOOT", "true")
-)
 
 OLD_DEFAULT_TAG_RESPONSES = {
     "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
@@ -918,16 +855,15 @@ def get_db_connection():
     global db_connection
     with db_lock:
         if db_connection is not None:
-            db_connection.ensure_ready()
             return db_connection
 
-        conn = open_database_connection()
-        if conn.backend != "mysql":
-            conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA synchronous=NORMAL;")
-            conn.execute("PRAGMA temp_store=MEMORY;")
-            conn.execute("PRAGMA foreign_keys=ON;")
-            conn.execute("PRAGMA cache_size=-20000;")
+        conn = sqlite3.connect(DB_FILE, check_same_thread=False, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA foreign_keys=ON;")
+        conn.execute("PRAGMA cache_size=-20000;")
         db_connection = conn
         return conn
 
@@ -935,131 +871,131 @@ def get_db_connection():
 def ensure_db_schema():
     conn = get_db_connection()
     with db_lock:
-        if is_mysql_backend():
-            schema_statements = [
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS role_codes (
+                code TEXT PRIMARY KEY,
+                role_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS invite_roles (
+                invite_code TEXT PRIMARY KEY,
+                role_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS tag_responses (
+                tag TEXT PRIMARY KEY,
+                response TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS firmware_seen (
+                entry_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS command_permissions (
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                command_key TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                role_ids_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, command_key)
+            );
+
+            CREATE TABLE IF NOT EXISTS reddit_feed_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                subreddit TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                last_checked_at TEXT NOT NULL DEFAULT '',
+                last_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, subreddit, channel_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS reddit_feed_seen_posts (
+                feed_id INTEGER NOT NULL,
+                post_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(feed_id, post_id),
+                FOREIGN KEY(feed_id) REFERENCES reddit_feed_subscriptions(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS web_users (
+                email TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                is_admin INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS kv_store (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
+            CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
+            CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
+                ON reddit_feed_subscriptions(subreddit);
+            CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
+                ON reddit_feed_subscriptions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
+                ON reddit_feed_subscriptions(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_reddit_feed_seen_posts_feed_id
+                ON reddit_feed_seen_posts(feed_id);
+            """
+        )
+        command_permission_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()
+        }
+        if "guild_id" not in command_permission_columns:
+            conn.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS role_codes (
-                    code VARCHAR(64) PRIMARY KEY,
-                    role_id BIGINT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS invite_roles (
-                    invite_code VARCHAR(64) PRIMARY KEY,
-                    role_id BIGINT NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS tag_responses (
-                    tag VARCHAR(100) PRIMARY KEY,
-                    response TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS firmware_seen (
-                    entry_id VARCHAR(255) PRIMARY KEY,
-                    created_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS command_permissions (
-                    guild_id BIGINT NOT NULL DEFAULT 0,
-                    command_key VARCHAR(100) NOT NULL,
-                    mode VARCHAR(32) NOT NULL,
-                    role_ids_json TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (guild_id, command_key)
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS reddit_feed_subscriptions (
-                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-                    guild_id BIGINT NOT NULL DEFAULT 0,
-                    subreddit VARCHAR(100) NOT NULL,
-                    channel_id BIGINT NOT NULL,
-                    enabled INTEGER NOT NULL DEFAULT 1,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    created_by_email VARCHAR(255) NOT NULL DEFAULT '',
-                    updated_by_email VARCHAR(255) NOT NULL DEFAULT '',
-                    last_checked_at TEXT NOT NULL,
-                    last_posted_at TEXT NOT NULL,
-                    last_error TEXT NOT NULL,
-                    UNIQUE KEY uq_reddit_feed_subscriptions_guild_subreddit_channel (guild_id, subreddit, channel_id)
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS reddit_feed_seen_posts (
-                    feed_id BIGINT NOT NULL,
-                    post_id VARCHAR(32) NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY(feed_id, post_id),
-                    FOREIGN KEY(feed_id) REFERENCES reddit_feed_subscriptions(id) ON DELETE CASCADE
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS web_users (
-                    email VARCHAR(255) PRIMARY KEY,
-                    password_hash TEXT NOT NULL,
-                    is_admin INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS kv_store (
-                    `key` VARCHAR(191) PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """,
-            ]
-        else:
-            schema_statements = [
-                """
-                CREATE TABLE IF NOT EXISTS role_codes (
-                    code TEXT PRIMARY KEY,
-                    role_id INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS invite_roles (
-                    invite_code TEXT PRIMARY KEY,
-                    role_id INTEGER NOT NULL,
-                    created_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS tag_responses (
-                    tag TEXT PRIMARY KEY,
-                    response TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS firmware_seen (
-                    entry_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS command_permissions (
-                    guild_id INTEGER NOT NULL DEFAULT 0,
+                CREATE TABLE command_permissions_new (
+                    guild_id INTEGER NOT NULL,
                     command_key TEXT NOT NULL,
                     mode TEXT NOT NULL,
                     role_ids_json TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (guild_id, command_key)
+                );
+                INSERT INTO command_permissions_new (
+                    guild_id,
+                    command_key,
+                    mode,
+                    role_ids_json,
+                    updated_at
                 )
-                """,
+                SELECT 0, command_key, mode, role_ids_json, updated_at
+                FROM command_permissions;
+                DROP TABLE command_permissions;
+                ALTER TABLE command_permissions_new RENAME TO command_permissions;
                 """
-                CREATE TABLE IF NOT EXISTS reddit_feed_subscriptions (
+            )
+
+        reddit_feed_columns = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(reddit_feed_subscriptions)"
+            ).fetchall()
+        }
+        if "guild_id" not in reddit_feed_columns:
+            conn.executescript(
+                """
+                CREATE TABLE reddit_feed_subscriptions_new (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    guild_id INTEGER NOT NULL DEFAULT 0,
+                    guild_id INTEGER NOT NULL,
                     subreddit TEXT NOT NULL,
                     channel_id INTEGER NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
@@ -1071,161 +1007,45 @@ def ensure_db_schema():
                     last_posted_at TEXT NOT NULL DEFAULT '',
                     last_error TEXT NOT NULL DEFAULT '',
                     UNIQUE(guild_id, subreddit, channel_id)
+                );
+                INSERT INTO reddit_feed_subscriptions_new (
+                    id,
+                    guild_id,
+                    subreddit,
+                    channel_id,
+                    enabled,
+                    created_at,
+                    updated_at,
+                    created_by_email,
+                    updated_by_email,
+                    last_checked_at,
+                    last_posted_at,
+                    last_error
                 )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS reddit_feed_seen_posts (
-                    feed_id INTEGER NOT NULL,
-                    post_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    PRIMARY KEY(feed_id, post_id),
-                    FOREIGN KEY(feed_id) REFERENCES reddit_feed_subscriptions(id) ON DELETE CASCADE
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS web_users (
-                    email TEXT PRIMARY KEY,
-                    password_hash TEXT NOT NULL,
-                    is_admin INTEGER NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """,
-                """
-                CREATE TABLE IF NOT EXISTS kv_store (
-                    `key` TEXT PRIMARY KEY,
-                    value TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """,
-                "CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id)",
-                "CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id)",
-                """
+                SELECT
+                    id,
+                    0,
+                    subreddit,
+                    channel_id,
+                    enabled,
+                    created_at,
+                    updated_at,
+                    created_by_email,
+                    updated_by_email,
+                    last_checked_at,
+                    last_posted_at,
+                    last_error
+                FROM reddit_feed_subscriptions;
+                DROP TABLE reddit_feed_subscriptions;
+                ALTER TABLE reddit_feed_subscriptions_new RENAME TO reddit_feed_subscriptions;
                 CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
-                    ON reddit_feed_subscriptions(subreddit)
-                """,
-                """
+                    ON reddit_feed_subscriptions(subreddit);
                 CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
-                    ON reddit_feed_subscriptions(enabled)
-                """,
-                """
+                    ON reddit_feed_subscriptions(enabled);
                 CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
-                    ON reddit_feed_subscriptions(guild_id)
-                """,
+                    ON reddit_feed_subscriptions(guild_id);
                 """
-                CREATE INDEX IF NOT EXISTS idx_reddit_feed_seen_posts_feed_id
-                    ON reddit_feed_seen_posts(feed_id)
-                """,
-            ]
-        for statement in schema_statements:
-            conn.execute(statement)
-        if is_mysql_backend():
-            mysql_indexes = {
-                "idx_role_codes_role_id": "CREATE INDEX idx_role_codes_role_id ON role_codes(role_id)",
-                "idx_invite_roles_role_id": "CREATE INDEX idx_invite_roles_role_id ON invite_roles(role_id)",
-                "idx_reddit_feed_subscriptions_subreddit": "CREATE INDEX idx_reddit_feed_subscriptions_subreddit ON reddit_feed_subscriptions(subreddit)",
-                "idx_reddit_feed_subscriptions_enabled": "CREATE INDEX idx_reddit_feed_subscriptions_enabled ON reddit_feed_subscriptions(enabled)",
-                "idx_reddit_feed_subscriptions_guild_id": "CREATE INDEX idx_reddit_feed_subscriptions_guild_id ON reddit_feed_subscriptions(guild_id)",
-                "idx_reddit_feed_seen_posts_feed_id": "CREATE INDEX idx_reddit_feed_seen_posts_feed_id ON reddit_feed_seen_posts(feed_id)",
-            }
-            for index_name, index_statement in mysql_indexes.items():
-                table_name = index_statement.split(" ON ", 1)[1].split("(", 1)[0].strip()
-                if not index_exists(conn, table_name, index_name):
-                    conn.execute(index_statement)
-
-        command_permission_columns = get_table_columns(conn, "command_permissions")
-        if "guild_id" not in command_permission_columns:
-            if is_mysql_backend():
-                conn.execute(
-                    "ALTER TABLE command_permissions ADD COLUMN guild_id BIGINT NOT NULL DEFAULT 0"
-                )
-            else:
-                conn.executescript(
-                    """
-                    CREATE TABLE command_permissions_new (
-                        guild_id INTEGER NOT NULL,
-                        command_key TEXT NOT NULL,
-                        mode TEXT NOT NULL,
-                        role_ids_json TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        PRIMARY KEY (guild_id, command_key)
-                    );
-                    INSERT INTO command_permissions_new (
-                        guild_id,
-                        command_key,
-                        mode,
-                        role_ids_json,
-                        updated_at
-                    )
-                    SELECT 0, command_key, mode, role_ids_json, updated_at
-                    FROM command_permissions;
-                    DROP TABLE command_permissions;
-                    ALTER TABLE command_permissions_new RENAME TO command_permissions;
-                    """
-                )
-
-        reddit_feed_columns = get_table_columns(conn, "reddit_feed_subscriptions")
-        if "guild_id" not in reddit_feed_columns:
-            if is_mysql_backend():
-                conn.execute(
-                    "ALTER TABLE reddit_feed_subscriptions ADD COLUMN guild_id BIGINT NOT NULL DEFAULT 0"
-                )
-            else:
-                conn.executescript(
-                    """
-                    CREATE TABLE reddit_feed_subscriptions_new (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        guild_id INTEGER NOT NULL,
-                        subreddit TEXT NOT NULL,
-                        channel_id INTEGER NOT NULL,
-                        enabled INTEGER NOT NULL DEFAULT 1,
-                        created_at TEXT NOT NULL,
-                        updated_at TEXT NOT NULL,
-                        created_by_email TEXT NOT NULL DEFAULT '',
-                        updated_by_email TEXT NOT NULL DEFAULT '',
-                        last_checked_at TEXT NOT NULL DEFAULT '',
-                        last_posted_at TEXT NOT NULL DEFAULT '',
-                        last_error TEXT NOT NULL DEFAULT '',
-                        UNIQUE(guild_id, subreddit, channel_id)
-                    );
-                    INSERT INTO reddit_feed_subscriptions_new (
-                        id,
-                        guild_id,
-                        subreddit,
-                        channel_id,
-                        enabled,
-                        created_at,
-                        updated_at,
-                        created_by_email,
-                        updated_by_email,
-                        last_checked_at,
-                        last_posted_at,
-                        last_error
-                    )
-                    SELECT
-                        id,
-                        0,
-                        subreddit,
-                        channel_id,
-                        enabled,
-                        created_at,
-                        updated_at,
-                        created_by_email,
-                        updated_by_email,
-                        last_checked_at,
-                        last_posted_at,
-                        last_error
-                    FROM reddit_feed_subscriptions;
-                    DROP TABLE reddit_feed_subscriptions;
-                    ALTER TABLE reddit_feed_subscriptions_new RENAME TO reddit_feed_subscriptions;
-                    CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
-                        ON reddit_feed_subscriptions(subreddit);
-                    CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
-                        ON reddit_feed_subscriptions(enabled);
-                    CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
-                        ON reddit_feed_subscriptions(guild_id);
-                    """
-                )
+            )
 
         conn.execute(
             "UPDATE command_permissions SET guild_id = ? WHERE guild_id = 0",
@@ -1242,7 +1062,7 @@ def db_kv_get(key: str):
     conn = get_db_connection()
     with db_lock:
         row = conn.execute(
-            "SELECT value FROM kv_store WHERE `key` = ?",
+            "SELECT value FROM kv_store WHERE key = ?",
             (key,),
         ).fetchone()
     return row["value"] if row else None
@@ -1254,7 +1074,7 @@ def db_kv_set(key: str, value: str):
     with db_lock:
         conn.execute(
             """
-            INSERT INTO kv_store (`key`, value, updated_at)
+            INSERT INTO kv_store (key, value, updated_at)
             VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
             """,
@@ -1266,7 +1086,7 @@ def db_kv_set(key: str, value: str):
 def db_kv_delete(key: str):
     conn = get_db_connection()
     with db_lock:
-        conn.execute("DELETE FROM kv_store WHERE `key` = ?", (key,))
+        conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
         conn.commit()
 
 
@@ -1288,7 +1108,7 @@ def list_reddit_feed_subscriptions(
         where_clauses.append("enabled = 1")
     if where_clauses:
         query += " WHERE " + " AND ".join(where_clauses)
-    query += " ORDER BY LOWER(subreddit) ASC, channel_id ASC, id ASC"
+    query += " ORDER BY subreddit COLLATE NOCASE ASC, channel_id ASC, id ASC"
     with db_lock:
         rows = conn.execute(query, tuple(params)).fetchall()
     feeds = []
@@ -1447,32 +1267,24 @@ def merge_reddit_feed_seen_post_ids(feed_id: int, post_ids):
                 """,
                 (int(feed_id), post_id, now_iso),
             )
-        retained_post_ids = [
-            str(row["post_id"])
-            for row in conn.execute(
-                """
-                SELECT post_id
+        conn.execute(
+            """
+            DELETE FROM reddit_feed_seen_posts
+            WHERE feed_id = ?
+              AND rowid NOT IN (
+                SELECT rowid
                 FROM reddit_feed_seen_posts
                 WHERE feed_id = ?
                 ORDER BY created_at DESC, post_id DESC
                 LIMIT ?
-                """,
-                (
-                    int(feed_id),
-                    REDDIT_FEED_SEEN_POST_RETENTION_LIMIT,
-                ),
-            ).fetchall()
-        ]
-        if retained_post_ids:
-            delete_placeholders = ", ".join(["?"] * len(retained_post_ids))
-            conn.execute(
-                f"""
-                DELETE FROM reddit_feed_seen_posts
-                WHERE feed_id = ?
-                  AND post_id NOT IN ({delete_placeholders})
-                """,
-                (int(feed_id), *retained_post_ids),
-            )
+              )
+            """,
+            (
+                int(feed_id),
+                int(feed_id),
+                REDDIT_FEED_SEEN_POST_RETENTION_LIMIT,
+            ),
+        )
         conn.commit()
 
 
@@ -1516,7 +1328,7 @@ def migrate_legacy_files_to_db():
 
         def kv_exists(key: str):
             row = conn.execute(
-                "SELECT 1 FROM kv_store WHERE `key` = ?", (key,)
+                "SELECT 1 FROM kv_store WHERE key = ?", (key,)
             ).fetchone()
             return row is not None
 
@@ -1525,7 +1337,7 @@ def migrate_legacy_files_to_db():
                 return
             conn.execute(
                 """
-                INSERT INTO kv_store (`key`, value, updated_at)
+                INSERT INTO kv_store (key, value, updated_at)
                 VALUES (?, ?, ?)
                 """,
                 (key, str(value), now_iso),
@@ -1727,99 +1539,8 @@ def migrate_legacy_files_to_db():
         conn.commit()
 
 
-def import_sqlite_data_into_active_db():
-    if DB_BACKEND != "mysql" or not DB_IMPORT_SQLITE_ON_BOOT:
-        return
-    sqlite_path = DB_FILE
-    if not sqlite_path or not os.path.exists(sqlite_path):
-        return
-
-    source_conn = sqlite3.connect(sqlite_path)
-    source_conn.row_factory = sqlite3.Row
-    destination_conn = get_db_connection()
-    imported_tables = []
-    skipped_tables = []
-    table_order = [
-        "role_codes",
-        "invite_roles",
-        "tag_responses",
-        "firmware_seen",
-        "command_permissions",
-        "reddit_feed_subscriptions",
-        "reddit_feed_seen_posts",
-        "web_users",
-        "kv_store",
-    ]
-    try:
-        with db_lock:
-            for table_name in table_order:
-                if not table_exists(destination_conn, table_name):
-                    skipped_tables.append(f"{table_name}:destination_missing")
-                    continue
-                if not source_conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
-                    (table_name,),
-                ).fetchone():
-                    continue
-                existing_count = destination_conn.execute(
-                    f"SELECT COUNT(*) AS c FROM {table_name}"
-                ).fetchone()["c"]
-                if int(existing_count or 0) > 0:
-                    skipped_tables.append(f"{table_name}:destination_not_empty")
-                    continue
-                source_columns = {
-                    str(row["name"])
-                    for row in source_conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-                }
-                destination_columns = get_table_columns(destination_conn, table_name)
-                selected_columns = [
-                    column
-                    for column in destination_columns
-                    if column in source_columns
-                ]
-                if not selected_columns:
-                    skipped_tables.append(f"{table_name}:no_shared_columns")
-                    continue
-                column_sql = ", ".join(
-                    f"`{column}`" if table_name == "kv_store" and column == "key" else column
-                    for column in selected_columns
-                )
-                rows = source_conn.execute(
-                    f"SELECT {', '.join(selected_columns)} FROM {table_name}"
-                ).fetchall()
-                if not rows:
-                    continue
-                placeholders = ", ".join(["?"] * len(selected_columns))
-                insert_statement = (
-                    f"INSERT OR IGNORE INTO {table_name} "
-                    f"({column_sql}) VALUES ({placeholders})"
-                )
-                for row in rows:
-                    destination_conn.execute(
-                        insert_statement,
-                        tuple(row[column] for column in selected_columns),
-                    )
-                imported_tables.append(f"{table_name}:{len(rows)}")
-            destination_conn.commit()
-    finally:
-        source_conn.close()
-
-    if imported_tables:
-        logger.info(
-            "Imported SQLite data into MySQL: sqlite_path=%s tables=%s",
-            sqlite_path,
-            ", ".join(imported_tables),
-        )
-    if skipped_tables:
-        logger.info(
-            "Skipped SQLite import for tables: %s",
-            ", ".join(skipped_tables),
-        )
-
-
 def initialize_storage():
     ensure_db_schema()
-    import_sqlite_data_into_active_db()
     migrate_legacy_files_to_db()
 
 
@@ -2473,7 +2194,7 @@ def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
             return {"ok": False, "error": "Invalid Reddit feed action."}
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
-    except DB_INTEGRITY_ERROR:
+    except sqlite3.IntegrityError:
         return {
             "ok": False,
             "error": "That subreddit/channel feed already exists.",
