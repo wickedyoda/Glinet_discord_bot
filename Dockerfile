@@ -4,6 +4,14 @@ FROM python:3.11-slim
 # Set working directory inside container
 WORKDIR /app
 
+# Refresh base OS packages so security fixes from the Debian slim image
+# are applied even when the parent image lags behind the latest point release.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends --only-upgrade \
+    libc-bin \
+    libc6 \
+  && rm -rf /var/lib/apt/lists/*
+
 # Pre-create runtime directories with restrictive defaults.
 RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs
 
