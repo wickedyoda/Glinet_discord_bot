@@ -22,6 +22,7 @@ All notable changes to this project are documented in this file.
 - Global `.env` settings remain global, but Discord role/channel dropdowns now load from the selected server.
 - Anonymous unknown-route `404` probe traffic no longer goes into the main web audit stream; it is isolated into `web_probe.log`.
 - Default persistent backend is now MySQL in Compose deployments, with startup import from `${DB_SQLITE_PATH}` into empty MySQL tables when `DB_IMPORT_SQLITE_ON_BOOT=true`.
+- Default Compose deployment now pulls the published GHCR bot image instead of requiring a local Docker build context.
 
 ## [2026-03-12] - Search Command Cleanup
 
