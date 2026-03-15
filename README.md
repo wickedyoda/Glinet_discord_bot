@@ -1,11 +1,11 @@
-# Discord Invite + Utility Bot
+# WickedYoda'sLittleHelper
 
 <p align="center">
   <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
   <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Logo (Full)" width="240" />
 </p>
 
-Discord bot for GL.iNet community operations with invite/code role access, moderation tools, search helpers, firmware monitoring, and a secured web admin GUI.
+Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper` identity, with invite/code role access, moderation tools, search helpers, firmware monitoring, and a secured web admin GUI.
 
 ## Documentation
 

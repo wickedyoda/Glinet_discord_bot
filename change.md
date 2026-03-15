@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-15] - Bot Identity Naming
+
+### Changed
+- Updated the primary project/bot name shown in the README to `WickedYoda'sLittleHelper`.
+- Updated the web GUI window title suffix to `WickedYoda'sLittleHelper Dashboard`.
+- Updated the web GUI bot-profile username placeholder to `WickedYoda'sLittleHelper`.
+
 ## [2026-03-14] - Web GUI Guild Selection
 
 ### Added
