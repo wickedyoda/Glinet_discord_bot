@@ -526,6 +526,16 @@ try:
     WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 except ValueError:
     WEB_PORT = 8080
+WEB_HTTPS_ENABLED = os.getenv("WEB_HTTPS_ENABLED", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+try:
+    WEB_HTTPS_PORT = int(os.getenv("WEB_HTTPS_PORT", "8081"))
+except ValueError:
+    WEB_HTTPS_PORT = 8081
 WEB_ENV_FILE = os.getenv("WEB_ENV_FILE", ".env").strip() or ".env"
 WEB_ADMIN_DEFAULT_EMAIL = os.getenv(
     "WEB_ADMIN_DEFAULT_EMAIL",
@@ -792,9 +802,9 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
 tree = bot.tree
 
-tag_responses = {}
-tag_responses_mtime = None
-tag_command_names = set()
+tag_response_cache = {}
+tag_command_names_by_guild = {}
+guild_settings_cache = {}
 docs_index_cache = {}
 firmware_monitor_task = None
 reddit_feed_monitor_task = None
@@ -808,6 +818,8 @@ WEB_ADMIN_RESTART_DELAY_SECONDS = 2
 WEB_ADMIN_CRITICAL_SHUTDOWN_DELAY_SECONDS = 10 * 60
 web_admin_shutdown_scheduled = False
 discord_catalog_cache = {}
+invite_roles_by_guild = {}
+invite_uses_by_guild = {}
 BOT_SERVER_NICKNAME_UNSET = object()
 command_permissions_lock = threading.Lock()
 command_permissions_cache = {}
@@ -874,21 +886,37 @@ def ensure_db_schema():
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS role_codes (
-                code TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                code TEXT NOT NULL,
                 role_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, code)
             );
 
             CREATE TABLE IF NOT EXISTS invite_roles (
-                invite_code TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                invite_code TEXT NOT NULL,
                 role_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, invite_code)
             );
 
             CREATE TABLE IF NOT EXISTS tag_responses (
-                tag TEXT PRIMARY KEY,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                tag TEXT NOT NULL,
                 response TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, tag)
+            );
+
+            CREATE TABLE IF NOT EXISTS guild_settings (
+                guild_id INTEGER PRIMARY KEY,
+                bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
+                mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
+                firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+                access_role_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                updated_by_email TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS firmware_seen (
@@ -945,6 +973,9 @@ def ensure_db_schema():
 
             CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
             CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
+            CREATE INDEX IF NOT EXISTS idx_role_codes_guild_id ON role_codes(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_invite_roles_guild_id ON invite_roles(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id ON tag_responses(guild_id);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
                 ON reddit_feed_subscriptions(subreddit);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
@@ -957,6 +988,74 @@ def ensure_db_schema():
             str(row["name"])
             for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()
         }
+        role_code_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(role_codes)").fetchall()
+        }
+        if "guild_id" not in role_code_columns:
+            conn.executescript(
+                """
+                CREATE TABLE role_codes_new (
+                    guild_id INTEGER NOT NULL,
+                    code TEXT NOT NULL,
+                    role_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, code)
+                );
+                INSERT INTO role_codes_new (guild_id, code, role_id, created_at)
+                SELECT 0, code, role_id, created_at
+                FROM role_codes;
+                DROP TABLE role_codes;
+                ALTER TABLE role_codes_new RENAME TO role_codes;
+                CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
+                CREATE INDEX IF NOT EXISTS idx_role_codes_guild_id ON role_codes(guild_id);
+                """
+            )
+
+        invite_role_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(invite_roles)").fetchall()
+        }
+        if "guild_id" not in invite_role_columns:
+            conn.executescript(
+                """
+                CREATE TABLE invite_roles_new (
+                    guild_id INTEGER NOT NULL,
+                    invite_code TEXT NOT NULL,
+                    role_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, invite_code)
+                );
+                INSERT INTO invite_roles_new (guild_id, invite_code, role_id, created_at)
+                SELECT 0, invite_code, role_id, created_at
+                FROM invite_roles;
+                DROP TABLE invite_roles;
+                ALTER TABLE invite_roles_new RENAME TO invite_roles;
+                CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
+                CREATE INDEX IF NOT EXISTS idx_invite_roles_guild_id ON invite_roles(guild_id);
+                """
+            )
+
+        tag_response_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(tag_responses)").fetchall()
+        }
+        if "guild_id" not in tag_response_columns:
+            conn.executescript(
+                """
+                CREATE TABLE tag_responses_new (
+                    guild_id INTEGER NOT NULL,
+                    tag TEXT NOT NULL,
+                    response TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, tag)
+                );
+                INSERT INTO tag_responses_new (guild_id, tag, response, updated_at)
+                SELECT 0, tag, response, updated_at
+                FROM tag_responses;
+                DROP TABLE tag_responses;
+                ALTER TABLE tag_responses_new RENAME TO tag_responses;
+                CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id ON tag_responses(guild_id);
+                """
+            )
+
         if "guild_id" not in command_permission_columns:
             conn.executescript(
                 """
@@ -1051,6 +1150,18 @@ def ensure_db_schema():
         )
 
         conn.execute(
+            "UPDATE role_codes SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
+        conn.execute(
+            "UPDATE invite_roles SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
+        conn.execute(
+            "UPDATE tag_responses SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
+        conn.execute(
             "UPDATE command_permissions SET guild_id = ? WHERE guild_id = 0",
             (GUILD_ID,),
         )
@@ -1091,6 +1202,149 @@ def db_kv_delete(key: str):
     with db_lock:
         conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
         conn.commit()
+
+
+def default_guild_settings():
+    return {
+        "bot_log_channel_id": BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else 0,
+        "mod_log_channel_id": MOD_LOG_CHANNEL_ID if MOD_LOG_CHANNEL_ID > 0 else 0,
+        "firmware_notify_channel_id": (
+            FIRMWARE_NOTIFY_CHANNEL_ID if FIRMWARE_NOTIFY_CHANNEL_ID > 0 else 0
+        ),
+        "access_role_id": 0,
+        "updated_at": "",
+        "updated_by_email": "",
+    }
+
+
+def load_guild_settings(guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    version = db_kv_get(f"guild_settings_updated_at:{safe_guild_id}") or "bootstrap"
+    cached = guild_settings_cache.get(safe_guild_id) or {}
+    if cached.get("mtime") == version:
+        return dict(cached.get("settings") or default_guild_settings())
+
+    settings = default_guild_settings()
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            """
+            SELECT bot_log_channel_id, mod_log_channel_id, firmware_notify_channel_id,
+                   access_role_id, updated_at, updated_by_email
+            FROM guild_settings
+            WHERE guild_id = ?
+            """,
+            (safe_guild_id,),
+        ).fetchone()
+    if row is not None:
+        settings.update(
+            {
+                "bot_log_channel_id": int(row["bot_log_channel_id"] or 0),
+                "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
+                "firmware_notify_channel_id": int(
+                    row["firmware_notify_channel_id"] or 0
+                ),
+                "access_role_id": int(row["access_role_id"] or 0),
+                "updated_at": str(row["updated_at"] or ""),
+                "updated_by_email": str(row["updated_by_email"] or ""),
+            }
+        )
+    else:
+        role_id_raw = db_kv_get("access_role_id")
+        if role_id_raw is None and os.path.exists(ROLE_FILE):
+            try:
+                with open(ROLE_FILE, "r") as handle:
+                    role_id_raw = handle.read().strip()
+            except Exception:
+                logger.exception("Failed reading legacy access role from %s", ROLE_FILE)
+        settings["access_role_id"] = parse_int_setting(role_id_raw, 0, minimum=0)
+
+    guild_settings_cache[safe_guild_id] = {"mtime": version, "settings": dict(settings)}
+    return settings
+
+
+def save_guild_settings(
+    guild_id: int | None,
+    payload: dict | None,
+    actor_email: str = "",
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    current = load_guild_settings(safe_guild_id)
+    updated_at = datetime.now(timezone.utc).isoformat()
+    merged = dict(current)
+    source = payload or {}
+    for key in (
+        "bot_log_channel_id",
+        "mod_log_channel_id",
+        "firmware_notify_channel_id",
+        "access_role_id",
+    ):
+        merged[key] = parse_int_setting(source.get(key, current.get(key, 0)), 0, minimum=0)
+
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO guild_settings (
+                guild_id,
+                bot_log_channel_id,
+                mod_log_channel_id,
+                firmware_notify_channel_id,
+                access_role_id,
+                updated_at,
+                updated_by_email
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                bot_log_channel_id=excluded.bot_log_channel_id,
+                mod_log_channel_id=excluded.mod_log_channel_id,
+                firmware_notify_channel_id=excluded.firmware_notify_channel_id,
+                access_role_id=excluded.access_role_id,
+                updated_at=excluded.updated_at,
+                updated_by_email=excluded.updated_by_email
+            """,
+            (
+                safe_guild_id,
+                merged["bot_log_channel_id"],
+                merged["mod_log_channel_id"],
+                merged["firmware_notify_channel_id"],
+                merged["access_role_id"],
+                updated_at,
+                actor_email or "unknown",
+            ),
+        )
+        conn.commit()
+
+    db_kv_set(f"guild_settings_updated_at:{safe_guild_id}", updated_at)
+    guild_settings_cache[safe_guild_id] = {
+        "mtime": updated_at,
+        "settings": {
+            **merged,
+            "updated_at": updated_at,
+            "updated_by_email": actor_email or "unknown",
+        },
+    }
+    return load_guild_settings(safe_guild_id)
+
+
+def get_effective_guild_setting(guild_id: int | None, key: str, fallback_value: int = 0):
+    settings = load_guild_settings(guild_id)
+    value = parse_int_setting(settings.get(key, 0), 0, minimum=0)
+    if value > 0:
+        return value
+    return parse_int_setting(fallback_value, 0, minimum=0)
+
+
+def get_effective_logging_channel_id(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    bot_log_channel_id = get_effective_guild_setting(
+        safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID
+    )
+    if bot_log_channel_id > 0:
+        return bot_log_channel_id
+    return get_effective_guild_setting(
+        safe_guild_id, "mod_log_channel_id", MOD_LOG_CHANNEL_ID
+    )
 
 
 def list_reddit_feed_subscriptions(
@@ -1362,10 +1616,10 @@ def migrate_legacy_files_to_db():
                         if code and role_id > 0:
                             conn.execute(
                                 """
-                                INSERT OR IGNORE INTO role_codes (code, role_id, created_at)
-                                VALUES (?, ?, ?)
+                                INSERT OR IGNORE INTO role_codes (guild_id, code, role_id, created_at)
+                                VALUES (?, ?, ?, ?)
                                 """,
-                                (code, role_id, now_iso),
+                                (GUILD_ID, code, role_id, now_iso),
                             )
             except Exception:
                 logger.exception(
@@ -1386,10 +1640,10 @@ def migrate_legacy_files_to_db():
                         if code and role_id > 0:
                             conn.execute(
                                 """
-                                INSERT OR IGNORE INTO invite_roles (invite_code, role_id, created_at)
-                                VALUES (?, ?, ?)
+                                INSERT OR IGNORE INTO invite_roles (guild_id, invite_code, role_id, created_at)
+                                VALUES (?, ?, ?, ?)
                                 """,
-                                (code, role_id, now_iso),
+                                (GUILD_ID, code, role_id, now_iso),
                             )
             except Exception:
                 logger.exception(
@@ -1410,27 +1664,28 @@ def migrate_legacy_files_to_db():
                             continue
                         conn.execute(
                             """
-                            INSERT OR IGNORE INTO tag_responses (tag, response, updated_at)
-                            VALUES (?, ?, ?)
+                            INSERT OR IGNORE INTO tag_responses (guild_id, tag, response, updated_at)
+                            VALUES (?, ?, ?, ?)
                             """,
-                            (tag, str(raw_response), now_iso),
+                            (GUILD_ID, tag, str(raw_response), now_iso),
                         )
             except Exception:
                 logger.exception(
                     "Failed migrating legacy tag responses from %s", TAG_RESPONSES_FILE
                 )
 
-        tag_count = conn.execute("SELECT COUNT(*) AS c FROM tag_responses").fetchone()[
-            "c"
-        ]
+        tag_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM tag_responses WHERE guild_id = ?",
+            (GUILD_ID,),
+        ).fetchone()["c"]
         if tag_count == 0 and not tag_mapping_loaded:
             for raw_tag, raw_response in DEFAULT_TAG_RESPONSES.items():
                 conn.execute(
                     """
-                    INSERT OR IGNORE INTO tag_responses (tag, response, updated_at)
-                    VALUES (?, ?, ?)
+                    INSERT OR IGNORE INTO tag_responses (guild_id, tag, response, updated_at)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (normalize_tag(raw_tag), str(raw_response), now_iso),
+                    (GUILD_ID, normalize_tag(raw_tag), str(raw_response), now_iso),
                 )
 
         if os.path.exists(FIRMWARE_STATE_FILE):
@@ -1534,6 +1789,22 @@ def migrate_legacy_files_to_db():
                 role_id = int(raw_value)
                 if role_id > 0:
                     kv_insert_if_missing("access_role_id", str(role_id))
+                    conn.execute(
+                        """
+                        INSERT INTO guild_settings (
+                            guild_id,
+                            access_role_id,
+                            updated_at,
+                            updated_by_email
+                        )
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT(guild_id) DO UPDATE SET
+                            access_role_id=excluded.access_role_id,
+                            updated_at=excluded.updated_at,
+                            updated_by_email=excluded.updated_by_email
+                        """,
+                        (GUILD_ID, role_id, now_iso, "legacy_migration"),
+                    )
             except Exception:
                 logger.exception(
                     "Failed migrating legacy access role from %s", ROLE_FILE
@@ -1556,47 +1827,58 @@ def tag_to_command_name(tag: str) -> str:
     return normalized.replace(" ", "_")
 
 
-def load_tag_responses():
+def load_tag_responses(guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
     conn = get_db_connection()
     with db_lock:
-        rows = conn.execute("SELECT tag, response FROM tag_responses").fetchall()
+        rows = conn.execute(
+            "SELECT tag, response FROM tag_responses WHERE guild_id = ?",
+            (safe_guild_id,),
+        ).fetchall()
     if not rows:
-        save_tag_responses(DEFAULT_TAG_RESPONSES)
+        save_tag_responses(DEFAULT_TAG_RESPONSES, guild_id=safe_guild_id)
         return {normalize_tag(k): str(v) for k, v in DEFAULT_TAG_RESPONSES.items()}
     return {normalize_tag(row["tag"]): str(row["response"]) for row in rows}
 
 
-def save_tag_responses(mapping):
+def save_tag_responses(mapping, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
     conn = get_db_connection()
     now_iso = datetime.now(timezone.utc).isoformat()
     normalized = {
         normalize_tag(k): str(v) for k, v in (mapping or {}).items() if normalize_tag(k)
     }
     with db_lock:
-        conn.execute("DELETE FROM tag_responses")
+        conn.execute("DELETE FROM tag_responses WHERE guild_id = ?", (safe_guild_id,))
         for tag, response in normalized.items():
             conn.execute(
                 """
-                INSERT INTO tag_responses (tag, response, updated_at)
-                VALUES (?, ?, ?)
+                INSERT INTO tag_responses (guild_id, tag, response, updated_at)
+                VALUES (?, ?, ?, ?)
                 """,
-                (tag, response, now_iso),
+                (safe_guild_id, tag, response, now_iso),
             )
         conn.commit()
-    db_kv_set("tag_responses_updated_at", now_iso)
+    db_kv_set(f"tag_responses_updated_at:{safe_guild_id}", now_iso)
 
 
-def get_tag_responses():
-    global tag_responses, tag_responses_mtime
-    current_version = db_kv_get("tag_responses_updated_at") or "bootstrap"
-    if tag_responses_mtime != current_version:
-        tag_responses = load_tag_responses()
-        tag_responses_mtime = current_version
-    return tag_responses
+def get_tag_responses(guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    current_version = (
+        db_kv_get(f"tag_responses_updated_at:{safe_guild_id}") or "bootstrap"
+    )
+    cached = tag_response_cache.get(safe_guild_id) or {}
+    if cached.get("mtime") != current_version:
+        tag_response_cache[safe_guild_id] = {
+            "mtime": current_version,
+            "mapping": load_tag_responses(safe_guild_id),
+        }
+    return dict(tag_response_cache.get(safe_guild_id, {}).get("mapping") or {})
 
 
-def upgrade_legacy_default_tag_responses():
-    current = dict(get_tag_responses())
+def upgrade_legacy_default_tag_responses(guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    current = dict(get_tag_responses(safe_guild_id))
     changed = False
     for raw_tag, old_response in OLD_DEFAULT_TAG_RESPONSES.items():
         tag = normalize_tag(raw_tag)
@@ -1608,31 +1890,38 @@ def upgrade_legacy_default_tag_responses():
             changed = True
     if not changed:
         return
-    save_tag_responses(current)
-    logger.info("Upgraded default tag responses to include support links.")
+    save_tag_responses(current, guild_id=safe_guild_id)
+    logger.info(
+        "Upgraded default tag responses to include support links for guild %s.",
+        safe_guild_id,
+    )
 
 
-def build_command_list():
-    tags = sorted(get_tag_responses().keys())
+def build_command_list(guild_id: int | None = None):
+    tags = sorted(get_tag_responses(guild_id).keys())
     if not tags:
         return "No tag commands are available yet."
     return "Tag commands:\n" + "\n".join(tags)
 
 
-def register_tag_commands():
-    global tag_command_names
+def register_tag_commands_for_guild(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    guild_obj = discord.Object(id=safe_guild_id)
     tag_commands = {}
-    for tag in get_tag_responses().keys():
+    for tag in get_tag_responses(safe_guild_id).keys():
         command_name = tag_to_command_name(tag)
         if not command_name:
             continue
         tag_commands[command_name] = tag
 
-    existing_names = {cmd.name for cmd in tree.get_commands()}
+    existing_names = {cmd.name for cmd in tree.get_commands(guild=guild_obj)}
+    registered_names = set()
     for command_name, tag in tag_commands.items():
         if command_name in existing_names:
             logger.warning(
-                "Skipping tag slash command /%s due to name conflict", command_name
+                "Skipping tag slash command /%s in guild %s due to name conflict",
+                command_name,
+                safe_guild_id,
             )
             continue
 
@@ -1652,7 +1941,10 @@ def register_tag_commands():
                         ephemeral=True,
                     )
                     return
-                tag_response = str(get_tag_responses().get(tag_key, "")).strip()
+                effective_guild_id = interaction.guild.id if interaction.guild else safe_guild_id
+                tag_response = str(
+                    get_tag_responses(effective_guild_id).get(tag_key, "")
+                ).strip()
                 if not tag_response:
                     await interaction.response.send_message(
                         "❌ This tag response is not configured.", ephemeral=True
@@ -1669,47 +1961,68 @@ def register_tag_commands():
                     description=f"Tag response for {command_name}",
                     callback=make_tag_reply(tag),
                 ),
-                guild=discord.Object(id=GUILD_ID),
+                guild=guild_obj,
             )
-            tag_command_names.add(command_name)
+            registered_names.add(command_name)
         except app_commands.errors.CommandAlreadyRegistered:
-            logger.info("Tag slash command /%s already registered", command_name)
+            logger.info(
+                "Tag slash command /%s already registered in guild %s",
+                command_name,
+                safe_guild_id,
+            )
         except TypeError:
-            logger.exception("Failed to register tag slash command /%s", command_name)
+            logger.exception(
+                "Failed to register tag slash command /%s in guild %s",
+                command_name,
+                safe_guild_id,
+            )
+    tag_command_names_by_guild[safe_guild_id] = registered_names
 
 
-async def reload_tag_commands_runtime():
-    global tag_command_names
+async def sync_commands_for_guild(guild: discord.Guild):
+    guild_obj = discord.Object(id=guild.id)
+    tree.clear_commands(guild=guild_obj)
+    tree.copy_global_to(guild=guild_obj)
+    register_tag_commands_for_guild(guild.id)
+    synced = await tree.sync(guild=guild_obj)
+    logger.info("Synced %d command(s) to guild %s", len(synced), guild.id)
+    return synced
+
+
+async def reload_tag_commands_runtime(guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
     try:
-        guild_obj = discord.Object(id=GUILD_ID)
-
-        removed_count = 0
-        for command_name in list(tag_command_names):
-            removed_command = tree.remove_command(command_name, guild=guild_obj)
-            if removed_command is not None:
-                removed_count += 1
-        tag_command_names.clear()
-
-        register_tag_commands()
-        synced = await tree.sync(guild=guild_obj)
+        guild = bot.get_guild(safe_guild_id)
+        if guild is None:
+            logger.warning(
+                "Cannot reload tag commands for guild %s: guild unavailable",
+                safe_guild_id,
+            )
+            return
+        previous_count = len(tag_command_names_by_guild.get(safe_guild_id) or set())
+        synced = await sync_commands_for_guild(guild)
         logger.info(
-            "Tag commands reloaded: removed=%s registered=%s synced=%s",
-            removed_count,
-            len(tag_command_names),
+            "Tag commands reloaded for guild %s: previous=%s current=%s synced=%s",
+            safe_guild_id,
+            previous_count,
+            len(tag_command_names_by_guild.get(safe_guild_id) or set()),
             len(synced),
         )
     except Exception:
-        logger.exception("Failed to reload tag slash commands")
+        logger.exception("Failed to reload tag slash commands for guild %s", safe_guild_id)
 
 
-def schedule_tag_command_refresh():
+def schedule_tag_command_refresh(guild_id: int | None = None):
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
         logger.warning("Cannot refresh tag slash commands yet: bot loop is not running")
         return False
 
     def _start_refresh():
-        asyncio.create_task(reload_tag_commands_runtime(), name="tag_commands_refresh")
+        asyncio.create_task(
+            reload_tag_commands_runtime(guild_id),
+            name=f"tag_commands_refresh_{normalize_target_guild_id(guild_id)}",
+        )
 
     loop.call_soon_threadsafe(_start_refresh)
     return True
@@ -1735,55 +2048,70 @@ def generate_code():
             return code
 
 
-def save_role_code(code, role_id):
+def save_role_code(code, role_id, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(timezone.utc).isoformat()
     conn = get_db_connection()
     with db_lock:
         conn.execute(
             """
-            INSERT OR REPLACE INTO role_codes (code, role_id, created_at)
-            VALUES (?, ?, ?)
+            INSERT OR REPLACE INTO role_codes (guild_id, code, role_id, created_at)
+            VALUES (?, ?, ?, ?)
             """,
-            (str(code), int(role_id), now_iso),
+            (safe_guild_id, str(code), int(role_id), now_iso),
         )
         conn.commit()
-    logger.info("Saved code %s for role %s", code, role_id)
+    logger.info("Saved code %s for role %s in guild %s", code, role_id, safe_guild_id)
 
 
-def get_role_id_by_code(code):
+def get_role_id_by_code(code, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
     conn = get_db_connection()
     with db_lock:
         row = conn.execute(
-            "SELECT role_id FROM role_codes WHERE code = ?",
-            (str(code),),
+            "SELECT role_id FROM role_codes WHERE guild_id = ? AND code = ?",
+            (safe_guild_id, str(code)),
         ).fetchone()
     if row is None:
         return None
     role_id = int(row["role_id"])
-    logger.info("Code %s matched role %s", code, role_id)
+    logger.info("Code %s matched role %s in guild %s", code, role_id, safe_guild_id)
     return role_id
 
 
 def load_invite_roles():
     conn = get_db_connection()
     with db_lock:
-        rows = conn.execute("SELECT invite_code, role_id FROM invite_roles").fetchall()
-    return {row["invite_code"]: int(row["role_id"]) for row in rows}
+        rows = conn.execute(
+            "SELECT guild_id, invite_code, role_id FROM invite_roles"
+        ).fetchall()
+    mapping = {}
+    for row in rows:
+        guild_id = int(row["guild_id"] or 0)
+        mapping.setdefault(guild_id, {})[row["invite_code"]] = int(row["role_id"])
+    return mapping
 
 
-def save_invite_role(invite_code, role_id):
+def save_invite_role(invite_code, role_id, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(timezone.utc).isoformat()
     conn = get_db_connection()
     with db_lock:
         conn.execute(
             """
-            INSERT OR REPLACE INTO invite_roles (invite_code, role_id, created_at)
-            VALUES (?, ?, ?)
+            INSERT OR REPLACE INTO invite_roles (guild_id, invite_code, role_id, created_at)
+            VALUES (?, ?, ?, ?)
             """,
-            (str(invite_code), int(role_id), now_iso),
+            (safe_guild_id, str(invite_code), int(role_id), now_iso),
         )
         conn.commit()
-    logger.info("Saved invite %s for role %s", invite_code, role_id)
+    invite_roles_by_guild.setdefault(safe_guild_id, {})[str(invite_code)] = int(role_id)
+    logger.info(
+        "Saved invite %s for role %s in guild %s",
+        invite_code,
+        role_id,
+        safe_guild_id,
+    )
 
 
 def has_allowed_role(member: discord.Member):
@@ -2212,16 +2540,18 @@ def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
     return response
 
 
-def run_web_get_tag_responses():
+def run_web_get_tag_responses(guild_id: int | str | None = None):
     try:
-        mapping = get_tag_responses()
+        mapping = get_tag_responses(guild_id)
     except Exception:
         logger.exception("Failed loading tag responses for web admin")
         return {"ok": False, "error": "Unexpected error while loading tag responses."}
     return {"ok": True, "mapping": mapping}
 
 
-def run_web_save_tag_responses(mapping: dict, actor_email: str):
+def run_web_save_tag_responses(
+    mapping: dict, actor_email: str, guild_id: int | str | None = None
+):
     if not isinstance(mapping, dict):
         return {"ok": False, "error": "Tag responses payload must be a JSON object."}
 
@@ -2235,13 +2565,78 @@ def run_web_save_tag_responses(mapping: dict, actor_email: str):
         normalized[tag] = raw_response
 
     try:
-        save_tag_responses(normalized)
+        safe_guild_id = normalize_target_guild_id(guild_id)
+        save_tag_responses(normalized, guild_id=safe_guild_id)
     except Exception:
         logger.exception("Failed saving tag responses from web admin")
         return {"ok": False, "error": "Unexpected error while saving tag responses."}
 
-    logger.info("Tag responses updated via web admin (%s entries)", len(normalized))
+    logger.info(
+        "Tag responses updated via web admin (%s entries, guild=%s)",
+        len(normalized),
+        safe_guild_id,
+    )
     return {"ok": True, "mapping": normalized, "message": "Tag responses updated."}
+
+
+def build_guild_settings_web_payload(guild_id: int | str | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    settings = load_guild_settings(safe_guild_id)
+    return {
+        "ok": True,
+        "guild_id": safe_guild_id,
+        "settings": {
+            "bot_log_channel_id": int(settings.get("bot_log_channel_id") or 0),
+            "mod_log_channel_id": int(settings.get("mod_log_channel_id") or 0),
+            "firmware_notify_channel_id": int(
+                settings.get("firmware_notify_channel_id") or 0
+            ),
+            "access_role_id": int(settings.get("access_role_id") or 0),
+        },
+        "effective": {
+            "bot_log_channel_id": get_effective_guild_setting(
+                safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID
+            ),
+            "mod_log_channel_id": get_effective_guild_setting(
+                safe_guild_id, "mod_log_channel_id", MOD_LOG_CHANNEL_ID
+            ),
+            "firmware_notify_channel_id": get_effective_guild_setting(
+                safe_guild_id,
+                "firmware_notify_channel_id",
+                FIRMWARE_NOTIFY_CHANNEL_ID,
+            ),
+            "access_role_id": get_effective_guild_setting(
+                safe_guild_id, "access_role_id", 0
+            ),
+        },
+        "updated_at": str(settings.get("updated_at") or ""),
+        "updated_by_email": str(settings.get("updated_by_email") or ""),
+    }
+
+
+def run_web_get_guild_settings(guild_id: int | str | None = None):
+    try:
+        return build_guild_settings_web_payload(guild_id)
+    except Exception:
+        logger.exception("Failed loading guild settings for web admin")
+        return {"ok": False, "error": "Unexpected error while loading guild settings."}
+
+
+def run_web_save_guild_settings(
+    payload: dict, actor_email: str, guild_id: int | str | None = None
+):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Guild settings payload must be an object."}
+    try:
+        safe_guild_id = normalize_target_guild_id(guild_id)
+        save_guild_settings(safe_guild_id, payload, actor_email=actor_email)
+        return {
+            **build_guild_settings_web_payload(safe_guild_id),
+            "message": "Guild settings updated.",
+        }
+    except Exception:
+        logger.exception("Failed saving guild settings from web admin")
+        return {"ok": False, "error": "Unexpected error while saving guild settings."}
 
 
 def validate_moderation_target(
@@ -3238,10 +3633,11 @@ async def prune_channel_recent_messages(
 
 
 async def resolve_mod_log_channel(guild: discord.Guild):
-    channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    channel_id = get_effective_logging_channel_id(guild.id)
     if channel_id <= 0:
         logger.warning(
-            "No bot log channel configured. Set BOT_LOG_CHANNEL_ID or MOD_LOG_CHANNEL_ID."
+            "No bot log channel configured for guild %s. Set guild settings or BOT_LOG_CHANNEL_ID/MOD_LOG_CHANNEL_ID.",
+            guild.id,
         )
         return None
 
@@ -3303,7 +3699,7 @@ async def send_moderation_log(
         f"**Reason:** {reason_text}\n"
         f"**Details:** {details_text}"
     )
-    target_channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    target_channel_id = get_effective_logging_channel_id(guild.id)
     record_bot_log_channel_message("moderation_action", target_channel_id, message)
 
     channel = await resolve_mod_log_channel(guild)
@@ -3352,7 +3748,7 @@ def read_recent_log_lines(path: str, max_lines: int):
 
 async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
     message = f"📌 **Server Event:** `{event_name}`\n{details}"
-    target_channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    target_channel_id = get_effective_logging_channel_id(guild.id)
     record_bot_log_channel_message("server_event", target_channel_id, message)
 
     channel = await resolve_mod_log_channel(guild)
@@ -3621,28 +4017,53 @@ def format_firmware_change_summary(
     return trim_discord_message("\n".join(lines))
 
 
-async def resolve_firmware_notify_channel():
-    if FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
-        return None, "channel_id_not_configured"
+async def resolve_firmware_notify_channels():
+    targets = []
+    seen_channel_ids = set()
+    for guild in bot.guilds:
+        channel_id = get_effective_guild_setting(
+            guild.id,
+            "firmware_notify_channel_id",
+            FIRMWARE_NOTIFY_CHANNEL_ID if guild.id == GUILD_ID else 0,
+        )
+        if channel_id <= 0 or channel_id in seen_channel_ids:
+            continue
+        seen_channel_ids.add(channel_id)
+        targets.append((guild.id, channel_id))
 
-    channel = bot.get_channel(FIRMWARE_NOTIFY_CHANNEL_ID)
-    if channel is None:
-        try:
-            channel = await bot.fetch_channel(FIRMWARE_NOTIFY_CHANNEL_ID)
-        except discord.NotFound:
-            return None, "channel_not_found"
-        except discord.Forbidden:
-            return None, "channel_access_forbidden"
-        except discord.HTTPException:
-            logger.exception(
-                "Failed to fetch firmware notify channel %s", FIRMWARE_NOTIFY_CHANNEL_ID
-            )
-            return None, "channel_fetch_http_error"
+    if not targets and FIRMWARE_NOTIFY_CHANNEL_ID > 0:
+        targets.append((GUILD_ID, FIRMWARE_NOTIFY_CHANNEL_ID))
 
-    if isinstance(channel, (discord.TextChannel, discord.Thread)):
-        return channel, ""
+    if not targets:
+        return [], ["channel_id_not_configured"]
 
-    return None, "channel_not_text"
+    channels = []
+    errors = []
+    for guild_id, channel_id in targets:
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except discord.NotFound:
+                errors.append(f"guild={guild_id}:channel_not_found")
+                continue
+            except discord.Forbidden:
+                errors.append(f"guild={guild_id}:channel_access_forbidden")
+                continue
+            except discord.HTTPException:
+                logger.exception(
+                    "Failed to fetch firmware notify channel %s for guild %s",
+                    channel_id,
+                    guild_id,
+                )
+                errors.append(f"guild={guild_id}:channel_fetch_http_error")
+                continue
+
+        if isinstance(channel, (discord.TextChannel, discord.Thread)):
+            channels.append(channel)
+        else:
+            errors.append(f"guild={guild_id}:channel_not_text")
+    return channels, errors
 
 
 def log_firmware_channel_unavailable(reason_key: str, pending_count: int):
@@ -3653,7 +4074,10 @@ def log_firmware_channel_unavailable(reason_key: str, pending_count: int):
         "channel_fetch_http_error": "Discord API error while fetching configured channel",
         "channel_not_text": "configured channel is not a text/thread channel",
     }
-    reason_text = reason_messages.get(reason_key, "configured channel is unavailable")
+    normalized_reason_key = str(reason_key or "").split(":", 1)[-1]
+    reason_text = reason_messages.get(
+        normalized_reason_key, "configured channel is unavailable"
+    )
     now_ts = time.time()
     last_reason = firmware_channel_warning_state.get("reason", "")
     last_logged_at = float(firmware_channel_warning_state.get("last_logged_at", 0.0))
@@ -3666,8 +4090,8 @@ def log_firmware_channel_unavailable(reason_key: str, pending_count: int):
     firmware_channel_warning_state["reason"] = reason_key
     firmware_channel_warning_state["last_logged_at"] = now_ts
     logger.warning(
-        "Firmware notifications paused: %s (channel_id=%s, guild_id=%s, pending_updates=%d). "
-        "Update firmware_notification_channel to a valid text channel the bot can access.",
+        "Firmware notifications paused: %s (default_channel_id=%s, primary_guild_id=%s, pending_updates=%d). "
+        "Update guild settings or firmware_notification_channel to a valid text channel the bot can access.",
         reason_text,
         FIRMWARE_NOTIFY_CHANNEL_ID,
         GUILD_ID,
@@ -3726,10 +4150,11 @@ async def check_firmware_updates_once():
         save_firmware_state(current_ids, current_signatures, sync_label)
         return
 
-    channel, channel_error = await resolve_firmware_notify_channel()
-    if channel is None:
+    channels, channel_errors = await resolve_firmware_notify_channels()
+    if not channels:
         log_firmware_channel_unavailable(
-            channel_error, len(new_entries) + len(changed_entries)
+            channel_errors[0] if channel_errors else "channel_id_not_configured",
+            len(new_entries) + len(changed_entries),
         )
         return
 
@@ -3741,15 +4166,29 @@ async def check_firmware_updates_once():
         len(changed_entries),
     )
     try:
-        await channel.send(
-            format_firmware_change_summary(new_entries, changed_entries, sync_label)
-        )
-    except discord.Forbidden:
-        logger.warning(
-            "No permission to post firmware notification in channel %s", channel.id
-        )
-        return
-    except discord.HTTPException:
+        message = format_firmware_change_summary(new_entries, changed_entries, sync_label)
+        delivered = 0
+        for channel in channels:
+            try:
+                await channel.send(message)
+                delivered += 1
+            except discord.Forbidden:
+                logger.warning(
+                    "No permission to post firmware notification in channel %s",
+                    channel.id,
+                )
+            except discord.HTTPException:
+                logger.exception(
+                    "Failed to post firmware summary notification to channel %s",
+                    channel.id,
+                )
+        if delivered == 0:
+            return
+        for reason in channel_errors:
+            log_firmware_channel_unavailable(
+                reason, len(new_entries) + len(changed_entries)
+            )
+    except Exception:
         logger.exception("Failed to post firmware summary notification")
         return
 
@@ -3757,9 +4196,18 @@ async def check_firmware_updates_once():
 
 
 async def firmware_monitor_loop():
-    if FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
+    configured_channels = any(
+        get_effective_guild_setting(
+            guild.id,
+            "firmware_notify_channel_id",
+            FIRMWARE_NOTIFY_CHANNEL_ID if guild.id == GUILD_ID else 0,
+        )
+        > 0
+        for guild in bot.guilds
+    )
+    if not configured_channels and FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
         logger.info(
-            "Firmware monitor disabled: set firmware_notification_channel to enable it."
+            "Firmware monitor disabled: set a guild firmware notification channel or firmware_notification_channel to enable it."
         )
         return
 
@@ -4067,6 +4515,8 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global WEB_BULK_ASSIGN_TIMEOUT_SECONDS
     global WEB_BOT_PROFILE_TIMEOUT_SECONDS
     global WEB_AVATAR_MAX_UPLOAD_BYTES
+    global WEB_HTTPS_ENABLED
+    global WEB_HTTPS_PORT
 
     LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", LOG_LEVEL), fallback=LOG_LEVEL)
     CONTAINER_LOG_LEVEL = normalize_log_level(
@@ -4215,23 +4665,40 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         WEB_AVATAR_MAX_UPLOAD_BYTES,
         minimum=1024,
     )
+    WEB_HTTPS_ENABLED = os.getenv(
+        "WEB_HTTPS_ENABLED", "true" if WEB_HTTPS_ENABLED else "false"
+    ).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    WEB_HTTPS_PORT = parse_int_setting(
+        os.getenv("WEB_HTTPS_PORT", WEB_HTTPS_PORT),
+        WEB_HTTPS_PORT,
+        minimum=1,
+    )
 
     docs_index_cache.clear()
     discord_catalog_cache.clear()
+    guild_settings_cache.clear()
     schedule_firmware_monitor_restart()
     schedule_reddit_feed_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
-def refresh_tag_responses_from_web():
-    get_tag_responses()
-    if schedule_tag_command_refresh():
+def refresh_tag_responses_from_web(guild_id: int | str | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    get_tag_responses(safe_guild_id)
+    if schedule_tag_command_refresh(safe_guild_id):
         logger.info(
-            "Tag responses refreshed from storage; slash command refresh scheduled"
+            "Tag responses refreshed from storage for guild %s; slash command refresh scheduled",
+            safe_guild_id,
         )
     else:
         logger.info(
-            "Tag responses refreshed from storage; slash command refresh deferred until bot loop is ready"
+            "Tag responses refreshed from storage for guild %s; slash command refresh deferred until bot loop is ready",
+            safe_guild_id,
         )
 
 
@@ -4284,7 +4751,10 @@ def _schedule_web_admin_critical_shutdown(reason: str):
 
 
 async def _send_web_admin_critical_alert(message: str):
-    channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    primary_guild_id = GUILD_ID if bot.get_guild(GUILD_ID) is not None else (
+        bot.guilds[0].id if bot.guilds else GUILD_ID
+    )
+    channel_id = get_effective_logging_channel_id(primary_guild_id)
     if channel_id <= 0:
         logger.critical(
             "Web admin critical alert could not be sent: no bot log channel configured."
@@ -4338,7 +4808,10 @@ async def _send_web_admin_critical_alert(message: str):
 
 
 def _dispatch_web_admin_critical_alert(message: str):
-    channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    primary_guild_id = GUILD_ID if bot.get_guild(GUILD_ID) is not None else (
+        bot.guilds[0].id if bot.guilds else GUILD_ID
+    )
+    channel_id = get_effective_logging_channel_id(primary_guild_id)
     record_bot_log_channel_message("web_admin_critical", channel_id, message)
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
@@ -4392,12 +4865,16 @@ def start_web_admin_server():
                 start_web_admin_interface(
                     host=WEB_BIND_HOST,
                     port=WEB_PORT,
+                    https_port=WEB_HTTPS_PORT,
+                    https_enabled=WEB_HTTPS_ENABLED,
                     data_dir=DATA_DIR,
                     env_file_path=WEB_ENV_FILE,
                     tag_responses_file=TAG_RESPONSES_FILE,
                     default_admin_email=WEB_ADMIN_DEFAULT_EMAIL,
                     default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
                     on_get_guilds=run_web_get_guilds,
+                    on_get_guild_settings=run_web_get_guild_settings,
+                    on_save_guild_settings=run_web_save_guild_settings,
                     on_env_settings_saved=refresh_runtime_settings_from_env,
                     on_tag_responses_saved=refresh_tag_responses_from_web,
                     on_get_tag_responses=run_web_get_tag_responses,
@@ -4883,13 +5360,41 @@ def build_docs_site_search_message(query: str, site_key: str):
     return trim_search_message("\n".join(lines))
 
 
+async def refresh_invite_cache_for_guild(guild: discord.Guild):
+    guild_invite_uses = invite_uses_by_guild.setdefault(guild.id, {})
+    invite_roles = invite_roles_by_guild.get(guild.id) or {}
+    if not invite_roles:
+        guild_invite_uses.clear()
+        return
+    try:
+        invites = await guild.invites()
+    except Exception:
+        logger.exception("Failed to cache invites for guild %s", guild.id)
+        return
+
+    guild_invite_uses.clear()
+    for invite in invites:
+        if invite.code in invite_roles:
+            guild_invite_uses[invite.code] = invite.uses
+
+
+async def sync_commands_for_all_guilds():
+    total_synced = 0
+    for guild in bot.guilds:
+        upgrade_legacy_default_tag_responses(guild.id)
+        get_tag_responses(guild.id)
+        synced = await sync_commands_for_guild(guild)
+        total_synced += len(synced)
+        await refresh_invite_cache_for_guild(guild)
+    return total_synced
+
+
 # Initialize SQLite storage before any runtime cache is loaded.
 initialize_storage()
-upgrade_legacy_default_tag_responses()
+upgrade_legacy_default_tag_responses(GUILD_ID)
 
 # Runtime caches for invite tracking
-invite_roles = load_invite_roles()
-invite_uses = {}
+invite_roles_by_guild = load_invite_roles()
 
 
 @bot.event
@@ -4899,24 +5404,17 @@ async def on_ready():
     install_asyncio_exception_logging(asyncio.get_running_loop())
     logger.info("Logged in as %s", bot.user.name)
     await _flush_web_admin_pending_critical_alerts()
-    guild = bot.get_guild(GUILD_ID)
-    if callable(globals().get("register_tag_commands")):
-        register_tag_commands()
+    if callable(globals().get("register_tag_commands_for_guild")):
+        total_synced = await sync_commands_for_all_guilds()
+        logger.info(
+            "Synced %d command(s) across %d guild(s)",
+            total_synced,
+            len(bot.guilds),
+        )
     else:
         logger.warning(
-            "Tag slash commands not registered: register_tag_commands missing"
+            "Tag slash commands not registered: register_tag_commands_for_guild missing"
         )
-    synced = await tree.sync(guild=guild)
-    logger.info("Synced %d command(s) to guild %s", len(synced), GUILD_ID)
-    get_tag_responses()
-
-    # Cache invite uses for tracking
-    try:
-        invites = await guild.invites()
-        for inv in invites:
-            invite_uses[inv.code] = inv.uses
-    except Exception:
-        logger.exception("Failed to cache invites on startup")
 
     if firmware_monitor_task is None or firmware_monitor_task.done():
         firmware_monitor_task = asyncio.create_task(
@@ -4926,6 +5424,23 @@ async def on_ready():
         reddit_feed_monitor_task = asyncio.create_task(
             reddit_feed_monitor_loop(), name="reddit_feed_monitor"
         )
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild):
+    invite_roles_by_guild.setdefault(guild.id, {})
+    await sync_commands_for_guild(guild)
+    await refresh_invite_cache_for_guild(guild)
+    logger.info("Joined guild %s (%s) and synced commands", guild.name, guild.id)
+
+
+@bot.event
+async def on_guild_remove(guild: discord.Guild):
+    invite_roles_by_guild.pop(guild.id, None)
+    invite_uses_by_guild.pop(guild.id, None)
+    tag_response_cache.pop(guild.id, None)
+    tag_command_names_by_guild.pop(guild.id, None)
+    discord_catalog_cache.pop(guild.id, None)
 
 
 @bot.event
@@ -4960,22 +5475,23 @@ async def on_tree_error(interaction: discord.Interaction, error: app_commands.Ap
 async def on_member_join(member: discord.Member):
     """Assign role based on the invite used to join."""
     guild = member.guild
-    if guild.id != GUILD_ID:
-        return
-
+    guild_invite_roles = invite_roles_by_guild.get(guild.id) or {}
+    guild_invite_uses = invite_uses_by_guild.setdefault(guild.id, {})
     used_invite = None
     try:
         invites = await guild.invites()
         for inv in invites:
-            if inv.code in invite_roles and inv.uses > invite_uses.get(inv.code, 0):
-                invite_uses[inv.code] = inv.uses
+            if inv.code in guild_invite_roles and inv.uses > guild_invite_uses.get(
+                inv.code, 0
+            ):
+                guild_invite_uses[inv.code] = inv.uses
                 used_invite = inv
                 break
     except Exception:
         logger.exception("Failed to fetch invites on member join")
 
     if used_invite:
-        role_id = invite_roles.get(used_invite.code)
+        role_id = guild_invite_roles.get(used_invite.code)
         role = guild.get_role(role_id)
         if role:
             try:
@@ -5001,8 +5517,6 @@ async def on_member_join(member: discord.Member):
 @bot.event
 async def on_member_remove(member: discord.Member):
     guild = member.guild
-    if guild.id != GUILD_ID:
-        return
 
     details = (
         f"**Member:** {member} (`{member.id}`)\n"
@@ -5014,7 +5528,7 @@ async def on_member_remove(member: discord.Member):
 @bot.event
 async def on_message_delete(message: discord.Message):
     guild = message.guild
-    if guild is None or guild.id != GUILD_ID:
+    if guild is None:
         return
 
     channel_name = (
@@ -5037,7 +5551,7 @@ async def on_bulk_message_delete(messages: list[discord.Message]):
     if not messages:
         return
     guild = messages[0].guild
-    if guild is None or guild.id != GUILD_ID:
+    if guild is None:
         return
 
     channel = messages[0].channel
@@ -5048,34 +5562,30 @@ async def on_bulk_message_delete(messages: list[discord.Message]):
 
 @bot.event
 async def on_user_update(before: discord.User, after: discord.User):
-    guild = bot.get_guild(GUILD_ID)
-    if guild is None:
-        return
-    member = guild.get_member(after.id)
-    if member is None:
-        return
+    for guild in bot.guilds:
+        member = guild.get_member(after.id)
+        if member is None:
+            continue
 
-    if before.name != after.name or before.global_name != after.global_name:
-        details = (
-            f"**User:** {member.mention} (`{after.id}`)\n"
-            f"**Username:** {clip_text(before.name)} -> {clip_text(after.name)}\n"
-            f"**Global Name:** {clip_text(before.global_name or 'N/A')} -> {clip_text(after.global_name or 'N/A')}\n"
-        )
-        await send_server_event_log(guild, "user_name_change", details)
+        if before.name != after.name or before.global_name != after.global_name:
+            details = (
+                f"**User:** {member.mention} (`{after.id}`)\n"
+                f"**Username:** {clip_text(before.name)} -> {clip_text(after.name)}\n"
+                f"**Global Name:** {clip_text(before.global_name or 'N/A')} -> {clip_text(after.global_name or 'N/A')}\n"
+            )
+            await send_server_event_log(guild, "user_name_change", details)
 
-    if before.display_avatar != after.display_avatar:
-        details = (
-            f"**User:** {member.mention} (`{after.id}`)\n"
-            f"**New Avatar:** {after.display_avatar.url}\n"
-        )
-        await send_server_event_log(guild, "user_avatar_change", details)
+        if before.display_avatar != after.display_avatar:
+            details = (
+                f"**User:** {member.mention} (`{after.id}`)\n"
+                f"**New Avatar:** {after.display_avatar.url}\n"
+            )
+            await send_server_event_log(guild, "user_avatar_change", details)
 
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     guild = after.guild
-    if guild.id != GUILD_ID:
-        return
 
     if before.nick != after.nick:
         details = (
@@ -5109,7 +5619,7 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 @bot.event
 async def on_invite_create(invite: discord.Invite):
     guild = invite.guild
-    if guild is None or guild.id != GUILD_ID:
+    if guild is None:
         return
 
     inviter_text = (
@@ -5129,8 +5639,6 @@ async def on_invite_create(invite: discord.Invite):
 @bot.event
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     guild = channel.guild
-    if guild.id != GUILD_ID:
-        return
 
     if isinstance(channel, discord.CategoryChannel):
         event_name = "category_created"
@@ -5150,8 +5658,6 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     guild = channel.guild
-    if guild.id != GUILD_ID:
-        return
 
     if isinstance(channel, discord.CategoryChannel):
         event_name = "category_deleted"
@@ -5171,8 +5677,6 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
 @bot.event
 async def on_guild_role_create(role: discord.Role):
     guild = role.guild
-    if guild.id != GUILD_ID:
-        return
 
     details = (
         f"**Role:** {role.mention} (`{role.id}`)\n"
@@ -5191,7 +5695,9 @@ async def on_message(message: discord.Message):
         if tag == "!list":
             await bot.process_commands(message)
             return
-        response = get_tag_responses().get(tag)
+        response = get_tag_responses(
+            message.guild.id if message.guild else GUILD_ID
+        ).get(tag)
         if response:
             if can_use_command(
                 message.author,
@@ -5206,17 +5712,21 @@ async def on_message(message: discord.Message):
 async def list_commands(ctx: commands.Context):
     if not await ensure_prefix_command_access(ctx, "list"):
         return
-    await ctx.send(build_command_list())
+    await ctx.send(build_command_list(ctx.guild.id if ctx.guild else GUILD_ID))
 
 
 @tree.command(
     name="submitrole",
     description="Submit a role for invite/code linking",
-    guild=discord.Object(id=GUILD_ID),
 )
 async def submitrole(interaction: discord.Interaction):
     logger.info("/submitrole invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "submitrole"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server channel.", ephemeral=True
+        )
         return
 
     await interaction.response.send_message(
@@ -5236,13 +5746,21 @@ async def submitrole(interaction: discord.Interaction):
             return
 
         role = msg.role_mentions[0]
-        channel = bot.get_channel(BOT_LOG_CHANNEL_ID) or interaction.channel
+        target_channel_id = get_effective_logging_channel_id(
+            interaction.guild.id if interaction.guild else GUILD_ID
+        )
+        channel = (
+            interaction.guild.get_channel(target_channel_id)
+            if interaction.guild and target_channel_id > 0
+            else None
+        ) or interaction.channel
         invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
         code = generate_code()
-        save_role_code(code, role.id)
-        save_invite_role(invite.code, role.id)
-        invite_roles[invite.code] = role.id
-        invite_uses[invite.code] = invite.uses
+        guild_id = interaction.guild.id if interaction.guild else GUILD_ID
+        save_role_code(code, role.id, guild_id=guild_id)
+        save_invite_role(invite.code, role.id, guild_id=guild_id)
+        invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
+        invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
 
         logger.info(
             "Generated invite %s and code %s for role %s using channel %s",
@@ -5265,7 +5783,6 @@ async def submitrole(interaction: discord.Interaction):
 @tree.command(
     name="bulk_assign_role_csv",
     description="Assign a role to members listed in an uploaded CSV file",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
     role="Role to assign",
@@ -5376,7 +5893,8 @@ class CodeEntryModal(discord.ui.Modal):
         self.add_item(self.code)
 
     async def on_submit(self, interaction: discord.Interaction):
-        role_id = get_role_id_by_code(self.code.value.strip())
+        effective_guild_id = interaction.guild.id if interaction.guild else GUILD_ID
+        role_id = get_role_id_by_code(self.code.value.strip(), guild_id=effective_guild_id)
         if not role_id:
             await interaction.response.send_message("❌ Invalid code.", ephemeral=True)
             return
@@ -5397,7 +5915,6 @@ class CodeEntryModal(discord.ui.Modal):
 @tree.command(
     name="enter_role",
     description="Enter a 6-digit code to receive a role",
-    guild=discord.Object(id=GUILD_ID),
 )
 async def enter_role(interaction: discord.Interaction):
     """Prompt the user to enter their code via a modal."""
@@ -5410,19 +5927,30 @@ async def enter_role(interaction: discord.Interaction):
 @tree.command(
     name="getaccess",
     description="Assign yourself the protected role",
-    guild=discord.Object(id=GUILD_ID),
 )
 async def getaccess(interaction: discord.Interaction):
     logger.info("/getaccess invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "getaccess"):
         return
     try:
-        role_id_raw = db_kv_get("access_role_id")
-        if role_id_raw is None and os.path.exists(ROLE_FILE):
-            with open(ROLE_FILE, "r") as f:
-                role_id_raw = f.read().strip()
-        role_id = int(str(role_id_raw).strip())
+        role_id = get_effective_guild_setting(
+            interaction.guild.id if interaction.guild else GUILD_ID,
+            "access_role_id",
+            0,
+        )
+        if role_id <= 0:
+            await interaction.response.send_message(
+                "❌ No self-assign access role is configured for this server.",
+                ephemeral=True,
+            )
+            return
         role = interaction.guild.get_role(role_id)
+        if role is None:
+            await interaction.response.send_message(
+                "❌ The configured self-assign role was not found in this server.",
+                ephemeral=True,
+            )
+            return
         await interaction.user.add_roles(role)
         logger.info("Assigned default role %s to user %s", role.id, interaction.user)
         await interaction.response.send_message(
@@ -5438,7 +5966,6 @@ async def getaccess(interaction: discord.Interaction):
 @tree.command(
     name="country",
     description="Add your country code to your nickname",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(code="2-letter country code (e.g. US, CA, DE)")
 async def country_slash(interaction: discord.Interaction, code: str):
@@ -5497,7 +6024,6 @@ async def country_prefix(ctx: commands.Context, code: str):
 @tree.command(
     name="clear_country",
     description="Remove country code suffix from your nickname",
-    guild=discord.Object(id=GUILD_ID),
 )
 async def clear_country_slash(interaction: discord.Interaction):
     logger.info("/clear_country invoked by %s", interaction.user)
@@ -5541,7 +6067,6 @@ async def clear_country_prefix(ctx: commands.Context):
 @tree.command(
     name="create_role",
     description="Create a new role",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
     name="Name for the new role",
@@ -5660,7 +6185,6 @@ async def create_role_slash(
 @tree.command(
     name="delete_role",
     description="Delete a role",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(role="Role to delete", reason="Reason for deletion")
 async def delete_role_slash(
@@ -5761,7 +6285,6 @@ async def delete_role_slash(
 @tree.command(
     name="edit_role",
     description="Edit role settings",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
     role="Role to edit",
@@ -5913,7 +6436,6 @@ async def edit_role_slash(
 @tree.command(
     name="modlog_test",
     description="Send a test moderation log entry",
-    guild=discord.Object(id=GUILD_ID),
 )
 async def modlog_test_slash(interaction: discord.Interaction):
     logger.info("/modlog_test invoked by %s", interaction.user)
@@ -5971,7 +6493,6 @@ async def modlog_test_prefix(ctx: commands.Context):
 @tree.command(
     name="logs",
     description="View recent container error log entries",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(lines="How many recent lines to return (10-400)")
 async def logs_slash(
@@ -6027,7 +6548,6 @@ async def logs_slash(
 @tree.command(
     name="prune_messages",
     description="Remove recent messages in the current channel",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(amount="How many recent messages to remove (1-500)")
 async def prune_messages_slash(
@@ -6226,7 +6746,6 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
 @tree.command(
     name="ban_member",
     description="Ban a member from the server",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(member="Member to ban", reason="Reason for ban")
 async def ban_member_slash(
@@ -6368,7 +6887,6 @@ async def ban_member_prefix(
 @tree.command(
     name="kick_member",
     description="Kick a member and prune their last 72 hours of messages",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(member="Member to kick", reason="Reason for kicking")
 async def kick_member_slash(
@@ -6535,7 +7053,6 @@ async def kick_member_prefix(
 @tree.command(
     name="timeout_member",
     description="Timeout a member for a duration (e.g. 30m, 2h, 1d)",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
     member="Member to timeout",
@@ -6728,7 +7245,6 @@ async def timeout_member_prefix(
 @tree.command(
     name="untimeout_member",
     description="Remove timeout from a member",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
     member="Member to remove timeout from", reason="Reason for removing timeout"
@@ -6890,7 +7406,6 @@ async def untimeout_member_prefix(
 @tree.command(
     name="add_role_member",
     description="Assign a role to a member",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
     member="Member to update", role="Role to add", reason="Reason for role assignment"
@@ -7131,7 +7646,6 @@ async def add_role_member_prefix(
 @tree.command(
     name="remove_role_member",
     description="Remove a role from a member",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(
     member="Member to update", role="Role to remove", reason="Reason for role removal"
@@ -7376,7 +7890,6 @@ async def remove_role_member_prefix(
 @tree.command(
     name="unban_member",
     description="Unban a user by ID",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(user_id="User ID to unban", reason="Reason for unban")
 async def unban_member_slash(
@@ -7507,7 +8020,6 @@ async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: st
 @tree.command(
     name="help",
     description="Quick bot help and link to advanced docs",
-    guild=discord.Object(id=GUILD_ID),
 )
 async def help_slash(interaction: discord.Interaction):
     logger.info("/help invoked by %s", interaction.user)
@@ -7519,7 +8031,6 @@ async def help_slash(interaction: discord.Interaction):
 @tree.command(
     name="search_reddit",
     description="Search r/GlInet and return top 5 matching posts",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_reddit_slash(interaction: discord.Interaction, query: str):
@@ -7577,7 +8088,6 @@ async def search_reddit_prefix(ctx: commands.Context, *, query: str):
 @tree.command(
     name="search_forum",
     description="Search the GL.iNet forum only",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_forum_slash(interaction: discord.Interaction, query: str):
@@ -7612,7 +8122,6 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
 @tree.command(
     name="search_openwrt_forum",
     description="Search the OpenWrt forum and return top 10 links",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_openwrt_forum_slash(
@@ -7653,7 +8162,6 @@ async def search_openwrt_forum_prefix(ctx: commands.Context, *, query: str):
 @tree.command(
     name="search_kvm",
     description="Search KVM docs only",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_kvm_slash(interaction: discord.Interaction, query: str):
@@ -7688,7 +8196,6 @@ async def search_kvm_prefix(ctx: commands.Context, *, query: str):
 @tree.command(
     name="search_iot",
     description="Search IoT docs only",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_iot_slash(interaction: discord.Interaction, query: str):
@@ -7723,7 +8230,6 @@ async def search_iot_prefix(ctx: commands.Context, *, query: str):
 @tree.command(
     name="search_router",
     description="Search Router v4 docs only",
-    guild=discord.Object(id=GUILD_ID),
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_router_slash(interaction: discord.Interaction, query: str):
