@@ -1078,10 +1078,6 @@ def ensure_db_schema():
 
             CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
             CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
-            CREATE INDEX IF NOT EXISTS idx_role_codes_guild_id ON role_codes(guild_id);
-            CREATE INDEX IF NOT EXISTS idx_invite_roles_guild_id ON invite_roles(guild_id);
-            CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id ON tag_responses(guild_id);
-            CREATE INDEX IF NOT EXISTS idx_actions_guild_id ON actions(guild_id);
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
                 ON reddit_feed_subscriptions(subreddit);
@@ -1153,6 +1149,29 @@ def ensure_db_schema():
                 DROP TABLE tag_responses;
                 ALTER TABLE tag_responses_new RENAME TO tag_responses;
                 CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id ON tag_responses(guild_id);
+                """
+            )
+
+        action_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
+        if "guild_id" not in action_columns:
+            conn.executescript(
+                """
+                CREATE TABLE actions_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    moderator TEXT NOT NULL DEFAULT '',
+                    target TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO actions_new (id, guild_id, created_at, action, status, moderator, target, reason)
+                SELECT id, 0, created_at, action, status, moderator, target, reason
+                FROM actions;
+                DROP TABLE actions;
+                ALTER TABLE actions_new RENAME TO actions;
+                CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
                 """
             )
 
@@ -1236,6 +1255,31 @@ def ensure_db_schema():
                     ON reddit_feed_subscriptions(enabled);
                 """
             )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_role_codes_guild_id
+                ON role_codes(guild_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_invite_roles_guild_id
+                ON invite_roles(guild_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id
+                ON tag_responses(guild_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_actions_guild_id
+                ON actions(guild_id)
+            """
+        )
 
         conn.execute(
             """
