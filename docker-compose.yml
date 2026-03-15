@@ -1,8 +1,37 @@
 services:
+  mysql:
+    image: mysql:8.4
+    container_name: discord_role_bot_mysql
+    environment:
+      MYSQL_DATABASE: ${DB_NAME:-discord_bot}
+      MYSQL_USER: ${DB_USER:-discord_bot}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-change_me}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-change_me_root}
+    command:
+      - --character-set-server=${DB_CHARSET:-utf8mb4}
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-name-resolve
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
   discord_invite_bot:
     build:
       context: .
     container_name: discord_role_bot
+    depends_on:
+      mysql:
+        condition: service_healthy
     env_file:
       - .env
     environment:
@@ -12,6 +41,17 @@ services:
       GENERAL_CHANNEL_ID: ${GENERAL_CHANNEL_ID:-0}
       DATA_DIR: ${DATA_DIR:-data}
       LOG_DIR: ${LOG_DIR:-/logs}
+      DB_BACKEND: ${DB_BACKEND:-mysql}
+      DB_HOST: ${DB_HOST:-mysql}
+      DB_PORT: ${DB_PORT:-3306}
+      DB_NAME: ${DB_NAME:-discord_bot}
+      DB_USER: ${DB_USER:-discord_bot}
+      DB_PASSWORD: ${DB_PASSWORD:-change_me}
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-change_me_root}
+      DB_CHARSET: ${DB_CHARSET:-utf8mb4}
+      DB_CONNECT_TIMEOUT_SECONDS: ${DB_CONNECT_TIMEOUT_SECONDS:-10}
+      DB_IMPORT_SQLITE_ON_BOOT: ${DB_IMPORT_SQLITE_ON_BOOT:-true}
+      DB_SQLITE_PATH: ${DB_SQLITE_PATH:-/app/data/bot_data.db}
       LOG_HARDEN_FILE_PERMISSIONS: ${LOG_HARDEN_FILE_PERMISSIONS:-true}
       LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-90}
       LOG_ROTATION_INTERVAL_DAYS: ${LOG_ROTATION_INTERVAL_DAYS:-1}
@@ -70,3 +110,6 @@ services:
       - ./logs:/logs
       - ./.env:/app/.env
     restart: unless-stopped
+
+volumes:
+  mysql_data:
