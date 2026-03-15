@@ -51,7 +51,7 @@ Bot requires:
 
 Primary storage:
 
-- `data/bot_data.db` (SQLite)
+- MySQL database `${DB_NAME}` by default, or `${DB_SQLITE_PATH}` when SQLite mode is used
 
 Startup merge import (legacy, non-overwriting):
 
@@ -61,7 +61,7 @@ Startup merge import (legacy, non-overwriting):
 
 Import behavior:
 
-- Existing SQLite rows are preserved.
+- Existing destination database rows are preserved.
 - Legacy entries are inserted only when missing.
 
 ## Operational Notes
@@ -78,7 +78,7 @@ Import behavior:
 - `/submitrole` fails:
   - Verify bot has invite permission in target channel.
 - Wrong role assigned:
-  - Check mapping data in SQLite or admin tooling.
+  - Check mapping data in the database or admin tooling.
 
 ## Related Pages
 

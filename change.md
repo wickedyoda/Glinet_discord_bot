@@ -8,6 +8,9 @@ All notable changes to this project are documented in this file.
 - New web GUI server-selection landing page at `/admin`.
 - Guild-scoped server dashboard at `/admin/dashboard`.
 - Web GUI now lists the Discord servers the bot is in and lets the user select which server to manage.
+- New runtime log file `${LOG_DIR}/web_probe.log` for anonymous unknown-route `404` web scan/probe traffic.
+- New shared database adapter with MySQL backend support and SQLite fallback/import support.
+- New Docker Compose `mysql` service for runtime persistence separation.
 
 ### Changed
 - Web GUI guild-scoped pages now use the selected Discord server context:
@@ -17,6 +20,8 @@ All notable changes to this project are documented in this file.
   - bulk role CSV assignment
 - Command permissions and Reddit feed subscriptions are now stored in SQLite per guild instead of globally.
 - Global `.env` settings remain global, but Discord role/channel dropdowns now load from the selected server.
+- Anonymous unknown-route `404` probe traffic no longer goes into the main web audit stream; it is isolated into `web_probe.log`.
+- Default persistent backend is now MySQL in Compose deployments, with startup import from `${DB_SQLITE_PATH}` into empty MySQL tables when `DB_IMPORT_SQLITE_ON_BOOT=true`.
 
 ## [2026-03-12] - Search Command Cleanup
 

@@ -108,9 +108,11 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/logs` (Login Required)
 
-- Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`)
+- Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`, `web_probe.log`)
 - Refresh button plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
 - Requires web GUI login
+
+`web_probe.log` captures anonymous unknown-route `404` scan/probe traffic so it does not clutter the main web audit stream.
 
 ### `/admin/command-permissions`
 
