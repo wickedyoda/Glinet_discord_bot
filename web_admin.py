@@ -1667,7 +1667,8 @@ def _render_layout(
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-            <option value="{{ url_for('settings') }}">Settings</option>
+            <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+            <option value="{{ url_for('settings') }}">Global Settings</option>
             <option value="{{ url_for('public_observability') }}">Observability</option>
             <option value="{{ url_for('admin_logs') }}">Logs</option>
             <option value="{{ url_for('documentation') }}">Documentation</option>
@@ -1785,6 +1786,8 @@ def create_web_app(
     default_admin_email: str,
     default_admin_password: str,
     on_get_guilds=None,
+    on_get_guild_settings=None,
+    on_save_guild_settings=None,
     on_env_settings_saved=None,
     on_get_tag_responses=None,
     on_save_tag_responses=None,
@@ -2962,10 +2965,16 @@ def create_web_app(
             "Open Reddit Feeds",
         )
         add_dashboard_card(
+            "Guild Settings",
+            "Set server-specific channels and role-based defaults for the selected Discord server.",
+            url_for("guild_settings"),
+            "Open Guild Settings",
+        )
+        add_dashboard_card(
             "Settings",
-            "Edit runtime environment settings with channel and role dropdowns.",
+            "Edit global runtime environment settings shared across all Discord servers.",
             url_for("settings"),
-            "Open Settings",
+            "Open Global Settings",
         )
         add_dashboard_card(
             "Observability",
@@ -4131,6 +4140,159 @@ def create_web_app(
             "Command Permissions", body, user["email"], bool(user.get("is_admin"))
         )
 
+    @app.route("/admin/guild-settings", methods=["GET", "POST"])
+    @login_required
+    def guild_settings():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Guild settings callbacks are not configured."}
+        )
+        discord_catalog = (
+            on_get_discord_catalog(selected_guild_id)
+            if callable(on_get_discord_catalog)
+            else None
+        )
+        channel_options = []
+        role_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                channel_options = discord_catalog.get("channels", []) or []
+                role_options = discord_catalog.get("roles", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
+        text_channel_options = [
+            option
+            for option in channel_options
+            if str(option.get("type") or "").strip().lower() == "text"
+        ]
+
+        if request.method == "POST":
+            if not callable(on_save_guild_settings):
+                flash("Guild settings save callback is not configured.", "error")
+            else:
+                payload = {
+                    "bot_log_channel_id": request.form.get("bot_log_channel_id", ""),
+                    "mod_log_channel_id": request.form.get("mod_log_channel_id", ""),
+                    "firmware_notify_channel_id": request.form.get(
+                        "firmware_notify_channel_id", ""
+                    ),
+                    "access_role_id": request.form.get("access_role_id", ""),
+                }
+                response = on_save_guild_settings(
+                    payload, user["email"], selected_guild_id
+                )
+                if not isinstance(response, dict):
+                    flash("Invalid response from guild settings handler.", "error")
+                elif not response.get("ok"):
+                    flash(
+                        str(response.get("error") or "Failed to update guild settings."),
+                        "error",
+                    )
+                else:
+                    settings_payload = response
+                    flash(
+                        str(response.get("message") or "Guild settings updated."),
+                        "success",
+                    )
+
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            error_text = (
+                str(settings_payload.get("error") or "Unable to load guild settings.")
+                if isinstance(settings_payload, dict)
+                else "Unable to load guild settings."
+            )
+            body = (
+                "<div class='card'><h2>Guild Settings</h2>"
+                f"<p class='muted'>Could not load guild settings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
+
+        current_settings = settings_payload.get("settings", {}) or {}
+        effective_settings = settings_payload.get("effective", {}) or {}
+        catalog_note = ""
+        if text_channel_options or role_options:
+            catalog_note = (
+                f"<p class='muted'>Loaded live Discord options from <strong>{escape(guild_name)}</strong>. "
+                f"Text channels: {len(text_channel_options)}; Roles: {len(role_options)}.</p>"
+            )
+        elif catalog_error:
+            catalog_note = (
+                f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
+            )
+
+        bot_log_select = _render_select_input(
+            "bot_log_channel_id",
+            str(current_settings.get("bot_log_channel_id") or ""),
+            text_channel_options,
+            placeholder="Use global fallback",
+        )
+        mod_log_select = _render_select_input(
+            "mod_log_channel_id",
+            str(current_settings.get("mod_log_channel_id") or ""),
+            text_channel_options,
+            placeholder="Use global fallback",
+        )
+        firmware_select = _render_select_input(
+            "firmware_notify_channel_id",
+            str(current_settings.get("firmware_notify_channel_id") or ""),
+            text_channel_options,
+            placeholder="Use global fallback",
+        )
+        access_role_select = _render_select_input(
+            "access_role_id",
+            str(current_settings.get("access_role_id") or ""),
+            role_options,
+            placeholder="No self-assign role",
+        )
+
+        body = f"""
+        <div class="card">
+          <h2>Guild Settings</h2>
+          <p class="muted">These values apply only to <strong>{escape(guild_name)}</strong>. Leave a field blank to use the global fallback.</p>
+          {catalog_note}
+          <form method="post">
+            <table>
+              <thead><tr><th>Setting</th><th>Configured Value</th><th>Effective Value</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>Bot Log Channel</strong><div class="muted mono">bot_log_channel_id</div></td>
+                  <td>{bot_log_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("bot_log_channel_id") or ""))}</td>
+                </tr>
+                <tr>
+                  <td><strong>Moderation Log Channel</strong><div class="muted mono">mod_log_channel_id</div></td>
+                  <td>{mod_log_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("mod_log_channel_id") or ""))}</td>
+                </tr>
+                <tr>
+                  <td><strong>Firmware Notify Channel</strong><div class="muted mono">firmware_notify_channel_id</div></td>
+                  <td>{firmware_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("firmware_notify_channel_id") or ""))}</td>
+                </tr>
+                <tr>
+                  <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
+                  <td>{access_role_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("access_role_id") or ""))}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div style="margin-top:14px;">
+              <button class="btn" type="submit">Save Guild Settings</button>
+            </div>
+          </form>
+        </div>
+        """
+        return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
+
     @app.route("/admin/settings", methods=["GET", "POST"])
     @login_required
     def settings():
@@ -4304,8 +4466,8 @@ def create_web_app(
             catalog_note = f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
 
         body = (
-            "<div class='card'><h2>Environment Settings</h2>"
-            "<p class='muted'>These map to runtime bot settings and persist in .env.</p>"
+            "<div class='card'><h2>Global Environment Settings</h2>"
+            "<p class='muted'>These map to runtime bot settings shared across all Discord servers and persist in .env.</p>"
             + (
                 f"<p class='muted'>Discord dropdown data is loaded from the selected server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong>.</p>"
                 if selected_guild_id
@@ -4315,12 +4477,18 @@ def create_web_app(
             + "<form method='post'><table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table><div style='margin-top:14px;'><button class='btn' type='submit'>Save Settings</button></div></form></div>"
         )
-        return _render_page("Settings", body, user["email"], bool(user.get("is_admin")))
+        return _render_page("Global Settings", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/tag-responses", methods=["GET", "POST"])
     @login_required
     def tag_responses():
         user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        selected_guild_name = str(selected_guild.get("name") or "Unknown")
         path = Path(tag_responses_file)
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -4334,7 +4502,9 @@ def create_web_app(
                     if not isinstance(key, str) or not isinstance(value, str):
                         raise ValueError("All tag keys/values must be strings")
                 if callable(on_save_tag_responses):
-                    response = on_save_tag_responses(parsed, user["email"])
+                    response = on_save_tag_responses(
+                        parsed, user["email"], selected_guild_id
+                    )
                     if not isinstance(response, dict):
                         raise ValueError(
                             "Invalid response from tag response save handler"
@@ -4346,13 +4516,13 @@ def create_web_app(
                 else:
                     path.write_text(json.dumps(parsed, indent=2) + "\n")
                 if callable(on_tag_responses_saved):
-                    on_tag_responses_saved()
+                    on_tag_responses_saved(selected_guild_id)
                 flash("Tag responses updated.", "success")
             except Exception as exc:
                 flash(f"Invalid tag JSON: {exc}", "error")
 
         if callable(on_get_tag_responses):
-            response = on_get_tag_responses()
+            response = on_get_tag_responses(selected_guild_id)
             if isinstance(response, dict) and response.get("ok"):
                 current_mapping = response.get("mapping", {}) or {}
                 current = json.dumps(current_mapping, indent=2) + "\n"
@@ -4375,7 +4545,7 @@ def create_web_app(
         body = f"""
         <div class="card">
           <h2>Tag Responses</h2>
-          <p class="muted">Edit the tag-to-response JSON mapping used by slash and message tag commands.</p>
+          <p class="muted">Edit the tag-to-response JSON mapping used by slash and message tag commands in <strong>{escape(selected_guild_name)}</strong>.</p>
           <form method="post">
             <textarea name="tag_json">{escaped_current}</textarea>
             <div style="margin-top:14px;">
@@ -4799,6 +4969,8 @@ def start_web_admin_interface(
     default_admin_email: str,
     default_admin_password: str,
     on_get_guilds=None,
+    on_get_guild_settings=None,
+    on_save_guild_settings=None,
     on_env_settings_saved=None,
     on_get_tag_responses=None,
     on_save_tag_responses=None,
@@ -4822,6 +4994,8 @@ def start_web_admin_interface(
         default_admin_email=default_admin_email,
         default_admin_password=default_admin_password,
         on_get_guilds=on_get_guilds,
+        on_get_guild_settings=on_get_guild_settings,
+        on_save_guild_settings=on_save_guild_settings,
         on_env_settings_saved=on_env_settings_saved,
         on_get_tag_responses=on_get_tag_responses,
         on_save_tag_responses=on_save_tag_responses,
