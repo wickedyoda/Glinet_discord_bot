@@ -15,6 +15,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 |---|---|---|---|
 | `DISCORD_TOKEN` | none | Discord bot token string | Required to start bot |
 | `GUILD_ID` | none | Integer guild ID | Required primary/default guild ID used for legacy migration and fallback behavior |
+| `MANAGED_GUILD_IDS` | empty | Comma/space-separated positive guild IDs | Optional allowlist. When set, the bot syncs commands and processes guild events only for listed guilds. |
 
 ## Core
 
@@ -42,6 +43,24 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `DOCS_INDEX_TTL_SECONDS` | `3600` | Integer, `>= 60` | Docs index cache TTL |
 | `SEARCH_RESPONSE_MAX_CHARS` | `1900` | Integer, `>= 200` | Max chars in search response |
 | `BOT_HELP_WIKI_URL` | `https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md` | URL with `http://` or `https://` | Link target shown in `/help` for advanced docs |
+
+## Utility Integrations
+
+| Variable | Default | Allowed / Options | Notes |
+|---|---|---|---|
+| `COMMAND_RESPONSES_EPHEMERAL` | `false` | Boolean | When true, utility slash-command replies default to ephemeral where supported |
+| `ENABLE_MEMBERS_INTENT` | `true` | Boolean | Enables Discord members intent for richer moderation/member flows |
+| `PUPPY_IMAGE_API_URL` | `https://random.dog/woof.json` | URL | Source used by `/happy` |
+| `PUPPY_IMAGE_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for `/happy` image fetch |
+| `SHORTENER_ENABLED` | `false` | Boolean | Enables `/shorten` and `/expand` integration |
+| `SHORTENER_BASE_URL` | empty | URL | Base URL of the shortener service |
+| `SHORTENER_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for shortener API requests |
+| `YOUTUBE_NOTIFY_ENABLED` | `false` | Boolean | Enables the YouTube subscription monitor and web page |
+| `YOUTUBE_POLL_INTERVAL_SECONDS` | `1800` | Integer, `>= 60` | Poll cadence for YouTube subscriptions |
+| `YOUTUBE_REQUEST_TIMEOUT_SECONDS` | `20` | Integer, `>= 1` | Timeout for YouTube feed/channel requests |
+| `UPTIME_STATUS_ENABLED` | `false` | Boolean | Enables `/uptime` command |
+| `UPTIME_STATUS_PAGE_URL` | `https://status.example.invalid/status/everything` | URL | Public status page used for uptime summary lookups |
+| `UPTIME_STATUS_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for uptime status fetch |
 
 ## Moderation
 

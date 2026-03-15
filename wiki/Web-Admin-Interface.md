@@ -108,7 +108,8 @@ UI forms include show/hide password toggles and validation feedback.
 
 - Global environment-backed settings editor
 - Live dropdowns for known channel and role fields load from the currently selected server
-- Bot profile and web-session/security settings
+- Managed-guild allowlist and utility integration settings
+- Web-session/security settings
 - Auto-logout selection (5 to 30 minutes)
 
 ### `/staus` (Public Read-Only Status)
@@ -122,9 +123,15 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/logs` (Login Required)
 
-- Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`)
+- Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`, `web_probe.log`)
 - Refresh button plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
 - Requires web GUI login
+
+### `/admin/actions`
+
+- Scoped to the selected server
+- Read-only activity history for moderation actions and server-event log writes
+- Useful for reviewing what the bot did without reading raw log files
 
 ### `/admin/command-permissions`
 
@@ -141,6 +148,13 @@ UI forms include show/hide password toggles and validation feedback.
 - Global Reddit polling interval dropdown (default every 30 minutes)
 - Feed list shows enabled state, last checked time, last posted time, and last error
 - New subscriptions baseline existing posts first, then only publish newer Reddit submissions
+
+### `/admin/youtube`
+
+- Scoped to the selected server
+- Add a YouTube channel URL and target Discord text channel
+- Stores last seen video metadata so only newer uploads are posted
+- Per-subscription enable/disable and delete controls
 
 ### `/admin/tag-responses`
 
@@ -174,15 +188,18 @@ Scope notes:
 
 - Guild-scoped:
   - `/admin/dashboard`
+  - `/admin/guild-settings`
+  - `/admin/actions`
   - `/admin/command-permissions`
   - `/admin/reddit-feeds`
+  - `/admin/youtube`
+  - `/admin/tag-responses`
   - `/admin/bulk-role-csv`
   - server nickname in `/admin/bot-profile`
 - Global:
   - `.env` settings in `/admin/settings`
   - bot username/avatar in `/admin/bot-profile`
   - web users
-  - tag responses
   - logs and observability
 
 ## Reverse Proxy Behavior
@@ -245,6 +262,20 @@ If behind proxy, ensure forwarded headers include:
 - `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT`
 - `WEB_BOT_PROFILE_TIMEOUT_SECONDS`
 - `WEB_AVATAR_MAX_UPLOAD_BYTES`
+- `MANAGED_GUILD_IDS`
+- `ENABLE_MEMBERS_INTENT`
+- `COMMAND_RESPONSES_EPHEMERAL`
+- `PUPPY_IMAGE_API_URL`
+- `PUPPY_IMAGE_TIMEOUT_SECONDS`
+- `SHORTENER_ENABLED`
+- `SHORTENER_BASE_URL`
+- `SHORTENER_TIMEOUT_SECONDS`
+- `YOUTUBE_NOTIFY_ENABLED`
+- `YOUTUBE_POLL_INTERVAL_SECONDS`
+- `YOUTUBE_REQUEST_TIMEOUT_SECONDS`
+- `UPTIME_STATUS_ENABLED`
+- `UPTIME_STATUS_PAGE_URL`
+- `UPTIME_STATUS_TIMEOUT_SECONDS`
 
 ## Related Pages
 
