@@ -26,9 +26,9 @@ services:
     restart: unless-stopped
 
   discord_invite_bot:
-    image: ${BOT_IMAGE:-ghcr.io/wickedyoda/discord_invite_bot}:${BOT_IMAGE_TAG:-latest}
+    build:
+      context: .
     container_name: discord_role_bot
-    pull_policy: always
     depends_on:
       mysql:
         condition: service_healthy

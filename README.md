@@ -33,8 +33,7 @@ cp .env.example .env
 3. Start:
 
 ```bash
-docker compose pull
-docker compose up -d
+docker compose up -d --build
 ```
 
 4. Open web admin:
@@ -64,15 +63,6 @@ docker buildx build \
 ```bash
 docker compose build
 ```
-
-Compose defaults to the published GHCR image:
-
-- `ghcr.io/wickedyoda/discord_invite_bot:latest`
-
-Override if needed:
-
-- `BOT_IMAGE`
-- `BOT_IMAGE_TAG`
 
 ## What It Includes
 
