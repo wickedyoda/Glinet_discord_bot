@@ -949,8 +949,6 @@ def ensure_db_schema():
                 ON reddit_feed_subscriptions(subreddit);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
                 ON reddit_feed_subscriptions(enabled);
-            CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
-                ON reddit_feed_subscriptions(guild_id);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_seen_posts_feed_id
                 ON reddit_feed_seen_posts(feed_id);
             """
@@ -1042,10 +1040,15 @@ def ensure_db_schema():
                     ON reddit_feed_subscriptions(subreddit);
                 CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
                     ON reddit_feed_subscriptions(enabled);
-                CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
-                    ON reddit_feed_subscriptions(guild_id);
                 """
             )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
+                ON reddit_feed_subscriptions(guild_id)
+            """
+        )
 
         conn.execute(
             "UPDATE command_permissions SET guild_id = ? WHERE guild_id = 0",
