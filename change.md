@@ -2,6 +2,40 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-15] - Dependency Security Update
+
+### Changed
+- Upgraded `cryptography` from `46.0.1` to `46.0.5` to address `CVE-2026-26007` / `GHSA-r6ph-v2qm-q3c2`.
+- Updated Docker dependency bootstrap to require `cryptography>=46.0.5` during image build.
+
+## [2026-03-15] - Feature Parity Merge from WickedYodaDiscordBot
+
+### Added
+- Utility slash commands:
+  - `/ping`
+  - `/sayhi`
+  - `/happy`
+  - `/shorten`
+  - `/expand`
+  - `/uptime`
+- Guild-scoped web admin page at `/admin/actions` for recent moderation and server-event history.
+- Guild-scoped web admin page at `/admin/youtube` for YouTube-channel-to-Discord subscriptions.
+- Managed-guild allowlist support via `MANAGED_GUILD_IDS`.
+- Verification tooling:
+  - `pyproject.toml`
+  - `requirements-dev.txt`
+  - `scripts/verify.sh`
+  - `tests/test_web_admin.py`
+- Route aliases:
+  - `/status/everything`
+  - `/admin/wiki`
+
+### Changed
+- The current repository now includes the user-visible feature set that previously existed only in `WickedYodaDiscordBot`.
+- Discord members intent can now be toggled through `ENABLE_MEMBERS_INTENT`.
+- Utility command response visibility can be controlled through `COMMAND_RESPONSES_EPHEMERAL`.
+- Wiki and README references were updated to reflect the merged feature surface and verification workflow.
+
 ## [2026-03-15] - Dual Web GUI HTTP/HTTPS Listeners
 
 ### Added

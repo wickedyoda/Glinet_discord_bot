@@ -1,30 +1,35 @@
-import discord
-from discord.ext import commands
-from discord import app_commands
-import logging
-from logging.handlers import TimedRotatingFileHandler
-import os
-import json
 import asyncio
 import concurrent.futures
-import re
-import time
 import csv
-import io
-import threading
-import sqlite3
-import secrets
-import sys
 import hashlib
+import http.client
+import io
+import json
+import logging
+import os
+import re
+import secrets
+import sqlite3
+import sys
+import threading
+import time
+import urllib.parse
+import xml.etree.ElementTree as ET
 from collections import deque
+from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
-from datetime import timedelta, datetime, timezone
 from html import unescape
+from logging.handlers import TimedRotatingFileHandler
 from urllib.parse import urljoin
-from dotenv import load_dotenv
+
+import discord
 import requests
 from bs4 import BeautifulSoup
 from croniter import croniter
+from discord import app_commands
+from discord.ext import commands
+from dotenv import load_dotenv
+
 from web_admin import start_web_admin_interface
 
 load_dotenv()
@@ -35,15 +40,20 @@ DATA_DIR = os.getenv("DATA_DIR", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
-SENSITIVE_LOG_VALUE_PATTERN = re.compile(
-    r"(?i)\b(password|token|secret|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)"
-)
+SENSITIVE_LOG_VALUE_PATTERN = re.compile(r"(?i)\b(password|token|secret|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)")
 REDDIT_SUBREDDIT_PATTERN = re.compile(r"^[A-Za-z0-9_]{2,21}$")
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 FALSY_ENV_VALUES = {"0", "false", "no", "off"}
-REDDIT_REQUEST_USER_AGENT = (
-    "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
+SHORT_CODE_REGEX = re.compile(r"/(\d+)(?:/)?$")
+STATUS_PAGE_PATH_REGEX = re.compile(r"^/status/([A-Za-z0-9_-]+)$")
+YOUTUBE_CHANNEL_ID_PATTERN = re.compile(r"^UC[a-zA-Z0-9_-]{22}$")
+YOUTUBE_CHANNEL_ID_META_PATTERNS = (
+    re.compile(r'"externalId":"(UC[a-zA-Z0-9_-]{22})"'),
+    re.compile(r'"channelId":"(UC[a-zA-Z0-9_-]{22})"'),
+    re.compile(r'"browseId":"(UC[a-zA-Z0-9_-]{22})"'),
+    re.compile(r'"https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{22})"'),
 )
+REDDIT_REQUEST_USER_AGENT = "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
 DEFAULT_REDDIT_FEED_CHECK_SCHEDULE = "*/30 * * * *"
 REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
@@ -95,9 +105,7 @@ def normalize_http_url_setting(raw_value: str, fallback_value: str, setting_name
     if candidate.startswith(("http://", "https://")):
         return candidate
     normalized = f"https://{candidate.lstrip('/')}"
-    logger.warning(
-        "%s is missing URL scheme; normalizing to %s", setting_name, normalized
-    )
+    logger.warning("%s is missing URL scheme; normalizing to %s", setting_name, normalized)
     return normalized
 
 
@@ -121,9 +129,7 @@ def normalize_reddit_subreddit_name(raw_value: str):
     return ""
 
 
-def normalize_reddit_subreddit_setting(
-    raw_value: str, fallback_value: str = "GlInet", setting_name: str = "REDDIT_SUBREDDIT"
-):
+def normalize_reddit_subreddit_setting(raw_value: str, fallback_value: str = "GlInet", setting_name: str = "REDDIT_SUBREDDIT"):
     fallback = str(fallback_value or "GlInet").strip() or "GlInet"
     candidate = normalize_reddit_subreddit_name(raw_value)
     if not candidate:
@@ -178,18 +184,14 @@ def ensure_log_storage_security(log_dir: str, log_files, enabled: bool):
         notices.append(f"Unable to create LOG_DIR '{log_dir}': {exc}")
         return notices
     if not _chmod_if_possible(log_dir, 0o700):
-        notices.append(
-            f"Unable to set secure directory mode on LOG_DIR '{log_dir}' (expected 0700)."
-        )
+        notices.append(f"Unable to set secure directory mode on LOG_DIR '{log_dir}' (expected 0700).")
     for file_path in log_files:
         if not file_path:
             continue
         if not os.path.exists(file_path):
             continue
         if not _chmod_if_possible(file_path, 0o600):
-            notices.append(
-                f"Unable to set secure file mode on log file '{file_path}' (expected 0600)."
-            )
+            notices.append(f"Unable to set secure file mode on log file '{file_path}' (expected 0600).")
     return notices
 
 
@@ -220,20 +222,14 @@ class SecureTimedRotatingFileHandler(TimedRotatingFileHandler):
 
 # Set up logging to console and persistent file
 LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", "INFO"))
-CONTAINER_LOG_LEVEL = normalize_log_level(
-    os.getenv("CONTAINER_LOG_LEVEL", "ERROR"), fallback="ERROR"
-)
-DISCORD_LOG_LEVEL = normalize_log_level(
-    os.getenv("DISCORD_LOG_LEVEL", "INFO"), fallback="INFO"
-)
+CONTAINER_LOG_LEVEL = normalize_log_level(os.getenv("CONTAINER_LOG_LEVEL", "ERROR"), fallback="ERROR")
+DISCORD_LOG_LEVEL = normalize_log_level(os.getenv("DISCORD_LOG_LEVEL", "INFO"), fallback="INFO")
 LOG_HARDEN_FILE_PERMISSIONS = is_truthy_env_value(
     os.getenv("LOG_HARDEN_FILE_PERMISSIONS", "true"),
     default_value=True,
 )
 LOG_RETENTION_DAYS = parse_positive_int_env("LOG_RETENTION_DAYS", 90, minimum=1)
-LOG_ROTATION_INTERVAL_DAYS = parse_positive_int_env(
-    "LOG_ROTATION_INTERVAL_DAYS", 1, minimum=1
-)
+LOG_ROTATION_INTERVAL_DAYS = parse_positive_int_env("LOG_ROTATION_INTERVAL_DAYS", 1, minimum=1)
 LOG_DIR = resolve_log_dir(os.getenv("LOG_DIR", "/logs"))
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
 BOT_CHANNEL_LOG_FILE = os.path.join(LOG_DIR, "bot_log.log")
@@ -345,9 +341,7 @@ if LOG_HARDEN_FILE_PERMISSIONS:
         LOG_DIR,
     )
 else:
-    logger.warning(
-        "Log permission hardening is disabled via LOG_HARDEN_FILE_PERMISSIONS=false."
-    )
+    logger.warning("Log permission hardening is disabled via LOG_HARDEN_FILE_PERMISSIONS=false.")
 for notice in log_permission_notices:
     logger.warning("Log storage security: %s", notice)
 logger.info(
@@ -400,16 +394,13 @@ def install_asyncio_exception_logging(loop: asyncio.AbstractEventLoop):
             logger.error("Asyncio exception: %s | context=%s", message, context)
 
     loop.set_exception_handler(_asyncio_exception_handler)
-    setattr(loop, "_invite_bot_exception_logging", True)
+    loop._invite_bot_exception_logging = True
 
 
 def get_required_env(name: str):
     value = os.getenv(name)
     if value is None or str(value).strip() == "":
-        message = (
-            f"Missing required environment variable: {name}. "
-            "Ensure it is set via env_file/environment in your container runtime."
-        )
+        message = f"Missing required environment variable: {name}. Ensure it is set via env_file/environment in your container runtime."
         logger.critical(message)
         raise RuntimeError(message)
     return str(value).strip()
@@ -427,6 +418,23 @@ def get_required_int_env(name: str):
 
 TOKEN = get_required_env("DISCORD_TOKEN")
 GUILD_ID = get_required_int_env("GUILD_ID")
+MANAGED_GUILD_IDS_RAW = os.getenv("MANAGED_GUILD_IDS", "").strip()
+if MANAGED_GUILD_IDS_RAW:
+    managed_guild_ids = set()
+    for part in re.split(r"[\s,]+", MANAGED_GUILD_IDS_RAW):
+        cleaned = str(part or "").strip()
+        if not cleaned:
+            continue
+        try:
+            guild_id = int(cleaned)
+        except ValueError as exc:
+            raise RuntimeError("MANAGED_GUILD_IDS must contain only numeric guild IDs.") from exc
+        if guild_id <= 0:
+            raise RuntimeError("MANAGED_GUILD_IDS must contain only positive guild IDs.")
+        managed_guild_ids.add(guild_id)
+    MANAGED_GUILD_IDS = managed_guild_ids or None
+else:
+    MANAGED_GUILD_IDS = None
 _bot_log_channel_raw = os.getenv("BOT_LOG_CHANNEL_ID", os.getenv("GENERAL_CHANNEL_ID", "0"))
 if _bot_log_channel_raw is None or str(_bot_log_channel_raw).strip() == "":
     _bot_log_channel_raw = os.getenv("GENERAL_CHANNEL_ID", "0")
@@ -437,21 +445,16 @@ try:
 except (TypeError, ValueError):
     BOT_LOG_CHANNEL_ID = 0
 if os.getenv("GENERAL_CHANNEL_ID") and not os.getenv("BOT_LOG_CHANNEL_ID"):
-    logger.warning(
-        "GENERAL_CHANNEL_ID is deprecated; migrate to BOT_LOG_CHANNEL_ID."
-    )
+    logger.warning("GENERAL_CHANNEL_ID is deprecated; migrate to BOT_LOG_CHANNEL_ID.")
 FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", "https://forum.gl-inet.com").rstrip("/")
 FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 OPENWRT_FORUM_BASE_URL = "https://forum.openwrt.org"
 OPENWRT_FORUM_MAX_RESULTS = 10
 REDDIT_BASE_URL = "https://www.reddit.com"
-REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(
-    os.getenv("REDDIT_SUBREDDIT", "GlInet"), fallback_value="GlInet"
-)
+REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(os.getenv("REDDIT_SUBREDDIT", "GlInet"), fallback_value="GlInet")
 REDDIT_MAX_RESULTS = 5
 REDDIT_FEED_CHECK_SCHEDULE = (
-    str(os.getenv("REDDIT_FEED_CHECK_SCHEDULE", DEFAULT_REDDIT_FEED_CHECK_SCHEDULE)).strip()
-    or DEFAULT_REDDIT_FEED_CHECK_SCHEDULE
+    str(os.getenv("REDDIT_FEED_CHECK_SCHEDULE", DEFAULT_REDDIT_FEED_CHECK_SCHEDULE)).strip() or DEFAULT_REDDIT_FEED_CHECK_SCHEDULE
 )
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
@@ -474,16 +477,10 @@ FIRMWARE_NOTIFICATION_CHANNEL_RAW = os.getenv(
         os.getenv("FIRMWARE_NOTIFY_CHANNEL_ID", ""),
     ),
 ).strip()
-if FIRMWARE_NOTIFICATION_CHANNEL_RAW.startswith(
-    "<#"
-) and FIRMWARE_NOTIFICATION_CHANNEL_RAW.endswith(">"):
+if FIRMWARE_NOTIFICATION_CHANNEL_RAW.startswith("<#") and FIRMWARE_NOTIFICATION_CHANNEL_RAW.endswith(">"):
     FIRMWARE_NOTIFICATION_CHANNEL_RAW = FIRMWARE_NOTIFICATION_CHANNEL_RAW[2:-1]
 try:
-    FIRMWARE_NOTIFY_CHANNEL_ID = (
-        int(FIRMWARE_NOTIFICATION_CHANNEL_RAW)
-        if FIRMWARE_NOTIFICATION_CHANNEL_RAW
-        else 0
-    )
+    FIRMWARE_NOTIFY_CHANNEL_ID = int(FIRMWARE_NOTIFICATION_CHANNEL_RAW) if FIRMWARE_NOTIFICATION_CHANNEL_RAW else 0
 except ValueError:
     logger.warning(
         "Invalid firmware_notification_channel value: %s",
@@ -503,18 +500,12 @@ if not FIRMWARE_CHECK_SCHEDULE:
             interval_minutes = max(1, interval_seconds // 60)
             FIRMWARE_CHECK_SCHEDULE = f"*/{interval_minutes} * * * *"
         except ValueError:
-            logger.warning(
-                "Invalid FIRMWARE_CHECK_INTERVAL_SECONDS value: %s", legacy_interval_raw
-            )
+            logger.warning("Invalid FIRMWARE_CHECK_INTERVAL_SECONDS value: %s", legacy_interval_raw)
 if not FIRMWARE_CHECK_SCHEDULE:
     FIRMWARE_CHECK_SCHEDULE = "*/30 * * * *"
 
-FIRMWARE_REQUEST_TIMEOUT_SECONDS = int(
-    os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "30")
-)
-FIRMWARE_RELEASE_NOTES_MAX_CHARS = max(
-    200, int(os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "900"))
-)
+FIRMWARE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "30"))
+FIRMWARE_RELEASE_NOTES_MAX_CHARS = max(200, int(os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "900")))
 WEB_ENABLED = os.getenv("WEB_ENABLED", "true").strip().lower() not in {
     "0",
     "false",
@@ -542,10 +533,38 @@ WEB_ADMIN_DEFAULT_EMAIL = os.getenv(
     os.getenv("WEB_ADMIN_DEFAULT_USERNAME", "admin@example.com"),
 ).strip()
 WEB_ADMIN_DEFAULT_PASSWORD = os.getenv("WEB_ADMIN_DEFAULT_PASSWORD", "")
+ENABLE_MEMBERS_INTENT = is_truthy_env_value(
+    os.getenv("ENABLE_MEMBERS_INTENT", "true"),
+    default_value=True,
+)
+COMMAND_RESPONSES_EPHEMERAL = is_truthy_env_value(
+    os.getenv("COMMAND_RESPONSES_EPHEMERAL", "false"),
+    default_value=False,
+)
+PUPPY_IMAGE_API_URL = normalize_http_url_setting(
+    os.getenv("PUPPY_IMAGE_API_URL", ""),
+    "https://dog.ceo/api/breeds/image/random",
+    "PUPPY_IMAGE_API_URL",
+)
+PUPPY_IMAGE_TIMEOUT_SECONDS = parse_positive_int_env("PUPPY_IMAGE_TIMEOUT_SECONDS", 8, minimum=1)
+SHORTENER_ENABLED = is_truthy_env_value(
+    os.getenv("SHORTENER_ENABLED", "false"),
+    default_value=False,
+)
+SHORTENER_TIMEOUT_SECONDS = parse_positive_int_env("SHORTENER_TIMEOUT_SECONDS", 10, minimum=1)
+YOUTUBE_NOTIFY_ENABLED = is_truthy_env_value(
+    os.getenv("YOUTUBE_NOTIFY_ENABLED", "false"),
+    default_value=False,
+)
+YOUTUBE_POLL_INTERVAL_SECONDS = parse_positive_int_env("YOUTUBE_POLL_INTERVAL_SECONDS", 300, minimum=30)
+YOUTUBE_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12, minimum=5)
+UPTIME_STATUS_ENABLED = is_truthy_env_value(
+    os.getenv("UPTIME_STATUS_ENABLED", "false"),
+    default_value=False,
+)
+UPTIME_STATUS_TIMEOUT_SECONDS = parse_positive_int_env("UPTIME_STATUS_TIMEOUT_SECONDS", 10, minimum=1)
 try:
-    WEB_DISCORD_CATALOG_TTL_SECONDS = max(
-        15, int(os.getenv("WEB_DISCORD_CATALOG_TTL_SECONDS", "120"))
-    )
+    WEB_DISCORD_CATALOG_TTL_SECONDS = max(15, int(os.getenv("WEB_DISCORD_CATALOG_TTL_SECONDS", "120")))
 except ValueError:
     WEB_DISCORD_CATALOG_TTL_SECONDS = 120
 try:
@@ -556,21 +575,15 @@ try:
 except ValueError:
     WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS = 20
 try:
-    WEB_BULK_ASSIGN_TIMEOUT_SECONDS = max(
-        30, int(os.getenv("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "300"))
-    )
+    WEB_BULK_ASSIGN_TIMEOUT_SECONDS = max(30, int(os.getenv("WEB_BULK_ASSIGN_TIMEOUT_SECONDS", "300")))
 except ValueError:
     WEB_BULK_ASSIGN_TIMEOUT_SECONDS = 300
 try:
-    WEB_BOT_PROFILE_TIMEOUT_SECONDS = max(
-        5, int(os.getenv("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "20"))
-    )
+    WEB_BOT_PROFILE_TIMEOUT_SECONDS = max(5, int(os.getenv("WEB_BOT_PROFILE_TIMEOUT_SECONDS", "20")))
 except ValueError:
     WEB_BOT_PROFILE_TIMEOUT_SECONDS = 20
 try:
-    WEB_AVATAR_MAX_UPLOAD_BYTES = max(
-        1024, int(os.getenv("WEB_AVATAR_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024)))
-    )
+    WEB_AVATAR_MAX_UPLOAD_BYTES = max(1024, int(os.getenv("WEB_AVATAR_MAX_UPLOAD_BYTES", str(2 * 1024 * 1024))))
 except ValueError:
     WEB_AVATAR_MAX_UPLOAD_BYTES = 2 * 1024 * 1024
 COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
@@ -596,6 +609,30 @@ DOCS_SITE_MAP = {
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
     "router": ("Router Docs v4", "https://docs.gl-inet.com/router/en/4"),
 }
+SHORTENER_BASE_URL = normalize_http_url_setting(
+    os.getenv("SHORTENER_BASE_URL", ""),
+    "https://l.twy4.us",
+    "SHORTENER_BASE_URL",
+).rstrip("/")
+SHORTENER_HOST = urllib.parse.urlparse(SHORTENER_BASE_URL).netloc.lower()
+UPTIME_STATUS_PAGE_URL = normalize_http_url_setting(
+    os.getenv("UPTIME_STATUS_PAGE_URL", ""),
+    "https://status.example.invalid/status/everything",
+    "UPTIME_STATUS_PAGE_URL",
+)
+_uptime_status_page_parsed = urllib.parse.urlparse(UPTIME_STATUS_PAGE_URL)
+uptime_slug_match = STATUS_PAGE_PATH_REGEX.match(_uptime_status_page_parsed.path.rstrip("/"))
+if uptime_slug_match is None:
+    logger.warning("UPTIME_STATUS_PAGE_URL must match /status/<slug>; uptime integration will be unavailable.")
+    UPTIME_STATUS_SLUG = ""
+    UPTIME_API_BASE = ""
+    UPTIME_API_CONFIG_URL = ""
+    UPTIME_API_HEARTBEAT_URL = ""
+else:
+    UPTIME_STATUS_SLUG = uptime_slug_match.group(1)
+    UPTIME_API_BASE = f"{_uptime_status_page_parsed.scheme}://{_uptime_status_page_parsed.netloc}"
+    UPTIME_API_CONFIG_URL = f"{UPTIME_API_BASE}/api/status-page/{UPTIME_STATUS_SLUG}"
+    UPTIME_API_HEARTBEAT_URL = f"{UPTIME_API_BASE}/api/status-page/heartbeat/{UPTIME_STATUS_SLUG}"
 
 ROLE_FILE = os.path.join(DATA_DIR, "access_role.txt")
 INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
@@ -612,14 +649,8 @@ OLD_DEFAULT_TAG_RESPONSES = {
     "!support": "🛠️ Need help? Please open a ticket or message a moderator.",
 }
 DEFAULT_TAG_RESPONSES = {
-    "!betatest": (
-        "✅ Thanks for your interest in the beta! We'll share more details soon.\n"
-        "🔗 Beta updates: https://forum.gl-inet.com/"
-    ),
-    "!support": (
-        "🛠️ Need help? Please open a ticket or message a moderator.\n"
-        "🔗 Support Discord: https://discord.gg/m6UjX6UhKe"
-    ),
+    "!betatest": ("✅ Thanks for your interest in the beta! We'll share more details soon.\n🔗 Beta updates: https://forum.gl-inet.com/"),
+    "!support": ("🛠️ Need help? Please open a ticket or message a moderator.\n🔗 Support Discord: https://discord.gg/m6UjX6UhKe"),
 }
 DEFAULT_ALLOWED_ROLE_NAMES = {"Employee", "Admin", "Gl.iNet Moderator"}
 COMMAND_PERMISSION_MODE_DEFAULT = "default"
@@ -644,6 +675,12 @@ MODERATOR_ONLY_COMMAND_KEYS = {
 COMMAND_PERMISSION_DEFAULTS = {
     "list": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "help": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "ping": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "sayhi": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "happy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "shorten": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "expand": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "uptime": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "tag_commands": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "submitrole": COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
     "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
@@ -672,9 +709,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
 }
 for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
-    COMMAND_PERMISSION_DEFAULTS[_command_key] = (
-        COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
-    )
+    COMMAND_PERMISSION_DEFAULTS[_command_key] = COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
 COMMAND_PERMISSION_METADATA = {
     "list": {
         "label": "!list",
@@ -683,6 +718,30 @@ COMMAND_PERMISSION_METADATA = {
     "help": {
         "label": "/help",
         "description": "Show quick bot capabilities and wiki link.",
+    },
+    "ping": {
+        "label": "/ping",
+        "description": "Check that the bot is online.",
+    },
+    "sayhi": {
+        "label": "/sayhi",
+        "description": "Post a short bot introduction.",
+    },
+    "happy": {
+        "label": "/happy",
+        "description": "Post a random puppy image.",
+    },
+    "shorten": {
+        "label": "/shorten",
+        "description": "Create a short URL through the configured shortener.",
+    },
+    "expand": {
+        "label": "/expand",
+        "description": "Expand a short URL or short code.",
+    },
+    "uptime": {
+        "label": "/uptime",
+        "description": "Show uptime monitor summary.",
     },
     "tag_commands": {
         "label": "Dynamic Tag Commands",
@@ -796,7 +855,7 @@ COMMAND_PERMISSION_POLICY_LABELS = {
 }
 
 intents = discord.Intents.default()
-intents.members = True
+intents.members = ENABLE_MEMBERS_INTENT
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, case_insensitive=True)
@@ -808,6 +867,7 @@ guild_settings_cache = {}
 docs_index_cache = {}
 firmware_monitor_task = None
 reddit_feed_monitor_task = None
+youtube_monitor_task = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
 web_admin_restart_events = deque()
@@ -861,6 +921,21 @@ def normalize_target_guild_id(raw_value, default_value: int | None = None):
     except (TypeError, ValueError, AttributeError):
         return fallback
     return guild_id if guild_id > 0 else fallback
+
+
+def is_managed_guild_id(guild_id: int | None):
+    if guild_id is None:
+        return False
+    if MANAGED_GUILD_IDS is None:
+        return True
+    return int(guild_id) in MANAGED_GUILD_IDS
+
+
+def get_managed_guilds():
+    guilds = sorted(bot.guilds, key=lambda item: (item.name.casefold(), item.id))
+    if MANAGED_GUILD_IDS is None:
+        return guilds
+    return [guild for guild in guilds if guild.id in MANAGED_GUILD_IDS]
 
 
 def get_db_connection():
@@ -919,6 +994,17 @@ def ensure_db_schema():
                 updated_by_email TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS actions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                action TEXT NOT NULL,
+                status TEXT NOT NULL,
+                moderator TEXT NOT NULL DEFAULT '',
+                target TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE TABLE IF NOT EXISTS firmware_seen (
                 entry_id TEXT PRIMARY KEY,
                 created_at TEXT NOT NULL
@@ -957,6 +1043,25 @@ def ensure_db_schema():
                 FOREIGN KEY(feed_id) REFERENCES reddit_feed_subscriptions(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS youtube_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                source_url TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                channel_title TEXT NOT NULL,
+                target_channel_id INTEGER NOT NULL,
+                target_channel_name TEXT NOT NULL,
+                last_video_id TEXT NOT NULL DEFAULT '',
+                last_video_title TEXT NOT NULL DEFAULT '',
+                last_published_at TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, channel_id, target_channel_id)
+            );
+
             CREATE TABLE IF NOT EXISTS web_users (
                 email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
@@ -976,21 +1081,22 @@ def ensure_db_schema():
             CREATE INDEX IF NOT EXISTS idx_role_codes_guild_id ON role_codes(guild_id);
             CREATE INDEX IF NOT EXISTS idx_invite_roles_guild_id ON invite_roles(guild_id);
             CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id ON tag_responses(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_actions_guild_id ON actions(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
                 ON reddit_feed_subscriptions(subreddit);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
                 ON reddit_feed_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_seen_posts_feed_id
                 ON reddit_feed_seen_posts(feed_id);
+            CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_guild_id
+                ON youtube_subscriptions(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_enabled
+                ON youtube_subscriptions(enabled);
             """
         )
-        command_permission_columns = {
-            str(row["name"])
-            for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()
-        }
-        role_code_columns = {
-            str(row["name"]) for row in conn.execute("PRAGMA table_info(role_codes)").fetchall()
-        }
+        command_permission_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()}
+        role_code_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(role_codes)").fetchall()}
         if "guild_id" not in role_code_columns:
             conn.executescript(
                 """
@@ -1011,9 +1117,7 @@ def ensure_db_schema():
                 """
             )
 
-        invite_role_columns = {
-            str(row["name"]) for row in conn.execute("PRAGMA table_info(invite_roles)").fetchall()
-        }
+        invite_role_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(invite_roles)").fetchall()}
         if "guild_id" not in invite_role_columns:
             conn.executescript(
                 """
@@ -1034,9 +1138,7 @@ def ensure_db_schema():
                 """
             )
 
-        tag_response_columns = {
-            str(row["name"]) for row in conn.execute("PRAGMA table_info(tag_responses)").fetchall()
-        }
+        tag_response_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tag_responses)").fetchall()}
         if "guild_id" not in tag_response_columns:
             conn.executescript(
                 """
@@ -1081,12 +1183,7 @@ def ensure_db_schema():
                 """
             )
 
-        reddit_feed_columns = {
-            str(row["name"])
-            for row in conn.execute(
-                "PRAGMA table_info(reddit_feed_subscriptions)"
-            ).fetchall()
-        }
+        reddit_feed_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(reddit_feed_subscriptions)").fetchall()}
         if "guild_id" not in reddit_feed_columns:
             conn.executescript(
                 """
@@ -1169,6 +1266,14 @@ def ensure_db_schema():
             "UPDATE reddit_feed_subscriptions SET guild_id = ? WHERE guild_id = 0",
             (GUILD_ID,),
         )
+        conn.execute(
+            "UPDATE actions SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
+        conn.execute(
+            "UPDATE youtube_subscriptions SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
         conn.commit()
 
 
@@ -1184,7 +1289,7 @@ def db_kv_get(key: str):
 
 def db_kv_set(key: str, value: str):
     conn = get_db_connection()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     with db_lock:
         conn.execute(
             """
@@ -1208,9 +1313,7 @@ def default_guild_settings():
     return {
         "bot_log_channel_id": BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else 0,
         "mod_log_channel_id": MOD_LOG_CHANNEL_ID if MOD_LOG_CHANNEL_ID > 0 else 0,
-        "firmware_notify_channel_id": (
-            FIRMWARE_NOTIFY_CHANNEL_ID if FIRMWARE_NOTIFY_CHANNEL_ID > 0 else 0
-        ),
+        "firmware_notify_channel_id": (FIRMWARE_NOTIFY_CHANNEL_ID if FIRMWARE_NOTIFY_CHANNEL_ID > 0 else 0),
         "access_role_id": 0,
         "updated_at": "",
         "updated_by_email": "",
@@ -1241,9 +1344,7 @@ def load_guild_settings(guild_id: int | None = None):
             {
                 "bot_log_channel_id": int(row["bot_log_channel_id"] or 0),
                 "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
-                "firmware_notify_channel_id": int(
-                    row["firmware_notify_channel_id"] or 0
-                ),
+                "firmware_notify_channel_id": int(row["firmware_notify_channel_id"] or 0),
                 "access_role_id": int(row["access_role_id"] or 0),
                 "updated_at": str(row["updated_at"] or ""),
                 "updated_by_email": str(row["updated_by_email"] or ""),
@@ -1253,7 +1354,7 @@ def load_guild_settings(guild_id: int | None = None):
         role_id_raw = db_kv_get("access_role_id")
         if role_id_raw is None and os.path.exists(ROLE_FILE):
             try:
-                with open(ROLE_FILE, "r") as handle:
+                with open(ROLE_FILE) as handle:
                     role_id_raw = handle.read().strip()
             except Exception:
                 logger.exception("Failed reading legacy access role from %s", ROLE_FILE)
@@ -1270,7 +1371,7 @@ def save_guild_settings(
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
     current = load_guild_settings(safe_guild_id)
-    updated_at = datetime.now(timezone.utc).isoformat()
+    updated_at = datetime.now(UTC).isoformat()
     merged = dict(current)
     source = payload or {}
     for key in (
@@ -1337,19 +1438,177 @@ def get_effective_guild_setting(guild_id: int | None, key: str, fallback_value: 
 
 def get_effective_logging_channel_id(guild_id: int | None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    bot_log_channel_id = get_effective_guild_setting(
-        safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID
-    )
+    bot_log_channel_id = get_effective_guild_setting(safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID)
     if bot_log_channel_id > 0:
         return bot_log_channel_id
-    return get_effective_guild_setting(
-        safe_guild_id, "mod_log_channel_id", MOD_LOG_CHANNEL_ID
-    )
+    return get_effective_guild_setting(safe_guild_id, "mod_log_channel_id", MOD_LOG_CHANNEL_ID)
 
 
-def list_reddit_feed_subscriptions(
-    enabled_only: bool = False, guild_id: int | None = None
+def record_action_safe(
+    action: str,
+    status: str,
+    moderator: str = "",
+    target: str = "",
+    reason: str = "",
+    guild_id: int | None = None,
 ):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO actions (guild_id, created_at, action, status, moderator, target, reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                datetime.now(UTC).isoformat(),
+                str(action or "").strip(),
+                str(status or "").strip(),
+                str(moderator or "").strip(),
+                str(target or "").strip(),
+                str(reason or "").strip(),
+            ),
+        )
+        conn.commit()
+
+
+def list_recent_actions(guild_id: int | None, limit: int = 200):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_limit = max(1, min(500, int(limit)))
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(
+            """
+            SELECT id, guild_id, created_at, action, status, moderator, target, reason
+            FROM actions
+            WHERE guild_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (safe_guild_id, safe_limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def list_youtube_subscriptions(
+    guild_id: int | None = None,
+    enabled_only: bool = False,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    query = (
+        "SELECT id, guild_id, source_url, channel_id, channel_title, target_channel_id, "
+        "target_channel_name, last_video_id, last_video_title, last_published_at, enabled, "
+        "created_at, updated_at, created_by_email, updated_by_email "
+        "FROM youtube_subscriptions WHERE guild_id = ?"
+    )
+    params = [safe_guild_id]
+    if enabled_only:
+        query += " AND enabled = 1"
+    query += " ORDER BY channel_title COLLATE NOCASE ASC, target_channel_name COLLATE NOCASE ASC, id ASC"
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_or_update_youtube_subscription(
+    guild_id: int | None,
+    *,
+    source_url: str,
+    channel_id: str,
+    channel_title: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    last_video_id: str,
+    last_video_title: str,
+    last_published_at: str,
+    actor_email: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO youtube_subscriptions (
+                guild_id, source_url, channel_id, channel_title, target_channel_id,
+                target_channel_name, last_video_id, last_video_title, last_published_at,
+                enabled, created_at, updated_at, created_by_email, updated_by_email
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, channel_id, target_channel_id) DO UPDATE SET
+                source_url=excluded.source_url,
+                channel_title=excluded.channel_title,
+                target_channel_name=excluded.target_channel_name,
+                last_video_id=excluded.last_video_id,
+                last_video_title=excluded.last_video_title,
+                last_published_at=excluded.last_published_at,
+                enabled=1,
+                updated_at=excluded.updated_at,
+                updated_by_email=excluded.updated_by_email
+            """,
+            (
+                safe_guild_id,
+                str(source_url or "").strip(),
+                str(channel_id or "").strip(),
+                str(channel_title or "").strip(),
+                int(target_channel_id),
+                str(target_channel_name or "").strip(),
+                str(last_video_id or "").strip(),
+                str(last_video_title or "").strip(),
+                str(last_published_at or "").strip(),
+                now_iso,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                str(actor_email or "").strip().lower(),
+            ),
+        )
+        conn.commit()
+
+
+def delete_youtube_subscription(subscription_id: int, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            "DELETE FROM youtube_subscriptions WHERE id = ? AND guild_id = ?",
+            (int(subscription_id), safe_guild_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def update_youtube_subscription_runtime_state(
+    subscription_id: int,
+    *,
+    guild_id: int | None,
+    last_video_id: str,
+    last_video_title: str,
+    last_published_at: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            UPDATE youtube_subscriptions
+            SET last_video_id = ?, last_video_title = ?, last_published_at = ?, updated_at = ?
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                str(last_video_id or "").strip(),
+                str(last_video_title or "").strip(),
+                str(last_published_at or "").strip(),
+                datetime.now(UTC).isoformat(),
+                int(subscription_id),
+                safe_guild_id,
+            ),
+        )
+        conn.commit()
+
+
+def list_reddit_feed_subscriptions(enabled_only: bool = False, guild_id: int | None = None):
     conn = get_db_connection()
     query = (
         "SELECT id, guild_id, subreddit, channel_id, enabled, created_at, updated_at, "
@@ -1419,9 +1678,7 @@ def get_reddit_feed_subscription(feed_id: int):
     }
 
 
-def create_reddit_feed_subscription(
-    guild_id: int, subreddit: str, channel_id: int, actor_email: str
-):
+def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: int, actor_email: str):
     cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold()
     if not cleaned_subreddit:
         raise ValueError("Enter a valid subreddit name or /r/ URL.")
@@ -1429,7 +1686,7 @@ def create_reddit_feed_subscription(
     safe_channel_id = int(channel_id)
     if safe_channel_id <= 0:
         raise ValueError("Choose a valid Discord channel.")
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
         conn.execute(
@@ -1460,7 +1717,7 @@ def create_reddit_feed_subscription(
 
 
 def set_reddit_feed_subscription_enabled(feed_id: int, enabled: bool, actor_email: str):
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
         cursor = conn.execute(
@@ -1513,7 +1770,7 @@ def merge_reddit_feed_seen_post_ids(feed_id: int, post_ids):
     if not normalized_ids:
         return
 
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
         for post_id in normalized_ids:
@@ -1552,7 +1809,7 @@ def update_reddit_feed_runtime_status(
     last_posted_at: str = "",
     last_error: str = "",
 ):
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
         conn.execute(
@@ -1579,14 +1836,12 @@ def update_reddit_feed_runtime_status(
 
 def migrate_legacy_files_to_db():
     conn = get_db_connection()
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
 
     with db_lock:
 
         def kv_exists(key: str):
-            row = conn.execute(
-                "SELECT 1 FROM kv_store WHERE key = ?", (key,)
-            ).fetchone()
+            row = conn.execute("SELECT 1 FROM kv_store WHERE key = ?", (key,)).fetchone()
             return row is not None
 
         def kv_insert_if_missing(key: str, value: str):
@@ -1602,7 +1857,7 @@ def migrate_legacy_files_to_db():
 
         if os.path.exists(CODES_FILE):
             try:
-                with open(CODES_FILE, "r") as f:
+                with open(CODES_FILE) as f:
                     for raw_line in f:
                         line = raw_line.strip()
                         if ":" not in line:
@@ -1622,13 +1877,11 @@ def migrate_legacy_files_to_db():
                                 (GUILD_ID, code, role_id, now_iso),
                             )
             except Exception:
-                logger.exception(
-                    "Failed migrating legacy role codes from %s", CODES_FILE
-                )
+                logger.exception("Failed migrating legacy role codes from %s", CODES_FILE)
 
         if os.path.exists(INVITE_ROLE_FILE):
             try:
-                with open(INVITE_ROLE_FILE, "r") as f:
+                with open(INVITE_ROLE_FILE) as f:
                     mapping = json.load(f)
                 if isinstance(mapping, dict):
                     for invite_code, raw_role_id in mapping.items():
@@ -1654,7 +1907,7 @@ def migrate_legacy_files_to_db():
         tag_mapping_loaded = False
         if os.path.exists(TAG_RESPONSES_FILE):
             try:
-                with open(TAG_RESPONSES_FILE, "r") as f:
+                with open(TAG_RESPONSES_FILE) as f:
                     payload = json.load(f)
                 if isinstance(payload, dict):
                     tag_mapping_loaded = True
@@ -1670,9 +1923,7 @@ def migrate_legacy_files_to_db():
                             (GUILD_ID, tag, str(raw_response), now_iso),
                         )
             except Exception:
-                logger.exception(
-                    "Failed migrating legacy tag responses from %s", TAG_RESPONSES_FILE
-                )
+                logger.exception("Failed migrating legacy tag responses from %s", TAG_RESPONSES_FILE)
 
         tag_count = conn.execute(
             "SELECT COUNT(*) AS c FROM tag_responses WHERE guild_id = ?",
@@ -1690,7 +1941,7 @@ def migrate_legacy_files_to_db():
 
         if os.path.exists(FIRMWARE_STATE_FILE):
             try:
-                with open(FIRMWARE_STATE_FILE, "r") as f:
+                with open(FIRMWARE_STATE_FILE) as f:
                     payload = json.load(f)
                 seen_ids = payload.get("seen_ids", [])
                 if isinstance(seen_ids, list):
@@ -1716,20 +1967,16 @@ def migrate_legacy_files_to_db():
                     FIRMWARE_STATE_FILE,
                 )
 
-        firmware_seen_count = conn.execute(
-            "SELECT COUNT(*) AS c FROM firmware_seen"
-        ).fetchone()["c"]
+        firmware_seen_count = conn.execute("SELECT COUNT(*) AS c FROM firmware_seen").fetchone()["c"]
         if firmware_seen_count > 0:
             kv_insert_if_missing("firmware_seen_initialized", "1")
             kv_insert_if_missing("firmware_source_url", FIRMWARE_FEED_URL)
 
         if os.path.exists(COMMAND_PERMISSIONS_FILE):
             try:
-                with open(COMMAND_PERMISSIONS_FILE, "r") as f:
+                with open(COMMAND_PERMISSIONS_FILE) as f:
                     payload = json.load(f)
-                raw_rules = (
-                    payload.get("rules", {}) if isinstance(payload, dict) else {}
-                )
+                raw_rules = payload.get("rules", {}) if isinstance(payload, dict) else {}
                 if isinstance(raw_rules, dict):
                     for command_key, raw_rule in raw_rules.items():
                         if command_key not in COMMAND_PERMISSION_DEFAULTS:
@@ -1757,7 +2004,7 @@ def migrate_legacy_files_to_db():
 
         if os.path.exists(WEB_USERS_FILE):
             try:
-                with open(WEB_USERS_FILE, "r") as f:
+                with open(WEB_USERS_FILE) as f:
                     payload = json.load(f)
                 users = payload.get("users", []) if isinstance(payload, dict) else []
                 if isinstance(users, list):
@@ -1778,13 +2025,11 @@ def migrate_legacy_files_to_db():
                             (email, password_hash, is_admin, created_at, now_iso),
                         )
             except Exception:
-                logger.exception(
-                    "Failed migrating legacy web users from %s", WEB_USERS_FILE
-                )
+                logger.exception("Failed migrating legacy web users from %s", WEB_USERS_FILE)
 
         if not kv_exists("access_role_id") and os.path.exists(ROLE_FILE):
             try:
-                with open(ROLE_FILE, "r") as f:
+                with open(ROLE_FILE) as f:
                     raw_value = f.read().strip()
                 role_id = int(raw_value)
                 if role_id > 0:
@@ -1806,9 +2051,7 @@ def migrate_legacy_files_to_db():
                         (GUILD_ID, role_id, now_iso, "legacy_migration"),
                     )
             except Exception:
-                logger.exception(
-                    "Failed migrating legacy access role from %s", ROLE_FILE
-                )
+                logger.exception("Failed migrating legacy access role from %s", ROLE_FILE)
 
         conn.commit()
 
@@ -1844,10 +2087,8 @@ def load_tag_responses(guild_id: int | None = None):
 def save_tag_responses(mapping, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
     conn = get_db_connection()
-    now_iso = datetime.now(timezone.utc).isoformat()
-    normalized = {
-        normalize_tag(k): str(v) for k, v in (mapping or {}).items() if normalize_tag(k)
-    }
+    now_iso = datetime.now(UTC).isoformat()
+    normalized = {normalize_tag(k): str(v) for k, v in (mapping or {}).items() if normalize_tag(k)}
     with db_lock:
         conn.execute("DELETE FROM tag_responses WHERE guild_id = ?", (safe_guild_id,))
         for tag, response in normalized.items():
@@ -1864,9 +2105,7 @@ def save_tag_responses(mapping, guild_id: int | None = None):
 
 def get_tag_responses(guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    current_version = (
-        db_kv_get(f"tag_responses_updated_at:{safe_guild_id}") or "bootstrap"
-    )
+    current_version = db_kv_get(f"tag_responses_updated_at:{safe_guild_id}") or "bootstrap"
     cached = tag_response_cache.get(safe_guild_id) or {}
     if cached.get("mtime") != current_version:
         tag_response_cache[safe_guild_id] = {
@@ -1942,13 +2181,9 @@ def register_tag_commands_for_guild(guild_id: int | None):
                     )
                     return
                 effective_guild_id = interaction.guild.id if interaction.guild else safe_guild_id
-                tag_response = str(
-                    get_tag_responses(effective_guild_id).get(tag_key, "")
-                ).strip()
+                tag_response = str(get_tag_responses(effective_guild_id).get(tag_key, "")).strip()
                 if not tag_response:
-                    await interaction.response.send_message(
-                        "❌ This tag response is not configured.", ephemeral=True
-                    )
+                    await interaction.response.send_message("❌ This tag response is not configured.", ephemeral=True)
                     return
                 await interaction.response.send_message(tag_response)
 
@@ -2050,7 +2285,7 @@ def generate_code():
 
 def save_role_code(code, role_id, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
         conn.execute(
@@ -2082,9 +2317,7 @@ def get_role_id_by_code(code, guild_id: int | None = None):
 def load_invite_roles():
     conn = get_db_connection()
     with db_lock:
-        rows = conn.execute(
-            "SELECT guild_id, invite_code, role_id FROM invite_roles"
-        ).fetchall()
+        rows = conn.execute("SELECT guild_id, invite_code, role_id FROM invite_roles").fetchall()
     mapping = {}
     for row in rows:
         guild_id = int(row["guild_id"] or 0)
@@ -2094,7 +2327,7 @@ def load_invite_roles():
 
 def save_invite_role(invite_code, role_id, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    now_iso = datetime.now(timezone.utc).isoformat()
+    now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
         conn.execute(
@@ -2177,9 +2410,7 @@ def load_command_permission_rules(guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
     with command_permissions_lock:
         cache_entry = command_permissions_cache.get(safe_guild_id, {})
-        version = (
-            db_kv_get(f"command_permissions_updated_at:{safe_guild_id}") or "bootstrap"
-        )
+        version = db_kv_get(f"command_permissions_updated_at:{safe_guild_id}") or "bootstrap"
         if cache_entry.get("mtime") == version:
             return cache_entry.get("rules", {})
 
@@ -2202,9 +2433,7 @@ def load_command_permission_rules(guild_id: int | None = None):
                 role_ids_payload = json.loads(row["role_ids_json"] or "[]")
             except Exception:
                 role_ids_payload = []
-            normalized_rules[command_key] = normalize_command_permission_rule(
-                {"mode": row["mode"], "role_ids": role_ids_payload}
-            )
+            normalized_rules[command_key] = normalize_command_permission_rule({"mode": row["mode"], "role_ids": role_ids_payload})
 
         command_permissions_cache[safe_guild_id] = {
             "mtime": version,
@@ -2213,9 +2442,7 @@ def load_command_permission_rules(guild_id: int | None = None):
         return normalized_rules
 
 
-def save_command_permission_rules(
-    rules: dict, actor_email: str = "", guild_id: int | None = None
-):
+def save_command_permission_rules(rules: dict, actor_email: str = "", guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
     safe_rules = {}
     for command_key, raw_rule in (rules or {}).items():
@@ -2226,7 +2453,7 @@ def save_command_permission_rules(
             continue
         safe_rules[command_key] = normalized_rule
 
-    updated_at = datetime.now(timezone.utc).isoformat()
+    updated_at = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with command_permissions_lock:
         with db_lock:
@@ -2268,9 +2495,7 @@ def save_command_permission_rules(
 
 
 def resolve_command_permission_state(command_key: str, guild_id: int | None = None):
-    default_policy = COMMAND_PERMISSION_DEFAULTS.get(
-        command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC
-    )
+    default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
     rule = load_command_permission_rules(guild_id=guild_id).get(
         command_key,
         {"mode": COMMAND_PERMISSION_MODE_DEFAULT, "role_ids": []},
@@ -2294,9 +2519,7 @@ def can_use_command(
     command_key: str,
     guild_id: int | None = None,
 ):
-    default_policy, mode, role_ids = resolve_command_permission_state(
-        command_key, guild_id=guild_id
-    )
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key, guild_id=guild_id)
 
     if mode == COMMAND_PERMISSION_MODE_PUBLIC:
         return True
@@ -2317,9 +2540,7 @@ def build_command_permission_denied_message(
     guild: discord.Guild | None = None,
     guild_id: int | None = None,
 ):
-    default_policy, mode, role_ids = resolve_command_permission_state(
-        command_key, guild_id=guild_id or (guild.id if guild else None)
-    )
+    default_policy, mode, role_ids = resolve_command_permission_state(command_key, guild_id=guild_id or (guild.id if guild else None))
     if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
         if guild is None or not role_ids:
             return "❌ You do not have one of the roles allowed to use this command."
@@ -2337,16 +2558,12 @@ def build_command_permission_denied_message(
     return "❌ You do not have permission to use this command."
 
 
-async def ensure_interaction_command_access(
-    interaction: discord.Interaction, command_key: str
-):
+async def ensure_interaction_command_access(interaction: discord.Interaction, command_key: str):
     guild_id = interaction.guild.id if interaction.guild else None
     if can_use_command(interaction.user, command_key, guild_id=guild_id):
         return True
     await interaction.response.send_message(
-        build_command_permission_denied_message(
-            command_key, interaction.guild, guild_id=guild_id
-        ),
+        build_command_permission_denied_message(command_key, interaction.guild, guild_id=guild_id),
         ephemeral=True,
     )
     return False
@@ -2356,17 +2573,11 @@ async def ensure_prefix_command_access(ctx: commands.Context, command_key: str):
     guild_id = ctx.guild.id if ctx.guild else None
     if can_use_command(ctx.author, command_key, guild_id=guild_id):
         return True
-    await ctx.send(
-        build_command_permission_denied_message(
-            command_key, ctx.guild, guild_id=guild_id
-        )
-    )
+    await ctx.send(build_command_permission_denied_message(command_key, ctx.guild, guild_id=guild_id))
     return False
 
 
-async def send_safe_interaction_message(
-    interaction: discord.Interaction, message_text: str, ephemeral: bool = True
-):
+async def send_safe_interaction_message(interaction: discord.Interaction, message_text: str, ephemeral: bool = True):
     try:
         if interaction.response.is_done():
             await interaction.followup.send(message_text, ephemeral=ephemeral)
@@ -2382,14 +2593,50 @@ async def send_safe_interaction_message(
         return False
 
 
+async def reply_with_default_visibility(interaction: discord.Interaction, message_text: str):
+    return await send_safe_interaction_message(interaction, message_text, ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+
+
+async def get_text_channel(client: commands.Bot, channel_id: int):
+    channel = client.get_channel(channel_id)
+    if isinstance(channel, discord.TextChannel):
+        return channel
+    try:
+        fetched = await client.fetch_channel(channel_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        return None
+    if isinstance(fetched, discord.TextChannel):
+        return fetched
+    return None
+
+
+async def log_interaction(
+    interaction: discord.Interaction,
+    action: str,
+    target: discord.abc.User | None = None,
+    reason: str | None = None,
+    success: bool = True,
+):
+    guild_id = interaction.guild.id if interaction.guild else GUILD_ID
+    status = "success" if success else "failed"
+    moderator = f"{interaction.user} ({interaction.user.id})" if interaction.user else "Unknown"
+    target_text = f"{target} ({target.id})" if target else ""
+    record_action_safe(
+        action=action,
+        status=status,
+        moderator=moderator,
+        target=target_text,
+        reason=truncate_log_text(str(reason or "")),
+        guild_id=guild_id,
+    )
+
+
 def build_command_permissions_web_payload(guild_id: int):
     safe_guild_id = normalize_target_guild_id(guild_id)
     rules = load_command_permission_rules(guild_id=safe_guild_id)
     commands_payload = []
     for command_key, metadata in COMMAND_PERMISSION_METADATA.items():
-        default_policy = COMMAND_PERMISSION_DEFAULTS.get(
-            command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC
-        )
+        default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
         rule = normalize_command_permission_rule(rules.get(command_key, {}))
         commands_payload.append(
             {
@@ -2397,9 +2644,7 @@ def build_command_permissions_web_payload(guild_id: int):
                 "label": metadata.get("label", command_key),
                 "description": metadata.get("description", ""),
                 "default_policy": default_policy,
-                "default_policy_label": COMMAND_PERMISSION_POLICY_LABELS.get(
-                    default_policy, default_policy
-                ),
+                "default_policy_label": COMMAND_PERMISSION_POLICY_LABELS.get(default_policy, default_policy),
                 "mode": rule["mode"],
                 "role_ids": rule["role_ids"],
             }
@@ -2444,9 +2689,7 @@ def run_web_update_command_permissions(payload: dict, actor_email: str, guild_id
         mode = normalize_permission_mode(raw_rule.get("mode"))
         role_ids = normalize_role_ids(raw_rule.get("role_ids", []))
         if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES and not role_ids:
-            validation_errors.append(
-                f"{command_key}: mode `custom_roles` requires at least one role ID."
-            )
+            validation_errors.append(f"{command_key}: mode `custom_roles` requires at least one role ID.")
         updated_rules[command_key] = {"mode": mode, "role_ids": role_ids}
 
     if validation_errors:
@@ -2471,9 +2714,7 @@ def run_web_update_command_permissions(payload: dict, actor_email: str, guild_id
 def build_reddit_feeds_web_payload(guild_id: int):
     return {
         "ok": True,
-        "feeds": list_reddit_feed_subscriptions(
-            enabled_only=False, guild_id=normalize_target_guild_id(guild_id)
-        ),
+        "feeds": list_reddit_feed_subscriptions(enabled_only=False, guild_id=normalize_target_guild_id(guild_id)),
     }
 
 
@@ -2498,9 +2739,7 @@ def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
         if action == "add":
             subreddit = str(payload.get("subreddit") or "")
             channel_id = int(str(payload.get("channel_id") or "0").strip())
-            create_reddit_feed_subscription(
-                safe_guild_id, subreddit, channel_id, actor_email
-            )
+            create_reddit_feed_subscription(safe_guild_id, subreddit, channel_id, actor_email)
             message = f"Reddit feed added for r/{normalize_reddit_subreddit_name(subreddit)}."
         elif action == "toggle":
             feed_id = int(str(payload.get("feed_id") or "0").strip())
@@ -2510,9 +2749,7 @@ def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
             enabled = str(payload.get("enabled") or "").strip().lower() in TRUTHY_ENV_VALUES
             if not set_reddit_feed_subscription_enabled(feed_id, enabled, actor_email):
                 return {"ok": False, "error": "Reddit feed entry was not found."}
-            message = (
-                "Reddit feed enabled." if enabled else "Reddit feed disabled."
-            )
+            message = "Reddit feed enabled." if enabled else "Reddit feed disabled."
         elif action == "delete":
             feed_id = int(str(payload.get("feed_id") or "0").strip())
             feed = get_reddit_feed_subscription(feed_id)
@@ -2540,6 +2777,104 @@ def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
     return response
 
 
+def build_actions_web_payload(guild_id: int):
+    return {
+        "ok": True,
+        "actions": list_recent_actions(guild_id, limit=200),
+    }
+
+
+def run_web_get_actions(guild_id: int):
+    try:
+        return build_actions_web_payload(guild_id)
+    except Exception:
+        logger.exception("Failed to build actions payload for web admin")
+        return {"ok": False, "error": "Unexpected error while loading actions."}
+
+
+def build_youtube_subscriptions_web_payload(guild_id: int):
+    return {
+        "ok": True,
+        "subscriptions": list_youtube_subscriptions(
+            guild_id=normalize_target_guild_id(guild_id),
+            enabled_only=False,
+        ),
+    }
+
+
+def run_web_get_youtube_subscriptions(guild_id: int):
+    try:
+        return build_youtube_subscriptions_web_payload(guild_id)
+    except Exception:
+        logger.exception("Failed to build YouTube subscriptions payload for web admin")
+        return {
+            "ok": False,
+            "error": "Unexpected error while loading YouTube subscriptions.",
+        }
+
+
+def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_id: int):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid YouTube subscription payload."}
+    action = str(payload.get("action") or "").strip().lower()
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    try:
+        if action == "add":
+            source_url = str(payload.get("source_url") or "").strip()
+            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
+            if target_channel_id <= 0:
+                return {"ok": False, "error": "Choose a valid Discord channel."}
+            resolved = resolve_youtube_subscription_seed(source_url)
+            guild = bot.get_guild(safe_guild_id)
+            target_channel = guild.get_channel(target_channel_id) if guild else None
+            target_channel_name = f"#{target_channel.name}" if isinstance(target_channel, discord.TextChannel) else str(target_channel_id)
+            create_or_update_youtube_subscription(
+                safe_guild_id,
+                source_url=resolved["source_url"],
+                channel_id=resolved["channel_id"],
+                channel_title=resolved["channel_title"],
+                target_channel_id=target_channel_id,
+                target_channel_name=target_channel_name,
+                last_video_id=resolved["last_video_id"],
+                last_video_title=resolved["last_video_title"],
+                last_published_at=resolved["last_published_at"],
+                actor_email=actor_email,
+            )
+            record_action_safe(
+                action="youtube_subscription_add",
+                status="success",
+                moderator=actor_email,
+                target=resolved["channel_title"],
+                reason=truncate_log_text(resolved["source_url"]),
+                guild_id=safe_guild_id,
+            )
+            message = "YouTube subscription saved."
+        elif action == "delete":
+            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
+            if not delete_youtube_subscription(subscription_id, guild_id=safe_guild_id):
+                return {"ok": False, "error": "YouTube subscription entry was not found."}
+            record_action_safe(
+                action="youtube_subscription_delete",
+                status="success",
+                moderator=actor_email,
+                target=str(subscription_id),
+                reason="Deleted via web admin",
+                guild_id=safe_guild_id,
+            )
+            message = "YouTube subscription deleted."
+        else:
+            return {"ok": False, "error": "Invalid YouTube subscription action."}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception:
+        logger.exception("Failed to manage YouTube subscriptions from web admin")
+        return {"ok": False, "error": "Failed to manage YouTube subscriptions."}
+
+    response = build_youtube_subscriptions_web_payload(safe_guild_id)
+    response["message"] = message
+    return response
+
+
 def run_web_get_tag_responses(guild_id: int | str | None = None):
     try:
         mapping = get_tag_responses(guild_id)
@@ -2549,9 +2884,7 @@ def run_web_get_tag_responses(guild_id: int | str | None = None):
     return {"ok": True, "mapping": mapping}
 
 
-def run_web_save_tag_responses(
-    mapping: dict, actor_email: str, guild_id: int | str | None = None
-):
+def run_web_save_tag_responses(mapping: dict, actor_email: str, guild_id: int | str | None = None):
     if not isinstance(mapping, dict):
         return {"ok": False, "error": "Tag responses payload must be a JSON object."}
 
@@ -2588,26 +2921,18 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
         "settings": {
             "bot_log_channel_id": int(settings.get("bot_log_channel_id") or 0),
             "mod_log_channel_id": int(settings.get("mod_log_channel_id") or 0),
-            "firmware_notify_channel_id": int(
-                settings.get("firmware_notify_channel_id") or 0
-            ),
+            "firmware_notify_channel_id": int(settings.get("firmware_notify_channel_id") or 0),
             "access_role_id": int(settings.get("access_role_id") or 0),
         },
         "effective": {
-            "bot_log_channel_id": get_effective_guild_setting(
-                safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID
-            ),
-            "mod_log_channel_id": get_effective_guild_setting(
-                safe_guild_id, "mod_log_channel_id", MOD_LOG_CHANNEL_ID
-            ),
+            "bot_log_channel_id": get_effective_guild_setting(safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID),
+            "mod_log_channel_id": get_effective_guild_setting(safe_guild_id, "mod_log_channel_id", MOD_LOG_CHANNEL_ID),
             "firmware_notify_channel_id": get_effective_guild_setting(
                 safe_guild_id,
                 "firmware_notify_channel_id",
                 FIRMWARE_NOTIFY_CHANNEL_ID,
             ),
-            "access_role_id": get_effective_guild_setting(
-                safe_guild_id, "access_role_id", 0
-            ),
+            "access_role_id": get_effective_guild_setting(safe_guild_id, "access_role_id", 0),
         },
         "updated_at": str(settings.get("updated_at") or ""),
         "updated_by_email": str(settings.get("updated_by_email") or ""),
@@ -2622,9 +2947,7 @@ def run_web_get_guild_settings(guild_id: int | str | None = None):
         return {"ok": False, "error": "Unexpected error while loading guild settings."}
 
 
-def run_web_save_guild_settings(
-    payload: dict, actor_email: str, guild_id: int | str | None = None
-):
+def run_web_save_guild_settings(payload: dict, actor_email: str, guild_id: int | str | None = None):
     if not isinstance(payload, dict):
         return {"ok": False, "error": "Guild settings payload must be an object."}
     try:
@@ -2639,9 +2962,7 @@ def run_web_save_guild_settings(
         return {"ok": False, "error": "Unexpected error while saving guild settings."}
 
 
-def validate_moderation_target(
-    actor: discord.Member, target: discord.Member, bot_member: discord.Member
-):
+def validate_moderation_target(actor: discord.Member, target: discord.Member, bot_member: discord.Member):
     if target.id == actor.id:
         return False, "❌ You cannot moderate yourself."
     if target.id == actor.guild.owner_id:
@@ -2655,9 +2976,7 @@ def validate_moderation_target(
     return True, None
 
 
-def validate_manageable_role(
-    actor: discord.Member, role: discord.Role, bot_member: discord.Member
-):
+def validate_manageable_role(actor: discord.Member, role: discord.Role, bot_member: discord.Member):
     if role == actor.guild.default_role:
         return False, "❌ You cannot manage the @everyone role."
     if role.managed:
@@ -2788,9 +3107,7 @@ def format_bulk_assignment_preview(title: str, values: list[str], limit: int = 2
     return f"**{title}:** {preview}"
 
 
-def build_bulk_assignment_summary_lines(
-    source_name: str, role_mention: str, result: dict
-):
+def build_bulk_assignment_summary_lines(source_name: str, role_mention: str, result: dict):
     summary_lines = [
         f"✅ Finished processing `{source_name}` for role {role_mention}.",
         f"- Unique names processed: `{result['unique_names_count']}`",
@@ -2805,18 +3122,14 @@ def build_bulk_assignment_summary_lines(
         format_bulk_assignment_preview("Unmatched", result["unmatched_names"]),
         format_bulk_assignment_preview("Ambiguous", result["ambiguous_names"]),
         format_bulk_assignment_preview("Failed", result["assignment_failures"]),
-        format_bulk_assignment_preview(
-            "Duplicate member inputs", result["duplicate_member_inputs"]
-        ),
+        format_bulk_assignment_preview("Duplicate member inputs", result["duplicate_member_inputs"]),
     ):
         if line:
             summary_lines.append(line)
     return summary_lines
 
 
-def build_bulk_assignment_report_text(
-    role: discord.Role, requested_by: str, source_name: str, result: dict
-):
+def build_bulk_assignment_report_text(role: discord.Role, requested_by: str, source_name: str, result: dict):
     def section_block(title: str, values: list[str]):
         lines = [f"{title}: {len(values)}"]
         if values:
@@ -2916,7 +3229,7 @@ async def process_bulk_role_assignment_payload(
 
 async def fetch_web_managed_guilds_async():
     guilds = []
-    for guild in sorted(bot.guilds, key=lambda item: item.name.casefold()):
+    for guild in get_managed_guilds():
         icon_url = str(guild.icon.url) if guild.icon else ""
         guilds.append(
             {
@@ -2945,9 +3258,7 @@ def run_web_get_guilds():
         return {"ok": False, "error": "Unexpected error while loading guild list."}
 
 
-async def run_web_bulk_role_assignment_async(
-    guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str
-):
+async def run_web_bulk_role_assignment_async(guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str):
     guild = bot.get_guild(normalize_target_guild_id(guild_id))
     if guild is None:
         return {"ok": False, "error": "Guild is not currently available to the bot."}
@@ -2993,9 +3304,7 @@ async def run_web_bulk_role_assignment_async(
         return {"ok": False, "error": error}
 
     summary_lines = build_bulk_assignment_summary_lines(filename, role.mention, result)
-    report_text = build_bulk_assignment_report_text(
-        role, f"web admin {actor_email}", filename, result
-    )
+    report_text = build_bulk_assignment_report_text(role, f"web admin {actor_email}", filename, result)
     return {
         "ok": True,
         "role_name": role.name,
@@ -3006,9 +3315,7 @@ async def run_web_bulk_role_assignment_async(
     }
 
 
-def run_web_bulk_role_assignment(
-    guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str
-):
+def run_web_bulk_role_assignment(guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str):
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
         return {
@@ -3016,9 +3323,7 @@ def run_web_bulk_role_assignment(
             "error": "Bot loop is not running yet. Try again in a few seconds.",
         }
     future = asyncio.run_coroutine_threadsafe(
-        run_web_bulk_role_assignment_async(
-            guild_id, role_input, payload, filename, actor_email
-        ),
+        run_web_bulk_role_assignment_async(guild_id, role_input, payload, filename, actor_email),
         loop,
     )
     try:
@@ -3048,9 +3353,7 @@ async def fetch_discord_catalog_async(guild_id: int):
     try:
         source_channels = await guild.fetch_channels()
     except Exception:
-        logger.debug(
-            "Falling back to cached guild channels for web catalog", exc_info=True
-        )
+        logger.debug("Falling back to cached guild channels for web catalog", exc_info=True)
 
     for channel in source_channels:
         if isinstance(channel, discord.CategoryChannel):
@@ -3082,9 +3385,7 @@ async def fetch_discord_catalog_async(guild_id: int):
             }
         )
 
-    channels.sort(
-        key=lambda item: (item["type"], item["position"], item["name"].casefold())
-    )
+    channels.sort(key=lambda item: (item["type"], item["position"], item["name"].casefold()))
 
     roles = []
     for role in guild.roles:
@@ -3114,20 +3415,14 @@ def run_web_get_discord_catalog(guild_id: int):
     now = time.time()
     cached_entry = discord_catalog_cache.get(safe_guild_id) or {}
     cached = cached_entry.get("data")
-    if (
-        cached
-        and now - float(cached_entry.get("fetched_at", 0.0))
-        < WEB_DISCORD_CATALOG_TTL_SECONDS
-    ):
+    if cached and now - float(cached_entry.get("fetched_at", 0.0)) < WEB_DISCORD_CATALOG_TTL_SECONDS:
         return cached
 
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
         return {"ok": False, "error": "Bot loop is not running yet."}
 
-    future = asyncio.run_coroutine_threadsafe(
-        fetch_discord_catalog_async(safe_guild_id), loop
-    )
+    future = asyncio.run_coroutine_threadsafe(fetch_discord_catalog_async(safe_guild_id), loop)
     try:
         data = future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
@@ -3160,13 +3455,9 @@ async def fetch_bot_profile_async(guild_id: int):
             except discord.HTTPException:
                 logger.exception("Failed to fetch bot member for guild %s", guild.id)
 
-    server_display_name = (
-        bot_member.display_name if bot_member is not None else current_user.display_name
-    )
+    server_display_name = bot_member.display_name if bot_member is not None else current_user.display_name
     server_nickname = bot_member.nick if bot_member is not None else ""
-    avatar_url = (
-        str(current_user.display_avatar.url) if current_user.display_avatar else ""
-    )
+    avatar_url = str(current_user.display_avatar.url) if current_user.display_avatar else ""
     return {
         "ok": True,
         "id": str(current_user.id),
@@ -3202,18 +3493,13 @@ def validate_bot_profile_change_request(
             None,
             "Provide either `server_nickname` or `clear_server_nickname`, not both.",
         )
-    if normalized_username is not None and not (
-        BOT_USERNAME_MIN_LENGTH <= len(normalized_username) <= BOT_USERNAME_MAX_LENGTH
-    ):
+    if normalized_username is not None and not (BOT_USERNAME_MIN_LENGTH <= len(normalized_username) <= BOT_USERNAME_MAX_LENGTH):
         return (
             None,
             None,
             f"Username must be between {BOT_USERNAME_MIN_LENGTH} and {BOT_USERNAME_MAX_LENGTH} characters.",
         )
-    if (
-        normalized_nickname is not None
-        and len(normalized_nickname) > BOT_NICKNAME_MAX_LENGTH
-    ):
+    if normalized_nickname is not None and len(normalized_nickname) > BOT_NICKNAME_MAX_LENGTH:
         return (
             None,
             None,
@@ -3250,9 +3536,7 @@ async def resolve_configured_guild_bot_member(guild_id: int):
         try:
             bot_member = await guild.fetch_member(current_user.id)
         except discord.HTTPException:
-            logger.exception(
-                "Failed to fetch bot member for configured guild %s", guild.id
-            )
+            logger.exception("Failed to fetch bot member for configured guild %s", guild.id)
             bot_member = None
     if bot_member is None:
         return guild, None, "Could not resolve the bot member in the configured guild."
@@ -3283,14 +3567,10 @@ async def apply_bot_profile_updates_async(
                 updated_username = True
             except discord.HTTPException:
                 logger.exception("Failed to update bot username")
-                errors.append(
-                    "Failed to update username. Discord may enforce rename limits; try again later."
-                )
+                errors.append("Failed to update username. Discord may enforce rename limits; try again later.")
 
     if server_nickname is not BOT_SERVER_NICKNAME_UNSET:
-        _, bot_member, member_error = await resolve_configured_guild_bot_member(
-            guild_id
-        )
+        _, bot_member, member_error = await resolve_configured_guild_bot_member(guild_id)
         if member_error:
             errors.append(member_error)
         else:
@@ -3307,17 +3587,11 @@ async def apply_bot_profile_updates_async(
                     )
                     updated_server_nickname = True
                 except discord.Forbidden:
-                    logger.exception(
-                        "Missing permission to update bot server nickname"
-                    )
-                    errors.append(
-                        "Missing permission to update server nickname. Check `Manage Nicknames` and role hierarchy."
-                    )
+                    logger.exception("Missing permission to update bot server nickname")
+                    errors.append("Missing permission to update server nickname. Check `Manage Nicknames` and role hierarchy.")
                 except discord.HTTPException:
                     logger.exception("Failed to update bot server nickname")
-                    errors.append(
-                        "Failed to update server nickname due to a Discord API error."
-                    )
+                    errors.append("Failed to update server nickname due to a Discord API error.")
 
     profile = await fetch_bot_profile_async(guild_id)
     result = {
@@ -3330,9 +3604,7 @@ async def apply_bot_profile_updates_async(
             if key != "ok":
                 result[key] = value
         if not profile.get("ok"):
-            errors.append(
-                str(profile.get("error") or "Unable to refresh bot profile details.")
-            )
+            errors.append(str(profile.get("error") or "Unable to refresh bot profile details."))
 
     updated_parts = []
     if updated_username:
@@ -3412,12 +3684,10 @@ async def run_web_update_bot_profile_async(
     clear_server_nickname: bool,
     actor_email: str,
 ):
-    normalized_username, nickname_target, validation_error = (
-        validate_bot_profile_change_request(
-            username=username,
-            server_nickname=server_nickname,
-            clear_server_nickname=clear_server_nickname,
-        )
+    normalized_username, nickname_target, validation_error = validate_bot_profile_change_request(
+        username=username,
+        server_nickname=server_nickname,
+        clear_server_nickname=clear_server_nickname,
     )
     if validation_error:
         return {"ok": False, "error": validation_error}
@@ -3479,9 +3749,7 @@ def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
             "error": "Bot loop is not running yet. Try again in a few seconds.",
         }
 
-    future = asyncio.run_coroutine_threadsafe(
-        run_web_update_bot_avatar_async(payload, actor_email), loop
-    )
+    future = asyncio.run_coroutine_threadsafe(run_web_update_bot_avatar_async(payload, actor_email), loop)
     try:
         return future.result(timeout=WEB_BOT_PROFILE_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
@@ -3588,9 +3856,7 @@ async def prune_user_messages(guild: discord.Guild, user_id: int, hours: int):
         seen_channel_ids.add(channel.id)
 
         perms = channel.permissions_for(guild.me)
-        if not (
-            perms.view_channel and perms.read_message_history and perms.manage_messages
-        ):
+        if not (perms.view_channel and perms.read_message_history and perms.manage_messages):
             continue
 
         scanned_channels += 1
@@ -3604,9 +3870,7 @@ async def prune_user_messages(guild: discord.Guild, user_id: int, hours: int):
             )
             deleted_count += len(deleted)
         except discord.Forbidden:
-            logger.warning(
-                "Skipping channel %s while pruning: missing permissions", channel.id
-            )
+            logger.warning("Skipping channel %s while pruning: missing permissions", channel.id)
         except discord.HTTPException:
             logger.exception("Failed to prune messages in channel %s", channel.id)
 
@@ -3623,9 +3887,7 @@ async def prune_channel_recent_messages(
     safe_amount = max(1, min(500, int(amount)))
     deleted_messages = await channel.purge(
         limit=safe_amount,
-        check=lambda message: (
-            not message.pinned and (skip_message_id is None or message.id != skip_message_id)
-        ),
+        check=lambda message: not message.pinned and (skip_message_id is None or message.id != skip_message_id),
         bulk=True,
         reason=reason,
     )
@@ -3651,9 +3913,7 @@ async def resolve_mod_log_channel(guild: discord.Guild):
             logger.warning("Bot log channel %s not found", channel_id)
             return None
         except discord.Forbidden:
-            logger.warning(
-                "No permission to access bot log channel %s", channel_id
-            )
+            logger.warning("No permission to access bot log channel %s", channel_id)
             return None
         except discord.HTTPException:
             logger.exception("Failed to fetch bot log channel %s", channel_id)
@@ -3667,9 +3927,7 @@ async def resolve_mod_log_channel(guild: discord.Guild):
 
 
 def record_bot_log_channel_message(event_name: str, channel_id: int, message: str):
-    sanitized_message = SENSITIVE_LOG_VALUE_PATTERN.sub(
-        r"\1=[REDACTED]", str(message or "")
-    ).replace("\n", "\\n")
+    sanitized_message = SENSITIVE_LOG_VALUE_PATTERN.sub(r"\1=[REDACTED]", str(message or "")).replace("\n", "\\n")
     bot_channel_logger.info(
         "event=%s channel_id=%s payload=%s",
         event_name,
@@ -3699,6 +3957,14 @@ async def send_moderation_log(
         f"**Reason:** {reason_text}\n"
         f"**Details:** {details_text}"
     )
+    record_action_safe(
+        action=action,
+        status=outcome,
+        moderator=f"{actor} ({actor.id})",
+        target=target_text,
+        reason=truncate_log_text(f"{reason_text} | {details_text}", max_length=500),
+        guild_id=guild.id,
+    )
     target_channel_id = get_effective_logging_channel_id(guild.id)
     record_bot_log_channel_message("moderation_action", target_channel_id, message)
 
@@ -3710,9 +3976,7 @@ async def send_moderation_log(
         await channel.send(message)
         return True
     except discord.Forbidden:
-        logger.warning(
-            "No permission to send moderation logs to channel %s", target_channel_id
-        )
+        logger.warning("No permission to send moderation logs to channel %s", target_channel_id)
         return False
     except discord.HTTPException:
         logger.exception("Failed to send moderation log for action %s", action)
@@ -3735,19 +3999,390 @@ def sanitize_log_text(value: str):
     return SENSITIVE_LOG_VALUE_PATTERN.sub(r"\1=[REDACTED]", text)
 
 
+def truncate_log_text(text: str, max_length: int = 300):
+    value = str(text or "")
+    if len(value) <= max_length:
+        return value
+    return f"{value[: max_length - 3]}..."
+
+
+def normalize_target_url(raw_url: str):
+    value = str(raw_url or "").strip()
+    if not value:
+        raise ValueError("Please provide a URL.")
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid URL. Use a valid http(s) URL.")
+    return urllib.parse.urlunparse(parsed)
+
+
+def normalize_short_reference(raw_value: str):
+    value = str(raw_value or "").strip()
+    if not value:
+        raise ValueError("Please provide a short code or short URL.")
+    if value.isdigit():
+        return f"{SHORTENER_BASE_URL}/{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid short URL format.")
+    if parsed.netloc.lower() != SHORTENER_HOST:
+        raise ValueError(f"Short URL must use {SHORTENER_HOST}.")
+    short_code = parsed.path.strip("/")
+    if not short_code or "/" in short_code or not short_code.isdigit():
+        raise ValueError("Short URL must point to a numeric short code.")
+    return f"{SHORTENER_BASE_URL}/{short_code}"
+
+
+def fetch_text_url(url: str, timeout_seconds: int, accept: str):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("Request URL is invalid.")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    conn = connection_cls(parsed.netloc, timeout=timeout_seconds)
+    try:
+        conn.request(
+            "GET",
+            path,
+            headers={
+                "User-Agent": "WickedYodaLittleHelper/1.0",
+                "Accept": accept,
+            },
+        )
+        response = conn.getresponse()
+        response_headers = {name.lower(): value for name, value in response.getheaders()}
+        body_text = response.read().decode("utf-8", errors="ignore")
+    except OSError as exc:
+        raise RuntimeError(f"Request failed: {exc}") from exc
+    finally:
+        conn.close()
+    return response.status, response_headers, body_text
+
+
+def shortener_request(method: str, url: str, body: bytes | None = None, headers=None):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise RuntimeError("Shortener request URL is invalid.")
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
+    request_headers = {"User-Agent": "WickedYodaLittleHelper/1.0"}
+    if headers:
+        request_headers.update(headers)
+
+    conn = connection_cls(parsed.netloc, timeout=SHORTENER_TIMEOUT_SECONDS)
+    try:
+        conn.request(method=method, url=path, body=body, headers=request_headers)
+        response = conn.getresponse()
+        response_headers = {name.lower(): value for name, value in response.getheaders()}
+        response_body = response.read().decode("utf-8", errors="ignore")
+        return response.status, response_headers, response_body
+    except OSError as exc:
+        raise RuntimeError(f"Shortener request failed: {exc}") from exc
+    finally:
+        conn.close()
+
+
+def create_short_url(target_url: str):
+    payload = urllib.parse.urlencode({"short": target_url}).encode("utf-8")
+    status, _, response_body = shortener_request(
+        method="POST",
+        url=f"{SHORTENER_BASE_URL}/",
+        body=payload,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    if status >= 400:
+        raise RuntimeError(f"Shortener returned HTTP {status}.")
+    match = SHORT_CODE_REGEX.search(response_body)
+    if not match:
+        raise RuntimeError("Shortener did not return a short code.")
+    short_code = match.group(1)
+    short_url = f"{SHORTENER_BASE_URL}/{short_code}"
+    return short_code, short_url
+
+
+def expand_short_url(short_url: str):
+    status, headers, _ = shortener_request(method="GET", url=short_url)
+    if status in {301, 302, 303, 307, 308}:
+        location = headers.get("location")
+        if not location:
+            raise RuntimeError("Shortener redirect did not include a Location header.")
+        return urllib.parse.urljoin(short_url, location)
+    if status == 404:
+        raise RuntimeError("Short code not found.")
+    if status >= 400:
+        raise RuntimeError(f"Shortener returned HTTP {status}.")
+    raise RuntimeError("Shortener did not return a redirect target.")
+
+
+def fetch_random_puppy_image_url():
+    status, _, body_text = fetch_text_url(
+        PUPPY_IMAGE_API_URL,
+        timeout_seconds=PUPPY_IMAGE_TIMEOUT_SECONDS,
+        accept="application/json",
+    )
+    if status >= 400:
+        raise RuntimeError(f"Puppy API returned HTTP {status}.")
+    try:
+        parsed_body = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Puppy API returned invalid JSON.") from exc
+    if not isinstance(parsed_body, dict):
+        raise RuntimeError("Puppy API returned an unexpected payload.")
+    image_url = parsed_body.get("message")
+    if not isinstance(image_url, str):
+        raise RuntimeError("Puppy API response did not include an image URL.")
+    parsed_image_url = urllib.parse.urlparse(image_url)
+    if parsed_image_url.scheme not in {"http", "https"} or not parsed_image_url.netloc:
+        raise RuntimeError("Puppy API returned an invalid image URL.")
+    return image_url
+
+
+def normalize_youtube_channel_url(raw_url: str):
+    value = str(raw_url or "").strip()
+    if not value:
+        raise ValueError("YouTube channel URL is required.")
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid YouTube URL.")
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host != "youtube.com":
+        raise ValueError("YouTube URL must be on youtube.com.")
+    if not parsed.path or parsed.path == "/":
+        raise ValueError("YouTube URL must include a channel path.")
+    return urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", parsed.query, ""))
+
+
+def resolve_youtube_channel_id(source_url: str):
+    normalized_url = normalize_youtube_channel_url(source_url)
+    parsed = urllib.parse.urlparse(normalized_url)
+    path_parts = [part for part in parsed.path.split("/") if part]
+    if len(path_parts) >= 2 and path_parts[0] == "channel":
+        direct_channel_id = path_parts[1]
+        if YOUTUBE_CHANNEL_ID_PATTERN.fullmatch(direct_channel_id):
+            return direct_channel_id
+    if parsed.path == "/feeds/videos.xml":
+        query_values = urllib.parse.parse_qs(parsed.query)
+        channel_id = query_values.get("channel_id", [""])[0]
+        if YOUTUBE_CHANNEL_ID_PATTERN.fullmatch(channel_id):
+            return channel_id
+    status, _, body_text = fetch_text_url(
+        normalized_url,
+        timeout_seconds=YOUTUBE_REQUEST_TIMEOUT_SECONDS,
+        accept="text/html",
+    )
+    if status >= 400:
+        raise RuntimeError(f"YouTube channel page returned HTTP {status}.")
+    for pattern in YOUTUBE_CHANNEL_ID_META_PATTERNS:
+        match = pattern.search(body_text)
+        if match:
+            return match.group(1)
+    raise RuntimeError("Unable to resolve YouTube channel ID from URL.")
+
+
+def fetch_latest_youtube_video(channel_id: str):
+    if not YOUTUBE_CHANNEL_ID_PATTERN.fullmatch(channel_id):
+        raise RuntimeError("Invalid YouTube channel ID.")
+    feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    status, _, body_text = fetch_text_url(
+        feed_url,
+        timeout_seconds=YOUTUBE_REQUEST_TIMEOUT_SECONDS,
+        accept="application/atom+xml",
+    )
+    if status >= 400:
+        raise RuntimeError(f"YouTube feed returned HTTP {status}.")
+    try:
+        root = ET.fromstring(body_text)
+    except ET.ParseError as exc:
+        raise RuntimeError("YouTube feed returned invalid XML.") from exc
+    ns = {
+        "atom": "http://www.w3.org/2005/Atom",
+        "yt": "http://www.youtube.com/xml/schemas/2015",
+    }
+    channel_title = root.findtext("atom:title", default="Unknown Channel", namespaces=ns).strip()
+    entry = root.find("atom:entry", ns)
+    if entry is None:
+        raise RuntimeError("YouTube feed has no entries.")
+    video_id = entry.findtext("yt:videoId", default="", namespaces=ns).strip()
+    video_title = entry.findtext("atom:title", default="Untitled", namespaces=ns).strip()
+    published_at = entry.findtext("atom:published", default="", namespaces=ns).strip()
+    link_el = entry.find("atom:link[@rel='alternate']", ns)
+    video_url = link_el.get("href", "").strip() if link_el is not None else ""
+    if not video_url and video_id:
+        video_url = f"https://www.youtube.com/watch?v={video_id}"
+    if not video_id:
+        raise RuntimeError("YouTube feed entry is missing video ID.")
+    if not video_url:
+        raise RuntimeError("YouTube feed entry is missing video URL.")
+    return {
+        "channel_id": channel_id,
+        "channel_title": channel_title,
+        "video_id": video_id,
+        "video_title": video_title,
+        "video_url": video_url,
+        "published_at": published_at,
+    }
+
+
+def resolve_youtube_subscription_seed(source_url: str):
+    normalized_url = normalize_youtube_channel_url(source_url)
+    channel_id = resolve_youtube_channel_id(normalized_url)
+    latest = fetch_latest_youtube_video(channel_id)
+    return {
+        "source_url": normalized_url,
+        "channel_id": channel_id,
+        "channel_title": latest["channel_title"],
+        "last_video_id": latest["video_id"],
+        "last_video_title": latest["video_title"],
+        "last_published_at": latest["published_at"],
+    }
+
+
+def uptime_request_json(url: str):
+    status, _, body_text = fetch_text_url(
+        url,
+        timeout_seconds=UPTIME_STATUS_TIMEOUT_SECONDS,
+        accept="application/json",
+    )
+    if status >= 400:
+        raise RuntimeError(f"Uptime endpoint returned HTTP {status}.")
+    try:
+        parsed_body = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Uptime endpoint returned invalid JSON.") from exc
+    if not isinstance(parsed_body, dict):
+        raise RuntimeError("Uptime endpoint returned an unexpected response.")
+    return parsed_body
+
+
+def _status_label(status_code: int):
+    return {0: "down", 1: "up", 2: "pending", 3: "maintenance"}.get(status_code, "unknown")
+
+
+def fetch_uptime_snapshot():
+    if not UPTIME_API_CONFIG_URL or not UPTIME_API_HEARTBEAT_URL:
+        raise RuntimeError("UPTIME_STATUS_PAGE_URL is not configured correctly.")
+    config_payload = uptime_request_json(UPTIME_API_CONFIG_URL)
+    heartbeat_payload = uptime_request_json(UPTIME_API_HEARTBEAT_URL)
+    group_list = config_payload.get("publicGroupList", [])
+    heartbeat_list = heartbeat_payload.get("heartbeatList", {})
+    uptime_list = heartbeat_payload.get("uptimeList", {})
+    if not isinstance(group_list, list) or not isinstance(heartbeat_list, dict):
+        raise RuntimeError("Uptime payload is missing expected fields.")
+
+    monitor_names = {}
+    for group in group_list:
+        if not isinstance(group, dict):
+            continue
+        monitors = group.get("monitorList", [])
+        if not isinstance(monitors, list):
+            continue
+        for monitor in monitors:
+            if not isinstance(monitor, dict):
+                continue
+            monitor_id = monitor.get("id")
+            monitor_name = monitor.get("name")
+            if isinstance(monitor_id, int) and isinstance(monitor_name, str):
+                monitor_names[monitor_id] = monitor_name.strip()
+
+    status_counts = {"up": 0, "down": 0, "pending": 0, "maintenance": 0, "unknown": 0}
+    down_monitors = []
+    latest_timestamp = ""
+    monitor_ids = sorted(monitor_names.keys())
+    if not monitor_ids:
+        monitor_ids = sorted(int(key) for key in heartbeat_list.keys() if str(key).isdigit())
+
+    for monitor_id in monitor_ids:
+        entries = heartbeat_list.get(str(monitor_id), [])
+        latest_entry = entries[-1] if isinstance(entries, list) and entries else None
+        if not isinstance(latest_entry, dict):
+            status_counts["unknown"] += 1
+            continue
+        status_code = latest_entry.get("status")
+        status_label = _status_label(status_code) if isinstance(status_code, int) else "unknown"
+        status_counts[status_label] += 1
+        current_time = latest_entry.get("time")
+        if isinstance(current_time, str) and current_time > latest_timestamp:
+            latest_timestamp = current_time
+        if status_label == "down":
+            monitor_name = monitor_names.get(monitor_id, f"Monitor {monitor_id}")
+            uptime_key = f"{monitor_id}_24"
+            uptime_value = uptime_list.get(uptime_key) if isinstance(uptime_list, dict) else None
+            if isinstance(uptime_value, (int, float)):
+                down_monitors.append(f"{monitor_name} ({uptime_value * 100:.1f}% 24h)")
+            else:
+                down_monitors.append(monitor_name)
+
+    return {
+        "title": config_payload.get("config", {}).get("title", "Uptime Status"),
+        "page_url": UPTIME_STATUS_PAGE_URL,
+        "total": len(monitor_ids),
+        "counts": status_counts,
+        "down_monitors": down_monitors,
+        "last_sample": latest_timestamp,
+    }
+
+
+def format_uptime_summary(snapshot: dict):
+    counts = snapshot.get("counts", {})
+    total = int(snapshot.get("total", 0))
+    up = int(counts.get("up", 0))
+    down = int(counts.get("down", 0))
+    pending = int(counts.get("pending", 0))
+    maintenance = int(counts.get("maintenance", 0))
+    unknown = int(counts.get("unknown", 0))
+    lines = [
+        f"**{snapshot.get('title', 'Uptime Status')}**",
+        f"Page: {snapshot.get('page_url', UPTIME_STATUS_PAGE_URL)}",
+        f"Monitors: {total} | Up: {up} | Down: {down} | Pending: {pending} | Maintenance: {maintenance} | Unknown: {unknown}",
+    ]
+    last_sample = str(snapshot.get("last_sample", "")).strip()
+    if last_sample:
+        lines.append(f"Last sample: {last_sample} UTC")
+    down_monitors = snapshot.get("down_monitors", [])
+    if isinstance(down_monitors, list) and down_monitors:
+        lines.append("Down monitors:")
+        for item in down_monitors[:10]:
+            lines.append(f"- {truncate_log_text(str(item), max_length=120)}")
+        if len(down_monitors) > 10:
+            lines.append(f"- ...and {len(down_monitors) - 10} more")
+    else:
+        lines.append("No monitors are currently down.")
+    return trim_search_message("\n".join(lines))
+
+
 def read_recent_log_lines(path: str, max_lines: int):
     try:
         line_limit = max(10, min(400, int(max_lines)))
     except (TypeError, ValueError):
         line_limit = 100
 
-    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+    with open(path, encoding="utf-8", errors="replace") as handle:
         buffer = deque(handle, maxlen=line_limit)
     return sanitize_log_text("".join(buffer))
 
 
 async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
     message = f"📌 **Server Event:** `{event_name}`\n{details}"
+    record_action_safe(
+        action=event_name,
+        status="success",
+        moderator="system",
+        target=str(guild.id),
+        reason=truncate_log_text(details, max_length=500),
+        guild_id=guild.id,
+    )
     target_channel_id = get_effective_logging_channel_id(guild.id)
     record_bot_log_channel_message("server_event", target_channel_id, message)
 
@@ -3759,9 +4394,7 @@ async def send_server_event_log(guild: discord.Guild, event_name: str, details: 
         await channel.send(message)
         return True
     except discord.Forbidden:
-        logger.warning(
-            "No permission to send server event logs to channel %s", target_channel_id
-        )
+        logger.warning("No permission to send server event logs to channel %s", target_channel_id)
         return False
     except discord.HTTPException:
         logger.exception("Failed to send server event log for %s", event_name)
@@ -3821,9 +4454,7 @@ def build_firmware_entry_signature(entry: dict):
         for item in entry.get("files", [])
         if str(item.get("url") or "").strip()
     ]
-    sha_tokens = [
-        str(value).strip() for value in entry.get("sha256", []) if str(value).strip()
-    ]
+    sha_tokens = [str(value).strip() for value in entry.get("sha256", []) if str(value).strip()]
     payload = "|".join(
         [
             str(entry.get("published_date") or "").strip(),
@@ -3844,10 +4475,8 @@ def build_firmware_signature_snapshot(entries: list[dict]):
     return snapshot
 
 
-def save_firmware_state(
-    seen_ids: set[str], signature_snapshot: dict[str, str], sync_label: str = ""
-):
-    now_iso = datetime.now(timezone.utc).isoformat()
+def save_firmware_state(seen_ids: set[str], signature_snapshot: dict[str, str], sync_label: str = ""):
+    now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
         conn.execute("DELETE FROM firmware_seen")
@@ -3878,9 +4507,7 @@ def save_firmware_state(
 def parse_firmware_entries(page_html: str):
     soup = BeautifulSoup(page_html, "html.parser")
     sync_line = soup.select_one(".sync-line")
-    sync_label = (
-        clean_search_text(sync_line.get_text(" ", strip=True)) if sync_line else ""
-    )
+    sync_label = clean_search_text(sync_line.get_text(" ", strip=True)) if sync_line else ""
     entries = []
 
     for section in soup.select("section.model-section"):
@@ -3891,24 +4518,14 @@ def parse_firmware_entries(page_html: str):
             code_tag = heading.find("span", class_="code")
             if code_tag is not None:
                 code_tag.extract()
-            model_name = (
-                clean_search_text(heading.get_text(" ", strip=True)) or model_name
-            )
+            model_name = clean_search_text(heading.get_text(" ", strip=True)) or model_name
 
         for row in section.find_all("div", class_="fw-row"):
             stage = (row.get("data-stage") or "unknown").strip().lower()
             version_tag = row.find("span", class_="fw-version")
             date_tag = row.find("span", class_="fw-date")
-            version = (
-                clean_search_text(version_tag.get_text(" ", strip=True))
-                if version_tag
-                else "unknown"
-            )
-            published_date = (
-                clean_search_text(date_tag.get_text(" ", strip=True))
-                if date_tag
-                else "unknown"
-            )
+            version = clean_search_text(version_tag.get_text(" ", strip=True)) if version_tag else "unknown"
+            published_date = clean_search_text(date_tag.get_text(" ", strip=True)) if date_tag else "unknown"
 
             files = []
             for link in row.select(".fw-files a[href]"):
@@ -3925,22 +4542,14 @@ def parse_firmware_entries(page_html: str):
 
             release_notes = ""
             notes_block = row.find_next_sibling()
-            if (
-                notes_block
-                and notes_block.name == "details"
-                and "release-notes" in (notes_block.get("class") or [])
-            ):
+            if notes_block and notes_block.name == "details" and "release-notes" in (notes_block.get("class") or []):
                 notes_content = notes_block.find("div", class_="content")
                 if notes_content:
-                    release_notes = normalize_release_notes_text(
-                        notes_content.get_text("\n", strip=True)
-                    )
+                    release_notes = normalize_release_notes_text(notes_content.get_text("\n", strip=True))
 
             file_key = "|".join(sorted(file_info["url"] for file_info in files))
             sha_key = "|".join(sorted(value for value in sha256_values if value))
-            entry_id = (
-                f"{model_code}|{stage}|{version}|{published_date}|{file_key or sha_key}"
-            )
+            entry_id = f"{model_code}|{stage}|{version}|{published_date}|{file_key or sha_key}"
             entries.append(
                 {
                     "id": entry_id,
@@ -3972,26 +4581,16 @@ def trim_discord_message(message: str, max_chars: int = 1900):
 
 def firmware_stage_label(raw_stage: str):
     stage = str(raw_stage or "").strip().lower()
-    return (
-        "Stable"
-        if stage == "release"
-        else "Testing"
-        if stage == "testing"
-        else stage.title() or "Unknown"
-    )
+    return "Stable" if stage == "release" else "Testing" if stage == "testing" else stage.title() or "Unknown"
 
 
-def format_firmware_change_summary(
-    new_entries: list[dict], changed_entries: list[dict], sync_label: str
-):
+def format_firmware_change_summary(new_entries: list[dict], changed_entries: list[dict], sync_label: str):
     total_changes = len(new_entries) + len(changed_entries)
     lines = [
         "📡 **Firmware updates detected**",
         f"New: `{len(new_entries)}` | Changed: `{len(changed_entries)}`",
     ]
-    combined_entries = [("🆕", entry) for entry in new_entries] + [
-        ("🔄", entry) for entry in changed_entries
-    ]
+    combined_entries = [("🆕", entry) for entry in new_entries] + [("🔄", entry) for entry in changed_entries]
     combined_entries.sort(
         key=lambda item: (
             item[1].get("published_date", ""),
@@ -4004,9 +4603,7 @@ def format_firmware_change_summary(
         model_code = str(entry.get("model_code") or "unknown").upper()
         version = str(entry.get("version") or "unknown")
         published_date = str(entry.get("published_date") or "unknown")
-        lines.append(
-            f"- {icon} `{model_code}` `{version}` ({stage_text}, {published_date})"
-        )
+        lines.append(f"- {icon} `{model_code}` `{version}` ({stage_text}, {published_date})")
 
     if total_changes > FIRMWARE_NOTIFICATION_ITEM_LIMIT:
         remaining = total_changes - FIRMWARE_NOTIFICATION_ITEM_LIMIT
@@ -4075,16 +4672,11 @@ def log_firmware_channel_unavailable(reason_key: str, pending_count: int):
         "channel_not_text": "configured channel is not a text/thread channel",
     }
     normalized_reason_key = str(reason_key or "").split(":", 1)[-1]
-    reason_text = reason_messages.get(
-        normalized_reason_key, "configured channel is unavailable"
-    )
+    reason_text = reason_messages.get(normalized_reason_key, "configured channel is unavailable")
     now_ts = time.time()
     last_reason = firmware_channel_warning_state.get("reason", "")
     last_logged_at = float(firmware_channel_warning_state.get("last_logged_at", 0.0))
-    if (
-        reason_key == last_reason
-        and (now_ts - last_logged_at) < FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS
-    ):
+    if reason_key == last_reason and (now_ts - last_logged_at) < FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS:
         return
 
     firmware_channel_warning_state["reason"] = reason_key
@@ -4118,9 +4710,7 @@ async def check_firmware_updates_once():
     seen_ids = load_firmware_seen_ids()
     if seen_ids is None:
         save_firmware_state(current_ids, current_signatures, sync_label)
-        logger.info(
-            "Firmware monitor baseline initialized with %d entries", len(current_ids)
-        )
+        logger.info("Firmware monitor baseline initialized with %d entries", len(current_ids))
         return
 
     previous_signatures = load_firmware_signature_map()
@@ -4185,9 +4775,7 @@ async def check_firmware_updates_once():
         if delivered == 0:
             return
         for reason in channel_errors:
-            log_firmware_channel_unavailable(
-                reason, len(new_entries) + len(changed_entries)
-            )
+            log_firmware_channel_unavailable(reason, len(new_entries) + len(changed_entries))
     except Exception:
         logger.exception("Failed to post firmware summary notification")
         return
@@ -4206,9 +4794,7 @@ async def firmware_monitor_loop():
         for guild in bot.guilds
     )
     if not configured_channels and FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
-        logger.info(
-            "Firmware monitor disabled: set a guild firmware notification channel or firmware_notification_channel to enable it."
-        )
+        logger.info("Firmware monitor disabled: set a guild firmware notification channel or firmware_notification_channel to enable it.")
         return
 
     if not croniter.is_valid(FIRMWARE_CHECK_SCHEDULE):
@@ -4226,12 +4812,10 @@ async def firmware_monitor_loop():
     await check_firmware_updates_once()
 
     while not bot.is_closed():
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         next_run_utc = croniter(FIRMWARE_CHECK_SCHEDULE, now_utc).get_next(datetime)
         wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
-        logger.debug(
-            "Next firmware check scheduled for %s UTC", next_run_utc.isoformat()
-        )
+        logger.debug("Next firmware check scheduled for %s UTC", next_run_utc.isoformat())
         await asyncio.sleep(wait_seconds)
         await check_firmware_updates_once()
 
@@ -4240,9 +4824,7 @@ def restart_firmware_monitor_task():
     global firmware_monitor_task
     if firmware_monitor_task is not None and not firmware_monitor_task.done():
         firmware_monitor_task.cancel()
-    firmware_monitor_task = asyncio.create_task(
-        firmware_monitor_loop(), name="firmware_monitor"
-    )
+    firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
 
 
 def schedule_firmware_monitor_restart():
@@ -4277,12 +4859,10 @@ async def process_reddit_feed_subscription(feed: dict):
     feed_id = int(feed.get("id") or 0)
     subreddit = str(feed.get("subreddit") or "").strip()
     channel_id = int(feed.get("channel_id") or 0)
-    checked_at = datetime.now(timezone.utc).isoformat()
+    checked_at = datetime.now(UTC).isoformat()
 
     try:
-        normalized_subreddit, posts = await asyncio.to_thread(
-            fetch_reddit_subreddit_new_posts, subreddit
-        )
+        normalized_subreddit, posts = await asyncio.to_thread(fetch_reddit_subreddit_new_posts, subreddit)
     except LookupError:
         update_reddit_feed_runtime_status(
             feed_id,
@@ -4417,7 +4997,7 @@ async def process_reddit_feed_subscription(feed: dict):
         return
 
     merge_reddit_feed_seen_post_ids(feed_id, current_post_ids)
-    posted_at = datetime.now(timezone.utc).isoformat()
+    posted_at = datetime.now(UTC).isoformat()
     update_reddit_feed_runtime_status(
         feed_id,
         last_checked_at=checked_at,
@@ -4463,12 +5043,10 @@ async def reddit_feed_monitor_loop():
     await check_reddit_feed_updates_once()
 
     while not bot.is_closed():
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         next_run_utc = croniter(REDDIT_FEED_CHECK_SCHEDULE, now_utc).get_next(datetime)
         wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
-        logger.debug(
-            "Next Reddit feed check scheduled for %s UTC", next_run_utc.isoformat()
-        )
+        logger.debug("Next Reddit feed check scheduled for %s UTC", next_run_utc.isoformat())
         await asyncio.sleep(wait_seconds)
         await check_reddit_feed_updates_once()
 
@@ -4477,9 +5055,7 @@ def restart_reddit_feed_monitor_task():
     global reddit_feed_monitor_task
     if reddit_feed_monitor_task is not None and not reddit_feed_monitor_task.done():
         reddit_feed_monitor_task.cancel()
-    reddit_feed_monitor_task = asyncio.create_task(
-        reddit_feed_monitor_loop(), name="reddit_feed_monitor"
-    )
+    reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
 
 
 def schedule_reddit_feed_monitor_restart():
@@ -4487,6 +5063,100 @@ def schedule_reddit_feed_monitor_restart():
     if loop is None or not loop.is_running():
         return
     loop.call_soon_threadsafe(restart_reddit_feed_monitor_task)
+
+
+async def process_youtube_subscription(subscription: dict):
+    subscription_id = int(subscription.get("id") or 0)
+    guild_id = int(subscription.get("guild_id") or 0)
+    channel_id = str(subscription.get("channel_id") or "").strip()
+    target_channel_id = int(subscription.get("target_channel_id") or 0)
+    last_video_id = str(subscription.get("last_video_id") or "").strip()
+    if subscription_id <= 0 or guild_id <= 0 or not channel_id or target_channel_id <= 0:
+        return
+    if not is_managed_guild_id(guild_id):
+        return
+
+    latest = await asyncio.to_thread(fetch_latest_youtube_video, channel_id)
+    if latest["video_id"] == last_video_id:
+        return
+
+    notify_channel = await get_text_channel(bot, target_channel_id)
+    if notify_channel is None or notify_channel.guild.id != guild_id:
+        logger.warning(
+            "Notify channel %s not found for YouTube subscription %s",
+            target_channel_id,
+            subscription_id,
+        )
+        return
+
+    embed = discord.Embed(
+        title=f"New video from {latest['channel_title']}",
+        description=f"[{latest['video_title']}]({latest['video_url']})",
+        color=discord.Color.red(),
+    )
+    embed.set_footer(text="YouTube Notification")
+    await notify_channel.send(embed=embed)
+
+    update_youtube_subscription_runtime_state(
+        subscription_id,
+        guild_id=guild_id,
+        last_video_id=latest["video_id"],
+        last_video_title=latest["video_title"],
+        last_published_at=latest["published_at"],
+    )
+    record_action_safe(
+        action="youtube_notify",
+        status="success",
+        moderator="system",
+        target=f"{notify_channel.name} ({notify_channel.id})",
+        reason=truncate_log_text(
+            f"{latest['channel_title']} - {latest['video_title']}",
+            max_length=300,
+        ),
+        guild_id=guild_id,
+    )
+
+
+async def poll_youtube_subscriptions():
+    subscriptions = list_youtube_subscriptions(enabled_only=True)
+    if not subscriptions:
+        return
+    for subscription in subscriptions:
+        try:
+            await process_youtube_subscription(subscription)
+        except Exception:
+            logger.exception(
+                "YouTube subscription poll failed for id=%s",
+                subscription.get("id"),
+            )
+
+
+async def youtube_monitor_loop():
+    logger.info(
+        "YouTube monitor active: polling every %s seconds",
+        YOUTUBE_POLL_INTERVAL_SECONDS,
+    )
+    await poll_youtube_subscriptions()
+    while not bot.is_closed():
+        await asyncio.sleep(YOUTUBE_POLL_INTERVAL_SECONDS)
+        await poll_youtube_subscriptions()
+
+
+def restart_youtube_monitor_task():
+    global youtube_monitor_task
+    if youtube_monitor_task is not None and not youtube_monitor_task.done():
+        youtube_monitor_task.cancel()
+    if not YOUTUBE_NOTIFY_ENABLED:
+        youtube_monitor_task = None
+        return
+    youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
+
+
+def schedule_youtube_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_youtube_monitor_task)
 
 
 def refresh_runtime_settings_from_env(_updated_values=None):
@@ -4517,6 +5187,16 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global WEB_AVATAR_MAX_UPLOAD_BYTES
     global WEB_HTTPS_ENABLED
     global WEB_HTTPS_PORT
+    global COMMAND_RESPONSES_EPHEMERAL
+    global PUPPY_IMAGE_API_URL
+    global PUPPY_IMAGE_TIMEOUT_SECONDS
+    global SHORTENER_ENABLED
+    global SHORTENER_TIMEOUT_SECONDS
+    global YOUTUBE_NOTIFY_ENABLED
+    global YOUTUBE_POLL_INTERVAL_SECONDS
+    global YOUTUBE_REQUEST_TIMEOUT_SECONDS
+    global UPTIME_STATUS_ENABLED
+    global UPTIME_STATUS_TIMEOUT_SECONDS
 
     LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", LOG_LEVEL), fallback=LOG_LEVEL)
     CONTAINER_LOG_LEVEL = normalize_log_level(
@@ -4542,12 +5222,59 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         minimum=0,
     )
     FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", FORUM_BASE_URL).rstrip("/")
-    FORUM_MAX_RESULTS = parse_int_setting(
-        os.getenv("FORUM_MAX_RESULTS", FORUM_MAX_RESULTS), FORUM_MAX_RESULTS, minimum=1
-    )
+    FORUM_MAX_RESULTS = parse_int_setting(os.getenv("FORUM_MAX_RESULTS", FORUM_MAX_RESULTS), FORUM_MAX_RESULTS, minimum=1)
     REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(
         os.getenv("REDDIT_SUBREDDIT", REDDIT_SUBREDDIT),
         fallback_value=REDDIT_SUBREDDIT,
+    )
+    COMMAND_RESPONSES_EPHEMERAL = is_truthy_env_value(
+        os.getenv(
+            "COMMAND_RESPONSES_EPHEMERAL",
+            "true" if COMMAND_RESPONSES_EPHEMERAL else "false",
+        ),
+        default_value=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    PUPPY_IMAGE_API_URL = normalize_http_url_setting(
+        os.getenv("PUPPY_IMAGE_API_URL", PUPPY_IMAGE_API_URL),
+        PUPPY_IMAGE_API_URL,
+        "PUPPY_IMAGE_API_URL",
+    )
+    PUPPY_IMAGE_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("PUPPY_IMAGE_TIMEOUT_SECONDS", PUPPY_IMAGE_TIMEOUT_SECONDS),
+        PUPPY_IMAGE_TIMEOUT_SECONDS,
+        minimum=1,
+    )
+    SHORTENER_ENABLED = is_truthy_env_value(
+        os.getenv("SHORTENER_ENABLED", "true" if SHORTENER_ENABLED else "false"),
+        default_value=SHORTENER_ENABLED,
+    )
+    SHORTENER_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("SHORTENER_TIMEOUT_SECONDS", SHORTENER_TIMEOUT_SECONDS),
+        SHORTENER_TIMEOUT_SECONDS,
+        minimum=1,
+    )
+    YOUTUBE_NOTIFY_ENABLED = is_truthy_env_value(
+        os.getenv("YOUTUBE_NOTIFY_ENABLED", "true" if YOUTUBE_NOTIFY_ENABLED else "false"),
+        default_value=YOUTUBE_NOTIFY_ENABLED,
+    )
+    YOUTUBE_POLL_INTERVAL_SECONDS = parse_int_setting(
+        os.getenv("YOUTUBE_POLL_INTERVAL_SECONDS", YOUTUBE_POLL_INTERVAL_SECONDS),
+        YOUTUBE_POLL_INTERVAL_SECONDS,
+        minimum=30,
+    )
+    YOUTUBE_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("YOUTUBE_REQUEST_TIMEOUT_SECONDS", YOUTUBE_REQUEST_TIMEOUT_SECONDS),
+        YOUTUBE_REQUEST_TIMEOUT_SECONDS,
+        minimum=5,
+    )
+    UPTIME_STATUS_ENABLED = is_truthy_env_value(
+        os.getenv("UPTIME_STATUS_ENABLED", "true" if UPTIME_STATUS_ENABLED else "false"),
+        default_value=UPTIME_STATUS_ENABLED,
+    )
+    UPTIME_STATUS_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("UPTIME_STATUS_TIMEOUT_SECONDS", UPTIME_STATUS_TIMEOUT_SECONDS),
+        UPTIME_STATUS_TIMEOUT_SECONDS,
+        minimum=1,
     )
     DOCS_MAX_RESULTS_PER_SITE = parse_int_setting(
         os.getenv("DOCS_MAX_RESULTS_PER_SITE", DOCS_MAX_RESULTS_PER_SITE),
@@ -4582,9 +5309,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         MOD_LOG_CHANNEL_ID,
         minimum=1,
     )
-    KICK_PRUNE_HOURS = parse_int_setting(
-        os.getenv("KICK_PRUNE_HOURS", KICK_PRUNE_HOURS), KICK_PRUNE_HOURS, minimum=1
-    )
+    KICK_PRUNE_HOURS = parse_int_setting(os.getenv("KICK_PRUNE_HOURS", KICK_PRUNE_HOURS), KICK_PRUNE_HOURS, minimum=1)
     CSV_ROLE_ASSIGN_MAX_NAMES = parse_int_setting(
         os.getenv("CSV_ROLE_ASSIGN_MAX_NAMES", CSV_ROLE_ASSIGN_MAX_NAMES),
         CSV_ROLE_ASSIGN_MAX_NAMES,
@@ -4613,12 +5338,9 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     if croniter.is_valid(candidate_schedule):
         FIRMWARE_CHECK_SCHEDULE = candidate_schedule
     else:
-        logger.warning(
-            "Ignoring invalid firmware_check_schedule value: %s", candidate_schedule
-        )
+        logger.warning("Ignoring invalid firmware_check_schedule value: %s", candidate_schedule)
     candidate_reddit_schedule = (
-        str(os.getenv("REDDIT_FEED_CHECK_SCHEDULE", REDDIT_FEED_CHECK_SCHEDULE)).strip()
-        or REDDIT_FEED_CHECK_SCHEDULE
+        str(os.getenv("REDDIT_FEED_CHECK_SCHEDULE", REDDIT_FEED_CHECK_SCHEDULE)).strip() or REDDIT_FEED_CHECK_SCHEDULE
     )
     if croniter.is_valid(candidate_reddit_schedule):
         REDDIT_FEED_CHECK_SCHEDULE = candidate_reddit_schedule
@@ -4665,9 +5387,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         WEB_AVATAR_MAX_UPLOAD_BYTES,
         minimum=1024,
     )
-    WEB_HTTPS_ENABLED = os.getenv(
-        "WEB_HTTPS_ENABLED", "true" if WEB_HTTPS_ENABLED else "false"
-    ).strip().lower() not in {
+    WEB_HTTPS_ENABLED = os.getenv("WEB_HTTPS_ENABLED", "true" if WEB_HTTPS_ENABLED else "false").strip().lower() not in {
         "0",
         "false",
         "no",
@@ -4684,6 +5404,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     guild_settings_cache.clear()
     schedule_firmware_monitor_restart()
     schedule_reddit_feed_monitor_restart()
+    schedule_youtube_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
@@ -4741,9 +5462,7 @@ def _schedule_web_admin_critical_shutdown(reason: str):
 
     def _create_shutdown_task():
         asyncio.create_task(
-            _shutdown_container_after_delay(
-                WEB_ADMIN_CRITICAL_SHUTDOWN_DELAY_SECONDS, reason
-            ),
+            _shutdown_container_after_delay(WEB_ADMIN_CRITICAL_SHUTDOWN_DELAY_SECONDS, reason),
             name="web_admin_critical_shutdown",
         )
 
@@ -4751,14 +5470,10 @@ def _schedule_web_admin_critical_shutdown(reason: str):
 
 
 async def _send_web_admin_critical_alert(message: str):
-    primary_guild_id = GUILD_ID if bot.get_guild(GUILD_ID) is not None else (
-        bot.guilds[0].id if bot.guilds else GUILD_ID
-    )
+    primary_guild_id = GUILD_ID if bot.get_guild(GUILD_ID) is not None else (bot.guilds[0].id if bot.guilds else GUILD_ID)
     channel_id = get_effective_logging_channel_id(primary_guild_id)
     if channel_id <= 0:
-        logger.critical(
-            "Web admin critical alert could not be sent: no bot log channel configured."
-        )
+        logger.critical("Web admin critical alert could not be sent: no bot log channel configured.")
         return False
 
     channel = bot.get_channel(channel_id)
@@ -4808,18 +5523,14 @@ async def _send_web_admin_critical_alert(message: str):
 
 
 def _dispatch_web_admin_critical_alert(message: str):
-    primary_guild_id = GUILD_ID if bot.get_guild(GUILD_ID) is not None else (
-        bot.guilds[0].id if bot.guilds else GUILD_ID
-    )
+    primary_guild_id = GUILD_ID if bot.get_guild(GUILD_ID) is not None else (bot.guilds[0].id if bot.guilds else GUILD_ID)
     channel_id = get_effective_logging_channel_id(primary_guild_id)
     record_bot_log_channel_message("web_admin_critical", channel_id, message)
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
         with web_admin_supervisor_lock:
             web_admin_pending_critical_alerts.append(message)
-        logger.critical(
-            "Web admin critical alert queued: bot event loop unavailable."
-        )
+        logger.critical("Web admin critical alert queued: bot event loop unavailable.")
         return
 
     future = asyncio.run_coroutine_threadsafe(
@@ -4831,9 +5542,7 @@ def _dispatch_web_admin_critical_alert(message: str):
         try:
             sent = bool(done_future.result())
             if not sent:
-                logger.critical(
-                    "Web admin critical alert dispatch completed but was not delivered."
-                )
+                logger.critical("Web admin critical alert dispatch completed but was not delivered.")
         except Exception:
             logger.exception("Web admin critical alert dispatch failed.")
 
@@ -4883,8 +5592,11 @@ def start_web_admin_server():
                     on_get_discord_catalog=run_web_get_discord_catalog,
                     on_get_command_permissions=run_web_get_command_permissions,
                     on_save_command_permissions=run_web_update_command_permissions,
+                    on_get_actions=run_web_get_actions,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
+                    on_get_youtube_subscriptions=run_web_get_youtube_subscriptions,
+                    on_manage_youtube_subscriptions=run_web_manage_youtube_subscriptions,
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
@@ -4971,18 +5683,14 @@ def search_discourse_links(
         return links
 
     try:
-        response = requests.get(
-            search_url, params={"q": query}, timeout=10, headers=request_headers
-        )
+        response = requests.get(search_url, params={"q": query}, timeout=10, headers=request_headers)
         response.raise_for_status()
         data = response.json()
     except requests.HTTPError as exc:
         status_code = getattr(exc.response, "status_code", None)
         if status_code == 429:
             logger.warning("%s search rate limited for query: %s", source_name, query)
-            return [
-                f"❌ {source_name} search is rate-limited right now. Please try again in a minute."
-            ]
+            return [f"❌ {source_name} search is rate-limited right now. Please try again in a minute."]
         logger.exception("%s search HTTP failure for query: %s", source_name, query)
         return [f"❌ Failed to fetch {source_name} results."]
     except requests.RequestException:
@@ -5113,15 +5821,9 @@ def fetch_reddit_subreddit_new_posts(subreddit: str):
         posts.append(
             {
                 "id": post_id,
-                "title": make_discord_safe_text(
-                    clean_search_text(str(payload.get("title") or "")).strip()
-                    or "Untitled post"
-                ),
+                "title": make_discord_safe_text(clean_search_text(str(payload.get("title") or "")).strip() or "Untitled post"),
                 "link": urljoin(REDDIT_BASE_URL, permalink),
-                "author": make_discord_safe_text(
-                    clean_search_text(str(payload.get("author") or "unknown")).strip()
-                    or "unknown"
-                ),
+                "author": make_discord_safe_text(clean_search_text(str(payload.get("author") or "unknown")).strip() or "unknown"),
                 "created_utc": int(float(payload.get("created_utc") or 0.0)),
             }
         )
@@ -5335,6 +6037,7 @@ def build_help_message():
         "Use this bot for:",
         "- Role access and invites (`/submitrole`, `/enter_role`, `/getaccess`)",
         "- Search (`/search_reddit`, `/search_forum`, `/search_openwrt_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
+        "- Utilities (`/ping`, `/sayhi`, `/happy`, `/shorten`, `/expand`, `/uptime`)",
         "- Country nickname tools (`/country`, `/clear_country`)",
         "- Tag shortcuts (`!list` and dynamic slash tag commands)",
         "- Moderation and member/role management (restricted by role/permissions)",
@@ -5380,7 +6083,7 @@ async def refresh_invite_cache_for_guild(guild: discord.Guild):
 
 async def sync_commands_for_all_guilds():
     total_synced = 0
-    for guild in bot.guilds:
+    for guild in get_managed_guilds():
         upgrade_legacy_default_tag_responses(guild.id)
         get_tag_responses(guild.id)
         synced = await sync_commands_for_guild(guild)
@@ -5401,6 +6104,7 @@ invite_roles_by_guild = load_invite_roles()
 async def on_ready():
     global firmware_monitor_task
     global reddit_feed_monitor_task
+    global youtube_monitor_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
     logger.info("Logged in as %s", bot.user.name)
     await _flush_web_admin_pending_critical_alerts()
@@ -5409,25 +6113,28 @@ async def on_ready():
         logger.info(
             "Synced %d command(s) across %d guild(s)",
             total_synced,
-            len(bot.guilds),
+            len(get_managed_guilds()),
         )
     else:
-        logger.warning(
-            "Tag slash commands not registered: register_tag_commands_for_guild missing"
-        )
+        logger.warning("Tag slash commands not registered: register_tag_commands_for_guild missing")
 
     if firmware_monitor_task is None or firmware_monitor_task.done():
-        firmware_monitor_task = asyncio.create_task(
-            firmware_monitor_loop(), name="firmware_monitor"
-        )
+        firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
     if reddit_feed_monitor_task is None or reddit_feed_monitor_task.done():
-        reddit_feed_monitor_task = asyncio.create_task(
-            reddit_feed_monitor_loop(), name="reddit_feed_monitor"
-        )
+        reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
+    if YOUTUBE_NOTIFY_ENABLED and (youtube_monitor_task is None or youtube_monitor_task.done()):
+        youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
 
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
+    if not is_managed_guild_id(guild.id):
+        logger.info(
+            "Joined unmanaged guild %s (%s); skipping command sync due to MANAGED_GUILD_IDS filter",
+            guild.name,
+            guild.id,
+        )
+        return
     invite_roles_by_guild.setdefault(guild.id, {})
     await sync_commands_for_guild(guild)
     await refresh_invite_cache_for_guild(guild)
@@ -5475,15 +6182,15 @@ async def on_tree_error(interaction: discord.Interaction, error: app_commands.Ap
 async def on_member_join(member: discord.Member):
     """Assign role based on the invite used to join."""
     guild = member.guild
+    if not is_managed_guild_id(guild.id):
+        return
     guild_invite_roles = invite_roles_by_guild.get(guild.id) or {}
     guild_invite_uses = invite_uses_by_guild.setdefault(guild.id, {})
     used_invite = None
     try:
         invites = await guild.invites()
         for inv in invites:
-            if inv.code in guild_invite_roles and inv.uses > guild_invite_uses.get(
-                inv.code, 0
-            ):
+            if inv.code in guild_invite_roles and inv.uses > guild_invite_uses.get(inv.code, 0):
                 guild_invite_uses[inv.code] = inv.uses
                 used_invite = inv
                 break
@@ -5505,10 +6212,7 @@ async def on_member_join(member: discord.Member):
             except Exception:
                 logger.exception("Failed to assign role on join for %s", member)
 
-    join_details = (
-        f"**Member:** {member.mention} (`{member.id}`)\n"
-        f"**Created:** <t:{int(member.created_at.timestamp())}:f>\n"
-    )
+    join_details = f"**Member:** {member.mention} (`{member.id}`)\n**Created:** <t:{int(member.created_at.timestamp())}:f>\n"
     if used_invite:
         join_details += f"**Invite:** `{used_invite.code}`\n"
     await send_server_event_log(guild, "member_join", join_details)
@@ -5517,11 +6221,10 @@ async def on_member_join(member: discord.Member):
 @bot.event
 async def on_member_remove(member: discord.Member):
     guild = member.guild
+    if not is_managed_guild_id(guild.id):
+        return
 
-    details = (
-        f"**Member:** {member} (`{member.id}`)\n"
-        f"**Nickname:** {clip_text(member.nick or 'N/A')}\n"
-    )
+    details = f"**Member:** {member} (`{member.id}`)\n**Nickname:** {clip_text(member.nick or 'N/A')}\n"
     await send_server_event_log(guild, "member_leave", details)
 
 
@@ -5530,12 +6233,10 @@ async def on_message_delete(message: discord.Message):
     guild = message.guild
     if guild is None:
         return
+    if not is_managed_guild_id(guild.id):
+        return
 
-    channel_name = (
-        message.channel.mention
-        if hasattr(message.channel, "mention")
-        else f"`{message.channel.id}`"
-    )
+    channel_name = message.channel.mention if hasattr(message.channel, "mention") else f"`{message.channel.id}`"
     details = (
         f"**Author:** {message.author} (`{message.author.id}`)\n"
         f"**Channel:** {channel_name}\n"
@@ -5553,6 +6254,8 @@ async def on_bulk_message_delete(messages: list[discord.Message]):
     guild = messages[0].guild
     if guild is None:
         return
+    if not is_managed_guild_id(guild.id):
+        return
 
     channel = messages[0].channel
     channel_name = channel.mention if hasattr(channel, "mention") else f"`{channel.id}`"
@@ -5562,7 +6265,7 @@ async def on_bulk_message_delete(messages: list[discord.Message]):
 
 @bot.event
 async def on_user_update(before: discord.User, after: discord.User):
-    for guild in bot.guilds:
+    for guild in get_managed_guilds():
         member = guild.get_member(after.id)
         if member is None:
             continue
@@ -5576,16 +6279,15 @@ async def on_user_update(before: discord.User, after: discord.User):
             await send_server_event_log(guild, "user_name_change", details)
 
         if before.display_avatar != after.display_avatar:
-            details = (
-                f"**User:** {member.mention} (`{after.id}`)\n"
-                f"**New Avatar:** {after.display_avatar.url}\n"
-            )
+            details = f"**User:** {member.mention} (`{after.id}`)\n**New Avatar:** {after.display_avatar.url}\n"
             await send_server_event_log(guild, "user_avatar_change", details)
 
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     guild = after.guild
+    if not is_managed_guild_id(guild.id):
+        return
 
     if before.nick != after.nick:
         details = (
@@ -5601,18 +6303,12 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 
     for role_id in added_role_ids:
         role = after_role_map[role_id]
-        details = (
-            f"**Member:** {after.mention} (`{after.id}`)\n"
-            f"**Role Added:** {role.mention} (`{role.id}`)\n"
-        )
+        details = f"**Member:** {after.mention} (`{after.id}`)\n**Role Added:** {role.mention} (`{role.id}`)\n"
         await send_server_event_log(guild, "member_role_added", details)
 
     for role_id in removed_role_ids:
         role = before_role_map[role_id]
-        details = (
-            f"**Member:** {after.mention} (`{after.id}`)\n"
-            f"**Role Removed:** {role.name} (`{role.id}`)\n"
-        )
+        details = f"**Member:** {after.mention} (`{after.id}`)\n**Role Removed:** {role.name} (`{role.id}`)\n"
         await send_server_event_log(guild, "member_role_removed", details)
 
 
@@ -5621,10 +6317,10 @@ async def on_invite_create(invite: discord.Invite):
     guild = invite.guild
     if guild is None:
         return
+    if not is_managed_guild_id(guild.id):
+        return
 
-    inviter_text = (
-        f"{invite.inviter} (`{invite.inviter.id}`)" if invite.inviter else "Unknown"
-    )
+    inviter_text = f"{invite.inviter} (`{invite.inviter.id}`)" if invite.inviter else "Unknown"
     channel_text = invite.channel.mention if getattr(invite, "channel", None) else "N/A"
     details = (
         f"**Invite Code:** `{invite.code}`\n"
@@ -5639,6 +6335,8 @@ async def on_invite_create(invite: discord.Invite):
 @bot.event
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     guild = channel.guild
+    if not is_managed_guild_id(guild.id):
+        return
 
     if isinstance(channel, discord.CategoryChannel):
         event_name = "category_created"
@@ -5647,10 +6345,7 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
 
     parent_name = channel.category.name if channel.category else "N/A"
     details = (
-        f"**Name:** {clip_text(channel.name)}\n"
-        f"**ID:** `{channel.id}`\n"
-        f"**Type:** `{channel.type}`\n"
-        f"**Category:** {clip_text(parent_name)}\n"
+        f"**Name:** {clip_text(channel.name)}\n**ID:** `{channel.id}`\n**Type:** `{channel.type}`\n**Category:** {clip_text(parent_name)}\n"
     )
     await send_server_event_log(guild, event_name, details)
 
@@ -5658,6 +6353,8 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
 @bot.event
 async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
     guild = channel.guild
+    if not is_managed_guild_id(guild.id):
+        return
 
     if isinstance(channel, discord.CategoryChannel):
         event_name = "category_deleted"
@@ -5666,10 +6363,7 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
 
     parent_name = channel.category.name if channel.category else "N/A"
     details = (
-        f"**Name:** {clip_text(channel.name)}\n"
-        f"**ID:** `{channel.id}`\n"
-        f"**Type:** `{channel.type}`\n"
-        f"**Category:** {clip_text(parent_name)}\n"
+        f"**Name:** {clip_text(channel.name)}\n**ID:** `{channel.id}`\n**Type:** `{channel.type}`\n**Category:** {clip_text(parent_name)}\n"
     )
     await send_server_event_log(guild, event_name, details)
 
@@ -5677,12 +6371,10 @@ async def on_guild_channel_delete(channel: discord.abc.GuildChannel):
 @bot.event
 async def on_guild_role_create(role: discord.Role):
     guild = role.guild
+    if not is_managed_guild_id(guild.id):
+        return
 
-    details = (
-        f"**Role:** {role.mention} (`{role.id}`)\n"
-        f"**Color:** `{role.color}`\n"
-        f"**Position:** `{role.position}`\n"
-    )
+    details = f"**Role:** {role.mention} (`{role.id}`)\n**Color:** `{role.color}`\n**Position:** `{role.position}`\n"
     await send_server_event_log(guild, "role_created", details)
 
 
@@ -5690,14 +6382,14 @@ async def on_guild_role_create(role: discord.Role):
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
+    if message.guild is not None and not is_managed_guild_id(message.guild.id):
+        return
     if message.content:
         tag = normalize_tag(message.content.strip().split()[0])
         if tag == "!list":
             await bot.process_commands(message)
             return
-        response = get_tag_responses(
-            message.guild.id if message.guild else GUILD_ID
-        ).get(tag)
+        response = get_tag_responses(message.guild.id if message.guild else GUILD_ID).get(tag)
         if response:
             if can_use_command(
                 message.author,
@@ -5724,20 +6416,13 @@ async def submitrole(interaction: discord.Interaction):
     if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server channel.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
         return
 
-    await interaction.response.send_message(
-        "Please mention the role you want to assign.", ephemeral=True
-    )
+    await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
 
     def check(m):
-        return (
-            m.author.id == interaction.user.id
-            and m.channel.id == interaction.channel.id
-        )
+        return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
 
     try:
         msg = await bot.wait_for("message", timeout=30.0, check=check)
@@ -5746,13 +6431,9 @@ async def submitrole(interaction: discord.Interaction):
             return
 
         role = msg.role_mentions[0]
-        target_channel_id = get_effective_logging_channel_id(
-            interaction.guild.id if interaction.guild else GUILD_ID
-        )
+        target_channel_id = get_effective_logging_channel_id(interaction.guild.id if interaction.guild else GUILD_ID)
         channel = (
-            interaction.guild.get_channel(target_channel_id)
-            if interaction.guild and target_channel_id > 0
-            else None
+            interaction.guild.get_channel(target_channel_id) if interaction.guild and target_channel_id > 0 else None
         ) or interaction.channel
         invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
         code = generate_code()
@@ -5770,14 +6451,10 @@ async def submitrole(interaction: discord.Interaction):
             channel.id,
         )
 
-        await interaction.followup.send(
-            f"✅ Invite link: {invite.url}\n🔢 6-digit code: `{code}`", ephemeral=True
-        )
+        await interaction.followup.send(f"✅ Invite link: {invite.url}\n🔢 6-digit code: `{code}`", ephemeral=True)
     except Exception:
         logger.exception("Error in /submitrole")
-        await interaction.followup.send(
-            "❌ Something went wrong. Try again.", ephemeral=True
-        )
+        await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
 
 
 @tree.command(
@@ -5788,33 +6465,23 @@ async def submitrole(interaction: discord.Interaction):
     role="Role to assign",
     csv_file="Upload a .csv containing Discord names (comma-separated or one-per-line)",
 )
-async def bulk_assign_role_csv(
-    interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment
-):
+async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment):
     logger.info("/bulk_assign_role_csv invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "bulk_assign_role_csv"):
         return
 
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server channel.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (
-        interaction.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
     actor = interaction.user if isinstance(interaction.user, discord.Member) else None
     if bot_member is None:
-        await interaction.response.send_message(
-            "❌ Could not resolve bot member in this guild.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
         return
     if role == interaction.guild.default_role:
-        await interaction.response.send_message(
-            "❌ The @everyone role cannot be assigned this way.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
         return
     if role.managed:
         await interaction.response.send_message(
@@ -5848,9 +6515,7 @@ async def bulk_assign_role_csv(
         payload = await csv_file.read()
     except Exception:
         logger.exception("Failed reading CSV attachment for /bulk_assign_role_csv")
-        await interaction.followup.send(
-            "❌ Could not read that file. Please try again.", ephemeral=True
-        )
+        await interaction.followup.send("❌ Could not read that file. Please try again.", ephemeral=True)
         return
 
     result, error = await process_bulk_role_assignment_payload(
@@ -5864,9 +6529,7 @@ async def bulk_assign_role_csv(
         await interaction.followup.send(error, ephemeral=True)
         return
 
-    summary_lines = build_bulk_assignment_summary_lines(
-        csv_file.filename, role.mention, result
-    )
+    summary_lines = build_bulk_assignment_summary_lines(csv_file.filename, role.mention, result)
     report_text = build_bulk_assignment_report_text(
         role=role,
         requested_by=f"{interaction.user} ({interaction.user.id})",
@@ -5878,18 +6541,14 @@ async def bulk_assign_role_csv(
     await interaction.followup.send(
         "\n".join(summary_lines),
         ephemeral=True,
-        file=discord.File(
-            io.BytesIO(report_text.encode("utf-8")), filename=report_filename
-        ),
+        file=discord.File(io.BytesIO(report_text.encode("utf-8")), filename=report_filename),
     )
 
 
 class CodeEntryModal(discord.ui.Modal):
     def __init__(self):
         super().__init__(title="Enter Role Code")
-        self.code = discord.ui.TextInput(
-            label="6-digit code", min_length=6, max_length=6
-        )
+        self.code = discord.ui.TextInput(label="6-digit code", min_length=6, max_length=6)
         self.add_item(self.code)
 
     async def on_submit(self, interaction: discord.Interaction):
@@ -5901,15 +6560,11 @@ class CodeEntryModal(discord.ui.Modal):
 
         role = interaction.guild.get_role(role_id)
         if not role:
-            await interaction.response.send_message(
-                "❌ Role not found.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Role not found.", ephemeral=True)
             return
 
         await interaction.user.add_roles(role)
-        await interaction.response.send_message(
-            f"✅ You've been given the **{role.name}** role!", ephemeral=True
-        )
+        await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
 
 
 @tree.command(
@@ -5953,14 +6608,10 @@ async def getaccess(interaction: discord.Interaction):
             return
         await interaction.user.add_roles(role)
         logger.info("Assigned default role %s to user %s", role.id, interaction.user)
-        await interaction.response.send_message(
-            f"✅ You've been given the **{role.name}** role!", ephemeral=True
-        )
+        await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
     except Exception:
         logger.exception("Error in /getaccess")
-        await interaction.response.send_message(
-            "❌ Could not assign role. Contact an admin.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Could not assign role. Contact an admin.", ephemeral=True)
 
 
 @tree.command(
@@ -6013,9 +6664,7 @@ async def country_prefix(ctx: commands.Context, code: str):
         await ctx.send(message)
     except discord.Forbidden:
         logger.exception("Missing permission to edit nickname for %s", ctx.author)
-        await ctx.send(
-            "❌ I can't edit your nickname. Check role hierarchy and nickname permissions."
-        )
+        await ctx.send("❌ I can't edit your nickname. Check role hierarchy and nickname permissions.")
     except discord.HTTPException:
         logger.exception("Failed to update nickname for %s", ctx.author)
         await ctx.send("❌ Could not update your nickname right now. Try again.")
@@ -6056,9 +6705,7 @@ async def clear_country_prefix(ctx: commands.Context):
         await ctx.send(message)
     except discord.Forbidden:
         logger.exception("Missing permission to edit nickname for %s", ctx.author)
-        await ctx.send(
-            "❌ I can't edit your nickname. Check role hierarchy and nickname permissions."
-        )
+        await ctx.send("❌ I can't edit your nickname. Check role hierarchy and nickname permissions.")
     except discord.HTTPException:
         logger.exception("Failed to clear nickname suffix for %s", ctx.author)
         await ctx.send("❌ Could not update your nickname right now. Try again.")
@@ -6085,16 +6732,12 @@ async def create_role_slash(
     if not await ensure_interaction_command_access(interaction, "create_role"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     normalized_name = name.strip()
     if not normalized_name:
-        await interaction.response.send_message(
-            "❌ Role name cannot be empty.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Role name cannot be empty.", ephemeral=True)
         return
     if len(normalized_name) > ROLE_NAME_MAX_LENGTH:
         await interaction.response.send_message(
@@ -6109,13 +6752,9 @@ async def create_role_slash(
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (
-        interaction.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
-        await interaction.response.send_message(
-            "❌ Could not resolve bot member in this guild.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -6132,13 +6771,9 @@ async def create_role_slash(
     if parsed_color is not None:
         create_kwargs["color"] = parsed_color
 
-    action_reason = (
-        f"Role created by {interaction.user} ({interaction.user.id}) via bot"
-    )
+    action_reason = f"Role created by {interaction.user} ({interaction.user.id}) via bot"
     try:
-        role = await interaction.guild.create_role(
-            reason=action_reason, **create_kwargs
-        )
+        role = await interaction.guild.create_role(reason=action_reason, **create_kwargs)
     except discord.Forbidden:
         logger.exception("Missing permission to create role %s", normalized_name)
         await send_moderation_log(
@@ -6164,9 +6799,7 @@ async def create_role_slash(
             outcome="failed",
             details="Discord API error while creating role.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to create role. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to create role. Try again.", ephemeral=True)
         return
 
     await send_moderation_log(
@@ -6196,19 +6829,13 @@ async def delete_role_slash(
     if not await ensure_interaction_command_access(interaction, "delete_role"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (
-        interaction.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
-        await interaction.response.send_message(
-            "❌ Could not resolve bot member in this guild.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -6217,12 +6844,8 @@ async def delete_role_slash(
         )
         return
 
-    can_manage, error_message = validate_manageable_role(
-        interaction.user, role, bot_member
-    )
-    action_reason = (
-        reason or ""
-    ).strip() or f"Role deleted by {interaction.user} via bot"
+    can_manage, error_message = validate_manageable_role(interaction.user, role, bot_member)
+    action_reason = (reason or "").strip() or f"Role deleted by {interaction.user} via bot"
     if not can_manage:
         await send_moderation_log(
             interaction.guild,
@@ -6264,9 +6887,7 @@ async def delete_role_slash(
             outcome="failed",
             details="Discord API error while deleting role.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to delete that role. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to delete that role. Try again.", ephemeral=True)
         return
 
     await send_moderation_log(
@@ -6307,19 +6928,13 @@ async def edit_role_slash(
     if not await ensure_interaction_command_access(interaction, "edit_role"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (
-        interaction.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
-        await interaction.response.send_message(
-            "❌ Could not resolve bot member in this guild.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -6328,12 +6943,8 @@ async def edit_role_slash(
         )
         return
 
-    can_manage, error_message = validate_manageable_role(
-        interaction.user, role, bot_member
-    )
-    action_reason = (
-        reason or ""
-    ).strip() or f"Role edited by {interaction.user} via bot"
+    can_manage, error_message = validate_manageable_role(interaction.user, role, bot_member)
+    action_reason = (reason or "").strip() or f"Role edited by {interaction.user} via bot"
     if not can_manage:
         await send_moderation_log(
             interaction.guild,
@@ -6351,9 +6962,7 @@ async def edit_role_slash(
     if name is not None:
         normalized_name = name.strip()
         if not normalized_name:
-            await interaction.response.send_message(
-                "❌ Role name cannot be empty.", ephemeral=True
-            )
+            await interaction.response.send_message("❌ Role name cannot be empty.", ephemeral=True)
             return
         if len(normalized_name) > ROLE_NAME_MAX_LENGTH:
             await interaction.response.send_message(
@@ -6417,9 +7026,7 @@ async def edit_role_slash(
             outcome="failed",
             details="Discord API error while editing role.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to edit that role. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to edit that role. Try again.", ephemeral=True)
         return
 
     details = f"Edited role {role.mention} (`{role.id}`): {', '.join(changed_fields)}."
@@ -6459,8 +7066,7 @@ async def modlog_test_slash(interaction: discord.Interaction):
         )
     else:
         await interaction.response.send_message(
-            f"❌ Could not send test log to channel ID `{target_channel_id}`. "
-            "Check channel ID and bot permissions.",
+            f"❌ Could not send test log to channel ID `{target_channel_id}`. Check channel ID and bot permissions.",
             ephemeral=True,
         )
 
@@ -6484,10 +7090,7 @@ async def modlog_test_prefix(ctx: commands.Context):
     if sent:
         await ctx.send(f"✅ Test moderation log sent to <#{target_channel_id}>.")
     else:
-        await ctx.send(
-            f"❌ Could not send test log to channel ID `{target_channel_id}`. "
-            "Check channel ID and bot permissions."
-        )
+        await ctx.send(f"❌ Could not send test log to channel ID `{target_channel_id}`. Check channel ID and bot permissions.")
 
 
 @tree.command(
@@ -6527,9 +7130,7 @@ async def logs_slash(
         )
         return
 
-    response_header = (
-        f"Showing last `{int(lines)}` lines from `{os.path.basename(CONTAINER_ERROR_LOG_FILE)}`."
-    )
+    response_header = f"Showing last `{int(lines)}` lines from `{os.path.basename(CONTAINER_ERROR_LOG_FILE)}`."
     if len(log_tail) <= 1700:
         await interaction.response.send_message(
             f"{response_header}\n```log\n{log_tail}\n```",
@@ -6554,15 +7155,11 @@ async def prune_messages_slash(
     interaction: discord.Interaction,
     amount: app_commands.Range[int, 1, 500],
 ):
-    logger.info(
-        "/prune_messages invoked by %s amount=%s", interaction.user, int(amount)
-    )
+    logger.info("/prune_messages invoked by %s amount=%s", interaction.user, int(amount))
     if not await ensure_interaction_command_access(interaction, "prune_messages"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
     if not isinstance(interaction.user, discord.Member):
         await interaction.response.send_message(
@@ -6578,13 +7175,9 @@ async def prune_messages_slash(
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (
-        interaction.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
-        await interaction.response.send_message(
-            "❌ Could not resolve bot member in this guild.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
         return
 
     channel = interaction.channel
@@ -6605,9 +7198,7 @@ async def prune_messages_slash(
             reason=action_reason,
         )
     except discord.Forbidden:
-        logger.exception(
-            "Missing permission to prune messages in channel %s", channel.id
-        )
+        logger.exception("Missing permission to prune messages in channel %s", channel.id)
         await send_moderation_log(
             interaction.guild,
             interaction.user,
@@ -6631,9 +7222,7 @@ async def prune_messages_slash(
             outcome="failed",
             details=f"Discord API error while pruning in <#{channel.id}>.",
         )
-        await interaction.followup.send(
-            "❌ Failed to prune messages. Try again.", ephemeral=True
-        )
+        await interaction.followup.send("❌ Failed to prune messages. Try again.", ephemeral=True)
         return
 
     await send_moderation_log(
@@ -6641,16 +7230,10 @@ async def prune_messages_slash(
         interaction.user,
         "prune_messages",
         reason=action_reason,
-        details=(
-            f"Pruned {deleted_count} messages in {channel.mention} "
-            f"(requested {int(amount)}; pinned messages skipped)."
-        ),
+        details=(f"Pruned {deleted_count} messages in {channel.mention} (requested {int(amount)}; pinned messages skipped)."),
     )
     await interaction.followup.send(
-        (
-            f"✅ Removed **{deleted_count}** messages from {channel.mention}. "
-            f"(Requested {int(amount)}; pinned messages were skipped.)"
-        ),
+        (f"✅ Removed **{deleted_count}** messages from {channel.mention}. (Requested {int(amount)}; pinned messages were skipped.)"),
         ephemeral=True,
     )
 
@@ -6677,9 +7260,7 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = ctx.guild.me or (
-        ctx.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
         await ctx.send("❌ Could not resolve bot member in this guild.")
         return
@@ -6687,9 +7268,7 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
     channel = ctx.channel
     perms = channel.permissions_for(bot_member)
     if not (perms.view_channel and perms.read_message_history and perms.manage_messages):
-        await ctx.send(
-            "❌ I need `View Channel`, `Read Message History`, and `Manage Messages` permissions here."
-        )
+        await ctx.send("❌ I need `View Channel`, `Read Message History`, and `Manage Messages` permissions here.")
         return
 
     action_reason = f"Pruned {requested_amount} messages by {ctx.author} via bot"
@@ -6701,9 +7280,7 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
             skip_message_id=ctx.message.id,
         )
     except discord.Forbidden:
-        logger.exception(
-            "Missing permission to prune messages in channel %s", channel.id
-        )
+        logger.exception("Missing permission to prune messages in channel %s", channel.id)
         await send_moderation_log(
             ctx.guild,
             ctx.author,
@@ -6732,14 +7309,10 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
         ctx.author,
         "prune_messages",
         reason=action_reason,
-        details=(
-            f"Pruned {deleted_count} messages in {channel.mention} "
-            f"(requested {requested_amount}; pinned messages skipped)."
-        ),
+        details=(f"Pruned {deleted_count} messages in {channel.mention} (requested {requested_amount}; pinned messages skipped)."),
     )
     await ctx.send(
-        f"✅ Removed **{deleted_count}** messages from {channel.mention}. "
-        f"(Requested {requested_amount}; pinned messages were skipped.)"
+        f"✅ Removed **{deleted_count}** messages from {channel.mention}. (Requested {requested_amount}; pinned messages were skipped.)"
     )
 
 
@@ -6748,16 +7321,12 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
     description="Ban a member from the server",
 )
 @app_commands.describe(member="Member to ban", reason="Reason for ban")
-async def ban_member_slash(
-    interaction: discord.Interaction, member: discord.Member, reason: str | None = None
-):
+async def ban_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
     logger.info("/ban_member invoked by %s targeting %s", interaction.user, member)
     if not await ensure_interaction_command_access(interaction, "ban_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(
-        interaction.user, member, interaction.guild.me
-    )
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -6801,9 +7370,7 @@ async def ban_member_slash(
             outcome="failed",
             details="Discord API error while banning member.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to ban the member. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to ban the member. Try again.", ephemeral=True)
         return
 
     await send_moderation_log(
@@ -6818,16 +7385,12 @@ async def ban_member_slash(
 
 
 @bot.command(name="banmember")
-async def ban_member_prefix(
-    ctx: commands.Context, member: discord.Member, *, reason: str = ""
-):
+async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
     logger.info("!banmember invoked by %s targeting %s", ctx.author, member)
     if not await ensure_prefix_command_access(ctx, "ban_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(
-        ctx.author, member, ctx.guild.me
-    )
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -6855,9 +7418,7 @@ async def ban_member_prefix(
             outcome="failed",
             details="Bot missing `Ban Members` permission or role hierarchy block.",
         )
-        await ctx.send(
-            "❌ I can't ban that member. Check role hierarchy and `Ban Members` permission."
-        )
+        await ctx.send("❌ I can't ban that member. Check role hierarchy and `Ban Members` permission.")
         return
     except discord.HTTPException:
         logger.exception("Failed to ban member %s", member)
@@ -6889,16 +7450,12 @@ async def ban_member_prefix(
     description="Kick a member and prune their last 72 hours of messages",
 )
 @app_commands.describe(member="Member to kick", reason="Reason for kicking")
-async def kick_member_slash(
-    interaction: discord.Interaction, member: discord.Member, reason: str | None = None
-):
+async def kick_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
     logger.info("/kick_member invoked by %s targeting %s", interaction.user, member)
     if not await ensure_interaction_command_access(interaction, "kick_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(
-        interaction.user, member, interaction.guild.me
-    )
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -6946,24 +7503,17 @@ async def kick_member_slash(
             outcome="failed",
             details="Discord API error while kicking member.",
         )
-        await interaction.followup.send(
-            "❌ Failed to kick the member. Try again.", ephemeral=True
-        )
+        await interaction.followup.send("❌ Failed to kick the member. Try again.", ephemeral=True)
         return
 
-    deleted_count, scanned_channels = await prune_user_messages(
-        interaction.guild, target_id, KICK_PRUNE_HOURS
-    )
+    deleted_count, scanned_channels = await prune_user_messages(interaction.guild, target_id, KICK_PRUNE_HOURS)
     await send_moderation_log(
         interaction.guild,
         interaction.user,
         "kick_member",
         target=member,
         reason=action_reason,
-        details=(
-            f"Kicked successfully; pruned {deleted_count} messages "
-            f"from last {KICK_PRUNE_HOURS}h across {scanned_channels} channels."
-        ),
+        details=(f"Kicked successfully; pruned {deleted_count} messages from last {KICK_PRUNE_HOURS}h across {scanned_channels} channels."),
     )
     await interaction.followup.send(
         f"✅ Kicked **{target_name}** and pruned **{deleted_count}** messages "
@@ -6973,16 +7523,12 @@ async def kick_member_slash(
 
 
 @bot.command(name="kickmember")
-async def kick_member_prefix(
-    ctx: commands.Context, member: discord.Member, *, reason: str = ""
-):
+async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
     logger.info("!kickmember invoked by %s targeting %s", ctx.author, member)
     if not await ensure_prefix_command_access(ctx, "kick_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(
-        ctx.author, member, ctx.guild.me
-    )
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -7012,9 +7558,7 @@ async def kick_member_prefix(
             outcome="failed",
             details="Bot missing `Kick Members` permission or role hierarchy block.",
         )
-        await ctx.send(
-            "❌ I can't kick that member. Check role hierarchy and `Kick Members` permission."
-        )
+        await ctx.send("❌ I can't kick that member. Check role hierarchy and `Kick Members` permission.")
         return
     except discord.HTTPException:
         logger.exception("Failed to kick member %s", member)
@@ -7030,19 +7574,14 @@ async def kick_member_prefix(
         await ctx.send("❌ Failed to kick the member. Try again.")
         return
 
-    deleted_count, scanned_channels = await prune_user_messages(
-        ctx.guild, target_id, KICK_PRUNE_HOURS
-    )
+    deleted_count, scanned_channels = await prune_user_messages(ctx.guild, target_id, KICK_PRUNE_HOURS)
     await send_moderation_log(
         ctx.guild,
         ctx.author,
         "kick_member",
         target=member,
         reason=action_reason,
-        details=(
-            f"Kicked successfully; pruned {deleted_count} messages "
-            f"from last {KICK_PRUNE_HOURS}h across {scanned_channels} channels."
-        ),
+        details=(f"Kicked successfully; pruned {deleted_count} messages from last {KICK_PRUNE_HOURS}h across {scanned_channels} channels."),
     )
     await ctx.send(
         f"✅ Kicked **{target_name}** and pruned **{deleted_count}** messages "
@@ -7074,9 +7613,7 @@ async def timeout_member_slash(
     if not await ensure_interaction_command_access(interaction, "timeout_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(
-        interaction.user, member, interaction.guild.me
-    )
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -7135,9 +7672,7 @@ async def timeout_member_slash(
             outcome="failed",
             details="Discord API error while applying timeout.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to timeout the member. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to timeout the member. Try again.", ephemeral=True)
         return
 
     timestamp = int(until.timestamp())
@@ -7156,18 +7691,12 @@ async def timeout_member_slash(
 
 
 @bot.command(name="timeoutmember")
-async def timeout_member_prefix(
-    ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""
-):
-    logger.info(
-        "!timeoutmember invoked by %s targeting %s for %s", ctx.author, member, duration
-    )
+async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""):
+    logger.info("!timeoutmember invoked by %s targeting %s for %s", ctx.author, member, duration)
     if not await ensure_prefix_command_access(ctx, "timeout_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(
-        ctx.author, member, ctx.guild.me
-    )
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -7210,9 +7739,7 @@ async def timeout_member_prefix(
             outcome="failed",
             details="Bot missing `Moderate Members` permission or role hierarchy block.",
         )
-        await ctx.send(
-            "❌ I can't timeout that member. Check role hierarchy and `Moderate Members` permission."
-        )
+        await ctx.send("❌ I can't timeout that member. Check role hierarchy and `Moderate Members` permission.")
         return
     except discord.HTTPException:
         logger.exception("Failed to timeout member %s", member)
@@ -7237,30 +7764,20 @@ async def timeout_member_prefix(
         reason=action_reason,
         details=f"Timed out for {duration_text} until <t:{timestamp}:f>.",
     )
-    await ctx.send(
-        f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>)."
-    )
+    await ctx.send(f"✅ Timed out **{member}** for **{duration_text}** (until <t:{timestamp}:f>).")
 
 
 @tree.command(
     name="untimeout_member",
     description="Remove timeout from a member",
 )
-@app_commands.describe(
-    member="Member to remove timeout from", reason="Reason for removing timeout"
-)
-async def untimeout_member_slash(
-    interaction: discord.Interaction, member: discord.Member, reason: str | None = None
-):
-    logger.info(
-        "/untimeout_member invoked by %s targeting %s", interaction.user, member
-    )
+@app_commands.describe(member="Member to remove timeout from", reason="Reason for removing timeout")
+async def untimeout_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
+    logger.info("/untimeout_member invoked by %s targeting %s", interaction.user, member)
     if not await ensure_interaction_command_access(interaction, "untimeout_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(
-        interaction.user, member, interaction.guild.me
-    )
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, interaction.guild.me)
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -7276,14 +7793,10 @@ async def untimeout_member_slash(
 
     timed_out_until = member.timed_out_until
     if timed_out_until is None or timed_out_until <= discord.utils.utcnow():
-        await interaction.response.send_message(
-            "ℹ️ That member is not currently timed out.", ephemeral=True
-        )
+        await interaction.response.send_message("ℹ️ That member is not currently timed out.", ephemeral=True)
         return
 
-    action_reason = (
-        reason or ""
-    ).strip() or f"Timeout removed by {interaction.user} via bot"
+    action_reason = (reason or "").strip() or f"Timeout removed by {interaction.user} via bot"
     try:
         await member.timeout(None, reason=action_reason)
     except discord.Forbidden:
@@ -7313,9 +7826,7 @@ async def untimeout_member_slash(
             outcome="failed",
             details="Discord API error while removing timeout.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to remove timeout. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to remove timeout. Try again.", ephemeral=True)
         return
 
     await send_moderation_log(
@@ -7326,22 +7837,16 @@ async def untimeout_member_slash(
         reason=action_reason,
         details="Timeout removed successfully.",
     )
-    await interaction.response.send_message(
-        f"✅ Removed timeout for **{member}**.", ephemeral=True
-    )
+    await interaction.response.send_message(f"✅ Removed timeout for **{member}**.", ephemeral=True)
 
 
 @bot.command(name="untimeoutmember")
-async def untimeout_member_prefix(
-    ctx: commands.Context, member: discord.Member, *, reason: str = ""
-):
+async def untimeout_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
     logger.info("!untimeoutmember invoked by %s targeting %s", ctx.author, member)
     if not await ensure_prefix_command_access(ctx, "untimeout_member"):
         return
 
-    can_moderate, error_message = validate_moderation_target(
-        ctx.author, member, ctx.guild.me
-    )
+    can_moderate, error_message = validate_moderation_target(ctx.author, member, ctx.guild.me)
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -7374,9 +7879,7 @@ async def untimeout_member_prefix(
             outcome="failed",
             details="Bot missing `Moderate Members` permission or role hierarchy block.",
         )
-        await ctx.send(
-            "❌ I can't remove timeout from that member. Check role hierarchy and `Moderate Members` permission."
-        )
+        await ctx.send("❌ I can't remove timeout from that member. Check role hierarchy and `Moderate Members` permission.")
         return
     except discord.HTTPException:
         logger.exception("Failed to remove timeout for member %s", member)
@@ -7407,9 +7910,7 @@ async def untimeout_member_prefix(
     name="add_role_member",
     description="Assign a role to a member",
 )
-@app_commands.describe(
-    member="Member to update", role="Role to add", reason="Reason for role assignment"
-)
+@app_commands.describe(member="Member to update", role="Role to add", reason="Reason for role assignment")
 async def add_role_member_slash(
     interaction: discord.Interaction,
     member: discord.Member,
@@ -7425,19 +7926,13 @@ async def add_role_member_slash(
     if not await ensure_interaction_command_access(interaction, "add_role_member"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (
-        interaction.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
-        await interaction.response.send_message(
-            "❌ Could not resolve bot member in this guild.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -7446,9 +7941,7 @@ async def add_role_member_slash(
         )
         return
 
-    can_moderate, member_error = validate_moderation_target(
-        interaction.user, member, bot_member
-    )
+    can_moderate, member_error = validate_moderation_target(interaction.user, member, bot_member)
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -7462,9 +7955,7 @@ async def add_role_member_slash(
         await interaction.response.send_message(member_error, ephemeral=True)
         return
 
-    can_manage_role, role_error = validate_manageable_role(
-        interaction.user, role, bot_member
-    )
+    can_manage_role, role_error = validate_manageable_role(interaction.user, role, bot_member)
     if not can_manage_role:
         await send_moderation_log(
             interaction.guild,
@@ -7485,9 +7976,7 @@ async def add_role_member_slash(
         )
         return
 
-    action_reason = (
-        reason or ""
-    ).strip() or f"Role assigned by {interaction.user} via bot"
+    action_reason = (reason or "").strip() or f"Role assigned by {interaction.user} via bot"
     try:
         await member.add_roles(role, reason=action_reason)
     except discord.Forbidden:
@@ -7517,9 +8006,7 @@ async def add_role_member_slash(
             outcome="failed",
             details="Discord API error while assigning role.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to assign role. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to assign role. Try again.", ephemeral=True)
         return
 
     await send_moderation_log(
@@ -7544,9 +8031,7 @@ async def add_role_member_prefix(
     *,
     reason: str = "",
 ):
-    logger.info(
-        "!addrolemember invoked by %s target=%s role=%s", ctx.author, member, role
-    )
+    logger.info("!addrolemember invoked by %s target=%s role=%s", ctx.author, member, role)
     if not await ensure_prefix_command_access(ctx, "add_role_member"):
         return
     if ctx.guild is None:
@@ -7554,21 +8039,15 @@ async def add_role_member_prefix(
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = ctx.guild.me or (
-        ctx.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
         await ctx.send("❌ Could not resolve bot member in this guild.")
         return
     if not bot_member.guild_permissions.manage_roles:
-        await ctx.send(
-            "❌ I need the `Manage Roles` permission to manage member roles."
-        )
+        await ctx.send("❌ I need the `Manage Roles` permission to manage member roles.")
         return
 
-    can_moderate, member_error = validate_moderation_target(
-        ctx.author, member, bot_member
-    )
+    can_moderate, member_error = validate_moderation_target(ctx.author, member, bot_member)
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -7614,9 +8093,7 @@ async def add_role_member_prefix(
             outcome="failed",
             details="Bot missing `Manage Roles` permission or role hierarchy block.",
         )
-        await ctx.send(
-            "❌ I can't assign that role. Check `Manage Roles` permission and role hierarchy."
-        )
+        await ctx.send("❌ I can't assign that role. Check `Manage Roles` permission and role hierarchy.")
         return
     except discord.HTTPException:
         logger.exception("Failed to add role %s to member %s", role, member)
@@ -7647,9 +8124,7 @@ async def add_role_member_prefix(
     name="remove_role_member",
     description="Remove a role from a member",
 )
-@app_commands.describe(
-    member="Member to update", role="Role to remove", reason="Reason for role removal"
-)
+@app_commands.describe(member="Member to update", role="Role to remove", reason="Reason for role removal")
 async def remove_role_member_slash(
     interaction: discord.Interaction,
     member: discord.Member,
@@ -7665,19 +8140,13 @@ async def remove_role_member_slash(
     if not await ensure_interaction_command_access(interaction, "remove_role_member"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = interaction.guild.me or (
-        interaction.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = interaction.guild.me or (interaction.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
-        await interaction.response.send_message(
-            "❌ Could not resolve bot member in this guild.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
         return
     if not bot_member.guild_permissions.manage_roles:
         await interaction.response.send_message(
@@ -7686,9 +8155,7 @@ async def remove_role_member_slash(
         )
         return
 
-    can_moderate, member_error = validate_moderation_target(
-        interaction.user, member, bot_member
-    )
+    can_moderate, member_error = validate_moderation_target(interaction.user, member, bot_member)
     if not can_moderate:
         await send_moderation_log(
             interaction.guild,
@@ -7702,9 +8169,7 @@ async def remove_role_member_slash(
         await interaction.response.send_message(member_error, ephemeral=True)
         return
 
-    can_manage_role, role_error = validate_manageable_role(
-        interaction.user, role, bot_member
-    )
+    can_manage_role, role_error = validate_manageable_role(interaction.user, role, bot_member)
     if not can_manage_role:
         await send_moderation_log(
             interaction.guild,
@@ -7725,15 +8190,11 @@ async def remove_role_member_slash(
         )
         return
 
-    action_reason = (
-        reason or ""
-    ).strip() or f"Role removed by {interaction.user} via bot"
+    action_reason = (reason or "").strip() or f"Role removed by {interaction.user} via bot"
     try:
         await member.remove_roles(role, reason=action_reason)
     except discord.Forbidden:
-        logger.exception(
-            "Missing permission to remove role %s from member %s", role, member
-        )
+        logger.exception("Missing permission to remove role %s from member %s", role, member)
         await send_moderation_log(
             interaction.guild,
             interaction.user,
@@ -7759,9 +8220,7 @@ async def remove_role_member_slash(
             outcome="failed",
             details="Discord API error while removing role.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to remove role. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to remove role. Try again.", ephemeral=True)
         return
 
     await send_moderation_log(
@@ -7786,9 +8245,7 @@ async def remove_role_member_prefix(
     *,
     reason: str = "",
 ):
-    logger.info(
-        "!removerolemember invoked by %s target=%s role=%s", ctx.author, member, role
-    )
+    logger.info("!removerolemember invoked by %s target=%s role=%s", ctx.author, member, role)
     if not await ensure_prefix_command_access(ctx, "remove_role_member"):
         return
     if ctx.guild is None:
@@ -7796,21 +8253,15 @@ async def remove_role_member_prefix(
         return
 
     bot_user_id = bot.user.id if bot.user else None
-    bot_member = ctx.guild.me or (
-        ctx.guild.get_member(bot_user_id) if bot_user_id else None
-    )
+    bot_member = ctx.guild.me or (ctx.guild.get_member(bot_user_id) if bot_user_id else None)
     if bot_member is None:
         await ctx.send("❌ Could not resolve bot member in this guild.")
         return
     if not bot_member.guild_permissions.manage_roles:
-        await ctx.send(
-            "❌ I need the `Manage Roles` permission to manage member roles."
-        )
+        await ctx.send("❌ I need the `Manage Roles` permission to manage member roles.")
         return
 
-    can_moderate, member_error = validate_moderation_target(
-        ctx.author, member, bot_member
-    )
+    can_moderate, member_error = validate_moderation_target(ctx.author, member, bot_member)
     if not can_moderate:
         await send_moderation_log(
             ctx.guild,
@@ -7846,9 +8297,7 @@ async def remove_role_member_prefix(
     try:
         await member.remove_roles(role, reason=action_reason)
     except discord.Forbidden:
-        logger.exception(
-            "Missing permission to remove role %s from member %s", role, member
-        )
+        logger.exception("Missing permission to remove role %s from member %s", role, member)
         await send_moderation_log(
             ctx.guild,
             ctx.author,
@@ -7858,9 +8307,7 @@ async def remove_role_member_prefix(
             outcome="failed",
             details="Bot missing `Manage Roles` permission or role hierarchy block.",
         )
-        await ctx.send(
-            "❌ I can't remove that role. Check `Manage Roles` permission and role hierarchy."
-        )
+        await ctx.send("❌ I can't remove that role. Check `Manage Roles` permission and role hierarchy.")
         return
     except discord.HTTPException:
         logger.exception("Failed to remove role %s from member %s", role, member)
@@ -7892,16 +8339,12 @@ async def remove_role_member_prefix(
     description="Unban a user by ID",
 )
 @app_commands.describe(user_id="User ID to unban", reason="Reason for unban")
-async def unban_member_slash(
-    interaction: discord.Interaction, user_id: str, reason: str | None = None
-):
+async def unban_member_slash(interaction: discord.Interaction, user_id: str, reason: str | None = None):
     logger.info("/unban_member invoked by %s target=%s", interaction.user, user_id)
     if not await ensure_interaction_command_access(interaction, "unban_member"):
         return
     if interaction.guild is None:
-        await interaction.response.send_message(
-            "❌ This command can only be used in a server.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
         return
 
     target_user_id = parse_user_id_input(user_id)
@@ -7911,9 +8354,7 @@ async def unban_member_slash(
 
     action_reason = (reason or "").strip() or f"Unbanned by {interaction.user} via bot"
     try:
-        await interaction.guild.unban(
-            discord.Object(id=target_user_id), reason=action_reason
-        )
+        await interaction.guild.unban(discord.Object(id=target_user_id), reason=action_reason)
     except discord.NotFound:
         await interaction.response.send_message(
             f"❌ User `{target_user_id}` is not currently banned.",
@@ -7945,9 +8386,7 @@ async def unban_member_slash(
             outcome="failed",
             details=f"Discord API error while unbanning user `{target_user_id}`.",
         )
-        await interaction.response.send_message(
-            "❌ Failed to unban that user. Try again.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Failed to unban that user. Try again.", ephemeral=True)
         return
 
     await send_moderation_log(
@@ -7957,9 +8396,7 @@ async def unban_member_slash(
         reason=action_reason,
         details=f"Unbanned user ID `{target_user_id}`.",
     )
-    await interaction.response.send_message(
-        f"✅ Unbanned user ID `{target_user_id}`.", ephemeral=True
-    )
+    await interaction.response.send_message(f"✅ Unbanned user ID `{target_user_id}`.", ephemeral=True)
 
 
 @bot.command(name="unbanmember")
@@ -8018,6 +8455,232 @@ async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: st
 
 
 @tree.command(
+    name="ping",
+    description="Check if the bot is online.",
+)
+async def ping_slash(interaction: discord.Interaction):
+    logger.info("/ping invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "ping"):
+        return
+    await interaction.response.send_message(
+        "WickedYoda's Little Helper is online.",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="ping", success=True)
+
+
+@tree.command(
+    name="sayhi",
+    description="Introduce the bot in the channel.",
+)
+async def sayhi_slash(interaction: discord.Interaction):
+    logger.info("/sayhi invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "sayhi"):
+        return
+    intro = "Hi everyone, I am WickedYoda's Little Helper.\nI can help with moderation, search, feeds, and utility actions."
+    await interaction.response.send_message(
+        intro,
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="sayhi", success=True)
+
+
+@tree.command(
+    name="happy",
+    description="Post a random puppy picture.",
+)
+async def happy_slash(interaction: discord.Interaction):
+    logger.info("/happy invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "happy"):
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        image_url = await asyncio.to_thread(fetch_random_puppy_image_url)
+        embed = discord.Embed(
+            title="Puppy Time",
+            description="Here is a random puppy picture.",
+            color=discord.Color.green(),
+        )
+        embed.set_image(url=image_url)
+        await interaction.followup.send(
+            embed=embed,
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="happy",
+            reason=truncate_log_text(image_url),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(
+            f"Failed to fetch puppy picture: {exc}",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="happy",
+            reason=truncate_log_text(str(exc)),
+            success=False,
+        )
+
+
+@tree.command(
+    name="shorten",
+    description="Create a short URL.",
+)
+@app_commands.describe(url="URL to shorten using the configured shortener")
+async def shorten_slash(interaction: discord.Interaction, url: str):
+    logger.info("/shorten invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "shorten"):
+        return
+    if not SHORTENER_ENABLED:
+        await reply_with_default_visibility(interaction, "Shortener integration is disabled.")
+        await log_interaction(
+            interaction,
+            action="shorten",
+            reason="shortener disabled",
+            success=False,
+        )
+        return
+    try:
+        normalized_url = normalize_target_url(url)
+    except ValueError as exc:
+        await reply_with_default_visibility(interaction, str(exc))
+        await log_interaction(
+            interaction,
+            action="shorten",
+            reason=str(exc),
+            success=False,
+        )
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        _, short_url = await asyncio.to_thread(create_short_url, normalized_url)
+        await interaction.followup.send(
+            f"Short URL: {short_url}",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="shorten",
+            reason=truncate_log_text(f"{normalized_url} -> {short_url}"),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(
+            f"Failed to shorten URL: {exc}",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="shorten",
+            reason=truncate_log_text(str(exc)),
+            success=False,
+        )
+
+
+@tree.command(
+    name="expand",
+    description="Expand a short code or short URL.",
+)
+@app_commands.describe(value="Short code or full short URL")
+async def expand_slash(interaction: discord.Interaction, value: str):
+    logger.info("/expand invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "expand"):
+        return
+    if not SHORTENER_ENABLED:
+        await reply_with_default_visibility(interaction, "Shortener integration is disabled.")
+        await log_interaction(
+            interaction,
+            action="expand",
+            reason="shortener disabled",
+            success=False,
+        )
+        return
+    try:
+        short_url = normalize_short_reference(value)
+    except ValueError as exc:
+        await reply_with_default_visibility(interaction, str(exc))
+        await log_interaction(
+            interaction,
+            action="expand",
+            reason=str(exc),
+            success=False,
+        )
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        resolved_url = await asyncio.to_thread(expand_short_url, short_url)
+        await interaction.followup.send(
+            f"Expanded URL: {resolved_url}",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="expand",
+            reason=truncate_log_text(f"{short_url} -> {resolved_url}"),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(
+            f"Failed to expand URL: {exc}",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="expand",
+            reason=truncate_log_text(str(exc)),
+            success=False,
+        )
+
+
+@tree.command(
+    name="uptime",
+    description="Show current uptime monitor status.",
+)
+async def uptime_slash(interaction: discord.Interaction):
+    logger.info("/uptime invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "uptime"):
+        return
+    if not UPTIME_STATUS_ENABLED:
+        await reply_with_default_visibility(interaction, "Uptime status integration is disabled.")
+        await log_interaction(
+            interaction,
+            action="uptime",
+            reason="uptime integration disabled",
+            success=False,
+        )
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        snapshot = await asyncio.to_thread(fetch_uptime_snapshot)
+        summary = format_uptime_summary(snapshot)
+        await interaction.followup.send(
+            summary,
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        counts = snapshot.get("counts", {})
+        await log_interaction(
+            interaction,
+            action="uptime",
+            reason=truncate_log_text(f"up={counts.get('up', 0)} down={counts.get('down', 0)} pending={counts.get('pending', 0)}"),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(
+            f"Failed to fetch uptime status: {exc}",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="uptime",
+            reason=truncate_log_text(str(exc)),
+            success=False,
+        )
+
+
+@tree.command(
     name="help",
     description="Quick bot help and link to advanced docs",
 )
@@ -8025,7 +8688,10 @@ async def help_slash(interaction: discord.Interaction):
     logger.info("/help invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "help"):
         return
-    await interaction.response.send_message(build_help_message())
+    await interaction.response.send_message(
+        build_help_message(),
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
 
 
 @tree.command(
@@ -8039,9 +8705,7 @@ async def search_reddit_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message(
-            "❌ Please provide a search query.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
         return
     try:
         await interaction.response.defer(thinking=True)
@@ -8079,9 +8743,7 @@ async def search_reddit_prefix(ctx: commands.Context, *, query: str):
         message = await asyncio.to_thread(build_reddit_search_message, query)
         await ctx.send(message)
     except Exception:
-        logger.exception(
-            "searchreddit command failed for user=%s query=%s", ctx.author, query
-        )
+        logger.exception("searchreddit command failed for user=%s query=%s", ctx.author, query)
         await ctx.send("❌ Failed to fetch Reddit results. Please try again shortly.")
 
 
@@ -8096,9 +8758,7 @@ async def search_forum_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message(
-            "❌ Please provide a search query.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_forum_search_message, query)
@@ -8124,21 +8784,13 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
     description="Search the OpenWrt forum and return top 10 links",
 )
 @app_commands.describe(query="Enter search keywords")
-async def search_openwrt_forum_slash(
-    interaction: discord.Interaction, query: str
-):
-    logger.info(
-        "/search_openwrt_forum invoked by %s with query %s", interaction.user, query
-    )
-    if not await ensure_interaction_command_access(
-        interaction, "search_openwrt_forum"
-    ):
+async def search_openwrt_forum_slash(interaction: discord.Interaction, query: str):
+    logger.info("/search_openwrt_forum invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_openwrt_forum"):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message(
-            "❌ Please provide a search query.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_openwrt_forum_search_message, query)
@@ -8170,9 +8822,7 @@ async def search_kvm_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message(
-            "❌ Please provide a search query.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_docs_site_search_message, query, "kvm")
@@ -8204,9 +8854,7 @@ async def search_iot_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message(
-            "❌ Please provide a search query.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_docs_site_search_message, query, "iot")
@@ -8238,9 +8886,7 @@ async def search_router_slash(interaction: discord.Interaction, query: str):
         return
     query = query.strip()
     if not query:
-        await interaction.response.send_message(
-            "❌ Please provide a search query.", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
     message = await asyncio.to_thread(build_docs_site_search_message, query, "router")
