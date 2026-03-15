@@ -74,7 +74,7 @@ docker compose build
 - Extended moderation commands and event logging
 - Firmware monitor (baseline + delta notifications)
 - Web-managed Reddit feed posting for new subreddit submissions
-- Web admin GUI with server selection and guild-scoped management pages
+- Web admin GUI with server selection, guild-scoped management pages, and per-guild channel/tag/invite settings
 - SQLite persistence with legacy merge import on startup
 
 ## Where To Find Details

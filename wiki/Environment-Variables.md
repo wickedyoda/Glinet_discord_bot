@@ -14,13 +14,13 @@ This page lists all supported environment variables, defaults, and accepted opti
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|
 | `DISCORD_TOKEN` | none | Discord bot token string | Required to start bot |
-| `GUILD_ID` | none | Integer guild ID | Required to scope guild operations |
+| `GUILD_ID` | none | Integer guild ID | Required primary/default guild ID used for legacy migration and fallback behavior |
 
 ## Core
 
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|
-| `BOT_LOG_CHANNEL_ID` | `0` | Integer, `>= 0` | Bot log/activity channel ID (used for invite fallback and bot activity routing) |
+| `BOT_LOG_CHANNEL_ID` | `0` | Integer, `>= 0` | Global fallback bot log/activity channel ID. Selected guild settings can override it per server. |
 | `DATA_DIR` | `data` | Path string | Persistent runtime data directory |
 | `LOG_DIR` | `/logs` | Path string | Directory for `bot.log`, `bot_log.log`, `container_errors.log`, and `web_gui_audit.log` |
 | `LOG_HARDEN_FILE_PERMISSIONS` | `true` | Boolean | Best-effort log storage hardening (`LOG_DIR` -> `0700`, log files -> `0600`) |

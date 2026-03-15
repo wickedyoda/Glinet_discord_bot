@@ -76,6 +76,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Dashboard includes direct action buttons/cards for major admin workflows.
 - Mobile layout is responsive for smaller screens and touch interaction.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
+- Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 
 ## Admin Pages and Capabilities
 
@@ -89,6 +90,16 @@ UI forms include show/hide password toggles and validation feedback.
 
 - Server dashboard overview
 - Quick links to settings, users, moderation tooling, and logs-related actions for the selected server
+
+### `/admin/guild-settings`
+
+- Scoped to the selected server
+- Per-guild overrides for:
+  - bot log channel
+  - moderation log channel
+  - firmware notify channel
+  - self-assign access role
+- Blank values fall back to the global runtime environment settings
 
 ### `/admin/settings`
 
@@ -130,7 +141,7 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/tag-responses`
 
-- JSON tag editor
+- JSON tag editor scoped to the selected server
 - Save + runtime reload
 - Dynamic slash refresh trigger (restart not required)
 
