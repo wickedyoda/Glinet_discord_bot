@@ -526,6 +526,16 @@ try:
     WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
 except ValueError:
     WEB_PORT = 8080
+WEB_HTTPS_ENABLED = os.getenv("WEB_HTTPS_ENABLED", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+try:
+    WEB_HTTPS_PORT = int(os.getenv("WEB_HTTPS_PORT", "8081"))
+except ValueError:
+    WEB_HTTPS_PORT = 8081
 WEB_ENV_FILE = os.getenv("WEB_ENV_FILE", ".env").strip() or ".env"
 WEB_ADMIN_DEFAULT_EMAIL = os.getenv(
     "WEB_ADMIN_DEFAULT_EMAIL",
@@ -4505,6 +4515,8 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global WEB_BULK_ASSIGN_TIMEOUT_SECONDS
     global WEB_BOT_PROFILE_TIMEOUT_SECONDS
     global WEB_AVATAR_MAX_UPLOAD_BYTES
+    global WEB_HTTPS_ENABLED
+    global WEB_HTTPS_PORT
 
     LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", LOG_LEVEL), fallback=LOG_LEVEL)
     CONTAINER_LOG_LEVEL = normalize_log_level(
@@ -4652,6 +4664,19 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         os.getenv("WEB_AVATAR_MAX_UPLOAD_BYTES", WEB_AVATAR_MAX_UPLOAD_BYTES),
         WEB_AVATAR_MAX_UPLOAD_BYTES,
         minimum=1024,
+    )
+    WEB_HTTPS_ENABLED = os.getenv(
+        "WEB_HTTPS_ENABLED", "true" if WEB_HTTPS_ENABLED else "false"
+    ).strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    WEB_HTTPS_PORT = parse_int_setting(
+        os.getenv("WEB_HTTPS_PORT", WEB_HTTPS_PORT),
+        WEB_HTTPS_PORT,
+        minimum=1,
     )
 
     docs_index_cache.clear()
@@ -4840,6 +4865,8 @@ def start_web_admin_server():
                 start_web_admin_interface(
                     host=WEB_BIND_HOST,
                     port=WEB_PORT,
+                    https_port=WEB_HTTPS_PORT,
+                    https_enabled=WEB_HTTPS_ENABLED,
                     data_dir=DATA_DIR,
                     env_file_path=WEB_ENV_FILE,
                     tag_responses_file=TAG_RESPONSES_FILE,

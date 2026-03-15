@@ -40,7 +40,10 @@ docker compose up -d --build
 
 ```text
 http://localhost:8080
+https://localhost:8081
 ```
+
+If no certificate is present, the bot generates a default self-signed certificate in `${DATA_DIR}/ssl/`. Replace the generated files with your own certificate and key if you want a browser-trusted deployment.
 
 ## Architecture Support
 

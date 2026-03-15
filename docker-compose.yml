@@ -41,8 +41,14 @@ services:
       WEB_ENABLED: ${WEB_ENABLED:-true}
       WEB_BIND_HOST: ${WEB_BIND_HOST:-0.0.0.0}
       WEB_PORT: ${WEB_PORT:-8080}
+      WEB_HTTPS_ENABLED: ${WEB_HTTPS_ENABLED:-true}
+      WEB_HTTPS_PORT: ${WEB_HTTPS_PORT:-8081}
       WEB_SESSION_TIMEOUT_MINUTES: ${WEB_SESSION_TIMEOUT_MINUTES:-60}
       WEB_PUBLIC_BASE_URL: ${WEB_PUBLIC_BASE_URL:-}
+      WEB_SSL_DIR: ${WEB_SSL_DIR:-/app/data/ssl}
+      WEB_SSL_CERT_FILE: ${WEB_SSL_CERT_FILE:-tls.crt}
+      WEB_SSL_KEY_FILE: ${WEB_SSL_KEY_FILE:-tls.key}
+      WEB_SSL_COMMON_NAME: ${WEB_SSL_COMMON_NAME:-localhost}
       WEB_ENV_FILE: ${WEB_ENV_FILE:-/app/.env}
       WEB_RESTART_ENABLED: ${WEB_RESTART_ENABLED:-true}
       WEB_GITHUB_WIKI_URL: ${WEB_GITHUB_WIKI_URL:-http://discord.glinet.wickedyoda.com/wiki}
@@ -65,6 +71,7 @@ services:
       WEB_AVATAR_MAX_UPLOAD_BYTES: ${WEB_AVATAR_MAX_UPLOAD_BYTES:-2097152}
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
+      - "127.0.0.1:${WEB_HTTPS_HOST_PORT:-8081}:${WEB_HTTPS_PORT:-8081}"
     volumes:
       - ./data:/app/data
       - ./logs:/logs

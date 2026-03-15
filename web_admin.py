@@ -3,6 +3,7 @@ import os
 import re
 import secrets
 import sqlite3
+import ssl
 import time
 import threading
 import hashlib
@@ -15,6 +16,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from croniter import croniter
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 from flask import (
     Flask,
     flash,
@@ -27,6 +32,7 @@ from flask import (
     url_for,
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.serving import make_server
 from werkzeug.security import check_password_hash, generate_password_hash
 
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
@@ -84,6 +90,8 @@ INT_KEYS = {
     "FIRMWARE_RELEASE_NOTES_MAX_CHARS",
     "WEB_PORT",
     "WEB_HOST_PORT",
+    "WEB_HTTPS_PORT",
+    "WEB_HTTPS_HOST_PORT",
     "WEB_DISCORD_CATALOG_TTL_SECONDS",
     "WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS",
     "WEB_BULK_ASSIGN_TIMEOUT_SECONDS",
@@ -216,9 +224,19 @@ ENV_FIELDS = [
         "Internal HTTP port in the container (default 8080).",
     ),
     (
+        "WEB_HTTPS_PORT",
+        "Web HTTPS Port",
+        "Internal HTTPS port in the container (default 8081).",
+    ),
+    (
         "WEB_HOST_PORT",
         "Web Host Port",
         "Host port mapped to WEB_PORT in Docker compose.",
+    ),
+    (
+        "WEB_HTTPS_HOST_PORT",
+        "Web HTTPS Host Port",
+        "Host port mapped to WEB_HTTPS_PORT in Docker compose.",
     ),
     (
         "WEB_SESSION_TIMEOUT_MINUTES",
@@ -269,6 +287,31 @@ ENV_FIELDS = [
         "WEB_PUBLIC_BASE_URL",
         "Web Public Base URL",
         "Public external base URL used behind reverse proxies (for origin validation).",
+    ),
+    (
+        "WEB_HTTPS_ENABLED",
+        "Web HTTPS Enabled",
+        "Enable the built-in HTTPS listener alongside HTTP.",
+    ),
+    (
+        "WEB_SSL_DIR",
+        "Web SSL Directory",
+        "Directory used to store the HTTPS certificate and key (defaults to DATA_DIR/ssl).",
+    ),
+    (
+        "WEB_SSL_CERT_FILE",
+        "Web SSL Cert File",
+        "Certificate filename or absolute path. Defaults to tls.crt inside WEB_SSL_DIR.",
+    ),
+    (
+        "WEB_SSL_KEY_FILE",
+        "Web SSL Key File",
+        "Private key filename or absolute path. Defaults to tls.key inside WEB_SSL_DIR.",
+    ),
+    (
+        "WEB_SSL_COMMON_NAME",
+        "Web SSL Common Name",
+        "Hostname used when generating the default self-signed certificate.",
     ),
     (
         "WEB_GITHUB_WIKI_URL",
@@ -1199,6 +1242,122 @@ def _normalize_env_updates(updated_values: dict):
     return normalized
 
 
+def _chmod_if_possible(path: Path, mode: int):
+    try:
+        os.chmod(path, mode)
+        return True
+    except (PermissionError, OSError):
+        return False
+
+
+def _get_web_ssl_dir(data_dir: str) -> Path:
+    configured = str(os.getenv("WEB_SSL_DIR", "")).strip()
+    if configured:
+        candidate = Path(configured)
+        if not candidate.is_absolute():
+            candidate = Path(data_dir) / candidate
+        return candidate
+    return Path(data_dir) / "ssl"
+
+
+def _resolve_ssl_file_path(ssl_dir: Path, raw_value: str, default_name: str) -> Path:
+    cleaned = str(raw_value or "").strip()
+    if not cleaned:
+        return ssl_dir / default_name
+    candidate = Path(cleaned)
+    if candidate.is_absolute():
+        return candidate
+    return ssl_dir / candidate
+
+
+def _build_self_signed_certificate(cert_path: Path, key_path: Path, common_name: str):
+    safe_common_name = (common_name or "localhost").strip() or "localhost"
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "WickedYoda Bot"),
+            x509.NameAttribute(NameOID.COMMON_NAME, safe_common_name),
+        ]
+    )
+    san_entries = [x509.DNSName("localhost"), x509.DNSName(safe_common_name)]
+    try:
+        san_entries.append(x509.IPAddress(ipaddress.ip_address("127.0.0.1")))
+    except ValueError:
+        pass
+    try:
+        san_entries.append(x509.IPAddress(ipaddress.ip_address(safe_common_name)))
+    except ValueError:
+        parsed_host = urlparse(safe_common_name).hostname if "://" in safe_common_name else None
+        if parsed_host:
+            san_entries.append(x509.DNSName(parsed_host))
+
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=5))
+        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=825))
+        .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
+        .sign(key, hashes.SHA256())
+    )
+
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path.write_bytes(
+        key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+    )
+
+
+def _ensure_https_ssl_context(data_dir: str, harden_file_permissions: bool, logger=None):
+    ssl_dir = _get_web_ssl_dir(data_dir)
+    ssl_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = _resolve_ssl_file_path(
+        ssl_dir, os.getenv("WEB_SSL_CERT_FILE", ""), "tls.crt"
+    )
+    key_path = _resolve_ssl_file_path(
+        ssl_dir, os.getenv("WEB_SSL_KEY_FILE", ""), "tls.key"
+    )
+    cert_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cert_exists = cert_path.exists()
+    key_exists = key_path.exists()
+    generated = False
+    if cert_exists != key_exists:
+        raise ValueError(
+            f"Both TLS files must exist together. cert={cert_path} key={key_path}"
+        )
+    if not cert_exists and not key_exists:
+        common_name = (
+            str(os.getenv("WEB_SSL_COMMON_NAME", "")).strip()
+            or urlparse(str(os.getenv("WEB_PUBLIC_BASE_URL", "")).strip()).hostname
+            or "localhost"
+        )
+        _build_self_signed_certificate(cert_path, key_path, common_name)
+        generated = True
+        if logger:
+            logger.warning(
+                "Generated default self-signed HTTPS certificate at %s and %s. Replace these files with your own trusted certificate if desired.",
+                cert_path,
+                key_path,
+            )
+
+    if harden_file_permissions:
+        _chmod_if_possible(ssl_dir, 0o700)
+        _chmod_if_possible(cert_path, 0o600)
+        _chmod_if_possible(key_path, 0o600)
+
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=str(cert_path), keyfile=str(key_path))
+    return context, cert_path, key_path, generated
+
+
 def _read_env_value(file_values: dict, key: str):
     direct_value = file_values.get(key, os.getenv(key, ""))
     if str(direct_value or "").strip():
@@ -1261,6 +1420,7 @@ def _validate_env_updates(updated_values: dict):
             "WEB_ENFORCE_CSRF",
             "WEB_ENFORCE_SAME_ORIGIN_POSTS",
             "WEB_HARDEN_FILE_PERMISSIONS",
+            "WEB_HTTPS_ENABLED",
         } and value.lower() not in truthy_values:
             errors.append(
                 f"{key} must be true/false (or 1/0, yes/no, on/off)."
@@ -2006,6 +2166,9 @@ def create_web_app(
             os.chmod(users_file.parent, 0o700)
         except (PermissionError, OSError):
             pass
+        ssl_dir = _get_web_ssl_dir(data_dir)
+        if ssl_dir.exists():
+            _chmod_if_possible(ssl_dir, 0o700)
         if env_file.exists():
             try:
                 os.chmod(env_file, 0o600)
@@ -4963,6 +5126,8 @@ def create_web_app(
 def start_web_admin_interface(
     host: str,
     port: int,
+    https_port: int,
+    https_enabled: bool,
     data_dir: str,
     env_file_path: str,
     tag_responses_file: str,
@@ -5012,6 +5177,55 @@ def start_web_admin_interface(
         on_request_restart=on_request_restart,
         logger=logger,
     )
+    servers = []
+    threads = []
+
+    def _serve_forever(server, name: str):
+        thread = threading.Thread(target=server.serve_forever, name=name, daemon=True)
+        thread.start()
+        threads.append(thread)
+        return thread
+
+    http_server = make_server(host, port, app, threaded=True)
+    servers.append(http_server)
+    _serve_forever(http_server, "web_admin_http")
     if logger:
         logger.info("Starting web admin interface on http://%s:%s", host, port)
-    app.run(host=host, port=port, debug=False, use_reloader=False)
+
+    if https_enabled:
+        ssl_context, cert_path, key_path, generated = _ensure_https_ssl_context(
+            data_dir=data_dir,
+            harden_file_permissions=_is_truthy_env_value(
+                os.getenv("WEB_HARDEN_FILE_PERMISSIONS", "true")
+            ),
+            logger=logger,
+        )
+        https_server = make_server(
+            host, https_port, app, threaded=True, ssl_context=ssl_context
+        )
+        servers.append(https_server)
+        _serve_forever(https_server, "web_admin_https")
+        if logger:
+            logger.info(
+                "Starting web admin interface on https://%s:%s using cert=%s key=%s%s",
+                host,
+                https_port,
+                cert_path,
+                key_path,
+                " (generated self-signed)" if generated else "",
+            )
+
+    try:
+        while True:
+            for thread in threads:
+                if not thread.is_alive():
+                    raise RuntimeError(
+                        f"Web admin listener thread stopped unexpectedly: {thread.name}"
+                    )
+            time.sleep(1)
+    finally:
+        for server in servers:
+            try:
+                server.shutdown()
+            except Exception:
+                pass

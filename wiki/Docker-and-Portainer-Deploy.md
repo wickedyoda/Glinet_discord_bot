@@ -24,6 +24,9 @@ services:
       - WEB_ENABLED=${WEB_ENABLED:-true}
       - WEB_PORT=${WEB_PORT:-8080}
       - WEB_HOST_PORT=${WEB_HOST_PORT:-8080}
+      - WEB_HTTPS_ENABLED=${WEB_HTTPS_ENABLED:-true}
+      - WEB_HTTPS_PORT=${WEB_HTTPS_PORT:-8081}
+      - WEB_HTTPS_HOST_PORT=${WEB_HTTPS_HOST_PORT:-8081}
       - LOG_DIR=${LOG_DIR:-/logs}
       - LOG_HARDEN_FILE_PERMISSIONS=${LOG_HARDEN_FILE_PERMISSIONS:-true}
       - LOG_RETENTION_DAYS=${LOG_RETENTION_DAYS:-90}
@@ -31,12 +34,17 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - CONTAINER_LOG_LEVEL=${CONTAINER_LOG_LEVEL:-ERROR}
       - WEB_PUBLIC_BASE_URL=${WEB_PUBLIC_BASE_URL:-}
+      - WEB_SSL_DIR=${WEB_SSL_DIR:-/app/data/ssl}
+      - WEB_SSL_CERT_FILE=${WEB_SSL_CERT_FILE:-tls.crt}
+      - WEB_SSL_KEY_FILE=${WEB_SSL_KEY_FILE:-tls.key}
+      - WEB_SSL_COMMON_NAME=${WEB_SSL_COMMON_NAME:-localhost}
       - WEB_TRUST_PROXY_HEADERS=${WEB_TRUST_PROXY_HEADERS:-true}
       - WEB_SESSION_COOKIE_SECURE=${WEB_SESSION_COOKIE_SECURE:-true}
       - WEB_ENFORCE_CSRF=${WEB_ENFORCE_CSRF:-true}
       - WEB_ENFORCE_SAME_ORIGIN_POSTS=${WEB_ENFORCE_SAME_ORIGIN_POSTS:-true}
     ports:
       - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
+      - "127.0.0.1:${WEB_HTTPS_HOST_PORT:-8081}:${WEB_HTTPS_PORT:-8081}"
     volumes:
       - ./data:/app/data
       - ./logs:/logs
@@ -58,12 +66,14 @@ Recommended adjustments:
 - Set `WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/`.
 - Keep `WEB_SESSION_COOKIE_SECURE=true`.
 - Keep CSRF and same-origin checks enabled.
+- The bot can also listen on built-in HTTPS `8081`; it generates a self-signed cert in `${DATA_DIR}/ssl/` if none exists.
 
 Example host mapping:
 
 ```yaml
 ports:
   - "127.0.0.1:8080:8080"
+  - "127.0.0.1:8081:8081"
 ```
 
 Use your proxy to publish HTTPS domain externally.

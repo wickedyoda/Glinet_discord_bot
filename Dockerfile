@@ -19,7 +19,7 @@ RUN python -m pip install --no-cache-dir --upgrade \
 # Copy the bot code and env files into the container
 COPY . .
 
-EXPOSE 8080
+EXPOSE 8080 8081
 
 # Run the bot
 CMD ["python", "-u", "bot.py"]

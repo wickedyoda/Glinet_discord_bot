@@ -8,6 +8,7 @@ Use this guide when exposing the web admin UI through a reverse proxy.
 - Forward the original host/protocol headers correctly.
 - Keep CSRF and same-origin protections enabled.
 - Avoid direct public exposure of the container port.
+- Optionally keep the bot's built-in HTTPS listener on `8081` for local/TLS fallback testing.
 
 ## Supported Proxy Patterns
 
@@ -24,6 +25,8 @@ Set these values in `.env`:
 WEB_ENABLED=true
 WEB_BIND_HOST=0.0.0.0
 WEB_PORT=8080
+WEB_HTTPS_ENABLED=true
+WEB_HTTPS_PORT=8081
 WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/
 WEB_TRUST_PROXY_HEADERS=true
 WEB_SESSION_COOKIE_SECURE=true
@@ -36,6 +39,8 @@ Notes:
 - `WEB_PUBLIC_BASE_URL` must match the external URL users open in their browser.
 - Keep a trailing slash on `WEB_PUBLIC_BASE_URL` for consistency.
 - Leave `WEB_TRUST_PROXY_HEADERS=true` only when the proxy is trusted and under your control.
+- If no TLS files exist, the bot generates a self-signed certificate in `${DATA_DIR}/ssl/`.
+- Replace `${DATA_DIR}/ssl/tls.crt` and `${DATA_DIR}/ssl/tls.key` with your own certificate and key if you want the built-in HTTPS listener to be browser-trusted.
 
 ## Docker/Network Recommendation
 
@@ -48,6 +53,7 @@ Example (localhost-only mapping):
 ```yaml
 ports:
   - "127.0.0.1:8080:8080"
+  - "127.0.0.1:8081:8081"
 ```
 
 ## Nginx Example
