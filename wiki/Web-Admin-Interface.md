@@ -9,7 +9,10 @@ Password-protected admin UI for runtime bot and policy management.
 ## Access and Session Model
 
 - Default bind: `WEB_BIND_HOST=127.0.0.1`, `WEB_PORT=8080`
+- Built-in HTTPS bind: `WEB_HTTPS_PORT=8081`
 - Typical container bind: `WEB_BIND_HOST=0.0.0.0` with host/proxy controls
+- If no TLS files exist, the bot generates a self-signed certificate under `${DATA_DIR}/ssl/`.
+- Replace `${DATA_DIR}/ssl/tls.crt` and `${DATA_DIR}/ssl/tls.key` with your own files if you want a browser-trusted HTTPS listener.
 - Login uses email + password (web-only account model)
 - Optional "Keep me signed in" extends session to 5 days on device
 - Inactivity timeout is configurable: 5 to 30 minutes in 5-minute steps

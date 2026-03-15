@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-15] - Dual Web GUI HTTP/HTTPS Listeners
+
+### Added
+- Built-in HTTPS listener for the web GUI on port `8081` alongside HTTP on `8080`.
+- Automatic self-signed certificate generation in `${DATA_DIR}/ssl/` when no user-provided TLS files exist.
+- Configurable TLS file locations and HTTPS port environment variables.
+
+### Changed
+- Docker packaging now exposes both `8080` and `8081`.
+- Compose and environment examples now include HTTPS listener variables and port mappings.
+- Wiki documentation now describes the generated default certificate and how to replace it with a trusted certificate.
+
 ## [2026-03-15] - Multi-Guild Runtime Expansion
 
 ### Added
