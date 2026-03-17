@@ -6,7 +6,7 @@ This feature set handles role assignment through invite tracking, access codes, 
 
 | Command | Access | Purpose |
 |---|---|---|
-| `/submitrole` | Member/Public (unless overridden) | Generate invite + 6-digit code for mapped role flow |
+| `/submitrole` | Member/Public (unless overridden) | Pick a Discord role in the slash command UI, then generate an invite + 6-digit code for that role |
 | `/enter_role` | Member/Public (unless overridden) | Redeem code and receive mapped role |
 | `/getaccess` | Member/Public (unless overridden) | Receive default access role |
 
@@ -14,7 +14,7 @@ This feature set handles role assignment through invite tracking, access codes, 
 
 ### Variation 1: Invite + Code Pair
 
-1. User runs `/submitrole`.
+1. User runs `/submitrole` and selects the target role in the slash command UI.
 2. Bot generates a persistent invite and a 6-digit code.
 3. User shares invite/code with target member.
 4. Target joins and/or redeems code via `/enter_role`.
@@ -76,6 +76,7 @@ Import behavior:
   - Verify mapping exists and target role still exists.
   - Verify bot has `Manage Roles` and role hierarchy is correct.
 - `/submitrole` fails:
+  - Verify a valid Discord role was selected.
   - Verify bot has invite permission in target channel.
 - Wrong role assigned:
   - Check mapping data in SQLite or admin tooling.

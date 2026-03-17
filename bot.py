@@ -7,6 +7,7 @@ import io
 import json
 import logging
 import os
+import random
 import re
 import secrets
 import sqlite3
@@ -14,6 +15,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import zipfile
 import xml.etree.ElementTree as ET
 from collections import deque
 from datetime import UTC, datetime, timedelta
@@ -67,6 +69,7 @@ MEMBER_ACTIVITY_WINDOW_SPECS = (
     ("last_7_days", "Last 7 Days", timedelta(days=7)),
     ("last_24_hours", "Last 24 Hours", timedelta(hours=24)),
 )
+MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL = 500
 
 
 def normalize_log_level(raw_value: str, fallback: str = "INFO"):
@@ -545,6 +548,12 @@ ENABLE_MEMBERS_INTENT = is_truthy_env_value(
     os.getenv("ENABLE_MEMBERS_INTENT", "true"),
     default_value=True,
 )
+MEMBER_ACTIVITY_BACKFILL_ENABLED = is_truthy_env_value(
+    os.getenv("MEMBER_ACTIVITY_BACKFILL_ENABLED", "false"),
+    default_value=False,
+)
+MEMBER_ACTIVITY_BACKFILL_GUILD_ID_RAW = str(os.getenv("MEMBER_ACTIVITY_BACKFILL_GUILD_ID", "") or "").strip()
+MEMBER_ACTIVITY_BACKFILL_SINCE_RAW = str(os.getenv("MEMBER_ACTIVITY_BACKFILL_SINCE", "") or "").strip()
 COMMAND_RESPONSES_EPHEMERAL = is_truthy_env_value(
     os.getenv("COMMAND_RESPONSES_EPHEMERAL", "false"),
     default_value=False,
@@ -675,6 +684,7 @@ MODERATOR_ONLY_COMMAND_KEYS = {
     "delete_role",
     "edit_role",
     "kick_member",
+    "random_choice",
     "remove_role_member",
     "timeout_member",
     "unban_member",
@@ -710,6 +720,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "remove_role_member": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "prune_messages": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "logs": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "random_choice": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "search_reddit": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_forum": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_openwrt_forum": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -836,6 +847,10 @@ COMMAND_PERMISSION_METADATA = {
         "label": "/logs",
         "description": "View recent container error log entries.",
     },
+    "random_choice": {
+        "label": "/random_choice",
+        "description": "Randomly pick a non-staff guild member.",
+    },
     "search_reddit": {
         "label": "/search_reddit, !searchreddit",
         "description": "Search configured subreddit on Reddit.",
@@ -881,6 +896,7 @@ docs_index_cache = {}
 firmware_monitor_task = None
 reddit_feed_monitor_task = None
 youtube_monitor_task = None
+member_activity_backfill_task = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
 web_admin_restart_events = deque()
@@ -1097,6 +1113,13 @@ def ensure_db_schema():
                 PRIMARY KEY (guild_id, user_id, hour_bucket)
             );
 
+            CREATE TABLE IF NOT EXISTS member_activity_seen_messages (
+                guild_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, message_id)
+            );
+
             CREATE TABLE IF NOT EXISTS web_users (
                 email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
@@ -1126,6 +1149,8 @@ def ensure_db_schema():
                 ON member_activity_summary(last_message_at);
             CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
                 ON member_activity_recent_hourly(hour_bucket);
+            CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_created_at
+                ON member_activity_seen_messages(created_at);
             """
         )
         command_permission_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()}
@@ -1469,6 +1494,35 @@ def ensure_db_schema():
                 """
             )
 
+        member_activity_seen_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_seen_messages)").fetchall()
+        }
+        if member_activity_seen_columns and "guild_id" not in member_activity_seen_columns:
+            conn.executescript(
+                """
+                CREATE TABLE member_activity_seen_messages_new (
+                    guild_id INTEGER NOT NULL,
+                    message_id INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, message_id)
+                );
+                INSERT INTO member_activity_seen_messages_new (
+                    guild_id,
+                    message_id,
+                    created_at
+                )
+                SELECT
+                    0,
+                    message_id,
+                    created_at
+                FROM member_activity_seen_messages;
+                DROP TABLE member_activity_seen_messages;
+                ALTER TABLE member_activity_seen_messages_new RENAME TO member_activity_seen_messages;
+                CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_created_at
+                    ON member_activity_seen_messages(created_at);
+                """
+            )
+
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_guild_id
@@ -1485,6 +1539,12 @@ def ensure_db_schema():
             """
             CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_guild_bucket
                 ON member_activity_recent_hourly(guild_id, hour_bucket)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_guild_created
+                ON member_activity_seen_messages(guild_id, created_at)
             """
         )
 
@@ -1522,6 +1582,10 @@ def ensure_db_schema():
         )
         conn.execute(
             "UPDATE member_activity_recent_hourly SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
+        conn.execute(
+            "UPDATE member_activity_seen_messages SET guild_id = ? WHERE guild_id = 0",
             (GUILD_ID,),
         )
         conn.commit()
@@ -1768,6 +1832,54 @@ def normalize_activity_timestamp(raw_value=None) -> datetime:
     return parsed
 
 
+def parse_member_activity_backfill_since(raw_value: str) -> datetime | None:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    candidate = text
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
+        candidate = f"{candidate}T00:00:00+00:00"
+    parsed = parse_iso_datetime_utc(candidate)
+    if parsed is None:
+        return None
+    return parsed.replace(minute=0, second=0, microsecond=0)
+
+
+def get_member_activity_backfill_target_guild_id() -> int:
+    raw_value = MEMBER_ACTIVITY_BACKFILL_GUILD_ID_RAW
+    if not raw_value:
+        return int(GUILD_ID)
+    try:
+        parsed = int(raw_value)
+    except ValueError as exc:
+        raise RuntimeError("MEMBER_ACTIVITY_BACKFILL_GUILD_ID must be a numeric guild ID.") from exc
+    if parsed <= 0:
+        raise RuntimeError("MEMBER_ACTIVITY_BACKFILL_GUILD_ID must be a positive guild ID.")
+    return parsed
+
+
+def member_activity_backfill_state_key(guild_id: int, since_dt: datetime) -> str:
+    return f"member_activity_backfill:{int(guild_id)}:{since_dt.isoformat()}"
+
+
+def load_member_activity_backfill_state(guild_id: int, since_dt: datetime) -> dict:
+    raw_value = db_kv_get(member_activity_backfill_state_key(guild_id, since_dt))
+    if not raw_value:
+        return {}
+    try:
+        payload = json.loads(raw_value)
+    except ValueError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, payload: dict):
+    db_kv_set(
+        member_activity_backfill_state_key(guild_id, since_dt),
+        json.dumps(payload, sort_keys=True),
+    )
+
+
 def compute_member_activity_metrics(message_count: int, active_days: int, period_start: datetime, period_end: datetime):
     total_seconds = max((period_end - period_start).total_seconds(), 3600.0)
     period_days = max(total_seconds / 86400.0, 1 / 24)
@@ -1823,6 +1935,10 @@ def prune_member_activity_recent_hourly(conn, current_dt: datetime):
         (cutoff_bucket,),
     )
     conn.execute(
+        "DELETE FROM member_activity_seen_messages WHERE created_at < ?",
+        (cutoff_dt.isoformat(),),
+    )
+    conn.execute(
         """
         DELETE FROM member_activity_summary
         WHERE last_message_at IS NULL OR last_message_at < ?
@@ -1841,98 +1957,133 @@ def prune_member_activity_recent_hourly(conn, current_dt: datetime):
     member_activity_recent_prune_marker = current_hour_bucket
 
 
-def record_member_message_activity(message: discord.Message):
-    if message.guild is None or message.author.bot:
-        return
-    if not is_managed_guild_id(message.guild.id):
-        return
-
-    safe_guild_id = normalize_target_guild_id(message.guild.id)
-    user_id = int(message.author.id)
-    username = clip_text(str(message.author), limit=120)
-    display_name = clip_text(getattr(message.author, "display_name", str(message.author)), limit=120)
-    message_dt = normalize_activity_timestamp(getattr(message, "created_at", None))
+def _record_member_message_activity_locked(
+    conn,
+    *,
+    guild_id: int,
+    user_id: int,
+    username: str,
+    display_name: str,
+    message_id: int,
+    message_dt: datetime,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
     message_iso = message_dt.isoformat()
     hour_bucket = message_dt.replace(minute=0, second=0, microsecond=0).isoformat()
+    inserted = conn.execute(
+        """
+        INSERT OR IGNORE INTO member_activity_seen_messages (
+            guild_id,
+            message_id,
+            created_at
+        )
+        VALUES (?, ?, ?)
+        """,
+        (
+            safe_guild_id,
+            int(message_id),
+            message_iso,
+        ),
+    )
+    if inserted.rowcount == 0:
+        return False
+    prune_member_activity_recent_hourly(conn, message_dt)
+    summary_row = conn.execute(
+        """
+        SELECT first_message_at, last_message_at
+        FROM member_activity_summary
+        WHERE guild_id = ? AND user_id = ?
+        """,
+        (safe_guild_id, user_id),
+    ).fetchone()
 
-    conn = get_db_connection()
-    with db_lock:
-        prune_member_activity_recent_hourly(conn, message_dt)
-        summary_row = conn.execute(
-            """
-            SELECT first_message_at, last_message_at
-            FROM member_activity_summary
-            WHERE guild_id = ? AND user_id = ?
-            """,
-            (safe_guild_id, user_id),
-        ).fetchone()
-
-        if summary_row is None:
-            conn.execute(
-                """
-                INSERT INTO member_activity_summary (
-                    guild_id,
-                    user_id,
-                    username,
-                    display_name,
-                    first_message_at,
-                    last_message_at,
-                    total_messages,
-                    total_active_days
-                )
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-                """,
-                (
-                    safe_guild_id,
-                    user_id,
-                    username,
-                    display_name,
-                    message_iso,
-                    message_iso,
-                ),
-            )
-        else:
-            conn.execute(
-                """
-                UPDATE member_activity_summary
-                SET username = ?,
-                    display_name = ?,
-                    last_message_at = ?,
-                    total_messages = 0,
-                    total_active_days = 0
-                WHERE guild_id = ? AND user_id = ?
-                """,
-                (
-                    username,
-                    display_name,
-                    message_iso,
-                    safe_guild_id,
-                    user_id,
-                ),
-            )
-
+    if summary_row is None:
         conn.execute(
             """
-            INSERT INTO member_activity_recent_hourly (
+            INSERT INTO member_activity_summary (
                 guild_id,
                 user_id,
-                hour_bucket,
-                message_count,
-                last_message_at
+                username,
+                display_name,
+                first_message_at,
+                last_message_at,
+                total_messages,
+                total_active_days
             )
-            VALUES (?, ?, ?, 1, ?)
-            ON CONFLICT(guild_id, user_id, hour_bucket) DO UPDATE SET
-                message_count = member_activity_recent_hourly.message_count + 1,
-                last_message_at = excluded.last_message_at
+            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
             """,
             (
                 safe_guild_id,
                 user_id,
-                hour_bucket,
+                username,
+                display_name,
+                message_iso,
                 message_iso,
             ),
         )
+    else:
+        conn.execute(
+            """
+            UPDATE member_activity_summary
+            SET username = ?,
+                display_name = ?,
+                last_message_at = ?,
+                total_messages = 0,
+                total_active_days = 0
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (
+                username,
+                display_name,
+                message_iso,
+                safe_guild_id,
+                user_id,
+            ),
+        )
+
+    conn.execute(
+        """
+        INSERT INTO member_activity_recent_hourly (
+            guild_id,
+            user_id,
+            hour_bucket,
+            message_count,
+            last_message_at
+        )
+        VALUES (?, ?, ?, 1, ?)
+        ON CONFLICT(guild_id, user_id, hour_bucket) DO UPDATE SET
+            message_count = member_activity_recent_hourly.message_count + 1,
+            last_message_at = excluded.last_message_at
+        """,
+        (
+            safe_guild_id,
+            user_id,
+            hour_bucket,
+            message_iso,
+        ),
+    )
+    return True
+
+
+def record_member_message_activity(message: discord.Message):
+    if message.guild is None or message.author.bot:
+        return False
+    if not is_managed_guild_id(message.guild.id):
+        return False
+
+    conn = get_db_connection()
+    with db_lock:
+        changed = _record_member_message_activity_locked(
+            conn,
+            guild_id=message.guild.id,
+            user_id=int(message.author.id),
+            username=clip_text(str(message.author), limit=120),
+            display_name=clip_text(getattr(message.author, "display_name", str(message.author)), limit=120),
+            message_id=int(message.id),
+            message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
+        )
         conn.commit()
+    return changed
 
 
 def list_member_activity_top_window(guild_id: int | None, window_key: str, limit: int = MEMBER_ACTIVITY_WEB_TOP_LIMIT):
@@ -2083,12 +2234,343 @@ def build_member_activity_web_payload(guild_id: int):
     }
 
 
+def export_member_activity_archive(guild_id: int):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    payload = build_member_activity_web_payload(safe_guild_id)
+    generated_at = datetime.now(UTC).replace(microsecond=0)
+    conn = get_db_connection()
+    with db_lock:
+        summary_rows = conn.execute(
+            """
+            SELECT guild_id, user_id, username, display_name, first_message_at, last_message_at
+            FROM member_activity_summary
+            WHERE guild_id = ?
+            ORDER BY last_message_at DESC, user_id ASC
+            """,
+            (safe_guild_id,),
+        ).fetchall()
+        hourly_rows = conn.execute(
+            """
+            SELECT guild_id, user_id, hour_bucket, message_count, last_message_at
+            FROM member_activity_recent_hourly
+            WHERE guild_id = ?
+            ORDER BY hour_bucket DESC, user_id ASC
+            """,
+            (safe_guild_id,),
+        ).fetchall()
+
+    def build_csv_bytes(headers: list[str], rows: list[list[object]]):
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(headers)
+        writer.writerows(rows)
+        return buffer.getvalue().encode("utf-8")
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr(
+            "summary.json",
+            json.dumps(
+                {
+                    "guild_id": safe_guild_id,
+                    "generated_at": generated_at.isoformat(),
+                    "retention_days": MEMBER_ACTIVITY_RECENT_RETENTION_DAYS,
+                    "windows": payload.get("windows", []),
+                },
+                indent=2,
+                sort_keys=True,
+            ).encode("utf-8"),
+        )
+
+        for window in payload.get("windows", []):
+            window_key = str(window.get("key") or "window")
+            members = window.get("members", []) if isinstance(window, dict) else []
+            archive.writestr(
+                f"{window_key}.csv",
+                build_csv_bytes(
+                    ["rank", "user_id", "display_name", "username", "message_count", "active_days", "last_message_at"],
+                    [
+                        [
+                            int(member.get("rank") or 0),
+                            int(member.get("user_id") or 0),
+                            str(member.get("display_name") or ""),
+                            str(member.get("username") or ""),
+                            int(member.get("message_count") or 0),
+                            int(member.get("active_days") or 0),
+                            str(member.get("last_message_at") or ""),
+                        ]
+                        for member in members
+                    ],
+                ),
+            )
+
+        archive.writestr(
+            "member_activity_summary.csv",
+            build_csv_bytes(
+                ["guild_id", "user_id", "username", "display_name", "first_message_at", "last_message_at"],
+                [
+                    [
+                        int(row["guild_id"] or 0),
+                        int(row["user_id"] or 0),
+                        str(row["username"] or ""),
+                        str(row["display_name"] or ""),
+                        str(row["first_message_at"] or ""),
+                        str(row["last_message_at"] or ""),
+                    ]
+                    for row in summary_rows
+                ],
+            ),
+        )
+        archive.writestr(
+            "member_activity_recent_hourly.csv",
+            build_csv_bytes(
+                ["guild_id", "user_id", "hour_bucket", "message_count", "last_message_at"],
+                [
+                    [
+                        int(row["guild_id"] or 0),
+                        int(row["user_id"] or 0),
+                        str(row["hour_bucket"] or ""),
+                        int(row["message_count"] or 0),
+                        str(row["last_message_at"] or ""),
+                    ]
+                    for row in hourly_rows
+                ],
+            ),
+        )
+
+    file_name = f"member_activity_guild_{safe_guild_id}_{generated_at.strftime('%Y%m%dT%H%M%SZ')}.zip"
+    return {
+        "ok": True,
+        "filename": file_name,
+        "content_type": "application/zip",
+        "data": archive_buffer.getvalue(),
+        "generated_at": generated_at.isoformat(),
+    }
+
+
 def run_web_get_member_activity(guild_id: int):
     try:
         return build_member_activity_web_payload(guild_id)
     except Exception as exc:
         logger.exception("Failed to build member activity web payload")
         return {"ok": False, "error": str(exc)}
+
+
+def run_web_export_member_activity(guild_id: int):
+    try:
+        return export_member_activity_archive(guild_id)
+    except Exception as exc:
+        logger.exception("Failed to export member activity archive")
+        return {"ok": False, "error": str(exc)}
+
+
+def _can_backfill_message_channel(channel, bot_member: discord.Member | None):
+    if bot_member is None:
+        return False
+    try:
+        permissions = channel.permissions_for(bot_member)
+    except Exception:
+        return False
+    return bool(getattr(permissions, "view_channel", False) and getattr(permissions, "read_message_history", False))
+
+
+async def iter_member_activity_backfill_channels(guild: discord.Guild):
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = guild.me or (guild.get_member(bot_user_id) if bot_user_id else None)
+    seen_channel_ids = set()
+
+    for channel in guild.text_channels:
+        if channel.id in seen_channel_ids or not _can_backfill_message_channel(channel, bot_member):
+            continue
+        seen_channel_ids.add(channel.id)
+        yield channel
+
+        try:
+            async for thread in channel.archived_threads(limit=None):
+                if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+                    continue
+                seen_channel_ids.add(thread.id)
+                yield thread
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning("Skipping archived public threads for channel %s during member activity backfill.", channel.id)
+
+        try:
+            async for thread in channel.archived_threads(limit=None, private=True, joined=True):
+                if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+                    continue
+                seen_channel_ids.add(thread.id)
+                yield thread
+        except (TypeError, discord.Forbidden, discord.HTTPException):
+            pass
+
+    for forum in guild.forums:
+        if not _can_backfill_message_channel(forum, bot_member):
+            continue
+        try:
+            async for thread in forum.archived_threads(limit=None):
+                if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+                    continue
+                seen_channel_ids.add(thread.id)
+                yield thread
+        except (TypeError, discord.Forbidden, discord.HTTPException):
+            pass
+
+        try:
+            async for thread in forum.archived_threads(limit=None, private=True, joined=True):
+                if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+                    continue
+                seen_channel_ids.add(thread.id)
+                yield thread
+        except (TypeError, discord.Forbidden, discord.HTTPException):
+            pass
+
+    for thread in guild.threads:
+        if thread.id in seen_channel_ids or not _can_backfill_message_channel(thread, bot_member):
+            continue
+        seen_channel_ids.add(thread.id)
+        yield thread
+
+
+async def member_activity_backfill_job():
+    if not MEMBER_ACTIVITY_BACKFILL_ENABLED:
+        return
+    since_dt = parse_member_activity_backfill_since(MEMBER_ACTIVITY_BACKFILL_SINCE_RAW)
+    if since_dt is None:
+        logger.warning(
+            "Member activity backfill is enabled but MEMBER_ACTIVITY_BACKFILL_SINCE is empty or invalid; skipping backfill."
+        )
+        return
+
+    try:
+        guild_id = get_member_activity_backfill_target_guild_id()
+    except RuntimeError as exc:
+        logger.warning("Invalid member activity backfill configuration: %s", exc)
+        return
+
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        logger.warning("Member activity backfill skipped: guild %s is not available to the bot.", guild_id)
+        return
+    if not is_managed_guild_id(guild.id):
+        logger.warning("Member activity backfill skipped: guild %s is outside MANAGED_GUILD_IDS.", guild.id)
+        return
+
+    state = load_member_activity_backfill_state(guild.id, since_dt)
+    if str(state.get("status") or "").strip().lower() == "completed":
+        logger.info(
+            "Member activity backfill already completed for guild %s since %s; skipping.",
+            guild.id,
+            since_dt.isoformat(),
+        )
+        return
+
+    until_dt = datetime.now(UTC).replace(microsecond=0)
+    status = {
+        "status": "running",
+        "guild_id": guild.id,
+        "guild_name": guild.name,
+        "since_at": since_dt.isoformat(),
+        "until_at": until_dt.isoformat(),
+        "started_at": datetime.now(UTC).isoformat(),
+        "completed_at": "",
+        "channels_scanned": int(state.get("channels_scanned") or 0),
+        "messages_processed": int(state.get("messages_processed") or 0),
+        "last_channel_id": int(state.get("last_channel_id") or 0),
+        "last_error": "",
+    }
+    save_member_activity_backfill_state(guild.id, since_dt, status)
+
+    logger.info(
+        "Member activity backfill started for guild %s (%s) since %s.",
+        guild.name,
+        guild.id,
+        since_dt.isoformat(),
+    )
+
+    channels_scanned = 0
+    messages_processed = 0
+    try:
+        async for channel in iter_member_activity_backfill_channels(guild):
+            channels_scanned += 1
+            status["channels_scanned"] = channels_scanned
+            status["last_channel_id"] = int(channel.id)
+            save_member_activity_backfill_state(guild.id, since_dt, status)
+            logger.info(
+                "Member activity backfill scanning channel %s (%s) [%s].",
+                getattr(channel, "name", channel.id),
+                channel.id,
+                channels_scanned,
+            )
+            try:
+                async for message in channel.history(limit=None, after=since_dt, before=until_dt, oldest_first=True):
+                    if message.author.bot or message.guild is None:
+                        continue
+                    conn = get_db_connection()
+                    with db_lock:
+                        changed = _record_member_message_activity_locked(
+                            conn,
+                            guild_id=message.guild.id,
+                            user_id=int(message.author.id),
+                            username=clip_text(str(message.author), limit=120),
+                            display_name=clip_text(getattr(message.author, "display_name", str(message.author)), limit=120),
+                            message_id=int(message.id),
+                            message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
+                        )
+                        if changed:
+                            conn.commit()
+                    if changed:
+                        messages_processed += 1
+                        if messages_processed % MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL == 0:
+                            status["messages_processed"] = messages_processed
+                            save_member_activity_backfill_state(guild.id, since_dt, status)
+                            logger.info(
+                                "Member activity backfill progress for guild %s: %s messages processed.",
+                                guild.id,
+                                messages_processed,
+                            )
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning(
+                    "Member activity backfill could not read channel %s (%s); continuing.",
+                    getattr(channel, "name", channel.id),
+                    channel.id,
+                )
+                continue
+
+        status.update(
+            {
+                "status": "completed",
+                "completed_at": datetime.now(UTC).isoformat(),
+                "channels_scanned": channels_scanned,
+                "messages_processed": messages_processed,
+                "last_error": "",
+            }
+        )
+        save_member_activity_backfill_state(guild.id, since_dt, status)
+        logger.info(
+            "Member activity backfill completed for guild %s (%s): channels=%s messages=%s since=%s until=%s",
+            guild.name,
+            guild.id,
+            channels_scanned,
+            messages_processed,
+            since_dt.isoformat(),
+            until_dt.isoformat(),
+        )
+    except Exception as exc:
+        status.update(
+            {
+                "status": "failed",
+                "completed_at": datetime.now(UTC).isoformat(),
+                "channels_scanned": channels_scanned,
+                "messages_processed": messages_processed,
+                "last_error": str(exc),
+            }
+        )
+        save_member_activity_backfill_state(guild.id, since_dt, status)
+        logger.exception(
+            "Member activity backfill failed for guild %s (%s).",
+            guild.name,
+            guild.id,
+        )
 
 
 def list_youtube_subscriptions(
@@ -2955,6 +3437,16 @@ def has_allowed_role(member: discord.Member):
 
 def has_moderator_access(member: discord.Member):
     return any(role.id in MODERATOR_ROLE_IDS for role in member.roles)
+
+
+def is_random_choice_eligible(member: discord.Member):
+    if member.bot:
+        return False
+    if has_moderator_access(member):
+        return False
+    if has_allowed_role(member):
+        return False
+    return True
 
 
 def normalize_permission_mode(value: str | None):
@@ -6194,6 +6686,7 @@ def start_web_admin_server():
                     on_save_command_permissions=run_web_update_command_permissions,
                     on_get_actions=run_web_get_actions,
                     on_get_member_activity=run_web_get_member_activity,
+                    on_export_member_activity=run_web_export_member_activity,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_youtube_subscriptions=run_web_get_youtube_subscriptions,
@@ -6661,9 +7154,6 @@ def format_member_activity_window_summary(window: dict):
         f"**{label}**",
         f"- Messages: `{int(window.get('message_count') or 0)}`",
         f"- Active Days: `{int(window.get('active_days') or 0)}`",
-        f"- Avg/Day: `{window.get('messages_per_day') or '0.00'}`",
-        f"- Avg/Active Day: `{window.get('messages_per_active_day') or '0.00'}`",
-        f"- Active %: `{window.get('active_day_ratio_percent') or '0.0'}%`",
         f"- Last Seen: {format_member_activity_last_seen(str(window.get('last_message_at') or ''))}",
     ]
     return "\n".join(lines)
@@ -6727,6 +7217,7 @@ async def on_ready():
     global firmware_monitor_task
     global reddit_feed_monitor_task
     global youtube_monitor_task
+    global member_activity_backfill_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
     logger.info("Logged in as %s", bot.user.name)
     await _flush_web_admin_pending_critical_alerts()
@@ -6746,6 +7237,11 @@ async def on_ready():
         reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
     if YOUTUBE_NOTIFY_ENABLED and (youtube_monitor_task is None or youtube_monitor_task.done()):
         youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
+    if MEMBER_ACTIVITY_BACKFILL_ENABLED and (member_activity_backfill_task is None or member_activity_backfill_task.done()):
+        member_activity_backfill_task = asyncio.create_task(
+            member_activity_backfill_job(),
+            name="member_activity_backfill",
+        )
 
 
 @bot.event
@@ -7035,26 +7531,26 @@ async def list_commands(ctx: commands.Context):
     name="submitrole",
     description="Submit a role for invite/code linking",
 )
-async def submitrole(interaction: discord.Interaction):
+@app_commands.describe(role="Role to map to a new invite link and access code")
+async def submitrole(interaction: discord.Interaction, role: discord.Role):
     logger.info("/submitrole invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
         return
+    if role == interaction.guild.default_role:
+        await interaction.response.send_message("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
+        return
+    if role.managed:
+        await interaction.response.send_message(
+            "❌ That role is managed by an integration and cannot be used for invite/code access.",
+            ephemeral=True,
+        )
+        return
 
-    await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
-
-    def check(m):
-        return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-
+    await interaction.response.defer(ephemeral=True)
     try:
-        msg = await bot.wait_for("message", timeout=30.0, check=check)
-        if not msg.role_mentions:
-            await interaction.followup.send("❌ No role mentioned.", ephemeral=True)
-            return
-
-        role = msg.role_mentions[0]
         target_channel_id = get_effective_logging_channel_id(interaction.guild.id if interaction.guild else GUILD_ID)
         channel = (
             interaction.guild.get_channel(target_channel_id) if interaction.guild and target_channel_id > 0 else None
@@ -7075,7 +7571,10 @@ async def submitrole(interaction: discord.Interaction):
             channel.id,
         )
 
-        await interaction.followup.send(f"✅ Invite link: {invite.url}\n🔢 6-digit code: `{code}`", ephemeral=True)
+        await interaction.followup.send(
+            f"✅ Role: {role.mention}\nInvite link: {invite.url}\n🔢 6-digit code: `{code}`",
+            ephemeral=True,
+        )
     except Exception:
         logger.exception("Error in /submitrole")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
@@ -7767,6 +8266,61 @@ async def logs_slash(
         response_header,
         ephemeral=True,
         file=discord.File(io.BytesIO(log_tail.encode("utf-8")), filename=report_name),
+    )
+
+
+@tree.command(
+    name="random_choice",
+    description="Randomly pick a non-staff guild member",
+)
+async def random_choice_slash(interaction: discord.Interaction):
+    logger.info("/random_choice invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "random_choice"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    if ENABLE_MEMBERS_INTENT and not guild.chunked:
+        try:
+            await guild.chunk(cache=True)
+        except Exception:
+            logger.exception("Failed to chunk guild %s before /random_choice", guild.id)
+
+    eligible_members = [member for member in guild.members if is_random_choice_eligible(member)]
+    if not eligible_members:
+        await interaction.followup.send(
+            "ℹ️ No eligible non-staff members were found in this server.",
+            ephemeral=True,
+        )
+        await log_interaction(
+            interaction,
+            action="random_choice",
+            reason="no eligible members",
+            success=False,
+        )
+        return
+
+    chosen_member = random.choice(eligible_members)
+    await interaction.followup.send(
+        "\n".join(
+            [
+                "🎲 **Random Choice**",
+                f"Selected member: {chosen_member.mention}",
+                f"Display name: `{clip_text(chosen_member.display_name, limit=80)}`",
+                f"User ID: `{chosen_member.id}`",
+                f"Eligible pool size: `{len(eligible_members)}`",
+            ]
+        ),
+        ephemeral=True,
+    )
+    await log_interaction(
+        interaction,
+        action="random_choice",
+        reason=truncate_log_text(f"selected={chosen_member.id} pool={len(eligible_members)}"),
+        success=True,
     )
 
 

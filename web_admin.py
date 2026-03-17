@@ -1921,6 +1921,7 @@ def create_web_app(
     on_save_command_permissions=None,
     on_get_actions=None,
     on_get_member_activity=None,
+    on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_youtube_subscriptions=None,
@@ -3518,6 +3519,15 @@ def create_web_app(
         windows = payload.get("windows", []) if isinstance(payload, dict) else []
         activity_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
         top_limit = int(payload.get("top_limit") or 20) if isinstance(payload, dict) else 20
+        export_html = ""
+        if callable(on_export_member_activity):
+            export_html = (
+                f"<div class='card'>"
+                f"<h3>Export Activity Data</h3>"
+                f"<p class='muted'>Download the selected server's member activity as a compressed ZIP archive.</p>"
+                f"<a class='btn secondary' href='{escape(url_for('member_activity_export'), quote=True)}'>Download Activity Export</a>"
+                f"</div>"
+            )
 
         window_cards = []
         for window in windows:
@@ -3533,9 +3543,6 @@ def create_web_app(
                     f"<td><strong>{escape(display_name)}</strong>{secondary_name}</td>"
                     f"<td>{escape(str(member.get('message_count') or 0))}</td>"
                     f"<td>{escape(str(member.get('active_days') or 0))}</td>"
-                    f"<td>{escape(str(member.get('messages_per_day') or '0.00'))}</td>"
-                    f"<td>{escape(str(member.get('messages_per_active_day') or '0.00'))}</td>"
-                    f"<td>{escape(str(member.get('active_day_ratio_percent') or '0.0'))}%</td>"
                     f"<td class='mono'>{escape(str(member.get('last_message_at') or 'n/a'))}</td>"
                     "</tr>"
                 )
@@ -3550,13 +3557,10 @@ def create_web_app(
                         <th>Member</th>
                         <th>Messages</th>
                         <th>Active Days</th>
-                        <th>Avg/Day</th>
-                        <th>Avg/Active Day</th>
-                        <th>Active %</th>
                         <th>Last Seen</th>
                       </tr>
                     </thead>
-                    <tbody>{"".join(rows) if rows else "<tr><td colspan='8' class='muted'>No member activity recorded in this window yet.</td></tr>"}</tbody>
+                    <tbody>{"".join(rows) if rows else "<tr><td colspan='5' class='muted'>No member activity recorded in this window yet.</td></tr>"}</tbody>
                   </table>
                 </div>
                 """
@@ -3567,10 +3571,11 @@ def create_web_app(
           <h2>Member Activity</h2>
           <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
           <p class="muted">Showing the top {escape(str(top_limit))} members by message activity for each time window.</p>
-          <p class="muted">Columns show total messages, active days, average messages per day, average messages per active day, and the share of days with activity.</p>
+          <p class="muted">Columns show exact messages sent in the selected period, active days in that period, and the most recent message timestamp.</p>
           {"<p class='muted'>" + escape(activity_error) + "</p>" if activity_error else ""}
         </div>
         {"".join(window_cards) if window_cards else "<div class='card'><p class='muted'>No member activity windows are available yet.</p></div>"}
+        {export_html}
         """
         return _render_page(
             "Member Activity",
@@ -3578,6 +3583,36 @@ def create_web_app(
             user["email"],
             bool(user.get("is_admin")),
             str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/member-activity/export", methods=["GET"])
+    @login_required
+    def member_activity_export():
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        if not callable(on_export_member_activity):
+            flash("Member activity export is not configured.", "error")
+            return redirect(url_for("member_activity_page"))
+        payload = on_export_member_activity(selected_guild_id)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            flash(
+                str(payload.get("error") or "Failed to export member activity.")
+                if isinstance(payload, dict)
+                else "Failed to export member activity.",
+                "error",
+            )
+            return redirect(url_for("member_activity_page"))
+        file_name = str(payload.get("filename") or "member_activity.zip")
+        content_type = str(payload.get("content_type") or "application/octet-stream")
+        data = payload.get("data") or b""
+        return send_file(
+            io.BytesIO(data),
+            mimetype=content_type,
+            as_attachment=True,
+            download_name=file_name,
         )
 
     @app.route("/admin/documentation", methods=["GET"])
@@ -4980,21 +5015,64 @@ def create_web_app(
             elif action == "password":
                 target_email = _normalize_email(request.form.get("email", ""))
                 new_password = request.form.get("password", "")
-                password_errors = _password_policy_errors(new_password)
-                if password_errors:
-                    for message in password_errors:
-                        flash(message, "error")
+                confirm_password = request.form.get("confirm_password", "")
+                if new_password != confirm_password:
+                    flash("Password and confirmation must match.", "error")
+                else:
+                    password_errors = _password_policy_errors(new_password)
+                    if password_errors:
+                        for message in password_errors:
+                            flash(message, "error")
+                    else:
+                        changed = False
+                        for entry in users_data:
+                            if entry["email"] == target_email:
+                                entry["password_hash"] = _hash_password(new_password)
+                                entry["password_changed_at"] = _now_iso()
+                                changed = True
+                                break
+                        if changed:
+                            _save_users(users_file, users_data)
+                            flash(f"Password updated for {target_email}.", "success")
+                            users_data = _read_users(users_file)
+                        else:
+                            flash("User not found.", "error")
+
+            elif action == "edit_user":
+                target_email = _normalize_email(request.form.get("email", ""))
+                updated_email = _normalize_email(request.form.get("updated_email", ""))
+                first_name = _clean_profile_text(request.form.get("first_name", ""), max_length=80)
+                last_name = _clean_profile_text(request.form.get("last_name", ""), max_length=80)
+                display_name = _clean_profile_text(request.form.get("display_name", ""), max_length=80)
+                if not target_email:
+                    flash("User email is required.", "error")
+                elif not _is_valid_email(updated_email):
+                    flash("Enter a valid updated email.", "error")
+                elif not first_name:
+                    flash("First name is required.", "error")
+                elif not last_name:
+                    flash("Last name is required.", "error")
+                elif not display_name:
+                    flash("Display name is required.", "error")
+                elif updated_email != target_email and any(entry["email"] == updated_email for entry in users_data):
+                    flash("Another user already has that email.", "error")
                 else:
                     changed = False
+                    now_iso = _now_iso()
                     for entry in users_data:
                         if entry["email"] == target_email:
-                            entry["password_hash"] = _hash_password(new_password)
-                            entry["password_changed_at"] = _now_iso()
+                            original_email = entry["email"]
+                            entry["email"] = updated_email
+                            entry["first_name"] = first_name
+                            entry["last_name"] = last_name
+                            entry["display_name"] = display_name
+                            if updated_email != original_email:
+                                entry["email_changed_at"] = now_iso
                             changed = True
                             break
                     if changed:
                         _save_users(users_file, users_data)
-                        flash(f"Password updated for {target_email}.", "success")
+                        flash(f"Updated user profile for {updated_email}.", "success")
                         users_data = _read_users(users_file)
                     else:
                         flash("User not found.", "error")
@@ -5040,8 +5118,10 @@ def create_web_app(
             role_button_disabled = " disabled" if is_self_read_only_demotion else ""
             role_button_title = " title='You cannot set your own account to Read-only.'" if is_self_read_only_demotion else ""
             display_name = str(entry.get("display_name") or _default_display_name(email))
+            first_name = str(entry.get("first_name") or "")
+            last_name = str(entry.get("last_name") or "")
             full_name = _clean_profile_text(
-                f"{str(entry.get('first_name') or '')} {str(entry.get('last_name') or '')}",
+                f"{first_name} {last_name}",
                 max_length=160,
             )
             user_rows.append(
@@ -5060,11 +5140,54 @@ def create_web_app(
                       <input type="hidden" name="role" value="{escape(next_role_value, quote=True)}" />
                       <button class="btn secondary" type="submit"{role_button_disabled}{role_button_title}>{escape(role_button_label)}</button>
                     </form>
+                    <a class="btn secondary" style="margin-left:6px;" href="#edit-user-{escape(email, quote=True)}">Edit</a>
                     <form method="post" style="display:inline;margin-left:6px;">
                       <input type="hidden" name="action" value="delete" />
                       <input type="hidden" name="email" value="{escape(email, quote=True)}" />
                       <button class="btn secondary" type="submit">Delete</button>
                     </form>
+                  </td>
+                </tr>
+                <tr>
+                  <td colspan="7">
+                    <details id="edit-user-{escape(email, quote=True)}">
+                      <summary>Edit {escape(display_name)}</summary>
+                      <div class="grid" style="margin-top:12px;">
+                        <div class="card">
+                          <h3>Edit Profile</h3>
+                          <form method="post">
+                            <input type="hidden" name="action" value="edit_user" />
+                            <input type="hidden" name="email" value="{escape(email, quote=True)}" />
+                            <label>First Name</label>
+                            <input type="text" name="first_name" autocomplete="given-name" value="{escape(first_name, quote=True)}" required />
+                            <label style="margin-top:10px;display:block;">Last Name</label>
+                            <input type="text" name="last_name" autocomplete="family-name" value="{escape(last_name, quote=True)}" required />
+                            <label style="margin-top:10px;display:block;">Display Name</label>
+                            <input type="text" name="display_name" autocomplete="nickname" value="{escape(display_name, quote=True)}" required />
+                            <label style="margin-top:10px;display:block;">Email</label>
+                            <input type="email" name="updated_email" autocomplete="email" autocapitalize="none" spellcheck="false" value="{escape(email, quote=True)}" required />
+                            <button class="btn" type="submit" style="margin-top:14px;">Save User Changes</button>
+                          </form>
+                        </div>
+                        <div class="card">
+                          <h3>Reset Password</h3>
+                          <form method="post">
+                            <input type="hidden" name="action" value="password" />
+                            <input type="hidden" name="email" value="{escape(email, quote=True)}" />
+                            <label>New Password</label>
+                            <input id="reset_user_password_{escape(email, quote=True)}" type="password" name="password" autocomplete="new-password" required />
+                            <label style="margin-top:10px;display:block;">Confirm Password</label>
+                            <input id="reset_user_password_confirm_{escape(email, quote=True)}" type="password" name="confirm_password" autocomplete="new-password" required />
+                            <label style="margin-top:8px;display:block;">
+                              <input type="checkbox"
+                                onchange="document.getElementById('reset_user_password_{escape(email, quote=True)}').type=this.checked?'text':'password';document.getElementById('reset_user_password_confirm_{escape(email, quote=True)}').type=this.checked?'text':'password';" />
+                              Show password
+                            </label>
+                            <button class="btn" type="submit" style="margin-top:14px;">Update Password</button>
+                          </form>
+                        </div>
+                      </div>
+                    </details>
                   </td>
                 </tr>
                 """
@@ -5104,20 +5227,8 @@ def create_web_app(
             </form>
           </div>
           <div class="card">
-            <h2>Reset Password</h2>
-            <form method="post">
-              <input type="hidden" name="action" value="password" />
-              <label>User Email</label>
-              <input type="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" required />
-              <label style="margin-top:10px;display:block;">New Password</label>
-              <input id="reset_user_password" type="password" name="password" autocomplete="new-password" required />
-              <label style="margin-top:8px;display:block;">
-                <input type="checkbox"
-                  onchange="document.getElementById('reset_user_password').type=this.checked?'text':'password';" />
-                Show password
-              </label>
-              <button class="btn" type="submit">Update Password</button>
-            </form>
+            <h2>Edit Existing Users</h2>
+            <p class="muted">Use the per-user edit section below to change names, email, role, or reset a password.</p>
           </div>
         </div>
         <div class="card">
@@ -5156,6 +5267,7 @@ def start_web_admin_interface(
     on_save_command_permissions=None,
     on_get_actions=None,
     on_get_member_activity=None,
+    on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_youtube_subscriptions=None,
@@ -5185,6 +5297,7 @@ def start_web_admin_interface(
         on_save_command_permissions=on_save_command_permissions,
         on_get_actions=on_get_actions,
         on_get_member_activity=on_get_member_activity,
+        on_export_member_activity=on_export_member_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
         on_manage_reddit_feeds=on_manage_reddit_feeds,
         on_get_youtube_subscriptions=on_get_youtube_subscriptions,
