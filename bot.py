@@ -1819,6 +1819,24 @@ def list_recent_actions(guild_id: int | None, limit: int = 200):
     return [dict(row) for row in rows]
 
 
+def ensure_random_choice_history_schema_locked(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS random_choice_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            selected_at TEXT NOT NULL,
+            selected_by_user_id INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_selected_at
+            ON random_choice_history(guild_id, selected_at);
+        CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_user_selected_at
+            ON random_choice_history(guild_id, user_id, selected_at);
+        """
+    )
+
+
 def prune_random_choice_history_locked(conn, current_dt: datetime):
     cutoff_dt = normalize_activity_timestamp(current_dt) - timedelta(days=RANDOM_CHOICE_HISTORY_RETENTION_DAYS)
     conn.execute(
@@ -1832,6 +1850,7 @@ def list_recent_random_choice_user_ids(guild_id: int | None, since_dt: datetime)
     safe_since_dt = normalize_activity_timestamp(since_dt)
     conn = get_db_connection()
     with db_lock:
+        ensure_random_choice_history_schema_locked(conn)
         prune_random_choice_history_locked(conn, safe_since_dt)
         rows = conn.execute(
             """
@@ -1855,6 +1874,7 @@ def record_random_choice_selection(
     safe_selected_at = normalize_activity_timestamp(selected_at)
     conn = get_db_connection()
     with db_lock:
+        ensure_random_choice_history_schema_locked(conn)
         prune_random_choice_history_locked(conn, safe_selected_at)
         conn.execute(
             """
