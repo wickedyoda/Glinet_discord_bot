@@ -81,6 +81,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 - Member activity page shows top-20 member activity windows for the selected server.
+- Member activity exports are generated for the selected server only and match the currently retained 90-day dataset.
 
 ## Admin Pages and Capabilities
 
@@ -147,6 +148,7 @@ UI forms include show/hide password toggles and validation feedback.
   - active day count
   - last seen timestamp
 - Export option at the bottom of the page downloads a compressed ZIP archive for the selected server
+- Export respects the selected server context; there is no cross-guild combined export
 - Export includes:
   - per-window leaderboard CSV files
   - raw member activity summary CSV
@@ -306,6 +308,6 @@ If behind proxy, ensure forwarded headers include:
 
 ## Related Pages
 
-- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
-- [Environment Variables](Environment-Variables)
-- [Security Hardening](Security-Hardening)
+- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
+- [Environment Variables](Environment-Variables.md)
+- [Security Hardening](Security-Hardening.md)
