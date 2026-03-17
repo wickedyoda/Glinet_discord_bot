@@ -59,6 +59,14 @@ REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
+MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
+MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
+MEMBER_ACTIVITY_WINDOW_SPECS = (
+    ("last_90_days", "Last 90 Days", timedelta(days=90)),
+    ("last_30_days", "Last 30 Days", timedelta(days=30)),
+    ("last_7_days", "Last 7 Days", timedelta(days=7)),
+    ("last_24_hours", "Last 24 Hours", timedelta(hours=24)),
+)
 
 
 def normalize_log_level(raw_value: str, fallback: str = "INFO"):
@@ -681,6 +689,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "shorten": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "expand": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "uptime": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "stats": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "tag_commands": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "submitrole": COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
     "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
@@ -742,6 +751,10 @@ COMMAND_PERMISSION_METADATA = {
     "uptime": {
         "label": "/uptime",
         "description": "Show uptime monitor summary.",
+    },
+    "stats": {
+        "label": "/stats",
+        "description": "Show your private member activity stats.",
     },
     "tag_commands": {
         "label": "Dynamic Tag Commands",
@@ -885,6 +898,7 @@ command_permissions_lock = threading.Lock()
 command_permissions_cache = {}
 db_lock = threading.RLock()
 db_connection = None
+member_activity_recent_prune_marker = ""
 FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS = 3600
 FIRMWARE_NOTIFICATION_ITEM_LIMIT = 12
 firmware_channel_warning_state = {"reason": "", "last_logged_at": 0.0}
@@ -1062,6 +1076,27 @@ def ensure_db_schema():
                 UNIQUE(guild_id, channel_id, target_channel_id)
             );
 
+            CREATE TABLE IF NOT EXISTS member_activity_summary (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '',
+                first_message_at TEXT NOT NULL,
+                last_message_at TEXT NOT NULL,
+                total_messages INTEGER NOT NULL DEFAULT 0,
+                total_active_days INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS member_activity_recent_hourly (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                hour_bucket TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                last_message_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id, hour_bucket)
+            );
+
             CREATE TABLE IF NOT EXISTS web_users (
                 email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
@@ -1087,6 +1122,10 @@ def ensure_db_schema():
                 ON reddit_feed_seen_posts(feed_id);
             CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_enabled
                 ON youtube_subscriptions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
+                ON member_activity_summary(last_message_at);
+            CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
+                ON member_activity_recent_hourly(hour_bucket);
             """
         )
         command_permission_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()}
@@ -1351,10 +1390,101 @@ def ensure_db_schema():
                 """
             )
 
+        member_activity_summary_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_summary)").fetchall()
+        }
+        if member_activity_summary_columns and "guild_id" not in member_activity_summary_columns:
+            conn.executescript(
+                """
+                CREATE TABLE member_activity_summary_new (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    username TEXT NOT NULL DEFAULT '',
+                    display_name TEXT NOT NULL DEFAULT '',
+                    first_message_at TEXT NOT NULL,
+                    last_message_at TEXT NOT NULL,
+                    total_messages INTEGER NOT NULL DEFAULT 0,
+                    total_active_days INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (guild_id, user_id)
+                );
+                INSERT INTO member_activity_summary_new (
+                    guild_id,
+                    user_id,
+                    username,
+                    display_name,
+                    first_message_at,
+                    last_message_at,
+                    total_messages,
+                    total_active_days
+                )
+                SELECT
+                    0,
+                    user_id,
+                    username,
+                    display_name,
+                    first_message_at,
+                    last_message_at,
+                    total_messages,
+                    total_active_days
+                FROM member_activity_summary;
+                DROP TABLE member_activity_summary;
+                ALTER TABLE member_activity_summary_new RENAME TO member_activity_summary;
+                CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
+                    ON member_activity_summary(last_message_at);
+                """
+            )
+
+        member_activity_recent_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_recent_hourly)").fetchall()
+        }
+        if member_activity_recent_columns and "guild_id" not in member_activity_recent_columns:
+            conn.executescript(
+                """
+                CREATE TABLE member_activity_recent_hourly_new (
+                    guild_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    hour_bucket TEXT NOT NULL,
+                    message_count INTEGER NOT NULL DEFAULT 0,
+                    last_message_at TEXT NOT NULL,
+                    PRIMARY KEY (guild_id, user_id, hour_bucket)
+                );
+                INSERT INTO member_activity_recent_hourly_new (
+                    guild_id,
+                    user_id,
+                    hour_bucket,
+                    message_count,
+                    last_message_at
+                )
+                SELECT
+                    0,
+                    user_id,
+                    hour_bucket,
+                    message_count,
+                    last_message_at
+                FROM member_activity_recent_hourly;
+                DROP TABLE member_activity_recent_hourly;
+                ALTER TABLE member_activity_recent_hourly_new RENAME TO member_activity_recent_hourly;
+                CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
+                    ON member_activity_recent_hourly(hour_bucket);
+                """
+            )
+
         conn.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_guild_id
                 ON youtube_subscriptions(guild_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_member_activity_summary_guild_id
+                ON member_activity_summary(guild_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_guild_bucket
+                ON member_activity_recent_hourly(guild_id, hour_bucket)
             """
         )
 
@@ -1384,6 +1514,14 @@ def ensure_db_schema():
         )
         conn.execute(
             "UPDATE youtube_subscriptions SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
+        conn.execute(
+            "UPDATE member_activity_summary SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
+        conn.execute(
+            "UPDATE member_activity_recent_hourly SET guild_id = ? WHERE guild_id = 0",
             (GUILD_ID,),
         )
         conn.commit()
@@ -1601,6 +1739,356 @@ def list_recent_actions(guild_id: int | None, limit: int = 200):
             (safe_guild_id, safe_limit),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def parse_iso_datetime_utc(raw_value) -> datetime | None:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def normalize_activity_timestamp(raw_value=None) -> datetime:
+    if isinstance(raw_value, datetime):
+        parsed = raw_value
+    else:
+        parsed = parse_iso_datetime_utc(raw_value)
+    if parsed is None:
+        parsed = datetime.now(UTC)
+    elif parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    else:
+        parsed = parsed.astimezone(UTC)
+    return parsed
+
+
+def compute_member_activity_metrics(message_count: int, active_days: int, period_start: datetime, period_end: datetime):
+    total_seconds = max((period_end - period_start).total_seconds(), 3600.0)
+    period_days = max(total_seconds / 86400.0, 1 / 24)
+    safe_messages = max(int(message_count or 0), 0)
+    safe_active_days = max(int(active_days or 0), 0)
+    return {
+        "period_days": period_days,
+        "messages_per_day": (safe_messages / period_days) if safe_messages else 0.0,
+        "messages_per_active_day": (safe_messages / safe_active_days) if safe_messages and safe_active_days else 0.0,
+        "active_day_ratio": min(1.0, safe_active_days / period_days) if safe_active_days else 0.0,
+    }
+
+
+def build_member_activity_window_record(
+    key: str,
+    label: str,
+    message_count: int,
+    active_days: int,
+    period_start: datetime,
+    period_end: datetime,
+    *,
+    first_message_at: str = "",
+    last_message_at: str = "",
+):
+    metrics = compute_member_activity_metrics(message_count, active_days, period_start, period_end)
+    return {
+        "key": key,
+        "label": label,
+        "message_count": int(message_count or 0),
+        "active_days": int(active_days or 0),
+        "period_days": metrics["period_days"],
+        "messages_per_day": metrics["messages_per_day"],
+        "messages_per_active_day": metrics["messages_per_active_day"],
+        "active_day_ratio": metrics["active_day_ratio"],
+        "first_message_at": str(first_message_at or ""),
+        "last_message_at": str(last_message_at or ""),
+    }
+
+
+def prune_member_activity_recent_hourly(conn, current_dt: datetime):
+    global member_activity_recent_prune_marker
+    current_hour_bucket = current_dt.replace(minute=0, second=0, microsecond=0).isoformat()
+    if member_activity_recent_prune_marker == current_hour_bucket:
+        return
+    cutoff_dt = current_dt - timedelta(days=MEMBER_ACTIVITY_RECENT_RETENTION_DAYS)
+    cutoff_bucket = cutoff_dt.replace(
+        minute=0,
+        second=0,
+        microsecond=0,
+    ).isoformat()
+    conn.execute(
+        "DELETE FROM member_activity_recent_hourly WHERE hour_bucket < ?",
+        (cutoff_bucket,),
+    )
+    conn.execute(
+        """
+        DELETE FROM member_activity_summary
+        WHERE last_message_at IS NULL OR last_message_at < ?
+        """,
+        (cutoff_dt.isoformat(),),
+    )
+    # Lifetime counters are no longer surfaced. Keep this table as a 90-day
+    # profile cache only so inactive members age out cleanly.
+    conn.execute(
+        """
+        UPDATE member_activity_summary
+        SET total_messages = 0,
+            total_active_days = 0
+        """
+    )
+    member_activity_recent_prune_marker = current_hour_bucket
+
+
+def record_member_message_activity(message: discord.Message):
+    if message.guild is None or message.author.bot:
+        return
+    if not is_managed_guild_id(message.guild.id):
+        return
+
+    safe_guild_id = normalize_target_guild_id(message.guild.id)
+    user_id = int(message.author.id)
+    username = clip_text(str(message.author), limit=120)
+    display_name = clip_text(getattr(message.author, "display_name", str(message.author)), limit=120)
+    message_dt = normalize_activity_timestamp(getattr(message, "created_at", None))
+    message_iso = message_dt.isoformat()
+    hour_bucket = message_dt.replace(minute=0, second=0, microsecond=0).isoformat()
+
+    conn = get_db_connection()
+    with db_lock:
+        prune_member_activity_recent_hourly(conn, message_dt)
+        summary_row = conn.execute(
+            """
+            SELECT first_message_at, last_message_at
+            FROM member_activity_summary
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (safe_guild_id, user_id),
+        ).fetchone()
+
+        if summary_row is None:
+            conn.execute(
+                """
+                INSERT INTO member_activity_summary (
+                    guild_id,
+                    user_id,
+                    username,
+                    display_name,
+                    first_message_at,
+                    last_message_at,
+                    total_messages,
+                    total_active_days
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """,
+                (
+                    safe_guild_id,
+                    user_id,
+                    username,
+                    display_name,
+                    message_iso,
+                    message_iso,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE member_activity_summary
+                SET username = ?,
+                    display_name = ?,
+                    last_message_at = ?,
+                    total_messages = 0,
+                    total_active_days = 0
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                (
+                    username,
+                    display_name,
+                    message_iso,
+                    safe_guild_id,
+                    user_id,
+                ),
+            )
+
+        conn.execute(
+            """
+            INSERT INTO member_activity_recent_hourly (
+                guild_id,
+                user_id,
+                hour_bucket,
+                message_count,
+                last_message_at
+            )
+            VALUES (?, ?, ?, 1, ?)
+            ON CONFLICT(guild_id, user_id, hour_bucket) DO UPDATE SET
+                message_count = member_activity_recent_hourly.message_count + 1,
+                last_message_at = excluded.last_message_at
+            """,
+            (
+                safe_guild_id,
+                user_id,
+                hour_bucket,
+                message_iso,
+            ),
+        )
+        conn.commit()
+
+
+def list_member_activity_top_window(guild_id: int | None, window_key: str, limit: int = MEMBER_ACTIVITY_WEB_TOP_LIMIT):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_limit = max(1, min(int(limit or MEMBER_ACTIVITY_WEB_TOP_LIMIT), 100))
+    now_dt = datetime.now(UTC)
+    conn = get_db_connection()
+    with db_lock:
+        window_duration = next((duration for key, _label, duration in MEMBER_ACTIVITY_WINDOW_SPECS if key == window_key), None)
+        if window_duration is None:
+            raise ValueError(f"Unsupported member activity window: {window_key}")
+        cutoff_dt = now_dt - window_duration
+        rows = conn.execute(
+            """
+            SELECT
+                h.user_id,
+                s.username,
+                s.display_name,
+                MAX(h.last_message_at) AS last_message_at,
+                SUM(h.message_count) AS message_count,
+                COUNT(DISTINCT substr(h.hour_bucket, 1, 10)) AS active_days
+            FROM member_activity_recent_hourly h
+            LEFT JOIN member_activity_summary s
+              ON s.guild_id = h.guild_id AND s.user_id = h.user_id
+            WHERE h.guild_id = ?
+              AND h.hour_bucket >= ?
+            GROUP BY h.user_id, s.username, s.display_name
+            ORDER BY message_count DESC, last_message_at DESC
+            LIMIT ?
+            """,
+            (
+                safe_guild_id,
+                cutoff_dt.replace(minute=0, second=0, microsecond=0).isoformat(),
+                safe_limit,
+            ),
+        ).fetchall()
+        members = []
+        label = next((item_label for key, item_label, _duration in MEMBER_ACTIVITY_WINDOW_SPECS if key == window_key), window_key)
+        for index, row in enumerate(rows, start=1):
+            stats = build_member_activity_window_record(
+                window_key,
+                label,
+                int(row["message_count"] or 0),
+                int(row["active_days"] or 0),
+                cutoff_dt,
+                now_dt,
+                first_message_at="",
+                last_message_at=str(row["last_message_at"] or ""),
+            )
+            stats.update(
+                {
+                    "rank": index,
+                    "user_id": int(row["user_id"] or 0),
+                    "username": str(row["username"] or ""),
+                    "display_name": str(row["display_name"] or ""),
+                }
+            )
+            members.append(stats)
+        return members
+
+
+def get_member_activity_snapshot(guild_id: int | None, user_id: int):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    now_dt = datetime.now(UTC)
+    conn = get_db_connection()
+    with db_lock:
+        summary_row = conn.execute(
+            """
+            SELECT
+                user_id,
+                username,
+                display_name,
+                first_message_at,
+                last_message_at,
+                total_messages,
+                total_active_days
+            FROM member_activity_summary
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (safe_guild_id, int(user_id)),
+        ).fetchone()
+        if summary_row is None:
+            return {
+                "ok": True,
+                "user_id": int(user_id),
+                "username": "",
+                "display_name": "",
+                "windows": [],
+            }
+
+        windows = []
+        for window_key, label, window_duration in MEMBER_ACTIVITY_WINDOW_SPECS:
+            cutoff_dt = now_dt - window_duration
+            row = conn.execute(
+                """
+                SELECT
+                    SUM(message_count) AS message_count,
+                    COUNT(DISTINCT substr(hour_bucket, 1, 10)) AS active_days,
+                    MAX(last_message_at) AS last_message_at
+                FROM member_activity_recent_hourly
+                WHERE guild_id = ?
+                  AND user_id = ?
+                  AND hour_bucket >= ?
+                """,
+                (
+                    safe_guild_id,
+                    int(user_id),
+                    cutoff_dt.replace(minute=0, second=0, microsecond=0).isoformat(),
+                ),
+            ).fetchone()
+            windows.append(
+                build_member_activity_window_record(
+                    window_key,
+                    label,
+                    int((row["message_count"] or 0) if row is not None else 0),
+                    int((row["active_days"] or 0) if row is not None else 0),
+                    cutoff_dt,
+                    now_dt,
+                    first_message_at="",
+                    last_message_at=str((row["last_message_at"] or "") if row is not None else ""),
+                )
+            )
+        return {
+            "ok": True,
+            "user_id": int(summary_row["user_id"] or 0),
+            "username": str(summary_row["username"] or ""),
+            "display_name": str(summary_row["display_name"] or ""),
+            "windows": windows,
+        }
+
+
+def build_member_activity_web_payload(guild_id: int):
+    windows = []
+    for window_key, label, _duration in MEMBER_ACTIVITY_WINDOW_SPECS:
+        windows.append(
+            {
+                "key": window_key,
+                "label": label,
+                "members": list_member_activity_top_window(guild_id, window_key, limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT),
+            }
+        )
+    return {
+        "ok": True,
+        "guild_id": normalize_target_guild_id(guild_id),
+        "generated_at": datetime.now(UTC).isoformat(),
+        "top_limit": MEMBER_ACTIVITY_WEB_TOP_LIMIT,
+        "windows": windows,
+    }
+
+
+def run_web_get_member_activity(guild_id: int):
+    try:
+        return build_member_activity_web_payload(guild_id)
+    except Exception as exc:
+        logger.exception("Failed to build member activity web payload")
+        return {"ok": False, "error": str(exc)}
 
 
 def list_youtube_subscriptions(
@@ -5705,6 +6193,7 @@ def start_web_admin_server():
                     on_get_command_permissions=run_web_get_command_permissions,
                     on_save_command_permissions=run_web_update_command_permissions,
                     on_get_actions=run_web_get_actions,
+                    on_get_member_activity=run_web_get_member_activity,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_youtube_subscriptions=run_web_get_youtube_subscriptions,
@@ -6149,7 +6638,7 @@ def build_help_message():
         "Use this bot for:",
         "- Role access and invites (`/submitrole`, `/enter_role`, `/getaccess`)",
         "- Search (`/search_reddit`, `/search_forum`, `/search_openwrt_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
-        "- Utilities (`/ping`, `/sayhi`, `/happy`, `/shorten`, `/expand`, `/uptime`)",
+        "- Utilities (`/ping`, `/sayhi`, `/happy`, `/shorten`, `/expand`, `/uptime`, `/stats`)",
         "- Country nickname tools (`/country`, `/clear_country`)",
         "- Tag shortcuts (`!list` and dynamic slash tag commands)",
         "- Moderation and member/role management (restricted by role/permissions)",
@@ -6157,6 +6646,27 @@ def build_help_message():
         f"📚 Advanced options and full docs: {BOT_HELP_WIKI_URL}",
     ]
     return trim_search_message("\n".join(lines))
+
+
+def format_member_activity_last_seen(raw_value: str):
+    last_seen_dt = parse_iso_datetime_utc(raw_value)
+    if last_seen_dt is None:
+        return "n/a"
+    return f"<t:{int(last_seen_dt.timestamp())}:R>"
+
+
+def format_member_activity_window_summary(window: dict):
+    label = str(window.get("label") or "Activity")
+    lines = [
+        f"**{label}**",
+        f"- Messages: `{int(window.get('message_count') or 0)}`",
+        f"- Active Days: `{int(window.get('active_days') or 0)}`",
+        f"- Avg/Day: `{window.get('messages_per_day') or '0.00'}`",
+        f"- Avg/Active Day: `{window.get('messages_per_active_day') or '0.00'}`",
+        f"- Active %: `{window.get('active_day_ratio_percent') or '0.0'}%`",
+        f"- Last Seen: {format_member_activity_last_seen(str(window.get('last_message_at') or ''))}",
+    ]
+    return "\n".join(lines)
 
 
 def build_docs_site_search_message(query: str, site_key: str):
@@ -6496,6 +7006,8 @@ async def on_message(message: discord.Message):
         return
     if message.guild is not None and not is_managed_guild_id(message.guild.id):
         return
+    if message.guild is not None:
+        record_member_message_activity(message)
     if message.content:
         tag = normalize_tag(message.content.strip().split()[0])
         if tag == "!list":
@@ -8790,6 +9302,56 @@ async def uptime_slash(interaction: discord.Interaction):
             reason=truncate_log_text(str(exc)),
             success=False,
         )
+
+
+@tree.command(
+    name="stats",
+    description="Show your private member activity stats.",
+)
+async def stats_slash(interaction: discord.Interaction):
+    logger.info("/stats invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "stats"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.",
+            ephemeral=True,
+        )
+        return
+    snapshot = get_member_activity_snapshot(interaction.guild.id, interaction.user.id)
+    windows = snapshot.get("windows", []) if isinstance(snapshot, dict) else []
+    if not windows:
+        await interaction.response.send_message(
+            "📊 No member activity has been recorded for you in this server yet.",
+            ephemeral=True,
+        )
+        await log_interaction(
+            interaction,
+            action="stats",
+            reason="no activity",
+            success=True,
+        )
+        return
+
+    display_name = str(snapshot.get("display_name") or interaction.user.display_name or interaction.user.name)
+    lines = [
+        "📊 **Your Activity Stats**",
+        f"Server: **{interaction.guild.name}**",
+        f"Member: **{display_name}**",
+        "",
+    ]
+    for index, window in enumerate(windows):
+        if index > 0:
+            lines.append("")
+        lines.append(format_member_activity_window_summary(window))
+    message = trim_search_message("\n".join(lines))
+    await interaction.response.send_message(message, ephemeral=True)
+    await log_interaction(
+        interaction,
+        action="stats",
+        reason=truncate_log_text(f"messages={sum(int(window.get('message_count') or 0) for window in windows)}"),
+        success=True,
+    )
 
 
 @tree.command(

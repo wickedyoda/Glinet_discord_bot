@@ -1786,6 +1786,7 @@ def _render_layout(
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
+            <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
@@ -1919,6 +1920,7 @@ def create_web_app(
     on_get_command_permissions=None,
     on_save_command_permissions=None,
     on_get_actions=None,
+    on_get_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_youtube_subscriptions=None,
@@ -3010,6 +3012,12 @@ def create_web_app(
             "Open Actions",
         )
         add_dashboard_card(
+            "Member Activity",
+            "Review top 20 member activity windows for the selected Discord server.",
+            url_for("member_activity_page"),
+            "Open Member Activity",
+        )
+        add_dashboard_card(
             "Reddit Feeds",
             "Map subreddit feeds to Discord channels and schedule automatic post checks.",
             url_for("reddit_feeds"),
@@ -3487,6 +3495,85 @@ def create_web_app(
         """
         return _render_page(
             "Action History",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/member-activity", methods=["GET"])
+    @login_required
+    def member_activity_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        payload = (
+            on_get_member_activity(selected_guild_id)
+            if callable(on_get_member_activity)
+            else {"ok": False, "error": "Member activity callback is not configured."}
+        )
+        windows = payload.get("windows", []) if isinstance(payload, dict) else []
+        activity_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        top_limit = int(payload.get("top_limit") or 20) if isinstance(payload, dict) else 20
+
+        window_cards = []
+        for window in windows:
+            members = window.get("members", []) if isinstance(window, dict) else []
+            rows = []
+            for member in members:
+                display_name = str(member.get("display_name") or member.get("username") or member.get("user_id") or "Unknown")
+                username = str(member.get("username") or "")
+                secondary_name = f"<div class='muted mono'>{escape(username)}</div>" if username and username != display_name else ""
+                rows.append(
+                    "<tr>"
+                    f"<td>{escape(str(member.get('rank') or ''))}</td>"
+                    f"<td><strong>{escape(display_name)}</strong>{secondary_name}</td>"
+                    f"<td>{escape(str(member.get('message_count') or 0))}</td>"
+                    f"<td>{escape(str(member.get('active_days') or 0))}</td>"
+                    f"<td>{escape(str(member.get('messages_per_day') or '0.00'))}</td>"
+                    f"<td>{escape(str(member.get('messages_per_active_day') or '0.00'))}</td>"
+                    f"<td>{escape(str(member.get('active_day_ratio_percent') or '0.0'))}%</td>"
+                    f"<td class='mono'>{escape(str(member.get('last_message_at') or 'n/a'))}</td>"
+                    "</tr>"
+                )
+            window_cards.append(
+                f"""
+                <div class="card table-scroll">
+                  <h3>{escape(str(window.get("label") or "Activity Window"))}</h3>
+                  <table class="history-table">
+                    <thead>
+                      <tr>
+                        <th>Rank</th>
+                        <th>Member</th>
+                        <th>Messages</th>
+                        <th>Active Days</th>
+                        <th>Avg/Day</th>
+                        <th>Avg/Active Day</th>
+                        <th>Active %</th>
+                        <th>Last Seen</th>
+                      </tr>
+                    </thead>
+                    <tbody>{"".join(rows) if rows else "<tr><td colspan='8' class='muted'>No member activity recorded in this window yet.</td></tr>"}</tbody>
+                  </table>
+                </div>
+                """
+            )
+
+        body = f"""
+        <div class="card">
+          <h2>Member Activity</h2>
+          <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+          <p class="muted">Showing the top {escape(str(top_limit))} members by message activity for each time window.</p>
+          <p class="muted">Columns show total messages, active days, average messages per day, average messages per active day, and the share of days with activity.</p>
+          {"<p class='muted'>" + escape(activity_error) + "</p>" if activity_error else ""}
+        </div>
+        {"".join(window_cards) if window_cards else "<div class='card'><p class='muted'>No member activity windows are available yet.</p></div>"}
+        """
+        return _render_page(
+            "Member Activity",
             body,
             user["email"],
             bool(user.get("is_admin")),
@@ -5068,6 +5155,7 @@ def start_web_admin_interface(
     on_get_command_permissions=None,
     on_save_command_permissions=None,
     on_get_actions=None,
+    on_get_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_youtube_subscriptions=None,
@@ -5096,6 +5184,7 @@ def start_web_admin_interface(
         on_get_command_permissions=on_get_command_permissions,
         on_save_command_permissions=on_save_command_permissions,
         on_get_actions=on_get_actions,
+        on_get_member_activity=on_get_member_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
         on_manage_reddit_feeds=on_manage_reddit_feeds,
         on_get_youtube_subscriptions=on_get_youtube_subscriptions,
