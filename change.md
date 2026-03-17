@@ -2,6 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-16] - Member Activity Analytics
+
+### Added
+- Member activity tracking for guild messages with rolling hourly retention for the last 90 days.
+- New private `/stats` slash command for personal activity summaries covering:
+  - last 90 days
+  - last 30 days
+  - last 7 days
+  - last 24 hours
+- New guild-scoped web admin page at `/admin/member-activity` showing top-20 member activity tables for the same time windows.
+
+### Changed
+- Help and wiki docs now include the member activity analytics feature and `/stats` command.
+- Member activity retention is now capped at 90 days and the lifetime "Since Joining" view has been removed.
+
 ## [2026-03-16] - Web GUI Host Bind Configuration
 
 ### Added

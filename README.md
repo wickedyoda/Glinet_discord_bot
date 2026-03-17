@@ -5,7 +5,7 @@
   <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Logo (Full)" width="240" />
 </p>
 
-Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper` identity, with invite/code role access, moderation tools, search helpers, firmware and YouTube monitoring, utility commands, and a secured multi-guild web admin GUI.
+Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper` identity, with invite/code role access, moderation tools, search helpers, firmware and YouTube monitoring, member-activity analytics, utility commands, and a secured multi-guild web admin GUI.
 
 ## Documentation
 
@@ -79,7 +79,8 @@ docker compose build
 - Firmware monitor (baseline + delta notifications)
 - YouTube subscription monitor with channel-to-Discord posting
 - Web-managed Reddit feed posting for new subreddit submissions
-- Web admin GUI with server selection, guild-scoped management pages, action history, YouTube subscriptions, and per-guild channel/tag/invite settings
+- Member activity tracking with private `/stats` output and web top-20 views for rolling 90/30/7/1-day windows
+- Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, and per-guild channel/tag/invite settings
 - Optional guild allowlist mode for multi-guild deployments and public invites
 - SQLite persistence with legacy merge import on startup
 - Local verification tooling for lint, tests, security checks, and Docker builds

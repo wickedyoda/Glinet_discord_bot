@@ -80,6 +80,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Mobile layout is responsive for smaller screens and touch interaction.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
+- Member activity page shows top-20 member activity windows for the selected server.
 
 ## Admin Pages and Capabilities
 
@@ -132,6 +133,22 @@ UI forms include show/hide password toggles and validation feedback.
 - Scoped to the selected server
 - Read-only activity history for moderation actions and server-event log writes
 - Useful for reviewing what the bot did without reading raw log files
+
+### `/admin/member-activity`
+
+- Scoped to the selected server
+- Read-only top 20 member activity tables for:
+  - last 90 days
+  - last 30 days
+  - last 7 days
+  - last 24 hours
+- Each table shows:
+  - message count
+  - active day count
+  - average messages per day
+  - average messages per active day
+  - active-day percentage
+  - last seen timestamp
 
 ### `/admin/command-permissions`
 
@@ -190,6 +207,7 @@ Scope notes:
   - `/admin/dashboard`
   - `/admin/guild-settings`
   - `/admin/actions`
+  - `/admin/member-activity`
   - `/admin/command-permissions`
   - `/admin/reddit-feeds`
   - `/admin/youtube`
