@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-16] - Web GUI Host Bind Configuration
+
+### Added
+- New Compose/env controls for web GUI host-side port publishing:
+  - `WEB_HTTP_HOST_BIND`
+  - `WEB_HTTPS_HOST_BIND`
+
+### Changed
+- Docker Compose web port publishing is no longer hardcoded to `127.0.0.1`.
+- Documentation now distinguishes same-host proxy-only localhost binding from direct host exposure using `0.0.0.0`.
+
 ## [2026-03-15] - Dependency Security Update
 
 ### Changed

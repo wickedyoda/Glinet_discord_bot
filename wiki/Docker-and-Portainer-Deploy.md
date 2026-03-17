@@ -23,9 +23,11 @@ services:
       - WEB_BIND_HOST=0.0.0.0
       - WEB_ENABLED=${WEB_ENABLED:-true}
       - WEB_PORT=${WEB_PORT:-8080}
+      - WEB_HTTP_HOST_BIND=${WEB_HTTP_HOST_BIND:-127.0.0.1}
       - WEB_HOST_PORT=${WEB_HOST_PORT:-8080}
       - WEB_HTTPS_ENABLED=${WEB_HTTPS_ENABLED:-true}
       - WEB_HTTPS_PORT=${WEB_HTTPS_PORT:-8081}
+      - WEB_HTTPS_HOST_BIND=${WEB_HTTPS_HOST_BIND:-127.0.0.1}
       - WEB_HTTPS_HOST_PORT=${WEB_HTTPS_HOST_PORT:-8081}
       - LOG_DIR=${LOG_DIR:-/logs}
       - LOG_HARDEN_FILE_PERMISSIONS=${LOG_HARDEN_FILE_PERMISSIONS:-true}
@@ -43,8 +45,8 @@ services:
       - WEB_ENFORCE_CSRF=${WEB_ENFORCE_CSRF:-true}
       - WEB_ENFORCE_SAME_ORIGIN_POSTS=${WEB_ENFORCE_SAME_ORIGIN_POSTS:-true}
     ports:
-      - "127.0.0.1:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
-      - "127.0.0.1:${WEB_HTTPS_HOST_PORT:-8081}:${WEB_HTTPS_PORT:-8081}"
+      - "${WEB_HTTP_HOST_BIND:-127.0.0.1}:${WEB_HOST_PORT:-8080}:${WEB_PORT:-8080}"
+      - "${WEB_HTTPS_HOST_BIND:-127.0.0.1}:${WEB_HTTPS_HOST_PORT:-8081}:${WEB_HTTPS_PORT:-8081}"
     volumes:
       - ./data:/app/data
       - ./logs:/logs
@@ -74,6 +76,13 @@ Example host mapping:
 ports:
   - "127.0.0.1:8080:8080"
   - "127.0.0.1:8081:8081"
+```
+
+If you want direct access from other machines instead of same-host reverse proxy only, set:
+
+```env
+WEB_HTTP_HOST_BIND=0.0.0.0
+WEB_HTTPS_HOST_BIND=0.0.0.0
 ```
 
 Use your proxy to publish HTTPS domain externally.
@@ -131,6 +140,7 @@ Notes:
 
 - App listens on `WEB_PORT` inside container.
 - Host published port controlled by `WEB_HOST_PORT` in compose mapping.
+- Host published bind address controlled by `WEB_HTTP_HOST_BIND` / `WEB_HTTPS_HOST_BIND`.
 - Public exposure should happen via reverse proxy, not direct open port.
 
 ## Logs and Diagnostics
@@ -167,7 +177,7 @@ Tune with:
 - `failed to read dockerfile`:
   - Use image-based deploy or correct stack path.
 - Web UI unavailable:
-  - Check bind host/port mapping and proxy upstream target.
+  - Check host bind address, host port mapping, and proxy upstream target.
 
 ## Security Guidance
 
