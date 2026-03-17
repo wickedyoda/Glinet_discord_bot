@@ -2342,8 +2342,8 @@ def record_member_message_activity(message: discord.Message):
             conn,
             guild_id=message.guild.id,
             user_id=int(message.author.id),
-            username=clip_text(str(message.author), limit=120),
-            display_name=clip_text(getattr(message.author, "display_name", str(message.author)), limit=120),
+            username=clip_text(str(message.author), max_chars=120),
+            display_name=clip_text(getattr(message.author, "display_name", str(message.author)), max_chars=120),
             message_id=int(message.id),
             message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
         )
@@ -2798,8 +2798,8 @@ async def member_activity_backfill_job():
                             conn,
                             guild_id=message.guild.id,
                             user_id=int(message.author.id),
-                            username=clip_text(str(message.author), limit=120),
-                            display_name=clip_text(getattr(message.author, "display_name", str(message.author)), limit=120),
+                            username=clip_text(str(message.author), max_chars=120),
+                            display_name=clip_text(getattr(message.author, "display_name", str(message.author)), max_chars=120),
                             message_id=int(message.id),
                             message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
                         )
@@ -8638,7 +8638,7 @@ async def random_choice_slash(interaction: discord.Interaction):
             [
                 "🎲 **Random Choice**",
                 f"Selected member: {chosen_member.mention}",
-                f"Display name: `{clip_text(chosen_member.display_name, limit=80)}`",
+                f"Display name: `{clip_text(chosen_member.display_name, max_chars=80)}`",
                 f"User ID: `{chosen_member.id}`",
                 f"Eligible pool size: `{len(eligible_members)}`",
                 f"Cooldown: `{RANDOM_CHOICE_COOLDOWN_DAYS} days` before this member can be picked again",
