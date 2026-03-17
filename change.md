@@ -52,6 +52,19 @@ All notable changes to this project are documented in this file.
   - configured moderator/admin role IDs
   - named staff roles `Employee`, `Admin`, and `Gl.iNet Moderator`
 
+### Changed
+- `/random_choice` now enforces a per-guild 7-day cooldown so the same member cannot be selected twice within that window.
+
+## [2026-03-17] - Member Activity Export
+
+### Added
+- ZIP export option at the bottom of `/admin/member-activity`.
+- Export archive now includes:
+  - one CSV per activity window
+  - raw member activity summary CSV
+  - raw hourly activity CSV
+  - JSON summary manifest
+
 ## [2026-03-16] - Web GUI Host Bind Configuration
 
 ### Added

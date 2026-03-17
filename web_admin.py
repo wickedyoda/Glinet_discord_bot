@@ -12,6 +12,7 @@ from collections import deque
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from html import escape
+from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -3609,7 +3610,7 @@ def create_web_app(
         content_type = str(payload.get("content_type") or "application/octet-stream")
         data = payload.get("data") or b""
         return send_file(
-            io.BytesIO(data),
+            BytesIO(data),
             mimetype=content_type,
             as_attachment=True,
             download_name=file_name,
