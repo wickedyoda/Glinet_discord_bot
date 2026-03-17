@@ -43,7 +43,10 @@ def _make_app(tmp_path: Path):
                     "label": "#alerts [text]",
                 }
             ],
-            "roles": [],
+            "roles": [
+                {"id": "111", "name": "Member", "label": "@Member"},
+                {"id": "222", "name": "Employee", "label": "@Employee"},
+            ],
         }
 
     app = create_web_app(
@@ -67,9 +70,12 @@ def _make_app(tmp_path: Path):
                 }
             ],
         },
-        on_get_member_activity=lambda guild_id: {
+        on_get_member_activity=lambda guild_id, role_id=None: {
             "ok": True,
             "top_limit": 20,
+            "selected_role_id": int(role_id or 0),
+            "excluded_role_ids": [],
+            "excluded_role_names": ["Employee", "Admin", "Gl.iNet Moderator"],
             "windows": [
                 {
                     "key": "last_90_days",
@@ -87,7 +93,7 @@ def _make_app(tmp_path: Path):
                 }
             ],
         },
-        on_export_member_activity=lambda guild_id: {
+        on_export_member_activity=lambda guild_id, role_id=None: {
             "ok": True,
             "filename": "member_activity_test.zip",
             "content_type": "application/zip",
@@ -137,6 +143,10 @@ def _make_app(tmp_path: Path):
 
 
 def _login(client):
+    return _login_as(client, "admin@example.com", "Ab!12xy")
+
+
+def _login_as(client, email: str, password: str):
     login_page = client.get("/login", base_url="https://docker.example:8443")
     assert login_page.status_code == 200
     html = login_page.get_data(as_text=True)
@@ -145,7 +155,7 @@ def _login(client):
     csrf_token = match.group(1)
     response = client.post(
         "/login",
-        data={"email": "admin@example.com", "password": "Ab!12xy"},
+        data={"email": email, "password": password},
         base_url="https://docker.example:8443",
         headers={"X-CSRF-Token": csrf_token},
         follow_redirects=True,
@@ -268,6 +278,10 @@ def test_member_activity_page_renders_tables(tmp_path: Path):
     assert b"Last 90 Days" in response.data
     assert b"Tester" in response.data
     assert b"Download Activity Export" in response.data
+    assert b"Top 20 by role" in response.data
+    assert b"All eligible members" in response.data
+    assert b"@Member" in response.data
+    assert b"@Employee" not in response.data
 
 
 def test_member_activity_export_downloads_zip(tmp_path: Path):
@@ -354,3 +368,46 @@ def test_admin_can_edit_user_and_reset_password(tmp_path: Path):
     )
     assert password_response.status_code == 200
     assert b"target-renamed@example.com" in password_response.data
+
+
+def test_glinet_role_is_limited_to_member_activity(tmp_path: Path):
+    app = _make_app(tmp_path)
+    admin_client = app.test_client()
+    _login(admin_client)
+
+    create_response = admin_client.post(
+        "/admin/users",
+        data={
+            "action": "create",
+            "csrf_token": _page_csrf_token(admin_client, "/admin/users"),
+            "first_name": "Glinet",
+            "last_name": "Viewer",
+            "display_name": "Glinet Viewer",
+            "email": "glinet@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+            "role": "glinet",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_response.status_code == 200
+    assert b"glinet@example.com" in create_response.data
+    assert b"Glinet" in create_response.data
+
+    client = app.test_client()
+    _login_as(client, "glinet@example.com", "Ab!12xy")
+    _select_guild(client)
+
+    member_activity_response = client.get("/admin/member-activity", base_url="https://docker.example:8443")
+    assert member_activity_response.status_code == 200
+    assert b"Member Activity" in member_activity_response.data
+
+    dashboard_response = client.get(
+        "/admin/dashboard",
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert dashboard_response.status_code == 200
+    assert b"Member Activity" in dashboard_response.data
+    assert b"Glinet access is limited to member activity only." in dashboard_response.data
