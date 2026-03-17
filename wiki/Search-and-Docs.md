@@ -63,5 +63,5 @@ Search GL.iNet forum and documentation sources directly from Discord.
 
 ## Related Pages
 
-- [Environment Variables](Environment-Variables)
-- [Command Reference](Command-Reference)
+- [Environment Variables](Environment-Variables.md)
+- [Command Reference](Command-Reference.md)

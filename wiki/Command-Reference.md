@@ -150,7 +150,7 @@ Custom role restriction options:
 
 ## Related Pages
 
-- [Role Access and Invites](Role-Access-and-Invites)
-- [Moderation and Logs](Moderation-and-Logs)
-- [Web Admin Interface](Web-Admin-Interface)
-- [Environment Variables](Environment-Variables)
+- [Role Access and Invites](Role-Access-and-Invites.md)
+- [Moderation and Logs](Moderation-and-Logs.md)
+- [Web Admin Interface](Web-Admin-Interface.md)
+- [Environment Variables](Environment-Variables.md)

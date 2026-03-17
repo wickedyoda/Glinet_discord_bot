@@ -71,6 +71,6 @@ Equivalent slash examples:
 
 ## Related Pages
 
-- [Command Reference](Command-Reference)
-- [Web Admin Interface](Web-Admin-Interface)
-- [Data Files](Data-Files)
+- [Command Reference](Command-Reference.md)
+- [Web Admin Interface](Web-Admin-Interface.md)
+- [Data Files](Data-Files.md)

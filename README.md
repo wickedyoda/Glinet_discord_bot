@@ -12,7 +12,7 @@ Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper
 Detailed feature behavior, deployment options, environment variables, proxy variations, and security guidance are maintained in the wiki.
 
 - Wiki home: [`wiki/Home.md`](./wiki/Home.md)
-- GitHub wiki page: [https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md](https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md)
+- GitHub wiki page: [https://github.com/wickedyoda/Glinet_discord_bot/wiki](https://github.com/wickedyoda/Glinet_discord_bot/wiki)
 - Public repo landing redirect target: [http://discord.glinet.wickedyoda.com/](http://discord.glinet.wickedyoda.com/)
 - Public wiki redirect target: [http://discord.glinet.wickedyoda.com/wiki](http://discord.glinet.wickedyoda.com/wiki)
 
@@ -76,11 +76,11 @@ docker compose build
 - Utility commands for `ping`, uptime/status, URL shortening/expansion, and quick image/greeting helpers
 - Country nickname suffix commands
 - Extended moderation commands and event logging
-- Moderator-only random member selection command that excludes staff roles
+- Moderator-only random member selection command that excludes staff roles and enforces a 7-day per-guild cooldown before the same member can be picked again
 - Firmware monitor (baseline + delta notifications)
 - YouTube subscription monitor with channel-to-Discord posting
 - Web-managed Reddit feed posting for new subreddit submissions
-- Member activity tracking with private `/stats` output and web top-20 views for rolling 90/30/7/1-day windows
+- Member activity tracking with private `/stats` output, web top-20 views for rolling 90/30/7/1-day windows, and ZIP export from the web GUI
 - Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, and per-guild channel/tag/invite settings
 - Optional guild allowlist mode for multi-guild deployments and public invites
 - SQLite persistence with legacy merge import on startup
@@ -126,6 +126,7 @@ Behavior:
 - Scans readable channel history from the selected guild starting at the given UTC date
 - Uses a one-time state record so the same completed backfill range does not rerun every restart
 - Only keeps the last 90 days of activity data
+- Feeds the same `/stats` command and `/admin/member-activity` web views used for live collection
 
 ## Security
 

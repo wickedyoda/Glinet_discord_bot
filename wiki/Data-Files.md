@@ -96,6 +96,6 @@ For reliable restore:
 
 ## Related Pages
 
-- [Environment Variables](Environment-Variables)
-- [Docker and Portainer Deploy](Docker-and-Portainer-Deploy)
-- [Security Hardening](Security-Hardening)
+- [Environment Variables](Environment-Variables.md)
+- [Docker and Portainer Deploy](Docker-and-Portainer-Deploy.md)
+- [Security Hardening](Security-Hardening.md)

@@ -65,6 +65,6 @@ For ~4000-member guilds:
 
 ## Related Pages
 
-- [Moderation and Logs](Moderation-and-Logs)
-- [Web Admin Interface](Web-Admin-Interface)
-- [Environment Variables](Environment-Variables)
+- [Moderation and Logs](Moderation-and-Logs.md)
+- [Web Admin Interface](Web-Admin-Interface.md)
+- [Environment Variables](Environment-Variables.md)

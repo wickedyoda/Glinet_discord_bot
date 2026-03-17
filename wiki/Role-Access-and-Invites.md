@@ -83,6 +83,6 @@ Import behavior:
 
 ## Related Pages
 
-- [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment)
-- [Command Reference](Command-Reference)
-- [Data Files](Data-Files)
+- [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment.md)
+- [Command Reference](Command-Reference.md)
+- [Data Files](Data-Files.md)
