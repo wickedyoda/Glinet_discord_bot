@@ -87,6 +87,12 @@ def _make_app(tmp_path: Path):
                 }
             ],
         },
+        on_export_member_activity=lambda guild_id: {
+            "ok": True,
+            "filename": "member_activity_test.zip",
+            "content_type": "application/zip",
+            "data": b"PK\x05\x06" + (b"\x00" * 18),
+        },
         on_get_reddit_feeds=lambda guild_id: {"ok": True, "feeds": []},
         on_get_youtube_subscriptions=lambda guild_id: {
             "ok": True,
@@ -228,6 +234,21 @@ def test_member_activity_page_renders_tables(tmp_path: Path):
     assert b"Member Activity" in response.data
     assert b"Last 90 Days" in response.data
     assert b"Tester" in response.data
+    assert b"Download Activity Export" in response.data
+
+
+def test_member_activity_export_downloads_zip(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/member-activity/export", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Type", "").startswith("application/zip")
+    assert "attachment;" in response.headers.get("Content-Disposition", "")
+    assert response.data.startswith(b"PK")
 
 
 def test_admin_can_edit_user_and_reset_password(tmp_path: Path):

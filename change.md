@@ -34,6 +34,24 @@ All notable changes to this project are documented in this file.
 - `/submitrole` now uses a native Discord slash-command role parameter instead of waiting for the user to mention a role in a follow-up message.
 - The command now validates the selected role before generating the invite link and 6-digit access code.
 
+## [2026-03-17] - Member Activity Backfill Job
+
+### Added
+- One-time startup backfill job for member activity history using:
+  - `MEMBER_ACTIVITY_BACKFILL_ENABLED`
+  - `MEMBER_ACTIVITY_BACKFILL_GUILD_ID`
+  - `MEMBER_ACTIVITY_BACKFILL_SINCE`
+- Backfill run-state storage so the same completed guild/date range does not replay on every restart.
+- Message-level dedupe table for member activity so live collection and backfill do not double-count the same Discord messages.
+
+## [2026-03-17] - Moderator `/random_choice` Command
+
+### Added
+- New moderator-only `/random_choice` slash command.
+- Random selection excludes members with:
+  - configured moderator/admin role IDs
+  - named staff roles `Employee`, `Admin`, and `Gl.iNet Moderator`
+
 ## [2026-03-16] - Web GUI Host Bind Configuration
 
 ### Added

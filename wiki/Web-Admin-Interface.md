@@ -146,6 +146,12 @@ UI forms include show/hide password toggles and validation feedback.
   - message count
   - active day count
   - last seen timestamp
+- Export option at the bottom of the page downloads a compressed ZIP archive for the selected server
+- Export includes:
+  - per-window leaderboard CSV files
+  - raw member activity summary CSV
+  - raw hourly activity CSV
+  - JSON summary manifest
 
 ### `/admin/command-permissions`
 
