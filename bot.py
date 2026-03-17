@@ -1971,6 +1971,179 @@ def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, paylo
     )
 
 
+def ensure_member_activity_schema_locked(conn):
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS member_activity_summary (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            username TEXT NOT NULL DEFAULT '',
+            display_name TEXT NOT NULL DEFAULT '',
+            first_message_at TEXT NOT NULL,
+            last_message_at TEXT NOT NULL,
+            total_messages INTEGER NOT NULL DEFAULT 0,
+            total_active_days INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (guild_id, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS member_activity_recent_hourly (
+            guild_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            hour_bucket TEXT NOT NULL,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            last_message_at TEXT NOT NULL,
+            PRIMARY KEY (guild_id, user_id, hour_bucket)
+        );
+
+        CREATE TABLE IF NOT EXISTS member_activity_seen_messages (
+            guild_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (guild_id, message_id)
+        );
+        """
+    )
+
+    member_activity_summary_columns = {
+        str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_summary)").fetchall()
+    }
+    if member_activity_summary_columns and "guild_id" not in member_activity_summary_columns:
+        conn.executescript(
+            """
+            CREATE TABLE member_activity_summary_new (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
+                display_name TEXT NOT NULL DEFAULT '',
+                first_message_at TEXT NOT NULL,
+                last_message_at TEXT NOT NULL,
+                total_messages INTEGER NOT NULL DEFAULT 0,
+                total_active_days INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id)
+            );
+            INSERT INTO member_activity_summary_new (
+                guild_id,
+                user_id,
+                username,
+                display_name,
+                first_message_at,
+                last_message_at,
+                total_messages,
+                total_active_days
+            )
+            SELECT
+                0,
+                user_id,
+                username,
+                display_name,
+                first_message_at,
+                last_message_at,
+                total_messages,
+                total_active_days
+            FROM member_activity_summary;
+            DROP TABLE member_activity_summary;
+            ALTER TABLE member_activity_summary_new RENAME TO member_activity_summary;
+            """
+        )
+
+    member_activity_recent_columns = {
+        str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_recent_hourly)").fetchall()
+    }
+    if member_activity_recent_columns and "guild_id" not in member_activity_recent_columns:
+        conn.executescript(
+            """
+            CREATE TABLE member_activity_recent_hourly_new (
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                hour_bucket TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                last_message_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, user_id, hour_bucket)
+            );
+            INSERT INTO member_activity_recent_hourly_new (
+                guild_id,
+                user_id,
+                hour_bucket,
+                message_count,
+                last_message_at
+            )
+            SELECT
+                0,
+                user_id,
+                hour_bucket,
+                message_count,
+                last_message_at
+            FROM member_activity_recent_hourly;
+            DROP TABLE member_activity_recent_hourly;
+            ALTER TABLE member_activity_recent_hourly_new RENAME TO member_activity_recent_hourly;
+            """
+        )
+
+    member_activity_seen_columns = {
+        str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_seen_messages)").fetchall()
+    }
+    if member_activity_seen_columns and "guild_id" not in member_activity_seen_columns:
+        conn.executescript(
+            """
+            CREATE TABLE member_activity_seen_messages_new (
+                guild_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, message_id)
+            );
+            INSERT INTO member_activity_seen_messages_new (
+                guild_id,
+                message_id,
+                created_at
+            )
+            SELECT
+                0,
+                message_id,
+                created_at
+            FROM member_activity_seen_messages;
+            DROP TABLE member_activity_seen_messages;
+            ALTER TABLE member_activity_seen_messages_new RENAME TO member_activity_seen_messages;
+            """
+        )
+
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
+            ON member_activity_summary(last_message_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
+            ON member_activity_recent_hourly(hour_bucket)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_created_at
+            ON member_activity_seen_messages(created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_member_activity_summary_guild_id
+            ON member_activity_summary(guild_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_guild_bucket
+            ON member_activity_recent_hourly(guild_id, hour_bucket)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_guild_created
+            ON member_activity_seen_messages(guild_id, created_at)
+        """
+    )
+
+
 def compute_member_activity_metrics(message_count: int, active_days: int, period_start: datetime, period_end: datetime):
     total_seconds = max((period_end - period_start).total_seconds(), 3600.0)
     period_days = max(total_seconds / 86400.0, 1 / 24)
@@ -2164,6 +2337,7 @@ def record_member_message_activity(message: discord.Message):
 
     conn = get_db_connection()
     with db_lock:
+        ensure_member_activity_schema_locked(conn)
         changed = _record_member_message_activity_locked(
             conn,
             guild_id=message.guild.id,
@@ -2183,6 +2357,7 @@ def list_member_activity_top_window(guild_id: int | None, window_key: str, limit
     now_dt = datetime.now(UTC)
     conn = get_db_connection()
     with db_lock:
+        ensure_member_activity_schema_locked(conn)
         window_duration = next((duration for key, _label, duration in MEMBER_ACTIVITY_WINDOW_SPECS if key == window_key), None)
         if window_duration is None:
             raise ValueError(f"Unsupported member activity window: {window_key}")
@@ -2241,6 +2416,7 @@ def get_member_activity_snapshot(guild_id: int | None, user_id: int):
     now_dt = datetime.now(UTC)
     conn = get_db_connection()
     with db_lock:
+        ensure_member_activity_schema_locked(conn)
         summary_row = conn.execute(
             """
             SELECT
@@ -2468,6 +2644,14 @@ def _can_backfill_message_channel(channel, bot_member: discord.Member | None):
 async def iter_member_activity_backfill_channels(guild: discord.Guild):
     bot_user_id = bot.user.id if bot.user else None
     bot_member = guild.me or (guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None and bot_user_id:
+        try:
+            bot_member = await guild.fetch_member(bot_user_id)
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning(
+                "Member activity backfill could not fetch bot member record for guild %s; channel discovery may be incomplete.",
+                guild.id,
+            )
     seen_channel_ids = set()
 
     for channel in guild.text_channels:
@@ -2547,13 +2731,25 @@ async def member_activity_backfill_job():
         return
 
     state = load_member_activity_backfill_state(guild.id, since_dt)
-    if str(state.get("status") or "").strip().lower() == "completed":
+    previous_status = str(state.get("status") or "").strip().lower()
+    previous_channels_scanned = int(state.get("channels_scanned") or 0)
+    previous_messages_processed = int(state.get("messages_processed") or 0)
+    if (
+        previous_status == "completed"
+        and (previous_channels_scanned > 0 or previous_messages_processed > 0)
+    ):
         logger.info(
             "Member activity backfill already completed for guild %s since %s; skipping.",
             guild.id,
             since_dt.isoformat(),
         )
         return
+    if previous_status == "completed":
+        logger.warning(
+            "Member activity backfill state for guild %s since %s was marked completed with no imported data; retrying.",
+            guild.id,
+            since_dt.isoformat(),
+        )
 
     until_dt = datetime.now(UTC).replace(microsecond=0)
     status = {
@@ -2626,6 +2822,24 @@ async def member_activity_backfill_job():
                     channel.id,
                 )
                 continue
+
+        if channels_scanned <= 0:
+            status.update(
+                {
+                    "status": "failed",
+                    "completed_at": datetime.now(UTC).isoformat(),
+                    "channels_scanned": channels_scanned,
+                    "messages_processed": messages_processed,
+                    "last_error": "No readable channels were discovered for backfill.",
+                }
+            )
+            save_member_activity_backfill_state(guild.id, since_dt, status)
+            logger.warning(
+                "Member activity backfill found no readable channels for guild %s (%s); not marking run complete.",
+                guild.name,
+                guild.id,
+            )
+            return
 
         status.update(
             {
@@ -7594,7 +7808,14 @@ async def on_message(message: discord.Message):
     if message.guild is not None and not is_managed_guild_id(message.guild.id):
         return
     if message.guild is not None:
-        record_member_message_activity(message)
+        try:
+            record_member_message_activity(message)
+        except Exception:
+            logger.exception(
+                "Failed to record member activity for message %s in guild %s",
+                getattr(message, "id", "unknown"),
+                getattr(message.guild, "id", "unknown"),
+            )
     if message.content:
         tag = normalize_tag(message.content.strip().split()[0])
         if tag == "!list":
