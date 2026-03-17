@@ -108,6 +108,7 @@ Web variation:
 | `/modlog_test` | Slash | Moderator | none | Sends test log to mod log channel |
 | `!modlogtest` | Prefix | Moderator | none | Prefix equivalent |
 | `/logs` | Slash | Moderator | optional line count | Returns recent container error lines (ephemeral) |
+| `/random_choice` | Slash | Moderator | none | Randomly selects one eligible member, excluding moderator/admin role IDs and named staff roles (`Employee`, `Admin`, `Gl.iNet Moderator`) |
 
 ## Web-Admin-Only Actions (No Discord Command)
 

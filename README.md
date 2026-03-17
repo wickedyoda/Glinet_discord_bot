@@ -76,6 +76,7 @@ docker compose build
 - Utility commands for `ping`, uptime/status, URL shortening/expansion, and quick image/greeting helpers
 - Country nickname suffix commands
 - Extended moderation commands and event logging
+- Moderator-only random member selection command that excludes staff roles
 - Firmware monitor (baseline + delta notifications)
 - YouTube subscription monitor with channel-to-Discord posting
 - Web-managed Reddit feed posting for new subreddit submissions
@@ -111,6 +112,20 @@ Defaults:
 - `LOG_HARDEN_FILE_PERMISSIONS=true` (enforces `0700` on log dir and `0600` on log files when possible)
 - `LOG_RETENTION_DAYS=90`
 - `LOG_ROTATION_INTERVAL_DAYS=1`
+
+## Member Activity Backfill
+
+To backfill member activity history once at startup, set:
+
+- `MEMBER_ACTIVITY_BACKFILL_ENABLED=true`
+- `MEMBER_ACTIVITY_BACKFILL_GUILD_ID=<target guild id>` or leave blank to use `GUILD_ID`
+- `MEMBER_ACTIVITY_BACKFILL_SINCE=2026-02-01`
+
+Behavior:
+
+- Scans readable channel history from the selected guild starting at the given UTC date
+- Uses a one-time state record so the same completed backfill range does not rerun every restart
+- Only keeps the last 90 days of activity data
 
 ## Security
 

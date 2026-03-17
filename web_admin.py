@@ -1921,6 +1921,7 @@ def create_web_app(
     on_save_command_permissions=None,
     on_get_actions=None,
     on_get_member_activity=None,
+    on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_youtube_subscriptions=None,
@@ -3518,6 +3519,15 @@ def create_web_app(
         windows = payload.get("windows", []) if isinstance(payload, dict) else []
         activity_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
         top_limit = int(payload.get("top_limit") or 20) if isinstance(payload, dict) else 20
+        export_html = ""
+        if callable(on_export_member_activity):
+            export_html = (
+                f"<div class='card'>"
+                f"<h3>Export Activity Data</h3>"
+                f"<p class='muted'>Download the selected server's member activity as a compressed ZIP archive.</p>"
+                f"<a class='btn secondary' href='{escape(url_for('member_activity_export'), quote=True)}'>Download Activity Export</a>"
+                f"</div>"
+            )
 
         window_cards = []
         for window in windows:
@@ -3565,6 +3575,7 @@ def create_web_app(
           {"<p class='muted'>" + escape(activity_error) + "</p>" if activity_error else ""}
         </div>
         {"".join(window_cards) if window_cards else "<div class='card'><p class='muted'>No member activity windows are available yet.</p></div>"}
+        {export_html}
         """
         return _render_page(
             "Member Activity",
@@ -3572,6 +3583,36 @@ def create_web_app(
             user["email"],
             bool(user.get("is_admin")),
             str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/member-activity/export", methods=["GET"])
+    @login_required
+    def member_activity_export():
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        if not callable(on_export_member_activity):
+            flash("Member activity export is not configured.", "error")
+            return redirect(url_for("member_activity_page"))
+        payload = on_export_member_activity(selected_guild_id)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            flash(
+                str(payload.get("error") or "Failed to export member activity.")
+                if isinstance(payload, dict)
+                else "Failed to export member activity.",
+                "error",
+            )
+            return redirect(url_for("member_activity_page"))
+        file_name = str(payload.get("filename") or "member_activity.zip")
+        content_type = str(payload.get("content_type") or "application/octet-stream")
+        data = payload.get("data") or b""
+        return send_file(
+            io.BytesIO(data),
+            mimetype=content_type,
+            as_attachment=True,
+            download_name=file_name,
         )
 
     @app.route("/admin/documentation", methods=["GET"])
@@ -5226,6 +5267,7 @@ def start_web_admin_interface(
     on_save_command_permissions=None,
     on_get_actions=None,
     on_get_member_activity=None,
+    on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_youtube_subscriptions=None,
@@ -5255,6 +5297,7 @@ def start_web_admin_interface(
         on_save_command_permissions=on_save_command_permissions,
         on_get_actions=on_get_actions,
         on_get_member_activity=on_get_member_activity,
+        on_export_member_activity=on_export_member_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
         on_manage_reddit_feeds=on_manage_reddit_feeds,
         on_get_youtube_subscriptions=on_get_youtube_subscriptions,
