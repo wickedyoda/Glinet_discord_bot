@@ -81,14 +81,17 @@ def _make_app(tmp_path: Path):
                             "username": "tester",
                             "message_count": 123,
                             "active_days": 14,
-                            "messages_per_day": "8.79",
-                            "messages_per_active_day": "8.79",
-                            "active_day_ratio_percent": "100.0",
                             "last_message_at": "2026-03-15T00:00:00+00:00",
                         }
                     ],
                 }
             ],
+        },
+        on_export_member_activity=lambda guild_id: {
+            "ok": True,
+            "filename": "member_activity_test.zip",
+            "content_type": "application/zip",
+            "data": b"PK\x05\x06" + (b"\x00" * 18),
         },
         on_get_reddit_feeds=lambda guild_id: {"ok": True, "feeds": []},
         on_get_youtube_subscriptions=lambda guild_id: {
@@ -140,6 +143,12 @@ def _select_guild(client):
     return response
 
 
+def _page_csrf_token(client, path: str):
+    response = client.get(path, base_url="https://docker.example:8443")
+    assert response.status_code == 200
+    return _extract_csrf_token(response)
+
+
 def test_healthz_route(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
@@ -176,6 +185,7 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
     for path in [
         "/admin",
         "/admin/dashboard",
+        "/admin/users",
         "/admin/actions",
         "/admin/member-activity",
         "/admin/youtube",
@@ -224,3 +234,76 @@ def test_member_activity_page_renders_tables(tmp_path: Path):
     assert b"Member Activity" in response.data
     assert b"Last 90 Days" in response.data
     assert b"Tester" in response.data
+    assert b"Download Activity Export" in response.data
+
+
+def test_member_activity_export_downloads_zip(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/member-activity/export", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Type", "").startswith("application/zip")
+    assert "attachment;" in response.headers.get("Content-Disposition", "")
+    assert response.data.startswith(b"PK")
+
+
+def test_admin_can_edit_user_and_reset_password(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    create_response = client.post(
+        "/admin/users",
+        data={
+            "action": "create",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "first_name": "Target",
+            "last_name": "User",
+            "display_name": "Target User",
+            "email": "target@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+            "role": "read_only",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_response.status_code == 200
+    assert b"target@example.com" in create_response.data
+
+    edit_response = client.post(
+        "/admin/users",
+        data={
+            "action": "edit_user",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "email": "target@example.com",
+            "updated_email": "target-renamed@example.com",
+            "first_name": "Target",
+            "last_name": "Updated",
+            "display_name": "Renamed User",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert edit_response.status_code == 200
+    assert b"target-renamed@example.com" in edit_response.data
+    assert b"Renamed User" in edit_response.data
+
+    password_response = client.post(
+        "/admin/users",
+        data={
+            "action": "password",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "email": "target-renamed@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert password_response.status_code == 200
+    assert b"target-renamed@example.com" in password_response.data
