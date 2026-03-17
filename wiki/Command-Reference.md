@@ -71,6 +71,7 @@ Web variation:
 | `/shorten` | Slash | Member/Public | `url` | Creates a shortened URL using the configured shortener |
 | `/expand` | Slash | Member/Public | shortened URL or code | Expands a shortened URL |
 | `/uptime` | Slash | Member/Public | none | Reads the configured uptime/status summary when enabled |
+| `/stats` | Slash | Member/Public | none | Sends your private member-activity summary for last 90 days, last 30 days, last 7 days, and last 24 hours |
 
 ## Country Nickname Commands
 
