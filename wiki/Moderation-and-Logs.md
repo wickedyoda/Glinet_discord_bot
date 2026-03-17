@@ -17,6 +17,7 @@ Moderator tooling for members, roles, and operational incident visibility.
 | Member discipline | `/timeout_member` | `!timeoutmember` | Moderator |
 | Member discipline | `/untimeout_member` | `!untimeoutmember` | Moderator |
 | Channel hygiene | `/prune_messages` | `!prune` | Moderator |
+| Member selection | `/random_choice` | none | Moderator |
 | Logging test | `/modlog_test` | `!modlogtest` | Moderator |
 | Runtime error logs | `/logs` | none | Moderator |
 
@@ -32,6 +33,16 @@ Moderator tooling for members, roles, and operational incident visibility.
 - Reads recent lines from `${LOG_DIR}/container_errors.log` (default `/logs/container_errors.log`).
 - Ephemeral response to reduce accidental exposure.
 - Intended for production incident triage without shell access.
+
+## `/random_choice` Behavior
+
+- Randomly selects one eligible non-staff member from the current guild.
+- Excludes:
+  - bots
+  - configured moderator/admin role IDs
+  - named staff roles `Employee`, `Admin`, and `Gl.iNet Moderator`
+- Persists selections per guild so the same member cannot be chosen again for 7 days, even if the bot restarts.
+- Returns the chosen member privately to the moderator who invoked it.
 
 Tuning variable:
 
@@ -91,6 +102,6 @@ Event coverage includes:
 
 ## Related Pages
 
-- [Command Reference](Command-Reference)
-- [Environment Variables](Environment-Variables)
-- [Security Hardening](Security-Hardening)
+- [Command Reference](Command-Reference.md)
+- [Environment Variables](Environment-Variables.md)
+- [Security Hardening](Security-Hardening.md)

@@ -65,6 +65,9 @@ All notable changes to this project are documented in this file.
   - raw hourly activity CSV
   - JSON summary manifest
 
+### Changed
+- README and wiki pages now consistently document member-activity backfill, export behavior, HTTPS certificate replacement, and the `/random_choice` 7-day cooldown.
+
 ## [2026-03-16] - Web GUI Host Bind Configuration
 
 ### Added
