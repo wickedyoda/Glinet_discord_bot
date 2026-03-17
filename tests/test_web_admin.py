@@ -67,6 +67,29 @@ def _make_app(tmp_path: Path):
                 }
             ],
         },
+        on_get_member_activity=lambda guild_id: {
+            "ok": True,
+            "top_limit": 20,
+            "windows": [
+                {
+                    "key": "last_90_days",
+                    "label": "Last 90 Days",
+                    "members": [
+                        {
+                            "rank": 1,
+                            "display_name": "Tester",
+                            "username": "tester",
+                            "message_count": 123,
+                            "active_days": 14,
+                            "messages_per_day": "8.79",
+                            "messages_per_active_day": "8.79",
+                            "active_day_ratio_percent": "100.0",
+                            "last_message_at": "2026-03-15T00:00:00+00:00",
+                        }
+                    ],
+                }
+            ],
+        },
         on_get_reddit_feeds=lambda guild_id: {"ok": True, "feeds": []},
         on_get_youtube_subscriptions=lambda guild_id: {
             "ok": True,
@@ -154,6 +177,7 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         "/admin",
         "/admin/dashboard",
         "/admin/actions",
+        "/admin/member-activity",
         "/admin/youtube",
         "/admin/documentation",
         "/admin/wiki",
@@ -186,3 +210,17 @@ def test_youtube_page_renders_form(tmp_path: Path):
     assert response.status_code == 200
     assert b"YouTube Subscriptions" in response.data
     assert b"Save Subscription" in response.data
+
+
+def test_member_activity_page_renders_tables(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/member-activity", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Member Activity" in response.data
+    assert b"Last 90 Days" in response.data
+    assert b"Tester" in response.data
