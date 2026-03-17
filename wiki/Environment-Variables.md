@@ -53,6 +53,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `MEMBER_ACTIVITY_BACKFILL_ENABLED` | `false` | Boolean | Run a one-time startup backfill for member activity history |
 | `MEMBER_ACTIVITY_BACKFILL_GUILD_ID` | empty | Integer guild ID | Optional guild to backfill. If blank, falls back to `GUILD_ID` |
 | `MEMBER_ACTIVITY_BACKFILL_SINCE` | empty | `YYYY-MM-DD` or ISO timestamp | Inclusive UTC lower bound for the member activity backfill run |
+| `MEMBER_ACTIVITY_ENCRYPTION_KEY` | empty | Passphrase or Fernet key | Encrypts member-activity identity fields at rest. If blank, the bot creates `${DATA_DIR}/member_activity.key` automatically |
 | `PUPPY_IMAGE_API_URL` | `https://random.dog/woof.json` | URL | Source used by `/happy` |
 | `PUPPY_IMAGE_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for `/happy` image fetch |
 | `SHORTENER_ENABLED` | `false` | Boolean | Enables `/shorten` and `/expand` integration |
