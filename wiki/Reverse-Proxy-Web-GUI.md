@@ -56,6 +56,20 @@ ports:
   - "127.0.0.1:8081:8081"
 ```
 
+Equivalent `.env` values for that mapping:
+
+```env
+WEB_HTTP_HOST_BIND=127.0.0.1
+WEB_HTTPS_HOST_BIND=127.0.0.1
+```
+
+If you are not using a same-host reverse proxy and need direct browser access to the Docker host on `8080`/`8081`, change those to:
+
+```env
+WEB_HTTP_HOST_BIND=0.0.0.0
+WEB_HTTPS_HOST_BIND=0.0.0.0
+```
+
 ## Nginx Example
 
 Replace `discord-admin.example.com` with your real domain.
