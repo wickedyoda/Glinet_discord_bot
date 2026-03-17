@@ -75,6 +75,6 @@ Example cron values (UTC):
 
 ## Related Pages
 
-- [Environment Variables](Environment-Variables)
-- [Moderation and Logs](Moderation-and-Logs)
-- [Data Files](Data-Files)
+- [Environment Variables](Environment-Variables.md)
+- [Moderation and Logs](Moderation-and-Logs.md)
+- [Data Files](Data-Files.md)

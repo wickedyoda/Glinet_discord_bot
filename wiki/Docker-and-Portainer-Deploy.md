@@ -187,6 +187,6 @@ Tune with:
 
 ## Related Pages
 
-- [Environment Variables](Environment-Variables)
-- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
-- [Security Hardening](Security-Hardening)
+- [Environment Variables](Environment-Variables.md)
+- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
+- [Security Hardening](Security-Hardening.md)

@@ -132,6 +132,6 @@ Compensating controls:
 
 ## Related Pages
 
-- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
-- [Environment Variables](Environment-Variables)
-- [Web Admin Interface](Web-Admin-Interface)
+- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
+- [Environment Variables](Environment-Variables.md)
+- [Web Admin Interface](Web-Admin-Interface.md)

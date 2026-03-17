@@ -249,6 +249,6 @@ If browser console warns that `Cross-Origin-Opener-Policy` was ignored on login:
 
 ## Related Pages
 
-- [Web Admin Interface](Web-Admin-Interface)
-- [Environment Variables](Environment-Variables)
-- [Security Hardening](Security-Hardening)
+- [Web Admin Interface](Web-Admin-Interface.md)
+- [Environment Variables](Environment-Variables.md)
+- [Security Hardening](Security-Hardening.md)
