@@ -7,6 +7,7 @@ This page lists every supported command style, access model, and common usage pa
 - Public/member commands: usable by normal guild members unless overridden in web admin command permissions.
 - Moderator commands: restricted by moderator/admin role gates and command-permissions overrides.
 - Web-admin-only actions: not exposed as Discord commands; managed only from web GUI by admin web users.
+- Web GUI command overrides can also fully disable a command per guild.
 
 Default role gates are configured with:
 

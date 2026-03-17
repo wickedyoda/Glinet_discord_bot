@@ -78,6 +78,16 @@ UI forms include show/hide password toggles and validation feedback.
 - Dedicated dashboard link is shown beside the dropdown.
 - Dashboard includes direct action buttons/cards for major admin workflows.
 - Mobile layout is responsive for smaller screens and touch interaction.
+
+## Command Permissions
+
+- `/admin/command-permissions` manages command access per selected guild.
+- Available modes:
+  - `Default rule`: follow the bot's built-in default access policy for that command
+  - `Public`: allow any guild member
+  - `Disabled`: turn the command off for that guild
+  - `Custom roles`: restrict the command to one or more selected roles
+- Custom-role mode requires at least one role ID or selected role.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 - Member activity page shows top-20 member activity windows for the selected server.

@@ -1618,15 +1618,18 @@ def _render_layout(
       color: var(--fg);
       padding: 12px 18px;
       display: flex;
-      justify-content: space-between;
-      align-items: center;
+      flex-direction: column;
+      align-items: stretch;
       gap: 14px;
       position: sticky;
       top: 0;
       z-index: 10;
     }
+    .header-toprow { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
     .header-brand { min-width: 170px; }
-    .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; flex: 1; }
+    .header-tools { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+    .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
+    .desktop-nav { display: flex; }
     .nav-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
     .nav-controls a { text-decoration: none; }
     .current-user { color: var(--muted); font-size: 0.95rem; }
@@ -1684,6 +1687,52 @@ def _render_layout(
       max-width: 70vw;
       min-width: 190px;
       padding: 7px 9px;
+    }
+    .mobile-nav { display: none; position: relative; }
+    .mobile-nav summary {
+      list-style: none;
+      cursor: pointer;
+      user-select: none;
+      min-height: 44px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: var(--btn-bg);
+      color: #fff;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 0;
+    }
+    .mobile-nav summary::-webkit-details-marker { display: none; }
+    .mobile-nav-panel {
+      margin-top: 10px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+      display: grid;
+      gap: 12px;
+    }
+    .mobile-user-block {
+      display: grid;
+      gap: 4px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .mobile-link-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .mobile-link-grid .btn,
+    .mobile-nav-panel .btn,
+    .mobile-nav-panel .inline-form,
+    .mobile-nav-panel .inline-form .btn,
+    .mobile-nav-panel .nav-select {
+      width: 100%;
     }
     .sr-only {
       position: absolute;
@@ -1743,12 +1792,11 @@ def _render_layout(
       header { padding: 10px 12px; align-items: center; }
       .wrap { margin: 14px auto; padding: 0 10px; }
       .card { padding: 14px; }
-      .header-right { width: 100%; justify-content: center; }
-      .nav-controls { width: 100%; display: grid; grid-template-columns: 1fr; }
+      .header-toprow { width: 100%; align-items: flex-start; }
+      .header-tools { margin-left: 0; width: auto; flex-shrink: 0; }
+      .header-right.desktop-nav { display: none; }
+      .mobile-nav { display: block; width: 100%; }
       .nav-select { width: 100%; max-width: 100%; min-width: 0; }
-      .nav-controls .btn { width: 100%; }
-      .inline-form { width: 100%; }
-      .inline-form .btn { width: 100%; }
       .theme-switch { width: 100%; }
       .theme-btn { flex: 1; min-height: 42px; }
       .current-user-email { display: block; }
@@ -1759,17 +1807,80 @@ def _render_layout(
     @media (max-width: 600px) {
       .card { border-radius: 10px; }
       .table-scroll > table { min-width: 620px; }
+      .header-toprow { flex-direction: column; align-items: stretch; }
+      .header-tools { width: 100%; flex-direction: column; align-items: stretch; }
+      .mobile-link-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body data-theme="black">
   <header>
-    <div class="header-brand"><strong>Discord Bot Admin</strong></div>
-    <div class="header-right">
-      <div class="theme-switch" aria-label="Theme selector">
-        <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
-        <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+    <div class="header-toprow">
+      <div class="header-brand"><strong>Discord Bot Admin</strong></div>
+      <div class="header-tools">
+        {% if current_email %}
+        <details class="mobile-nav">
+          <summary>{{ title }} Menu</summary>
+          <div class="mobile-nav-panel">
+            <div class="mobile-user-block">
+              <span class="current-user">{{ current_display_name or current_email }} ({{ "Admin" if is_admin else "Read-only" }})</span>
+              {% if current_display_name and current_display_name != current_email %}
+                <span class="current-user-email">{{ current_email }}</span>
+              {% endif %}
+              {% if current_guild_name %}<span class="current-user">Server: {{ current_guild_name }}</span>{% endif %}
+            </div>
+            <div class="mobile-link-grid">
+              <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+              <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+              <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+              <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+              <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+              <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
+            </div>
+            <label class="sr-only" for="mobile-nav-page-select">Open page</label>
+            <select id="mobile-nav-page-select" class="nav-select nav-page-select">
+              <option value="">Go to page...</option>
+              <option value="{{ url_for('guilds_page') }}">Servers</option>
+              <option value="{{ url_for('account') }}">My Account</option>
+              <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+              <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+              <option value="{{ url_for('actions_page') }}">Action History</option>
+              <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+              <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+              <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+              <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+              <option value="{{ url_for('settings') }}">Global Settings</option>
+              <option value="{{ url_for('public_observability') }}">Observability</option>
+              <option value="{{ url_for('admin_logs') }}">Logs</option>
+              <option value="{{ url_for('documentation') }}">Documentation</option>
+              <option value="{{ url_for('documentation') }}">Wiki Viewer</option>
+              {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
+              <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+              <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+              <option value="{{ url_for('users') }}">Users</option>
+              <option value="{{ url_for('logout') }}">Logout</option>
+            </select>
+            {% if restart_enabled %}
+              {% if is_admin %}
+              <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
+                <input type="hidden" name="confirm" value="yes" />
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+                <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
+              </form>
+              {% else %}
+              <button class="btn danger" type="button" disabled title="Read-only users cannot restart the container">Restart Container</button>
+              {% endif %}
+            {% endif %}
+          </div>
+        </details>
+        {% endif %}
+        <div class="theme-switch" aria-label="Theme selector">
+          <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
+          <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+        </div>
       </div>
+    </div>
+    <div class="header-right desktop-nav">
       {% if current_email %}
         <nav class="nav-controls">
           <span class="current-user">{{ current_display_name or current_email }} ({{ "Admin" if is_admin else "Read-only" }})</span>
@@ -1779,8 +1890,8 @@ def _render_layout(
           {% if current_guild_name %}<span class="current-user">Server: {{ current_guild_name }}</span>{% endif %}
           <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
           <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-          <label class="sr-only" for="nav-page-select">Open page</label>
-          <select id="nav-page-select" class="nav-select">
+          <label class="sr-only" for="desktop-nav-page-select">Open page</label>
+          <select id="desktop-nav-page-select" class="nav-select nav-page-select">
             <option value="">Go to page...</option>
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('account') }}">My Account</option>
@@ -1857,8 +1968,7 @@ def _render_layout(
         });
       });
 
-      const navPageSelect = document.getElementById("nav-page-select");
-      if (navPageSelect) {
+      document.querySelectorAll(".nav-page-select").forEach((navPageSelect) => {
         navPageSelect.addEventListener("change", function () {
           const option = navPageSelect.options[navPageSelect.selectedIndex];
           const target = option ? option.value : "";
@@ -1873,7 +1983,7 @@ def _render_layout(
           }
           navPageSelect.value = "";
         });
-      }
+      });
 
       document.querySelectorAll(".wrap table").forEach((table) => {
         const parent = table.parentElement;
@@ -4326,6 +4436,7 @@ def create_web_app(
             role_ids_value = ",".join(str(value) for value in role_ids)
             default_selected = " selected" if mode == "default" else ""
             public_selected = " selected" if mode == "public" else ""
+            disabled_selected = " selected" if mode == "disabled" else ""
             custom_selected = " selected" if mode == "custom_roles" else ""
             if role_options:
                 role_input_html = (
@@ -4358,6 +4469,7 @@ def create_web_app(
                     <select name="mode__{escape(command_key, quote=True)}">
                       <option value="default"{default_selected}>Default rule</option>
                       <option value="public"{public_selected}>Public (any member)</option>
+                      <option value="disabled"{disabled_selected}>Disabled</option>
                       <option value="custom_roles"{custom_selected}>Custom roles</option>
                     </select>
                   </td>
@@ -4382,7 +4494,7 @@ def create_web_app(
         <div class="card">
           <h2>Command Permissions</h2>
           <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
-          <p class="muted">Set access mode per command. Default mode follows built-in behavior. Custom mode requires at least one role ID.</p>
+          <p class="muted">Set access mode per command. Default mode follows built-in behavior. Disabled turns the command off for this server. Custom mode requires at least one role ID.</p>
           <p class="muted">Default named-role gate: {escape(", ".join(str(item) for item in allowed_role_names) or "None")}</p>
           <p class="muted">Current moderator role IDs: <span class="mono">{escape(",".join(str(item) for item in moderator_role_ids) or "None")}</span></p>
           {role_hint_html}
