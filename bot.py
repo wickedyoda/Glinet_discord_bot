@@ -451,10 +451,6 @@ def decrypt_member_activity_identity(value: str):
         logger.warning("Unable to decrypt member activity identity field; verify MEMBER_ACTIVITY_ENCRYPTION_KEY or key file.")
         return ""
 
-
-initialize_member_activity_encryption()
-
-
 def install_global_exception_logging():
     def _sys_excepthook(exc_type, exc_value, exc_traceback):
         if issubclass(exc_type, KeyboardInterrupt):
@@ -755,6 +751,8 @@ COMMAND_PERMISSIONS_FILE = os.path.join(DATA_DIR, "command_permissions.json")
 DB_FILE = os.path.join(DATA_DIR, "bot_data.db")
 MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE = os.path.join(DATA_DIR, "member_activity.key")
 WEB_USERS_FILE = os.path.join(DATA_DIR, "web_users.json")
+
+initialize_member_activity_encryption()
 
 OLD_DEFAULT_TAG_RESPONSES = {
     "!betatest": "✅ Thanks for your interest in the beta! We'll share more details soon.",
