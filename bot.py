@@ -6661,9 +6661,6 @@ def format_member_activity_window_summary(window: dict):
         f"**{label}**",
         f"- Messages: `{int(window.get('message_count') or 0)}`",
         f"- Active Days: `{int(window.get('active_days') or 0)}`",
-        f"- Avg/Day: `{window.get('messages_per_day') or '0.00'}`",
-        f"- Avg/Active Day: `{window.get('messages_per_active_day') or '0.00'}`",
-        f"- Active %: `{window.get('active_day_ratio_percent') or '0.0'}%`",
         f"- Last Seen: {format_member_activity_last_seen(str(window.get('last_message_at') or ''))}",
     ]
     return "\n".join(lines)
@@ -7035,26 +7032,26 @@ async def list_commands(ctx: commands.Context):
     name="submitrole",
     description="Submit a role for invite/code linking",
 )
-async def submitrole(interaction: discord.Interaction):
+@app_commands.describe(role="Role to map to a new invite link and access code")
+async def submitrole(interaction: discord.Interaction, role: discord.Role):
     logger.info("/submitrole invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
         return
+    if role == interaction.guild.default_role:
+        await interaction.response.send_message("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
+        return
+    if role.managed:
+        await interaction.response.send_message(
+            "❌ That role is managed by an integration and cannot be used for invite/code access.",
+            ephemeral=True,
+        )
+        return
 
-    await interaction.response.send_message("Please mention the role you want to assign.", ephemeral=True)
-
-    def check(m):
-        return m.author.id == interaction.user.id and m.channel.id == interaction.channel.id
-
+    await interaction.response.defer(ephemeral=True)
     try:
-        msg = await bot.wait_for("message", timeout=30.0, check=check)
-        if not msg.role_mentions:
-            await interaction.followup.send("❌ No role mentioned.", ephemeral=True)
-            return
-
-        role = msg.role_mentions[0]
         target_channel_id = get_effective_logging_channel_id(interaction.guild.id if interaction.guild else GUILD_ID)
         channel = (
             interaction.guild.get_channel(target_channel_id) if interaction.guild and target_channel_id > 0 else None
@@ -7075,7 +7072,10 @@ async def submitrole(interaction: discord.Interaction):
             channel.id,
         )
 
-        await interaction.followup.send(f"✅ Invite link: {invite.url}\n🔢 6-digit code: `{code}`", ephemeral=True)
+        await interaction.followup.send(
+            f"✅ Role: {role.mention}\nInvite link: {invite.url}\n🔢 6-digit code: `{code}`",
+            ephemeral=True,
+        )
     except Exception:
         logger.exception("Error in /submitrole")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
