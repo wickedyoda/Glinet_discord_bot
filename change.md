@@ -284,6 +284,7 @@ All notable changes to this project are documented in this file.
 - Admin web controls for command permissions with per-command modes:
   - default policy
   - public
+  - disabled
   - custom roles (multi-role selection)
 - Web observability page:
   - runtime snapshot cards for CPU, memory, I/O, network, and uptime

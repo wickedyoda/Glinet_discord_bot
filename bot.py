@@ -765,6 +765,7 @@ DEFAULT_TAG_RESPONSES = {
 DEFAULT_ALLOWED_ROLE_NAMES = {"Employee", "Admin", "Gl.iNet Moderator"}
 COMMAND_PERMISSION_MODE_DEFAULT = "default"
 COMMAND_PERMISSION_MODE_PUBLIC = "public"
+COMMAND_PERMISSION_MODE_DISABLED = "disabled"
 COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
 COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
 COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES = "allowed_role_names"
@@ -3900,6 +3901,7 @@ def normalize_permission_mode(value: str | None):
     if raw in {
         COMMAND_PERMISSION_MODE_DEFAULT,
         COMMAND_PERMISSION_MODE_PUBLIC,
+        COMMAND_PERMISSION_MODE_DISABLED,
         COMMAND_PERMISSION_MODE_CUSTOM_ROLES,
     }:
         return raw
@@ -4059,6 +4061,8 @@ def can_use_command(
 ):
     default_policy, mode, role_ids = resolve_command_permission_state(command_key, guild_id=guild_id)
 
+    if mode == COMMAND_PERMISSION_MODE_DISABLED:
+        return False
     if mode == COMMAND_PERMISSION_MODE_PUBLIC:
         return True
     if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
@@ -4079,6 +4083,8 @@ def build_command_permission_denied_message(
     guild_id: int | None = None,
 ):
     default_policy, mode, role_ids = resolve_command_permission_state(command_key, guild_id=guild_id or (guild.id if guild else None))
+    if mode == COMMAND_PERMISSION_MODE_DISABLED:
+        return "⛔ This command is disabled in this server."
     if mode == COMMAND_PERMISSION_MODE_CUSTOM_ROLES:
         if guild is None or not role_ids:
             return "❌ You do not have one of the roles allowed to use this command."

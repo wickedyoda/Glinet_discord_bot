@@ -94,6 +94,39 @@ def _make_app(tmp_path: Path):
             "data": b"PK\x05\x06" + (b"\x00" * 18),
         },
         on_get_reddit_feeds=lambda guild_id: {"ok": True, "feeds": []},
+        on_get_command_permissions=lambda guild_id: {
+            "ok": True,
+            "commands": [
+                {
+                    "key": "ping",
+                    "label": "/ping",
+                    "description": "Check that the bot is online.",
+                    "default_policy": "public",
+                    "default_policy_label": "Public",
+                    "mode": "disabled",
+                    "role_ids": [],
+                }
+            ],
+            "allowed_role_names": ["Employee"],
+            "moderator_role_ids": [123],
+        },
+        on_save_command_permissions=lambda payload, actor_email, guild_id: {
+            "ok": True,
+            "message": "Command permissions updated.",
+            "commands": [
+                {
+                    "key": "ping",
+                    "label": "/ping",
+                    "description": "Check that the bot is online.",
+                    "default_policy": "public",
+                    "default_policy_label": "Public",
+                    "mode": payload.get("commands", {}).get("ping", {}).get("mode", "default"),
+                    "role_ids": [],
+                }
+            ],
+            "allowed_role_names": ["Employee"],
+            "moderator_role_ids": [123],
+        },
         on_get_youtube_subscriptions=lambda guild_id: {
             "ok": True,
             "subscriptions": [],
@@ -249,6 +282,20 @@ def test_member_activity_export_downloads_zip(tmp_path: Path):
     assert response.headers.get("Content-Type", "").startswith("application/zip")
     assert "attachment;" in response.headers.get("Content-Disposition", "")
     assert response.data.startswith(b"PK")
+
+
+def test_command_permissions_page_supports_disabled_mode(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/command-permissions", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Command Permissions" in response.data
+    assert b"Disabled" in response.data
+    assert b'value="disabled" selected' in response.data
 
 
 def test_admin_can_edit_user_and_reset_password(tmp_path: Path):
