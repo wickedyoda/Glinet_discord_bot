@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import concurrent.futures
 import csv
 import hashlib
@@ -28,6 +29,7 @@ import discord
 import requests
 from bs4 import BeautifulSoup
 from croniter import croniter
+from cryptography.fernet import Fernet, InvalidToken
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -70,6 +72,7 @@ MEMBER_ACTIVITY_WINDOW_SPECS = (
     ("last_24_hours", "Last 24 Hours", timedelta(hours=24)),
 )
 MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL = 500
+MEMBER_ACTIVITY_ENCRYPTION_PREFIX = "enc:"
 RANDOM_CHOICE_COOLDOWN_DAYS = 7
 RANDOM_CHOICE_HISTORY_RETENTION_DAYS = 30
 
@@ -363,6 +366,94 @@ logger.info(
     LOG_RETENTION_DAYS,
 )
 
+member_activity_encryption_fernet: Fernet | None = None
+member_activity_encryption_migration_checked = False
+
+
+def _normalize_member_activity_fernet_key(raw_value: str):
+    candidate = str(raw_value or "").strip()
+    if not candidate:
+        raise RuntimeError("Member activity encryption key is empty.")
+    try:
+        decoded = base64.urlsafe_b64decode(candidate.encode("ascii"))
+        if len(decoded) == 32:
+            return candidate.encode("ascii")
+    except Exception:
+        pass
+    return base64.urlsafe_b64encode(hashlib.sha256(candidate.encode("utf-8")).digest())
+
+
+def _load_or_create_member_activity_encryption_secret():
+    if MEMBER_ACTIVITY_ENCRYPTION_KEY_RAW:
+        return MEMBER_ACTIVITY_ENCRYPTION_KEY_RAW, "environment", False
+    try:
+        os.makedirs(os.path.dirname(MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE) or DATA_DIR, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(f"Unable to create member activity key directory: {exc}") from exc
+    if os.path.exists(MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE):
+        try:
+            stored = open(MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE, encoding="utf-8").read().strip()
+        except OSError as exc:
+            raise RuntimeError(f"Unable to read member activity key file: {exc}") from exc
+        if not stored:
+            raise RuntimeError("Member activity key file is empty.")
+        return stored, MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE, False
+    generated_key = Fernet.generate_key().decode("ascii")
+    try:
+        with open(MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE, "w", encoding="utf-8") as handle:
+            handle.write(generated_key)
+            handle.write("\n")
+        _chmod_if_possible(MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE, 0o600)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Unable to persist generated member activity encryption key to {MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE}: {exc}"
+        ) from exc
+    return generated_key, MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE, True
+
+
+def initialize_member_activity_encryption():
+    global member_activity_encryption_fernet
+    secret, source, generated = _load_or_create_member_activity_encryption_secret()
+    member_activity_encryption_fernet = Fernet(_normalize_member_activity_fernet_key(secret))
+    if generated:
+        logger.warning(
+            "Generated member activity encryption key at %s. Set MEMBER_ACTIVITY_ENCRYPTION_KEY explicitly if you want external key management.",
+            source,
+        )
+    else:
+        logger.info("Member activity encryption enabled using key source: %s", source)
+
+
+def encrypt_member_activity_identity(value: str):
+    text = str(value or "")
+    if not text:
+        return ""
+    if member_activity_encryption_fernet is None:
+        return text
+    if text.startswith(MEMBER_ACTIVITY_ENCRYPTION_PREFIX):
+        return text
+    token = member_activity_encryption_fernet.encrypt(text.encode("utf-8")).decode("ascii")
+    return f"{MEMBER_ACTIVITY_ENCRYPTION_PREFIX}{token}"
+
+
+def decrypt_member_activity_identity(value: str):
+    text = str(value or "")
+    if not text:
+        return ""
+    if member_activity_encryption_fernet is None:
+        return text
+    if not text.startswith(MEMBER_ACTIVITY_ENCRYPTION_PREFIX):
+        return text
+    token = text[len(MEMBER_ACTIVITY_ENCRYPTION_PREFIX) :]
+    try:
+        return member_activity_encryption_fernet.decrypt(token.encode("ascii")).decode("utf-8")
+    except InvalidToken:
+        logger.warning("Unable to decrypt member activity identity field; verify MEMBER_ACTIVITY_ENCRYPTION_KEY or key file.")
+        return ""
+
+
+initialize_member_activity_encryption()
+
 
 def install_global_exception_logging():
     def _sys_excepthook(exc_type, exc_value, exc_traceback):
@@ -556,6 +647,7 @@ MEMBER_ACTIVITY_BACKFILL_ENABLED = is_truthy_env_value(
 )
 MEMBER_ACTIVITY_BACKFILL_GUILD_ID_RAW = str(os.getenv("MEMBER_ACTIVITY_BACKFILL_GUILD_ID", "") or "").strip()
 MEMBER_ACTIVITY_BACKFILL_SINCE_RAW = str(os.getenv("MEMBER_ACTIVITY_BACKFILL_SINCE", "") or "").strip()
+MEMBER_ACTIVITY_ENCRYPTION_KEY_RAW = str(os.getenv("MEMBER_ACTIVITY_ENCRYPTION_KEY", "") or "").strip()
 COMMAND_RESPONSES_EPHEMERAL = is_truthy_env_value(
     os.getenv("COMMAND_RESPONSES_EPHEMERAL", "false"),
     default_value=False,
@@ -661,6 +753,7 @@ TAG_RESPONSES_FILE = os.path.join(DATA_DIR, "tag_responses.json")
 FIRMWARE_STATE_FILE = os.path.join(DATA_DIR, "firmware_seen.json")
 COMMAND_PERMISSIONS_FILE = os.path.join(DATA_DIR, "command_permissions.json")
 DB_FILE = os.path.join(DATA_DIR, "bot_data.db")
+MEMBER_ACTIVITY_ENCRYPTION_KEY_FILE = os.path.join(DATA_DIR, "member_activity.key")
 WEB_USERS_FILE = os.path.join(DATA_DIR, "web_users.json")
 
 OLD_DEFAULT_TAG_RESPONSES = {
@@ -953,6 +1046,18 @@ def normalize_target_guild_id(raw_value, default_value: int | None = None):
     except (TypeError, ValueError, AttributeError):
         return fallback
     return guild_id if guild_id > 0 else fallback
+
+
+def require_managed_guild_id(raw_value, *, context: str = "guild"):
+    try:
+        guild_id = int(str(raw_value).strip())
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise ValueError(f"{context} must be a valid numeric guild ID.") from exc
+    if guild_id <= 0:
+        raise ValueError(f"{context} must be a positive guild ID.")
+    if not is_managed_guild_id(guild_id):
+        raise ValueError(f"{context} {guild_id} is outside MANAGED_GUILD_IDS.")
+    return guild_id
 
 
 def is_managed_guild_id(guild_id: int | None):
@@ -1846,7 +1951,7 @@ def prune_random_choice_history_locked(conn, current_dt: datetime):
 
 
 def list_recent_random_choice_user_ids(guild_id: int | None, since_dt: datetime):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_guild_id = require_managed_guild_id(guild_id, context="random choice guild")
     safe_since_dt = normalize_activity_timestamp(since_dt)
     conn = get_db_connection()
     with db_lock:
@@ -1870,7 +1975,7 @@ def record_random_choice_selection(
     selected_by_user_id: int = 0,
     selected_at: datetime | None = None,
 ):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_guild_id = require_managed_guild_id(guild_id, context="random choice guild")
     safe_selected_at = normalize_activity_timestamp(selected_at)
     conn = get_db_connection()
     with db_lock:
@@ -1972,6 +2077,7 @@ def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, paylo
 
 
 def ensure_member_activity_schema_locked(conn):
+    global member_activity_encryption_migration_checked
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS member_activity_summary (
@@ -2142,6 +2248,40 @@ def ensure_member_activity_schema_locked(conn):
             ON member_activity_seen_messages(guild_id, created_at)
         """
     )
+    if not member_activity_encryption_migration_checked:
+        rows = conn.execute(
+            """
+            SELECT guild_id, user_id, username, display_name
+            FROM member_activity_summary
+            """
+        ).fetchall()
+        updates = []
+        for row in rows:
+            username = str(row["username"] or "")
+            display_name = str(row["display_name"] or "")
+            encrypted_username = encrypt_member_activity_identity(username)
+            encrypted_display_name = encrypt_member_activity_identity(display_name)
+            if encrypted_username != username or encrypted_display_name != display_name:
+                updates.append(
+                    (
+                        encrypted_username,
+                        encrypted_display_name,
+                        int(row["guild_id"] or 0),
+                        int(row["user_id"] or 0),
+                    )
+                )
+        if updates:
+            conn.executemany(
+                """
+                UPDATE member_activity_summary
+                SET username = ?,
+                    display_name = ?
+                WHERE guild_id = ? AND user_id = ?
+                """,
+                updates,
+            )
+            logger.info("Encrypted %s existing member activity profile row(s).", len(updates))
+        member_activity_encryption_migration_checked = True
 
 
 def compute_member_activity_metrics(message_count: int, active_days: int, period_start: datetime, period_end: datetime):
@@ -2231,7 +2371,9 @@ def _record_member_message_activity_locked(
     message_id: int,
     message_dt: datetime,
 ):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+    encrypted_username = encrypt_member_activity_identity(username)
+    encrypted_display_name = encrypt_member_activity_identity(display_name)
     message_iso = message_dt.isoformat()
     hour_bucket = message_dt.replace(minute=0, second=0, microsecond=0).isoformat()
     inserted = conn.execute(
@@ -2279,8 +2421,8 @@ def _record_member_message_activity_locked(
             (
                 safe_guild_id,
                 user_id,
-                username,
-                display_name,
+                encrypted_username,
+                encrypted_display_name,
                 message_iso,
                 message_iso,
             ),
@@ -2297,8 +2439,8 @@ def _record_member_message_activity_locked(
             WHERE guild_id = ? AND user_id = ?
             """,
             (
-                username,
-                display_name,
+                encrypted_username,
+                encrypted_display_name,
                 message_iso,
                 safe_guild_id,
                 user_id,
@@ -2352,7 +2494,7 @@ def record_member_message_activity(message: discord.Message):
 
 
 def list_member_activity_top_window(guild_id: int | None, window_key: str, limit: int = MEMBER_ACTIVITY_WEB_TOP_LIMIT):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
     safe_limit = max(1, min(int(limit or MEMBER_ACTIVITY_WEB_TOP_LIMIT), 100))
     now_dt = datetime.now(UTC)
     conn = get_db_connection()
@@ -2403,8 +2545,8 @@ def list_member_activity_top_window(guild_id: int | None, window_key: str, limit
                 {
                     "rank": index,
                     "user_id": int(row["user_id"] or 0),
-                    "username": str(row["username"] or ""),
-                    "display_name": str(row["display_name"] or ""),
+                    "username": decrypt_member_activity_identity(str(row["username"] or "")),
+                    "display_name": decrypt_member_activity_identity(str(row["display_name"] or "")),
                 }
             )
             members.append(stats)
@@ -2412,7 +2554,7 @@ def list_member_activity_top_window(guild_id: int | None, window_key: str, limit
 
 
 def get_member_activity_snapshot(guild_id: int | None, user_id: int):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
     now_dt = datetime.now(UTC)
     conn = get_db_connection()
     with db_lock:
@@ -2476,25 +2618,26 @@ def get_member_activity_snapshot(guild_id: int | None, user_id: int):
         return {
             "ok": True,
             "user_id": int(summary_row["user_id"] or 0),
-            "username": str(summary_row["username"] or ""),
-            "display_name": str(summary_row["display_name"] or ""),
+            "username": decrypt_member_activity_identity(str(summary_row["username"] or "")),
+            "display_name": decrypt_member_activity_identity(str(summary_row["display_name"] or "")),
             "windows": windows,
         }
 
 
 def build_member_activity_web_payload(guild_id: int):
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
     windows = []
     for window_key, label, _duration in MEMBER_ACTIVITY_WINDOW_SPECS:
         windows.append(
             {
                 "key": window_key,
                 "label": label,
-                "members": list_member_activity_top_window(guild_id, window_key, limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT),
+                "members": list_member_activity_top_window(safe_guild_id, window_key, limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT),
             }
         )
     return {
         "ok": True,
-        "guild_id": normalize_target_guild_id(guild_id),
+        "guild_id": safe_guild_id,
         "generated_at": datetime.now(UTC).isoformat(),
         "top_limit": MEMBER_ACTIVITY_WEB_TOP_LIMIT,
         "windows": windows,
@@ -2502,7 +2645,7 @@ def build_member_activity_web_payload(guild_id: int):
 
 
 def export_member_activity_archive(guild_id: int):
-    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
     payload = build_member_activity_web_payload(safe_guild_id)
     generated_at = datetime.now(UTC).replace(microsecond=0)
     conn = get_db_connection()
@@ -2579,8 +2722,8 @@ def export_member_activity_archive(guild_id: int):
                     [
                         int(row["guild_id"] or 0),
                         int(row["user_id"] or 0),
-                        str(row["username"] or ""),
-                        str(row["display_name"] or ""),
+                        decrypt_member_activity_identity(str(row["username"] or "")),
+                        decrypt_member_activity_identity(str(row["display_name"] or "")),
                         str(row["first_message_at"] or ""),
                         str(row["last_message_at"] or ""),
                     ]

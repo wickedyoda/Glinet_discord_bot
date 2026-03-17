@@ -68,6 +68,14 @@ All notable changes to this project are documented in this file.
 ### Changed
 - README and wiki pages now consistently document member-activity backfill, export behavior, HTTPS certificate replacement, and the `/random_choice` 7-day cooldown.
 
+## [2026-03-17] - Member Activity Encryption
+
+### Changed
+- Member-activity identity fields (`username`, `display_name`) are now encrypted at rest before being written to SQLite.
+- Existing plaintext member-activity profile rows are automatically migrated to encrypted storage on first access.
+- Added `MEMBER_ACTIVITY_ENCRYPTION_KEY` for deployments that want external key management instead of the generated `${DATA_DIR}/member_activity.key` file.
+- Guild-scoped member-activity and random-choice history paths now fail closed on invalid or unmanaged guild IDs instead of falling back to the primary guild.
+
 ## [2026-03-16] - Web GUI Host Bind Configuration
 
 ### Added

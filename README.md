@@ -133,6 +133,7 @@ Behavior:
 - No public web signup; web users are admin-created.
 - Password policy and 90-day password rotation are enforced.
 - CSRF and session hardening are enabled by default.
+- Member-activity identity fields are encrypted at rest. Set `MEMBER_ACTIVITY_ENCRYPTION_KEY` for external key management, or let the bot generate `${DATA_DIR}/member_activity.key`.
 - Deployment hardening guidance: [`wiki/Security-Hardening.md`](./wiki/Security-Hardening.md)
 - Project Terms of Service and Privacy Policy: [https://wickedyoda.com/?p=3460](https://wickedyoda.com/?p=3460)
 - Discord developer terms: [https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service](https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service)
