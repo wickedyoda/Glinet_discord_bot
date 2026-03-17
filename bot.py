@@ -15,8 +15,8 @@ import sys
 import threading
 import time
 import urllib.parse
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
@@ -70,6 +70,8 @@ MEMBER_ACTIVITY_WINDOW_SPECS = (
     ("last_24_hours", "Last 24 Hours", timedelta(hours=24)),
 )
 MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL = 500
+RANDOM_CHOICE_COOLDOWN_DAYS = 7
+RANDOM_CHOICE_HISTORY_RETENTION_DAYS = 30
 
 
 def normalize_log_level(raw_value: str, fallback: str = "INFO"):
@@ -1120,6 +1122,14 @@ def ensure_db_schema():
                 PRIMARY KEY (guild_id, message_id)
             );
 
+            CREATE TABLE IF NOT EXISTS random_choice_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                selected_at TEXT NOT NULL,
+                selected_by_user_id INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS web_users (
                 email TEXT PRIMARY KEY,
                 password_hash TEXT NOT NULL,
@@ -1151,6 +1161,10 @@ def ensure_db_schema():
                 ON member_activity_recent_hourly(hour_bucket);
             CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_created_at
                 ON member_activity_seen_messages(created_at);
+            CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_selected_at
+                ON random_choice_history(guild_id, selected_at);
+            CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_user_selected_at
+                ON random_choice_history(guild_id, user_id, selected_at);
             """
         )
         command_permission_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()}
@@ -1803,6 +1817,63 @@ def list_recent_actions(guild_id: int | None, limit: int = 200):
             (safe_guild_id, safe_limit),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def prune_random_choice_history_locked(conn, current_dt: datetime):
+    cutoff_dt = normalize_activity_timestamp(current_dt) - timedelta(days=RANDOM_CHOICE_HISTORY_RETENTION_DAYS)
+    conn.execute(
+        "DELETE FROM random_choice_history WHERE selected_at < ?",
+        (cutoff_dt.isoformat(),),
+    )
+
+
+def list_recent_random_choice_user_ids(guild_id: int | None, since_dt: datetime):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_since_dt = normalize_activity_timestamp(since_dt)
+    conn = get_db_connection()
+    with db_lock:
+        prune_random_choice_history_locked(conn, safe_since_dt)
+        rows = conn.execute(
+            """
+            SELECT DISTINCT user_id
+            FROM random_choice_history
+            WHERE guild_id = ? AND selected_at >= ?
+            """,
+            (safe_guild_id, safe_since_dt.isoformat()),
+        ).fetchall()
+    return {int(row["user_id"]) for row in rows}
+
+
+def record_random_choice_selection(
+    guild_id: int | None,
+    user_id: int,
+    *,
+    selected_by_user_id: int = 0,
+    selected_at: datetime | None = None,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_selected_at = normalize_activity_timestamp(selected_at)
+    conn = get_db_connection()
+    with db_lock:
+        prune_random_choice_history_locked(conn, safe_selected_at)
+        conn.execute(
+            """
+            INSERT INTO random_choice_history (
+                guild_id,
+                user_id,
+                selected_at,
+                selected_by_user_id
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                int(user_id),
+                safe_selected_at.isoformat(),
+                int(selected_by_user_id or 0),
+            ),
+        )
+        conn.commit()
 
 
 def parse_iso_datetime_utc(raw_value) -> datetime | None:
@@ -8289,21 +8360,38 @@ async def random_choice_slash(interaction: discord.Interaction):
         except Exception:
             logger.exception("Failed to chunk guild %s before /random_choice", guild.id)
 
-    eligible_members = [member for member in guild.members if is_random_choice_eligible(member)]
+    cooldown_start = datetime.now(UTC) - timedelta(days=RANDOM_CHOICE_COOLDOWN_DAYS)
+    recently_selected_user_ids = list_recent_random_choice_user_ids(guild.id, cooldown_start)
+    eligible_members = [
+        member
+        for member in guild.members
+        if is_random_choice_eligible(member) and member.id not in recently_selected_user_ids
+    ]
     if not eligible_members:
         await interaction.followup.send(
-            "ℹ️ No eligible non-staff members were found in this server.",
+            (
+                f"ℹ️ No eligible non-staff members are currently available outside the "
+                f"{RANDOM_CHOICE_COOLDOWN_DAYS}-day cooldown."
+            ),
             ephemeral=True,
         )
         await log_interaction(
             interaction,
             action="random_choice",
-            reason="no eligible members",
+            reason=truncate_log_text(
+                f"no eligible members outside {RANDOM_CHOICE_COOLDOWN_DAYS}d cooldown "
+                f"(recently_selected={len(recently_selected_user_ids)})"
+            ),
             success=False,
         )
         return
 
     chosen_member = random.choice(eligible_members)
+    record_random_choice_selection(
+        guild.id,
+        chosen_member.id,
+        selected_by_user_id=interaction.user.id,
+    )
     await interaction.followup.send(
         "\n".join(
             [
@@ -8312,6 +8400,7 @@ async def random_choice_slash(interaction: discord.Interaction):
                 f"Display name: `{clip_text(chosen_member.display_name, limit=80)}`",
                 f"User ID: `{chosen_member.id}`",
                 f"Eligible pool size: `{len(eligible_members)}`",
+                f"Cooldown: `{RANDOM_CHOICE_COOLDOWN_DAYS} days` before this member can be picked again",
             ]
         ),
         ephemeral=True,
@@ -8319,7 +8408,10 @@ async def random_choice_slash(interaction: discord.Interaction):
     await log_interaction(
         interaction,
         action="random_choice",
-        reason=truncate_log_text(f"selected={chosen_member.id} pool={len(eligible_members)}"),
+        reason=truncate_log_text(
+            f"selected={chosen_member.id} pool={len(eligible_members)} "
+            f"cooldown_days={RANDOM_CHOICE_COOLDOWN_DAYS}"
+        ),
         success=True,
     )
 
