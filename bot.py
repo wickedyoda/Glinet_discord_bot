@@ -2492,9 +2492,103 @@ def record_member_message_activity(message: discord.Message):
     return changed
 
 
-def list_member_activity_top_window(guild_id: int | None, window_key: str, limit: int = MEMBER_ACTIVITY_WEB_TOP_LIMIT):
+def normalize_optional_role_id(value) -> int | None:
+    try:
+        role_id = int(str(value or "").strip())
+    except (TypeError, ValueError):
+        return None
+    return role_id if role_id > 0 else None
+
+
+def is_member_activity_ranking_eligible(member: discord.Member | None, role_id: int | None = None):
+    if not isinstance(member, discord.Member):
+        return False
+    if member.bot:
+        return False
+    if has_moderator_access(member) or has_allowed_role(member):
+        return False
+    if role_id is not None and not any(role.id == role_id for role in member.roles):
+        return False
+    return True
+
+
+async def resolve_member_activity_members_async(guild_id: int, user_ids: list[int]):
+    guild = bot.get_guild(int(guild_id))
+    if guild is None:
+        return {}
+
+    members_by_id = {}
+    if ENABLE_MEMBERS_INTENT and not guild.chunked:
+        try:
+            await guild.chunk(cache=True)
+        except Exception:
+            logger.debug("Falling back to partial guild member cache for activity rankings", exc_info=True)
+
+    missing_ids = []
+    for user_id in user_ids:
+        member = guild.get_member(int(user_id))
+        if member is not None:
+            members_by_id[int(user_id)] = member
+        else:
+            missing_ids.append(int(user_id))
+
+    for user_id in missing_ids:
+        try:
+            member = await guild.fetch_member(int(user_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            continue
+        members_by_id[int(user_id)] = member
+    return members_by_id
+
+
+def resolve_member_activity_members(guild_id: int, user_ids: list[int]):
+    unique_user_ids = []
+    seen = set()
+    for user_id in user_ids:
+        try:
+            normalized = int(user_id)
+        except (TypeError, ValueError):
+            continue
+        if normalized <= 0 or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique_user_ids.append(normalized)
+    if not unique_user_ids:
+        return {}
+
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        guild = bot.get_guild(int(guild_id))
+        if guild is None:
+            return {}
+        return {
+            user_id: member
+            for user_id in unique_user_ids
+            if (member := guild.get_member(user_id)) is not None
+        }
+
+    future = asyncio.run_coroutine_threadsafe(resolve_member_activity_members_async(int(guild_id), unique_user_ids), loop)
+    try:
+        return future.result(timeout=20)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        logger.warning("Timed out resolving guild members for activity rankings (guild=%s).", guild_id)
+        return {}
+    except Exception:
+        logger.exception("Failed resolving guild members for activity rankings (guild=%s).", guild_id)
+        return {}
+
+
+def list_member_activity_top_window(
+    guild_id: int | None,
+    window_key: str,
+    limit: int = MEMBER_ACTIVITY_WEB_TOP_LIMIT,
+    *,
+    role_id: int | None = None,
+):
     safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
     safe_limit = max(1, min(int(limit or MEMBER_ACTIVITY_WEB_TOP_LIMIT), 100))
+    safe_role_id = normalize_optional_role_id(role_id)
     now_dt = datetime.now(UTC)
     conn = get_db_connection()
     with db_lock:
@@ -2519,17 +2613,25 @@ def list_member_activity_top_window(guild_id: int | None, window_key: str, limit
               AND h.hour_bucket >= ?
             GROUP BY h.user_id, s.username, s.display_name
             ORDER BY message_count DESC, last_message_at DESC
-            LIMIT ?
             """,
             (
                 safe_guild_id,
                 cutoff_dt.replace(minute=0, second=0, microsecond=0).isoformat(),
-                safe_limit,
             ),
         ).fetchall()
-        members = []
-        label = next((item_label for key, item_label, _duration in MEMBER_ACTIVITY_WINDOW_SPECS if key == window_key), window_key)
-        for index, row in enumerate(rows, start=1):
+    members = []
+    label = next((item_label for key, item_label, _duration in MEMBER_ACTIVITY_WINDOW_SPECS if key == window_key), window_key)
+    batch_size = max(safe_limit * 5, 100)
+    for batch_start in range(0, len(rows), batch_size):
+        batch_rows = rows[batch_start : batch_start + batch_size]
+        member_map = resolve_member_activity_members(
+            safe_guild_id,
+            [int(row["user_id"] or 0) for row in batch_rows],
+        )
+        for row in batch_rows:
+            user_id = int(row["user_id"] or 0)
+            if not is_member_activity_ranking_eligible(member_map.get(user_id), role_id=safe_role_id):
+                continue
             stats = build_member_activity_window_record(
                 window_key,
                 label,
@@ -2542,14 +2644,16 @@ def list_member_activity_top_window(guild_id: int | None, window_key: str, limit
             )
             stats.update(
                 {
-                    "rank": index,
-                    "user_id": int(row["user_id"] or 0),
+                    "rank": len(members) + 1,
+                    "user_id": user_id,
                     "username": decrypt_member_activity_identity(str(row["username"] or "")),
                     "display_name": decrypt_member_activity_identity(str(row["display_name"] or "")),
                 }
             )
             members.append(stats)
-        return members
+            if len(members) >= safe_limit:
+                return members
+    return members
 
 
 def get_member_activity_snapshot(guild_id: int | None, user_id: int):
@@ -2623,15 +2727,21 @@ def get_member_activity_snapshot(guild_id: int | None, user_id: int):
         }
 
 
-def build_member_activity_web_payload(guild_id: int):
+def build_member_activity_web_payload(guild_id: int, role_id: int | None = None):
     safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
+    safe_role_id = normalize_optional_role_id(role_id)
     windows = []
     for window_key, label, _duration in MEMBER_ACTIVITY_WINDOW_SPECS:
         windows.append(
             {
                 "key": window_key,
                 "label": label,
-                "members": list_member_activity_top_window(safe_guild_id, window_key, limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT),
+                "members": list_member_activity_top_window(
+                    safe_guild_id,
+                    window_key,
+                    limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT,
+                    role_id=safe_role_id,
+                ),
             }
         )
     return {
@@ -2639,13 +2749,17 @@ def build_member_activity_web_payload(guild_id: int):
         "guild_id": safe_guild_id,
         "generated_at": datetime.now(UTC).isoformat(),
         "top_limit": MEMBER_ACTIVITY_WEB_TOP_LIMIT,
+        "selected_role_id": safe_role_id or 0,
+        "excluded_role_ids": sorted(MODERATOR_ROLE_IDS),
+        "excluded_role_names": sorted(DEFAULT_ALLOWED_ROLE_NAMES),
         "windows": windows,
     }
 
 
-def export_member_activity_archive(guild_id: int):
+def export_member_activity_archive(guild_id: int, role_id: int | None = None):
     safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
-    payload = build_member_activity_web_payload(safe_guild_id)
+    safe_role_id = normalize_optional_role_id(role_id)
+    payload = build_member_activity_web_payload(safe_guild_id, role_id=safe_role_id)
     generated_at = datetime.now(UTC).replace(microsecond=0)
     conn = get_db_connection()
     with db_lock:
@@ -2747,7 +2861,8 @@ def export_member_activity_archive(guild_id: int):
             ),
         )
 
-    file_name = f"member_activity_guild_{safe_guild_id}_{generated_at.strftime('%Y%m%dT%H%M%SZ')}.zip"
+    role_suffix = f"_role_{safe_role_id}" if safe_role_id is not None else ""
+    file_name = f"member_activity_guild_{safe_guild_id}{role_suffix}_{generated_at.strftime('%Y%m%dT%H%M%SZ')}.zip"
     return {
         "ok": True,
         "filename": file_name,
@@ -2757,17 +2872,17 @@ def export_member_activity_archive(guild_id: int):
     }
 
 
-def run_web_get_member_activity(guild_id: int):
+def run_web_get_member_activity(guild_id: int, role_id: int | None = None):
     try:
-        return build_member_activity_web_payload(guild_id)
+        return build_member_activity_web_payload(guild_id, role_id=role_id)
     except Exception as exc:
         logger.exception("Failed to build member activity web payload")
         return {"ok": False, "error": str(exc)}
 
 
-def run_web_export_member_activity(guild_id: int):
+def run_web_export_member_activity(guild_id: int, role_id: int | None = None):
     try:
-        return export_member_activity_archive(guild_id)
+        return export_member_activity_archive(guild_id, role_id=role_id)
     except Exception as exc:
         logger.exception("Failed to export member activity archive")
         return {"ok": False, "error": str(exc)}

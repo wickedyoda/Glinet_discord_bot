@@ -542,11 +542,27 @@ def _default_display_name(email: str) -> str:
 
 
 def _is_admin_user(user: dict | None) -> bool:
-    return bool(user and user.get("is_admin"))
+    return _normalize_web_user_role((user or {}).get("role", "")) == "admin"
 
 
-def _user_role_label_from_is_admin(is_admin: bool) -> str:
-    return "Admin" if bool(is_admin) else "Read-only"
+def _normalize_web_user_role(value: str | None, *, is_admin: bool = False) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"admin", "read_only", "glinet"}:
+        return raw
+    return "admin" if bool(is_admin) else "read_only"
+
+
+def _is_glinet_user(user: dict | None) -> bool:
+    return _normalize_web_user_role((user or {}).get("role", "")) == "glinet"
+
+
+def _user_role_label(role_value: str | None = None, *, is_admin: bool = False) -> str:
+    normalized = _normalize_web_user_role(role_value, is_admin=is_admin)
+    if normalized == "admin":
+        return "Admin"
+    if normalized == "glinet":
+        return "Glinet"
+    return "Read-only"
 
 
 def _audit_user_label_from_email(email: str) -> str:
@@ -943,6 +959,8 @@ def _ensure_users_table_columns(conn):
     rows = conn.execute("PRAGMA table_info(web_users)").fetchall()
     columns = {str(row["name"]) for row in rows}
     alter_statements = []
+    if "role" not in columns:
+        alter_statements.append("ALTER TABLE web_users ADD COLUMN role TEXT NOT NULL DEFAULT ''")
     if "first_name" not in columns:
         alter_statements.append("ALTER TABLE web_users ADD COLUMN first_name TEXT NOT NULL DEFAULT ''")
     if "last_name" not in columns:
@@ -1002,6 +1020,15 @@ def _ensure_users_table_columns(conn):
     conn.execute(
         """
         UPDATE web_users
+        SET role = CASE
+            WHEN TRIM(COALESCE(role, '')) = '' THEN CASE WHEN is_admin = 1 THEN 'admin' ELSE 'read_only' END
+            ELSE LOWER(TRIM(role))
+        END
+        """
+    )
+    conn.execute(
+        """
+        UPDATE web_users
         SET first_name = COALESCE(first_name, ''),
             last_name = COALESCE(last_name, ''),
             display_name = COALESCE(display_name, '')
@@ -1044,6 +1071,7 @@ def _read_users(users_db_file: Path):
                 email,
                 password_hash,
                 is_admin,
+                role,
                 first_name,
                 last_name,
                 display_name,
@@ -1062,7 +1090,8 @@ def _read_users(users_db_file: Path):
         {
             "email": str(row["email"]).strip().lower(),
             "password_hash": str(row["password_hash"]),
-            "is_admin": bool(row["is_admin"]),
+            "role": _normalize_web_user_role(str(row["role"] or ""), is_admin=bool(row["is_admin"])),
+            "is_admin": _normalize_web_user_role(str(row["role"] or ""), is_admin=bool(row["is_admin"])) == "admin",
             "first_name": _clean_profile_text(str(row["first_name"] or ""), max_length=80),
             "last_name": _clean_profile_text(str(row["last_name"] or ""), max_length=80),
             "display_name": _clean_profile_text(
@@ -1090,7 +1119,8 @@ def _save_users(users_db_file: Path, users):
                 password_hash = str(entry.get("password_hash", "")).strip()
                 if not email or not password_hash:
                     continue
-                is_admin = 1 if bool(entry.get("is_admin", False)) else 0
+                role = _normalize_web_user_role(str(entry.get("role", "")), is_admin=bool(entry.get("is_admin", False)))
+                is_admin = 1 if role == "admin" else 0
                 first_name = _clean_profile_text(str(entry.get("first_name", "")), max_length=80)
                 last_name = _clean_profile_text(str(entry.get("last_name", "")), max_length=80)
                 display_name = _clean_profile_text(str(entry.get("display_name", "")), max_length=80) or _default_display_name(email)
@@ -1103,6 +1133,7 @@ def _save_users(users_db_file: Path, users):
                         email,
                         password_hash,
                         is_admin,
+                        role,
                         first_name,
                         last_name,
                         display_name,
@@ -1111,12 +1142,13 @@ def _save_users(users_db_file: Path, users):
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         email,
                         password_hash,
                         is_admin,
+                        role,
                         first_name,
                         last_name,
                         display_name,
@@ -1160,6 +1192,7 @@ def _ensure_default_admin(users_db_file: Path, default_email: str, default_passw
                     email,
                     password_hash,
                     is_admin,
+                    role,
                     first_name,
                     last_name,
                     display_name,
@@ -1168,12 +1201,13 @@ def _ensure_default_admin(users_db_file: Path, default_email: str, default_passw
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     email,
                     _hash_password(password),
                     1,
+                    "admin",
                     "",
                     "",
                     display_name,
@@ -1544,6 +1578,8 @@ def _render_layout(
     current_display_name: str,
     csrf_token: str,
     is_admin: bool,
+    current_role_label: str = "Read-only",
+    current_role: str = "read_only",
     current_guild_name: str = "",
     github_wiki_url: str = "",
     restart_enabled: bool = False,
@@ -1823,7 +1859,7 @@ def _render_layout(
           <summary>{{ title }} Menu</summary>
           <div class="mobile-nav-panel">
             <div class="mobile-user-block">
-              <span class="current-user">{{ current_display_name or current_email }} ({{ "Admin" if is_admin else "Read-only" }})</span>
+              <span class="current-user">{{ current_display_name or current_email }} ({{ current_role_label }})</span>
               {% if current_display_name and current_display_name != current_email %}
                 <span class="current-user-email">{{ current_email }}</span>
               {% endif %}
@@ -1831,21 +1867,24 @@ def _render_layout(
             </div>
             <div class="mobile-link-grid">
               <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
-              <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
               <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
               <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+              {% if current_role != "glinet" %}
+              <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
               <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
               <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
+              {% endif %}
             </div>
             <label class="sr-only" for="mobile-nav-page-select">Open page</label>
             <select id="mobile-nav-page-select" class="nav-select nav-page-select">
               <option value="">Go to page...</option>
               <option value="{{ url_for('guilds_page') }}">Servers</option>
               <option value="{{ url_for('account') }}">My Account</option>
+              <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+              {% if current_role != "glinet" %}
               <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
               <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
               <option value="{{ url_for('actions_page') }}">Action History</option>
-              <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
               <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
               <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
               <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
@@ -1858,6 +1897,7 @@ def _render_layout(
               <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
               <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
               <option value="{{ url_for('users') }}">Users</option>
+              {% endif %}
               <option value="{{ url_for('logout') }}">Logout</option>
             </select>
             {% if restart_enabled %}
@@ -1883,22 +1923,25 @@ def _render_layout(
     <div class="header-right desktop-nav">
       {% if current_email %}
         <nav class="nav-controls">
-          <span class="current-user">{{ current_display_name or current_email }} ({{ "Admin" if is_admin else "Read-only" }})</span>
+          <span class="current-user">{{ current_display_name or current_email }} ({{ current_role_label }})</span>
           {% if current_display_name and current_display_name != current_email %}
             <span class="current-user-email">({{ current_email }})</span>
           {% endif %}
           {% if current_guild_name %}<span class="current-user">Server: {{ current_guild_name }}</span>{% endif %}
           <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+          {% if current_role != "glinet" %}
           <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+          {% endif %}
           <label class="sr-only" for="desktop-nav-page-select">Open page</label>
           <select id="desktop-nav-page-select" class="nav-select nav-page-select">
             <option value="">Go to page...</option>
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('account') }}">My Account</option>
+            <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+            {% if current_role != "glinet" %}
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
-            <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
@@ -1911,6 +1954,7 @@ def _render_layout(
             <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
             <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
             <option value="{{ url_for('users') }}">Users</option>
+            {% endif %}
             <option value="{{ url_for('logout') }}">Logout</option>
           </select>
           {% if restart_enabled %}
@@ -1934,8 +1978,10 @@ def _render_layout(
         <div class="flash {{ category }}">{{ message }}</div>
       {% endfor %}
     {% endwith %}
-    {% if current_email and not is_admin %}
+    {% if current_email and current_role == "read_only" %}
       <div class="flash">Read-only account: you can view all pages, but configuration and management changes are blocked.</div>
+    {% elif current_email and current_role == "glinet" %}
+      <div class="flash">Glinet account: access is limited to server selection and member activity.</div>
     {% endif %}
     {{ body_html | safe }}
   </div>
@@ -2007,6 +2053,8 @@ def _render_layout(
         current_display_name=current_display_name,
         csrf_token=csrf_token,
         is_admin=is_admin,
+        current_role_label=current_role_label,
+        current_role=current_role,
         current_guild_name=current_guild_name,
         github_wiki_url=github_wiki_url,
         restart_enabled=restart_enabled,
@@ -2591,6 +2639,30 @@ def create_web_app(
             return redirect(url_for(str(request.endpoint)))
         return redirect(url_for("dashboard"))
 
+    @app.before_request
+    def enforce_glinet_role_route_restrictions():
+        user = _current_user()
+        if user is None or not _is_glinet_user(user):
+            return None
+        allowed_endpoints = {
+            "index",
+            "login",
+            "logout",
+            "healthz",
+            "favicon",
+            "account",
+            "guilds_page",
+            "select_guild",
+            "member_activity_page",
+            "member_activity_export",
+        }
+        if request.endpoint in allowed_endpoints:
+            return None
+        flash("Glinet access is limited to member activity only.", "error")
+        if _selected_guild():
+            return redirect(url_for("member_activity_page"))
+        return redirect(url_for("guilds_page"))
+
     def _prune_login_attempts(client_ip: str):
         now_ts = time.time()
         entries = login_attempts.get(client_ip, [])
@@ -2629,12 +2701,17 @@ def create_web_app(
         csrf_token = _ensure_csrf_token()
         resolved_display_name = _clean_profile_text(current_display_name, max_length=80)
         normalized_email = _normalize_email(current_email)
+        current_role = _normalize_web_user_role("", is_admin=is_admin)
         if not resolved_display_name and normalized_email:
             for account in _read_users(users_file):
                 if account.get("email") == normalized_email:
                     resolved_display_name = _clean_profile_text(
                         str(account.get("display_name", "")),
                         max_length=80,
+                    )
+                    current_role = _normalize_web_user_role(
+                        str(account.get("role", "")),
+                        is_admin=bool(account.get("is_admin")),
                     )
                     break
         if not resolved_display_name and normalized_email:
@@ -2647,6 +2724,8 @@ def create_web_app(
             resolved_display_name,
             csrf_token,
             is_admin,
+            current_role_label=_user_role_label(current_role, is_admin=is_admin),
+            current_role=current_role,
             current_guild_name=(str(current_guild.get("name") or "") if isinstance(current_guild, dict) else ""),
             github_wiki_url=_github_wiki_url(),
             restart_enabled=_restart_enabled(),
@@ -3033,10 +3112,11 @@ def create_web_app(
 
         selected_note = ""
         if isinstance(selected_guild, dict):
+            selected_target = url_for("member_activity_page") if _is_glinet_user(user) else url_for("dashboard")
             selected_note = (
                 f"<p>Current server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong> "
                 f"(<span class='mono'>{escape(str(selected_guild.get('id') or ''))}</span>). "
-                f"<a href='{escape(url_for('dashboard'), quote=True)}'>Open dashboard</a>.</p>"
+                f"<a href='{escape(selected_target, quote=True)}'>{'Open member activity' if _is_glinet_user(user) else 'Open dashboard'}</a>.</p>"
             )
         error_html = f"<p class='muted'>Could not load guild list: {escape(guild_error)}</p>" if guild_error else ""
         body = f"""
@@ -3063,6 +3143,9 @@ def create_web_app(
             flash("That Discord server is no longer available to the bot.", "error")
             return redirect(url_for("guilds_page"))
         flash("Discord server context updated.", "success")
+        user = _current_user()
+        if _is_glinet_user(user):
+            return redirect(url_for("member_activity_page"))
         return redirect(url_for("dashboard"))
 
     @app.route("/admin/dashboard", methods=["GET"])
@@ -3622,21 +3705,57 @@ def create_web_app(
             return selection_redirect
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
+        selected_role_id = str(request.args.get("role_id", "") or "").strip()
         payload = (
-            on_get_member_activity(selected_guild_id)
+            on_get_member_activity(selected_guild_id, selected_role_id)
             if callable(on_get_member_activity)
             else {"ok": False, "error": "Member activity callback is not configured."}
         )
+        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
         windows = payload.get("windows", []) if isinstance(payload, dict) else []
         activity_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
         top_limit = int(payload.get("top_limit") or 20) if isinstance(payload, dict) else 20
+        excluded_role_ids = {
+            str(item)
+            for item in (payload.get("excluded_role_ids", []) if isinstance(payload, dict) else [])
+            if str(item).strip()
+        }
+        excluded_role_names = {
+            str(item).strip().casefold()
+            for item in (payload.get("excluded_role_names", []) if isinstance(payload, dict) else [])
+            if str(item).strip()
+        }
+        role_options = [{"value": "", "label": "All eligible members"}]
+        if isinstance(discord_catalog, dict) and discord_catalog.get("ok"):
+            for role in discord_catalog.get("roles", []) or []:
+                role_id_value = str(role.get("id") or "").strip()
+                role_name = str(role.get("name") or "").strip()
+                if not role_id_value or not role_name:
+                    continue
+                if role_id_value in excluded_role_ids or role_name.casefold() in excluded_role_names:
+                    continue
+                role_options.append({"value": role_id_value, "label": f"@{role_name}"})
+        selected_role_label = "All eligible members"
+        for option in role_options:
+            if option["value"] == selected_role_id:
+                selected_role_label = option["label"]
+                break
+        role_filter_select = _render_fixed_select_input(
+            "role_id",
+            selected_role_id,
+            role_options,
+            placeholder="All eligible members",
+        )
         export_html = ""
         if callable(on_export_member_activity):
+            export_url = url_for("member_activity_export")
+            if selected_role_id:
+                export_url = url_for("member_activity_export", role_id=selected_role_id)
             export_html = (
                 f"<div class='card'>"
                 f"<h3>Export Activity Data</h3>"
                 f"<p class='muted'>Download the selected server's member activity as a compressed ZIP archive.</p>"
-                f"<a class='btn secondary' href='{escape(url_for('member_activity_export'), quote=True)}'>Download Activity Export</a>"
+                f"<a class='btn secondary' href='{escape(export_url, quote=True)}'>Download Activity Export</a>"
                 f"</div>"
             )
 
@@ -3681,7 +3800,17 @@ def create_web_app(
         <div class="card">
           <h2>Member Activity</h2>
           <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
-          <p class="muted">Showing the top {escape(str(top_limit))} members by message activity for each time window.</p>
+          <form method="get" style="margin:14px 0;">
+            <div style="display:grid; grid-template-columns:minmax(220px, 360px) auto; gap:10px; align-items:end;">
+              <div>
+                <label for="member-activity-role-filter"><strong>Top 20 by role</strong></label>
+                {role_filter_select.replace("<select ", "<select id='member-activity-role-filter' ")}
+              </div>
+              <div><button class="btn secondary" type="submit">Apply Filter</button></div>
+            </div>
+          </form>
+          <p class="muted">Showing the top {escape(str(top_limit))} eligible members by message activity for each time window.</p>
+          <p class="muted">Current filter: <strong>{escape(selected_role_label)}</strong>. Members with moderator/admin/employee-style access are excluded from rankings.</p>
           <p class="muted">Columns show exact messages sent in the selected period, active days in that period, and the most recent message timestamp.</p>
           {"<p class='muted'>" + escape(activity_error) + "</p>" if activity_error else ""}
         </div>
@@ -3704,10 +3833,11 @@ def create_web_app(
             return selection_redirect
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
+        selected_role_id = str(request.args.get("role_id", "") or "").strip()
         if not callable(on_export_member_activity):
             flash("Member activity export is not configured.", "error")
             return redirect(url_for("member_activity_page"))
-        payload = on_export_member_activity(selected_guild_id)
+        payload = on_export_member_activity(selected_guild_id, selected_role_id)
         if not isinstance(payload, dict) or not payload.get("ok"):
             flash(
                 str(payload.get("error") or "Failed to export member activity.")
@@ -5073,7 +5203,7 @@ def create_web_app(
                 first_name = _clean_profile_text(request.form.get("first_name", ""), max_length=80)
                 last_name = _clean_profile_text(request.form.get("last_name", ""), max_length=80)
                 display_name = _clean_profile_text(request.form.get("display_name", ""), max_length=80)
-                requested_role = str(request.form.get("role", "read_only")).strip().lower()
+                requested_role = _normalize_web_user_role(request.form.get("role", "read_only"))
                 is_admin = requested_role == "admin"
                 if not _is_valid_email(email):
                     flash("Enter a valid email.", "error")
@@ -5097,6 +5227,7 @@ def create_web_app(
                             {
                                 "email": email,
                                 "password_hash": _hash_password(password),
+                                "role": requested_role,
                                 "is_admin": is_admin,
                                 "first_name": first_name,
                                 "last_name": last_name,
@@ -5192,17 +5323,18 @@ def create_web_app(
 
             elif action == "set_role":
                 target_email = _normalize_email(request.form.get("email", ""))
-                requested_role = str(request.form.get("role", "read_only")).strip().lower()
+                requested_role = _normalize_web_user_role(request.form.get("role", "read_only"))
                 target_is_admin = requested_role == "admin"
                 if target_email == user["email"] and not target_is_admin:
                     flash(
-                        "You cannot set your own account to Read-only. Another admin must do this.",
+                        "You cannot set your own account to a non-admin role. Another admin must do this.",
                         "error",
                     )
                 else:
                     changed = False
                     for entry in users_data:
                         if entry["email"] == target_email:
+                            entry["role"] = requested_role
                             entry["is_admin"] = target_is_admin
                             changed = True
                             break
@@ -5212,7 +5344,7 @@ def create_web_app(
                         else:
                             _save_users(users_file, users_data)
                             flash(
-                                f"Updated role for {target_email} to {_user_role_label_from_is_admin(target_is_admin)}.",
+                                f"Updated role for {target_email} to {_user_role_label(requested_role, is_admin=target_is_admin)}.",
                                 "success",
                             )
                             users_data = _read_users(users_file)
@@ -5222,14 +5354,19 @@ def create_web_app(
         user_rows = []
         for entry in users_data:
             email = entry["email"]
-            is_admin_entry = bool(entry.get("is_admin"))
-            role_label = _user_role_label_from_is_admin(is_admin_entry)
-            next_role_value = "read_only" if is_admin_entry else "admin"
-            next_role_label = _user_role_label_from_is_admin(next_role_value == "admin")
-            is_self_read_only_demotion = email == user["email"] and next_role_value == "read_only"
-            role_button_label = "Set Read-only (Self blocked)" if is_self_read_only_demotion else f"Set {next_role_label}"
-            role_button_disabled = " disabled" if is_self_read_only_demotion else ""
-            role_button_title = " title='You cannot set your own account to Read-only.'" if is_self_read_only_demotion else ""
+            current_role_value = _normalize_web_user_role(entry.get("role", ""), is_admin=bool(entry.get("is_admin")))
+            is_admin_entry = current_role_value == "admin"
+            role_label = _user_role_label(current_role_value, is_admin=is_admin_entry)
+            role_select_html = _render_fixed_select_input(
+                f"role__{email}",
+                current_role_value,
+                [
+                    {"value": "read_only", "label": "Read-only"},
+                    {"value": "glinet", "label": "Glinet"},
+                    {"value": "admin", "label": "Admin"},
+                ],
+                "Select role...",
+            ).replace("<select ", "<select style='min-width:150px;' ")
             display_name = str(entry.get("display_name") or _default_display_name(email))
             first_name = str(entry.get("first_name") or "")
             last_name = str(entry.get("last_name") or "")
@@ -5250,8 +5387,8 @@ def create_web_app(
                     <form method="post" style="display:inline;">
                       <input type="hidden" name="action" value="set_role" />
                       <input type="hidden" name="email" value="{escape(email, quote=True)}" />
-                      <input type="hidden" name="role" value="{escape(next_role_value, quote=True)}" />
-                      <button class="btn secondary" type="submit"{role_button_disabled}{role_button_title}>{escape(role_button_label)}</button>
+                      {role_select_html.replace(f"name='{escape(f'role__{email}', quote=True)}'", "name='role'")}
+                      <button class="btn secondary" type="submit">Set Role</button>
                     </form>
                     <a class="btn secondary" style="margin-left:6px;" href="#edit-user-{escape(email, quote=True)}">Edit</a>
                     <form method="post" style="display:inline;margin-left:6px;">
@@ -5333,6 +5470,7 @@ def create_web_app(
               <label style="margin-top:10px;display:block;">Role</label>
               <select name="role">
                 <option value="read_only">Read-only</option>
+                <option value="glinet">Glinet</option>
                 <option value="admin">Admin</option>
               </select>
               <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>
