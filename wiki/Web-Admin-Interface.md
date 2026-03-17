@@ -145,9 +145,6 @@ UI forms include show/hide password toggles and validation feedback.
 - Each table shows:
   - message count
   - active day count
-  - average messages per day
-  - average messages per active day
-  - active-day percentage
   - last seen timestamp
 
 ### `/admin/command-permissions`
@@ -190,6 +187,12 @@ UI forms include show/hide password toggles and validation feedback.
 
 - User and role management (`Admin` / `Read-only`)
 - User creation with password policy enforcement
+- Admins can edit another web user's:
+  - first name
+  - last name
+  - display name
+  - email
+- Admins can reset another web user's password from the same page
 - Password visibility toggle in create/reset forms
 
 ### `/admin/bot-profile`

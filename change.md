@@ -16,6 +16,23 @@ All notable changes to this project are documented in this file.
 ### Changed
 - Help and wiki docs now include the member activity analytics feature and `/stats` command.
 - Member activity retention is now capped at 90 days and the lifetime "Since Joining" view has been removed.
+- Member activity views now show exact period totals instead of derived average-rate fields.
+
+## [2026-03-17] - Web User Admin Editing
+
+### Added
+- Admins can now edit another web GUI user's:
+  - first name
+  - last name
+  - display name
+  - email
+- Admins can now reset another web GUI user's password directly from that user's edit section.
+
+## [2026-03-17] - Native Role Picker for `/submitrole`
+
+### Changed
+- `/submitrole` now uses a native Discord slash-command role parameter instead of waiting for the user to mention a role in a follow-up message.
+- The command now validates the selected role before generating the invite link and 6-digit access code.
 
 ## [2026-03-16] - Web GUI Host Bind Configuration
 
