@@ -18,10 +18,16 @@ Core capabilities:
 - Country suffix nickname utilities
 - Moderation tooling for members, roles, event logs, and moderator-only random member selection with a 7-day cooldown
 - Firmware feed monitor with scheduled notification delivery
+- Reddit feed monitor with channel-to-Discord posting for configured subreddits
 - YouTube feed monitor with channel-to-Discord posting
+- LinkedIn public profile monitor with channel-to-Discord posting
 - Member activity analytics with private `/stats`, rolling 90-day retention, optional startup backfill, and ZIP export from the web GUI
-- Secure web admin interface with per-command permissions, action history, YouTube subscriptions, member activity views, and user management
+- Secure web admin interface with per-command permissions, action history, observability, Reddit/YouTube/LinkedIn subscriptions, member activity views, and user management
 - Multi-guild admin model with optional managed-guild allowlist filtering
+- Three web-user roles:
+  - `Admin`
+  - `Read-only`
+  - `Glinet` (member-activity-only access)
 - SQLite-backed persistence with legacy merge imports on startup
 
 ## Read by Goal

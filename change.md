@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-17] - LinkedIn Profile Notifications
+
+### Added
+- Guild-scoped LinkedIn public profile subscriptions in the web GUI.
+- LinkedIn-to-Discord notification monitor for newly detected public profile posts.
+- Discord channel dropdown selection for each LinkedIn profile subscription.
+
 ## [2026-03-16] - Member Activity Analytics
 
 ### Added
@@ -27,6 +34,12 @@ All notable changes to this project are documented in this file.
   - display name
   - email
 - Admins can now reset another web GUI user's password directly from that user's edit section.
+
+## [2026-03-18] - Restore Invite Code Command
+
+### Added
+
+- Added moderator-only `/restore_code` to restore a specific 6-digit role access code and generate a fresh invite link for the selected role.
 
 ## [2026-03-17] - Native Role Picker for `/submitrole`
 
