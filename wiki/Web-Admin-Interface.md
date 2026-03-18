@@ -34,7 +34,7 @@ Each web user includes:
 - First name
 - Last name
 - Display name (shown in GUI)
-- Role (`Admin` or `Read-only`)
+- Role (`Admin`, `Read-only`, or `Glinet`)
 - Password age metadata (90-day rotation enforcement)
 
 User self-service capabilities:
@@ -56,6 +56,15 @@ Read-only capabilities:
 - Can view all settings/options/data exposed by the web GUI
 - Cannot apply management/configuration changes (save/update/delete/restart actions are blocked server-side)
 
+`Glinet` capabilities:
+
+- Can sign in
+- Can select a guild/server
+- Can view `/admin/member-activity`
+- Can export member-activity ZIP archives from `/admin/member-activity/export`
+- Can manage their own `/admin/account` page
+- Cannot access dashboard, logs, settings, documentation, user management, or other admin pages
+
 No Discord `/login` or `!login` flow exists for web-user creation.
 
 ## Password Policy
@@ -75,6 +84,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Main page lists the Discord servers the bot is currently in.
 - Select a server first, then open the server dashboard for guild-scoped admin actions.
 - Top menu uses dropdown-based section navigation.
+- Mobile layout uses a compact quickbar plus collapsible menu drawer for server jump, account access, theme switching, and primary page links.
 - Dedicated dashboard link is shown beside the dropdown.
 - Dashboard includes direct action buttons/cards for major admin workflows.
 - Mobile layout is responsive for smaller screens and touch interaction.
@@ -125,14 +135,14 @@ UI forms include show/hide password toggles and validation feedback.
 - Web-session/security settings
 - Auto-logout selection (5 to 30 minutes)
 
-### `/staus` (Public Read-Only Status)
+### `/status/everything` (Public Read-Only Status)
 
 - Runtime observability view in web GUI
 - CPU, memory, I/O, network, and uptime snapshot cards
 - 24-hour rolling metrics summary (min/avg/max) retained in-memory
 - Manual refresh plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
 - Public and read-only (no login required)
-- `/admin/observability` redirects to `/staus`
+- `/admin/observability` redirects to `/status/everything`
 
 ### `/admin/logs` (Login Required)
 
@@ -145,6 +155,13 @@ UI forms include show/hide password toggles and validation feedback.
 - Scoped to the selected server
 - Read-only activity history for moderation actions and server-event log writes
 - Useful for reviewing what the bot did without reading raw log files
+
+### `/admin/account`
+
+- Self-service account page for the current web GUI user
+- Change password
+- Change email
+- Update first name, last name, and display name
 
 ### `/admin/member-activity`
 
@@ -197,6 +214,16 @@ UI forms include show/hide password toggles and validation feedback.
 - Stores last seen post metadata so only newer posts are announced
 - Best-effort public-profile monitoring: private or login-gated activity will not be detected
 
+### `/admin/documentation`
+
+- Built-in documentation page inside the web GUI
+- Presents operator guidance and shortcuts for bot administration topics
+
+### `/admin/wiki`
+
+- Embedded wiki/documentation viewer in the web GUI
+- Useful when the operator wants docs without leaving the admin interface
+
 ### `/admin/tag-responses`
 
 - JSON tag editor scoped to the selected server
@@ -212,7 +239,7 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/users`
 
-- User and role management (`Admin` / `Read-only`)
+- User and role management (`Admin` / `Read-only` / `Glinet`)
 - User creation with password policy enforcement
 - Admins can edit another web user's:
   - first name
@@ -241,6 +268,7 @@ Scope notes:
   - `/admin/command-permissions`
   - `/admin/reddit-feeds`
   - `/admin/youtube`
+  - `/admin/linkedin`
   - `/admin/tag-responses`
   - `/admin/bulk-role-csv`
   - server nickname in `/admin/bot-profile`

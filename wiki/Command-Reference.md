@@ -131,6 +131,7 @@ In `/admin/command-permissions`, each command can be set to:
 
 - `default`: uses built-in command access (public vs moderator).
 - `public`: opens command to all users.
+- `disabled`: turns the command off for that guild.
 - `custom_roles`: restricts command to one or more selected Discord roles.
 
 Custom role restriction options:
