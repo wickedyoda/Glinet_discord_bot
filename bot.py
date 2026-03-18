@@ -2126,6 +2126,89 @@ def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, paylo
     )
 
 
+def list_member_activity_backfill_completed_ranges(guild_id: int):
+    safe_guild_id = int(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(
+            """
+            SELECT key, value
+            FROM kv_store
+            WHERE key LIKE ?
+            """,
+            (f"member_activity_backfill:{safe_guild_id}:%",),
+        ).fetchall()
+
+    ranges = []
+    for row in rows:
+        try:
+            payload = json.loads(str(row["value"] or ""))
+        except ValueError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("status") or "").strip().lower() != "completed":
+            continue
+        since_dt = parse_iso_datetime_utc(payload.get("since_at"))
+        until_dt = parse_iso_datetime_utc(payload.get("until_at"))
+        if since_dt is None or until_dt is None:
+            continue
+        if until_dt <= since_dt:
+            continue
+        ranges.append((since_dt, until_dt))
+    return ranges
+
+
+def merge_member_activity_backfill_ranges(ranges):
+    normalized = []
+    for start_dt, end_dt in ranges:
+        safe_start = normalize_activity_timestamp(start_dt)
+        safe_end = normalize_activity_timestamp(end_dt)
+        if safe_end <= safe_start:
+            continue
+        normalized.append((safe_start, safe_end))
+    if not normalized:
+        return []
+
+    normalized.sort(key=lambda item: item[0])
+    merged = [normalized[0]]
+    for start_dt, end_dt in normalized[1:]:
+        last_start, last_end = merged[-1]
+        if start_dt <= last_end:
+            merged[-1] = (last_start, max(last_end, end_dt))
+            continue
+        merged.append((start_dt, end_dt))
+    return merged
+
+
+def compute_member_activity_backfill_missing_ranges(requested_since: datetime, requested_until: datetime, completed_ranges):
+    safe_requested_since = normalize_activity_timestamp(requested_since)
+    safe_requested_until = normalize_activity_timestamp(requested_until)
+    if safe_requested_until <= safe_requested_since:
+        return []
+
+    merged_ranges = merge_member_activity_backfill_ranges(completed_ranges)
+    missing_ranges = []
+    cursor = safe_requested_since
+    for completed_start, completed_end in merged_ranges:
+        if completed_end <= safe_requested_since:
+            continue
+        if completed_start >= safe_requested_until:
+            break
+        clipped_start = max(completed_start, safe_requested_since)
+        clipped_end = min(completed_end, safe_requested_until)
+        if clipped_end <= clipped_start:
+            continue
+        if clipped_start > cursor:
+            missing_ranges.append((cursor, clipped_start))
+        cursor = max(cursor, clipped_end)
+        if cursor >= safe_requested_until:
+            break
+    if cursor < safe_requested_until:
+        missing_ranges.append((cursor, safe_requested_until))
+    return missing_ranges
+
+
 def ensure_member_activity_schema_locked(conn):
     global member_activity_encryption_migration_checked
     conn.executescript(
@@ -3040,11 +3123,16 @@ async def member_activity_backfill_job():
 
     state = load_member_activity_backfill_state(guild.id, since_dt)
     previous_status = str(state.get("status") or "").strip().lower()
+    previous_covered_by_existing_ranges = bool(state.get("covered_by_existing_ranges"))
     previous_channels_scanned = int(state.get("channels_scanned") or 0)
     previous_messages_processed = int(state.get("messages_processed") or 0)
     if (
         previous_status == "completed"
-        and (previous_channels_scanned > 0 or previous_messages_processed > 0)
+        and (
+            previous_covered_by_existing_ranges
+            or previous_channels_scanned > 0
+            or previous_messages_processed > 0
+        )
     ):
         logger.info(
             "Member activity backfill already completed for guild %s since %s; skipping.",
@@ -3060,6 +3148,33 @@ async def member_activity_backfill_job():
         )
 
     until_dt = datetime.now(UTC).replace(microsecond=0)
+    completed_ranges = list_member_activity_backfill_completed_ranges(guild.id)
+    missing_ranges = compute_member_activity_backfill_missing_ranges(since_dt, until_dt, completed_ranges)
+    if not missing_ranges:
+        status = {
+            "status": "completed",
+            "guild_id": guild.id,
+            "guild_name": guild.name,
+            "since_at": since_dt.isoformat(),
+            "until_at": until_dt.isoformat(),
+            "started_at": datetime.now(UTC).isoformat(),
+            "completed_at": datetime.now(UTC).isoformat(),
+            "channels_scanned": 0,
+            "messages_processed": 0,
+            "last_channel_id": 0,
+            "last_error": "",
+            "covered_by_existing_ranges": True,
+        }
+        save_member_activity_backfill_state(guild.id, since_dt, status)
+        logger.info(
+            "Member activity backfill skipped for guild %s (%s): requested range %s to %s is already indexed.",
+            guild.name,
+            guild.id,
+            since_dt.isoformat(),
+            until_dt.isoformat(),
+        )
+        return
+
     status = {
         "status": "running",
         "guild_id": guild.id,
@@ -3072,14 +3187,16 @@ async def member_activity_backfill_job():
         "messages_processed": int(state.get("messages_processed") or 0),
         "last_channel_id": int(state.get("last_channel_id") or 0),
         "last_error": "",
+        "covered_by_existing_ranges": False,
     }
     save_member_activity_backfill_state(guild.id, since_dt, status)
 
     logger.info(
-        "Member activity backfill started for guild %s (%s) since %s.",
+        "Member activity backfill started for guild %s (%s) since %s with %s missing range(s).",
         guild.name,
         guild.id,
         since_dt.isoformat(),
+        len(missing_ranges),
     )
 
     channels_scanned = 0
@@ -3097,32 +3214,42 @@ async def member_activity_backfill_job():
                 channels_scanned,
             )
             try:
-                async for message in channel.history(limit=None, after=since_dt, before=until_dt, oldest_first=True):
-                    if message.author.bot or message.guild is None:
-                        continue
-                    conn = get_db_connection()
-                    with db_lock:
-                        changed = _record_member_message_activity_locked(
-                            conn,
-                            guild_id=message.guild.id,
-                            user_id=int(message.author.id),
-                            username=clip_text(str(message.author), max_chars=120),
-                            display_name=clip_text(getattr(message.author, "display_name", str(message.author)), max_chars=120),
-                            message_id=int(message.id),
-                            message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
-                        )
-                        if changed:
-                            conn.commit()
-                    if changed:
-                        messages_processed += 1
-                        if messages_processed % MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL == 0:
-                            status["messages_processed"] = messages_processed
-                            save_member_activity_backfill_state(guild.id, since_dt, status)
-                            logger.info(
-                                "Member activity backfill progress for guild %s: %s messages processed.",
-                                guild.id,
-                                messages_processed,
+                for range_index, (range_start, range_end) in enumerate(missing_ranges, start=1):
+                    logger.info(
+                        "Member activity backfill scanning missing range %s/%s for channel %s (%s): %s to %s",
+                        range_index,
+                        len(missing_ranges),
+                        getattr(channel, "name", channel.id),
+                        channel.id,
+                        range_start.isoformat(),
+                        range_end.isoformat(),
+                    )
+                    async for message in channel.history(limit=None, after=range_start, before=range_end, oldest_first=True):
+                        if message.author.bot or message.guild is None:
+                            continue
+                        conn = get_db_connection()
+                        with db_lock:
+                            changed = _record_member_message_activity_locked(
+                                conn,
+                                guild_id=message.guild.id,
+                                user_id=int(message.author.id),
+                                username=clip_text(str(message.author), max_chars=120),
+                                display_name=clip_text(getattr(message.author, "display_name", str(message.author)), max_chars=120),
+                                message_id=int(message.id),
+                                message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
                             )
+                            if changed:
+                                conn.commit()
+                        if changed:
+                            messages_processed += 1
+                            if messages_processed % MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL == 0:
+                                status["messages_processed"] = messages_processed
+                                save_member_activity_backfill_state(guild.id, since_dt, status)
+                                logger.info(
+                                    "Member activity backfill progress for guild %s: %s messages processed.",
+                                    guild.id,
+                                    messages_processed,
+                                )
             except (discord.Forbidden, discord.HTTPException):
                 logger.warning(
                     "Member activity backfill could not read channel %s (%s); continuing.",

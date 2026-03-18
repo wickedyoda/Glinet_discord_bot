@@ -125,6 +125,7 @@ To backfill member activity history once at startup, set:
 Behavior:
 
 - Scans readable channel history from the selected guild starting at the given UTC date
+- Reuses completed backfill coverage so reruns only scan missing time ranges instead of rereading already indexed periods
 - Uses a one-time state record so the same completed backfill range does not rerun every restart
 - Only keeps the last 90 days of activity data
 - Feeds the same `/stats` command and `/admin/member-activity` web views used for live collection
