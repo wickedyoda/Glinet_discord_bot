@@ -89,6 +89,7 @@ UI forms include show/hide password toggles and validation feedback.
   - `Custom roles`: restrict the command to one or more selected roles
 - Custom-role mode requires at least one role ID or selected role.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
+- LinkedIn profile management page lets admins map public LinkedIn profiles to Discord text channels for new-post notifications.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 - Member activity page shows top-20 member activity windows for the selected server.
 - Member activity exports are generated for the selected server only and match the currently retained 90-day dataset.
@@ -187,6 +188,14 @@ UI forms include show/hide password toggles and validation feedback.
 - Add a YouTube channel URL and target Discord text channel
 - Stores last seen video metadata so only newer uploads are posted
 - Per-subscription enable/disable and delete controls
+
+### `/admin/linkedin`
+
+- Scoped to the selected server
+- Add a public LinkedIn profile URL and target Discord text channel
+- Uses the public profile page to detect newer visible posts
+- Stores last seen post metadata so only newer posts are announced
+- Best-effort public-profile monitoring: private or login-gated activity will not be detected
 
 ### `/admin/tag-responses`
 

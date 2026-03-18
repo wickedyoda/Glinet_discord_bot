@@ -41,7 +41,7 @@ PASSWORD_MAX_AGE_DAYS = 90
 REMEMBER_LOGIN_DAYS = 5
 AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
-PASSWORD_HASH_METHOD = "pbkdf2:sha256:600000"
+PASSWORD_HASH_METHOD = "pbkdf2:sha256:600000"  # nosec B105
 SESSION_TIMEOUT_MINUTE_OPTIONS = (60,)
 WEB_INACTIVITY_TIMEOUT_MINUTES = 60
 POST_FORM_TAG_PATTERN = re.compile(
@@ -89,6 +89,8 @@ INT_KEYS = {
     "SHORTENER_TIMEOUT_SECONDS",
     "YOUTUBE_POLL_INTERVAL_SECONDS",
     "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
+    "LINKEDIN_POLL_INTERVAL_SECONDS",
+    "LINKEDIN_REQUEST_TIMEOUT_SECONDS",
     "UPTIME_STATUS_TIMEOUT_SECONDS",
     "WEB_PORT",
     "WEB_HOST_PORT",
@@ -110,6 +112,17 @@ SENSITIVE_KEYS = {
     "WEB_ADMIN_DEFAULT_PASSWORD",
     "WEB_ADMIN_SESSION_SECRET",
 }
+
+
+def _clip_text(value: str, max_chars: int = 120):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
 ENV_FIELDS = [
     ("DISCORD_TOKEN", "Discord Token", "Bot token for Discord authentication."),
     ("GUILD_ID", "Guild ID", "Primary guild (server) ID."),
@@ -268,6 +281,21 @@ ENV_FIELDS = [
         "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
         "YouTube Request Timeout",
         "Timeout in seconds for YouTube page/feed requests.",
+    ),
+    (
+        "LINKEDIN_NOTIFY_ENABLED",
+        "LinkedIn Notify Enabled",
+        "Enable LinkedIn public-profile polling and posting.",
+    ),
+    (
+        "LINKEDIN_POLL_INTERVAL_SECONDS",
+        "LinkedIn Poll Interval",
+        "Seconds between LinkedIn profile checks.",
+    ),
+    (
+        "LINKEDIN_REQUEST_TIMEOUT_SECONDS",
+        "LinkedIn Request Timeout",
+        "Timeout in seconds for LinkedIn public-profile requests.",
     ),
     (
         "UPTIME_STATUS_ENABLED",
@@ -1910,6 +1938,7 @@ def _render_layout(
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
                 <option value="{{ url_for('settings') }}">Global Settings</option>
                 <option value="{{ url_for('public_observability') }}">Observability</option>
@@ -2008,6 +2037,7 @@ def _render_layout(
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+            <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
             <option value="{{ url_for('settings') }}">Global Settings</option>
             <option value="{{ url_for('public_observability') }}">Observability</option>
@@ -2149,6 +2179,8 @@ def create_web_app(
     on_manage_reddit_feeds=None,
     on_get_youtube_subscriptions=None,
     on_manage_youtube_subscriptions=None,
+    on_get_linkedin_subscriptions=None,
+    on_manage_linkedin_subscriptions=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -2694,6 +2726,8 @@ def create_web_app(
             "bot_profile",
             "command_permissions",
             "reddit_feeds",
+            "youtube_subscriptions",
+            "linkedin_subscriptions",
             "settings",
             "tag_responses",
             "bulk_role_csv",
@@ -3287,6 +3321,12 @@ def create_web_app(
             "Map YouTube channels to Discord channels and post new uploads automatically.",
             url_for("youtube_subscriptions"),
             "Open YouTube",
+        )
+        add_dashboard_card(
+            "LinkedIn Profiles",
+            "Map public LinkedIn profiles to Discord channels and post new profile activity automatically.",
+            url_for("linkedin_subscriptions"),
+            "Open LinkedIn",
         )
         add_dashboard_card(
             "Guild Settings",
@@ -4550,6 +4590,175 @@ def create_web_app(
             str(user.get("display_name") or ""),
         )
 
+    @app.route("/admin/linkedin", methods=["GET", "POST"])
+    @login_required
+    def linkedin_subscriptions():
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+
+        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
+        channel_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                channel_options = discord_catalog.get("channels", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
+        text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
+        channel_labels = {
+            str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
+            for option in text_channel_options
+            if str(option.get("id") or "").strip()
+        }
+
+        payload = (
+            on_get_linkedin_subscriptions(selected_guild_id)
+            if callable(on_get_linkedin_subscriptions)
+            else {"ok": False, "error": "LinkedIn subscription callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not callable(on_manage_linkedin_subscriptions):
+                flash("LinkedIn subscription update callback is not configured.", "error")
+            else:
+                callback_payload = {"action": action}
+                if action == "add":
+                    callback_payload["source_url"] = request.form.get("source_url", "")
+                    callback_payload["channel_id"] = str(request.form.get("channel_id", "")).strip()
+                elif action == "delete":
+                    callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                else:
+                    flash("Invalid LinkedIn subscription action.", "error")
+                    callback_payload = None
+
+                if callback_payload is not None:
+                    response = on_manage_linkedin_subscriptions(callback_payload, user["email"], selected_guild_id)
+                    if not isinstance(response, dict):
+                        flash("Invalid response from LinkedIn subscription handler.", "error")
+                    elif response.get("ok"):
+                        payload = response
+                        flash(
+                            str(response.get("message") or "LinkedIn subscriptions updated."),
+                            "success",
+                        )
+                    else:
+                        flash(
+                            str(response.get("error") or "Failed to update LinkedIn subscriptions."),
+                            "error",
+                        )
+
+            payload = (
+                on_get_linkedin_subscriptions(selected_guild_id)
+                if callable(on_get_linkedin_subscriptions)
+                else {"ok": False, "error": "LinkedIn subscription callbacks are not configured."}
+            )
+
+        subscriptions = payload.get("subscriptions", []) if isinstance(payload, dict) else []
+        subscriptions_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        channel_select_html = _render_select_input(
+            "channel_id",
+            "",
+            text_channel_options,
+            placeholder="Select a Discord text channel...",
+        )
+        rows = []
+        for subscription in subscriptions:
+            subscription_id = str(subscription.get("id") or "")
+            channel_id = str(subscription.get("target_channel_id") or "").strip()
+            channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
+            actions_html = (
+                f"""
+                <form method="post" style="display:inline;" onsubmit="return confirm('Delete this LinkedIn subscription?');">
+                  <input type="hidden" name="action" value="delete" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <button class="btn danger" type="submit">Delete</button>
+                </form>
+                """
+                if is_admin
+                else "<button class='btn danger' type='button' disabled>Delete</button>"
+            )
+            rows.append(
+                f"""
+                <tr>
+                  <td>{escape(str(subscription.get("profile_name") or "Unknown profile"))}</td>
+                  <td>{escape(str(subscription.get("source_url") or ""))}</td>
+                  <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
+                  <td>{escape(_clip_text(str(subscription.get("last_post_text") or "No post captured yet."), max_chars=100))}</td>
+                  <td class="muted">{escape(str(subscription.get("last_published_at") or "Never"))}</td>
+                  <td class="muted">{escape(str(subscription.get("last_checked_at") or "Never"))}</td>
+                  <td class="muted">{escape(str(subscription.get("last_error") or "")) or "OK"}</td>
+                  <td>{actions_html}</td>
+                </tr>
+                """
+            )
+
+        catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        add_disabled_attr = "" if text_channel_options and is_admin else " disabled"
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Add LinkedIn Profile</h2>
+            <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+            <p class="muted">Track a public LinkedIn profile and post new profile activity into a Discord text channel.</p>
+            <p class="muted">Use the public profile URL, for example <span class="mono">https://www.linkedin.com/in/example</span>.</p>
+            {catalog_note}
+            <form method="post">
+              <input type="hidden" name="action" value="add" />
+              <label>LinkedIn profile URL</label>
+              <input type="text" name="source_url" placeholder="https://www.linkedin.com/in/example" required{add_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {channel_select_html}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{add_disabled_attr}>Save Subscription</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured LinkedIn Profiles</h2>
+          <p class="muted">This watcher works best for public LinkedIn profiles whose recent posts are visible on the public profile page.</p>
+          {f"<p class='muted'>Could not load subscriptions: {escape(subscriptions_error)}</p>" if subscriptions_error else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Profile</th>
+                <th>Source URL</th>
+                <th>Discord Channel</th>
+                <th>Last Post Preview</th>
+                <th>Last Published</th>
+                <th>Last Checked</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(rows) if rows else "<tr><td colspan='8' class='muted'>No LinkedIn profiles are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page(
+            "LinkedIn Profiles",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
     @login_required
     def command_permissions():
@@ -4944,6 +5153,7 @@ def create_web_app(
                 "COMMAND_RESPONSES_EPHEMERAL",
                 "SHORTENER_ENABLED",
                 "YOUTUBE_NOTIFY_ENABLED",
+                "LINKEDIN_NOTIFY_ENABLED",
                 "UPTIME_STATUS_ENABLED",
             }:
                 safe_value = "true" if _is_truthy_env_value(safe_value, False) else "false"
@@ -4992,7 +5202,19 @@ def create_web_app(
                     )
                 ]
                 select_placeholder = "Select YouTube polling interval..."
-            elif key in {"YOUTUBE_REQUEST_TIMEOUT_SECONDS", "UPTIME_STATUS_TIMEOUT_SECONDS"}:
+            elif key == "LINKEDIN_POLL_INTERVAL_SECONDS":
+                static_select_options = [
+                    {"value": value, "label": label}
+                    for value, label in (
+                        ("300", "Every 5 minutes"),
+                        ("600", "Every 10 minutes"),
+                        ("900", "Every 15 minutes"),
+                        ("1800", "Every 30 minutes"),
+                        ("3600", "Every 60 minutes"),
+                    )
+                ]
+                select_placeholder = "Select LinkedIn polling interval..."
+            elif key in {"YOUTUBE_REQUEST_TIMEOUT_SECONDS", "LINKEDIN_REQUEST_TIMEOUT_SECONDS", "UPTIME_STATUS_TIMEOUT_SECONDS"}:
                 static_select_options = [{"value": value, "label": f"{value}s"} for value in ("5", "8", "10", "12", "15", "30")]
                 select_placeholder = "Select timeout..."
             if key == "firmware_notification_channel" or key.endswith("_CHANNEL_ID"):
@@ -5587,6 +5809,8 @@ def start_web_admin_interface(
     on_manage_reddit_feeds=None,
     on_get_youtube_subscriptions=None,
     on_manage_youtube_subscriptions=None,
+    on_get_linkedin_subscriptions=None,
+    on_manage_linkedin_subscriptions=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -5617,6 +5841,8 @@ def start_web_admin_interface(
         on_manage_reddit_feeds=on_manage_reddit_feeds,
         on_get_youtube_subscriptions=on_get_youtube_subscriptions,
         on_manage_youtube_subscriptions=on_manage_youtube_subscriptions,
+        on_get_linkedin_subscriptions=on_get_linkedin_subscriptions,
+        on_manage_linkedin_subscriptions=on_manage_linkedin_subscriptions,
         on_get_bot_profile=on_get_bot_profile,
         on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,
@@ -5667,5 +5893,6 @@ def start_web_admin_interface(
         for server in servers:
             try:
                 server.shutdown()
-            except Exception:
-                pass
+            except Exception as exc:
+                if logger:
+                    logger.debug("Web admin server shutdown raised %s", exc)
