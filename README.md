@@ -79,9 +79,10 @@ docker compose build
 - Moderator-only random member selection command that excludes staff roles and enforces a 7-day per-guild cooldown before the same member can be picked again
 - Firmware monitor (baseline + delta notifications)
 - YouTube subscription monitor with channel-to-Discord posting
+- LinkedIn public profile monitor with channel-to-Discord posting
 - Web-managed Reddit feed posting for new subreddit submissions
 - Member activity tracking with private `/stats` output, web top-20 views for rolling 90/30/7/1-day windows, and ZIP export from the web GUI
-- Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, and per-guild channel/tag/invite settings
+- Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, LinkedIn profile subscriptions, and per-guild channel/tag/invite settings
 - Optional guild allowlist mode for multi-guild deployments and public invites
 - SQLite persistence with legacy merge import on startup
 - Local verification tooling for lint, tests, security checks, and Docker builds

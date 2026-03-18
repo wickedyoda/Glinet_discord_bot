@@ -137,6 +137,10 @@ def _make_app(tmp_path: Path):
             "ok": True,
             "subscriptions": [],
         },
+        on_get_linkedin_subscriptions=lambda guild_id: {
+            "ok": True,
+            "subscriptions": [],
+        },
     )
     app.config["TESTING"] = True
     return app
@@ -232,6 +236,7 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         "/admin/actions",
         "/admin/member-activity",
         "/admin/youtube",
+        "/admin/linkedin",
         "/admin/documentation",
         "/admin/wiki",
         "/status/everything",
@@ -262,6 +267,19 @@ def test_youtube_page_renders_form(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"YouTube Subscriptions" in response.data
+    assert b"Save Subscription" in response.data
+
+
+def test_linkedin_page_renders_form(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/linkedin", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"LinkedIn Profiles" in response.data
     assert b"Save Subscription" in response.data
 
 

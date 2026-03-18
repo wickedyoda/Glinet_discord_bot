@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-17] - LinkedIn Profile Notifications
+
+### Added
+- Guild-scoped LinkedIn public profile subscriptions in the web GUI.
+- LinkedIn-to-Discord notification monitor for newly detected public profile posts.
+- Discord channel dropdown selection for each LinkedIn profile subscription.
+
 ## [2026-03-16] - Member Activity Analytics
 
 ### Added
