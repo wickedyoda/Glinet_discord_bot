@@ -1666,10 +1666,30 @@ def _render_layout(
     .header-tools { display: flex; align-items: center; gap: 12px; margin-left: auto; }
     .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
     .desktop-nav { display: flex; }
+    .mobile-quickbar { display: none; }
     .nav-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
     .nav-controls a { text-decoration: none; }
     .current-user { color: var(--muted); font-size: 0.95rem; }
     .current-user-email { color: var(--muted); font-size: 0.85rem; }
+    .header-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 7px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--fg);
+      font-size: 0.88rem;
+      line-height: 1.2;
+    }
+    .header-chip strong {
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
     .wrap { max-width: 1200px; margin: 22px auto; padding: 0 16px; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
     .flash { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid var(--border); }
@@ -1763,6 +1783,15 @@ def _render_layout(
       grid-template-columns: 1fr 1fr;
       gap: 10px;
     }
+    .mobile-panel-section { display: grid; gap: 8px; }
+    .mobile-panel-title {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
     .mobile-link-grid .btn,
     .mobile-nav-panel .btn,
     .mobile-nav-panel .inline-form,
@@ -1831,9 +1860,11 @@ def _render_layout(
       .header-toprow { width: 100%; align-items: flex-start; }
       .header-tools { margin-left: 0; width: auto; flex-shrink: 0; }
       .header-right.desktop-nav { display: none; }
+      .mobile-quickbar { display: grid; grid-template-columns: 1fr; gap: 10px; width: 100%; }
       .mobile-nav { display: block; width: 100%; }
       .nav-select { width: 100%; max-width: 100%; min-width: 0; }
       .theme-switch { width: 100%; }
+      .header-tools .theme-switch { display: none; }
       .theme-btn { flex: 1; min-height: 42px; }
       .current-user-email { display: block; }
       .dash-actions .btn { width: 100%; }
@@ -1856,7 +1887,7 @@ def _render_layout(
       <div class="header-tools">
         {% if current_email %}
         <details class="mobile-nav">
-          <summary>{{ title }} Menu</summary>
+          <summary>Menu</summary>
           <div class="mobile-nav-panel">
             <div class="mobile-user-block">
               <span class="current-user">{{ current_display_name or current_email }} ({{ current_role_label }})</span>
@@ -1865,41 +1896,56 @@ def _render_layout(
               {% endif %}
               {% if current_guild_name %}<span class="current-user">Server: {{ current_guild_name }}</span>{% endif %}
             </div>
-            <div class="mobile-link-grid">
-              <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
-              <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
-              <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
-              {% if current_role != "glinet" %}
-              <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-              <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
-              <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
-              {% endif %}
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Quick Jump</p>
+              <label class="sr-only" for="mobile-nav-page-select">Open page</label>
+              <select id="mobile-nav-page-select" class="nav-select nav-page-select">
+                <option value="">Go to page...</option>
+                <option value="{{ url_for('guilds_page') }}">Servers</option>
+                <option value="{{ url_for('account') }}">My Account</option>
+                <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+                {% if current_role != "glinet" %}
+                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('actions_page') }}">Action History</option>
+                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+                <option value="{{ url_for('settings') }}">Global Settings</option>
+                <option value="{{ url_for('public_observability') }}">Observability</option>
+                <option value="{{ url_for('admin_logs') }}">Logs</option>
+                <option value="{{ url_for('documentation') }}">Documentation</option>
+                <option value="{{ url_for('documentation') }}">Wiki Viewer</option>
+                {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
+                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+                <option value="{{ url_for('users') }}">Users</option>
+                {% endif %}
+                <option value="{{ url_for('logout') }}">Logout</option>
+              </select>
             </div>
-            <label class="sr-only" for="mobile-nav-page-select">Open page</label>
-            <select id="mobile-nav-page-select" class="nav-select nav-page-select">
-              <option value="">Go to page...</option>
-              <option value="{{ url_for('guilds_page') }}">Servers</option>
-              <option value="{{ url_for('account') }}">My Account</option>
-              <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
-              {% if current_role != "glinet" %}
-              <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
-              <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
-              <option value="{{ url_for('actions_page') }}">Action History</option>
-              <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-              <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
-              <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
-              <option value="{{ url_for('settings') }}">Global Settings</option>
-              <option value="{{ url_for('public_observability') }}">Observability</option>
-              <option value="{{ url_for('admin_logs') }}">Logs</option>
-              <option value="{{ url_for('documentation') }}">Documentation</option>
-              <option value="{{ url_for('documentation') }}">Wiki Viewer</option>
-              {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
-              <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
-              <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
-              <option value="{{ url_for('users') }}">Users</option>
-              {% endif %}
-              <option value="{{ url_for('logout') }}">Logout</option>
-            </select>
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Primary Actions</p>
+              <div class="mobile-link-grid">
+                <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+                <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+                <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+                {% if current_role != "glinet" %}
+                <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+                <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
+                {% else %}
+                <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
+                {% endif %}
+              </div>
+            </div>
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Theme</p>
+              <div class="theme-switch" aria-label="Theme selector">
+                <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
+                <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+              </div>
+            </div>
             {% if restart_enabled %}
               {% if is_admin %}
               <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
@@ -1920,6 +1966,24 @@ def _render_layout(
         </div>
       </div>
     </div>
+    {% if current_email %}
+    <div class="mobile-quickbar">
+      <div class="header-chip">
+        <strong>Server</strong>
+        <span>{{ current_guild_name or "No server selected" }}</span>
+      </div>
+      <div class="mobile-link-grid">
+        <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+        <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+        <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+        {% if current_role != "glinet" %}
+        <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+        {% else %}
+        <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
     <div class="header-right desktop-nav">
       {% if current_email %}
         <nav class="nav-controls">

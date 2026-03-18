@@ -57,12 +57,20 @@ YOUTUBE_CHANNEL_ID_META_PATTERNS = (
     re.compile(r'"browseId":"(UC[a-zA-Z0-9_-]{22})"'),
     re.compile(r'"https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{22})"'),
 )
+LINKEDIN_PROFILE_PATH_PATTERN = re.compile(r"^/(?:in|company|school)/[^/]+/?$")
+LINKEDIN_POST_URL_PATTERN = re.compile(r"^https://www\.linkedin\.com/(?:posts/[^/?#]+|feed/update/[^?#]+)$")
 REDDIT_REQUEST_USER_AGENT = "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
 DEFAULT_REDDIT_FEED_CHECK_SCHEDULE = "*/30 * * * *"
 REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
+LINKEDIN_REQUEST_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36"
+)
+LINKEDIN_MAX_POSTS_PER_RUN = 5
 MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
 MEMBER_ACTIVITY_WINDOW_SPECS = (
@@ -665,6 +673,12 @@ YOUTUBE_NOTIFY_ENABLED = is_truthy_env_value(
 )
 YOUTUBE_POLL_INTERVAL_SECONDS = parse_positive_int_env("YOUTUBE_POLL_INTERVAL_SECONDS", 300, minimum=30)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12, minimum=5)
+LINKEDIN_NOTIFY_ENABLED = is_truthy_env_value(
+    os.getenv("LINKEDIN_NOTIFY_ENABLED", "false"),
+    default_value=False,
+)
+LINKEDIN_POLL_INTERVAL_SECONDS = parse_positive_int_env("LINKEDIN_POLL_INTERVAL_SECONDS", 900, minimum=60)
+LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 15, minimum=5)
 UPTIME_STATUS_ENABLED = is_truthy_env_value(
     os.getenv("UPTIME_STATUS_ENABLED", "false"),
     default_value=False,
@@ -990,6 +1004,7 @@ docs_index_cache = {}
 firmware_monitor_task = None
 reddit_feed_monitor_task = None
 youtube_monitor_task = None
+linkedin_monitor_task = None
 member_activity_backfill_task = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
@@ -6854,6 +6869,9 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global YOUTUBE_NOTIFY_ENABLED
     global YOUTUBE_POLL_INTERVAL_SECONDS
     global YOUTUBE_REQUEST_TIMEOUT_SECONDS
+    global LINKEDIN_NOTIFY_ENABLED
+    global LINKEDIN_POLL_INTERVAL_SECONDS
+    global LINKEDIN_REQUEST_TIMEOUT_SECONDS
     global UPTIME_STATUS_ENABLED
     global UPTIME_STATUS_TIMEOUT_SECONDS
 
@@ -6924,6 +6942,20 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     YOUTUBE_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
         os.getenv("YOUTUBE_REQUEST_TIMEOUT_SECONDS", YOUTUBE_REQUEST_TIMEOUT_SECONDS),
         YOUTUBE_REQUEST_TIMEOUT_SECONDS,
+        minimum=5,
+    )
+    LINKEDIN_NOTIFY_ENABLED = is_truthy_env_value(
+        os.getenv("LINKEDIN_NOTIFY_ENABLED", "true" if LINKEDIN_NOTIFY_ENABLED else "false"),
+        default_value=LINKEDIN_NOTIFY_ENABLED,
+    )
+    LINKEDIN_POLL_INTERVAL_SECONDS = parse_int_setting(
+        os.getenv("LINKEDIN_POLL_INTERVAL_SECONDS", LINKEDIN_POLL_INTERVAL_SECONDS),
+        LINKEDIN_POLL_INTERVAL_SECONDS,
+        minimum=60,
+    )
+    LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("LINKEDIN_REQUEST_TIMEOUT_SECONDS", LINKEDIN_REQUEST_TIMEOUT_SECONDS),
+        LINKEDIN_REQUEST_TIMEOUT_SECONDS,
         minimum=5,
     )
     UPTIME_STATUS_ENABLED = is_truthy_env_value(
@@ -7064,6 +7096,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     schedule_firmware_monitor_restart()
     schedule_reddit_feed_monitor_restart()
     schedule_youtube_monitor_restart()
+    schedule_linkedin_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
