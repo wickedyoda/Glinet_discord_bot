@@ -3712,7 +3712,7 @@ def create_web_app(
         {auto_refresh_script}
         """
 
-    @app.route("/staus", methods=["GET"])
+    @app.route("/status", methods=["GET"])
     def public_observability():
         body = _render_observability_view(
             page_title="Status Observability",
@@ -3725,7 +3725,7 @@ def create_web_app(
             "",
         )
 
-    @app.route("/status", methods=["GET"])
+    @app.route("/staus", methods=["GET"])
     def public_observability_alias():
         return redirect(url_for("public_observability", **request.args.to_dict(flat=True)))
 
