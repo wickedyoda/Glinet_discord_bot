@@ -239,10 +239,21 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         "/admin/linkedin",
         "/admin/documentation",
         "/admin/wiki",
+        "/status",
         "/status/everything",
     ]:
         response = client.get(path, base_url="https://docker.example:8443", follow_redirects=True)
         assert response.status_code == 200, path
+
+
+def test_staus_redirects_to_status(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+
+    response = client.get("/staus", base_url="https://docker.example:8443", follow_redirects=False)
+
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/status")
 
 
 def test_actions_page_renders_history(tmp_path: Path):
