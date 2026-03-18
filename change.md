@@ -35,6 +35,12 @@ All notable changes to this project are documented in this file.
   - email
 - Admins can now reset another web GUI user's password directly from that user's edit section.
 
+## [2026-03-18] - Canonical Status Route
+
+### Fixed
+
+- Corrected the public observability/status page so `/status` is the canonical route and `/staus` redirects to it for backward compatibility.
+
 ## [2026-03-18] - Restore Invite Code Command
 
 ### Added
