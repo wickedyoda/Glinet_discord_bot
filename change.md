@@ -35,6 +35,12 @@ All notable changes to this project are documented in this file.
   - email
 - Admins can now reset another web GUI user's password directly from that user's edit section.
 
+## [2026-03-18] - Smarter Member Activity Backfill Coverage
+
+### Changed
+
+- Member activity backfill now reuses previously completed coverage windows so reruns only scan missing time ranges instead of rereading already indexed periods.
+
 ## [2026-03-18] - Canonical Status Route
 
 ### Fixed
