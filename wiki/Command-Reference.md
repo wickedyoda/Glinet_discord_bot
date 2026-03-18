@@ -23,7 +23,8 @@ Per-command overrides are configured in:
 | Command | Type | Default Access | Parameters | Notes |
 |---|---|---|---|---|
 | `/submitrole` | Slash | Member/Public | `role` | Discord prompts for the target role, then the bot generates the invite + 6-digit access code |
-| `/enter_role` | Slash | Member/Public | `code` | Redeems a 6-digit code and assigns mapped role |
+| `/restore_code` | Slash | Moderator | `role`, `code` | Restores a specific 6-digit code for a role and generates a fresh invite |
+| `/enter_role` | Slash | Member/Public | none | Opens a modal to redeem a 6-digit code and assigns mapped role |
 | `/getaccess` | Slash | Member/Public | none | Assigns default access role |
 
 ## Bulk CSV Role Assignment

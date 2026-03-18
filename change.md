@@ -35,6 +35,12 @@ All notable changes to this project are documented in this file.
   - email
 - Admins can now reset another web GUI user's password directly from that user's edit section.
 
+## [2026-03-18] - Restore Invite Code Command
+
+### Added
+
+- Added moderator-only `/restore_code` to restore a specific 6-digit role access code and generate a fresh invite link for the selected role.
+
 ## [2026-03-17] - Native Role Picker for `/submitrole`
 
 ### Changed

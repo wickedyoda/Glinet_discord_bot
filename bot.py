@@ -794,6 +794,7 @@ MODERATOR_ONLY_COMMAND_KEYS = {
     "edit_role",
     "kick_member",
     "random_choice",
+    "restore_code",
     "remove_role_member",
     "timeout_member",
     "unban_member",
@@ -883,6 +884,10 @@ COMMAND_PERMISSION_METADATA = {
     "submitrole": {
         "label": "/submitrole",
         "description": "Create role invite + code mapping.",
+    },
+    "restore_code": {
+        "label": "/restore_code",
+        "description": "Restore a specific 6-digit role access code.",
     },
     "bulk_assign_role_csv": {
         "label": "/bulk_assign_role_csv",
@@ -4182,6 +4187,42 @@ def save_invite_role(invite_code, role_id, guild_id: int | None = None):
     )
 
 
+def normalize_role_access_code(value: str):
+    cleaned = re.sub(r"\D+", "", str(value or ""))
+    if len(cleaned) != 6:
+        return None
+    return cleaned
+
+
+async def create_role_access_mapping(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    code: str,
+):
+    if interaction.guild is None:
+        raise ValueError("This command can only be used in a server channel.")
+    if role == interaction.guild.default_role:
+        raise ValueError("The @everyone role cannot be assigned this way.")
+    if role.managed:
+        raise ValueError("That role is managed by an integration and cannot be used for invite/code access.")
+
+    normalized_code = normalize_role_access_code(code)
+    if normalized_code is None:
+        raise ValueError("Code must be exactly 6 digits.")
+
+    target_channel_id = get_effective_logging_channel_id(interaction.guild.id)
+    channel = (
+        interaction.guild.get_channel(target_channel_id) if target_channel_id > 0 else None
+    ) or interaction.channel
+    invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
+    guild_id = interaction.guild.id
+    save_role_code(normalized_code, role.id, guild_id=guild_id)
+    save_invite_role(invite.code, role.id, guild_id=guild_id)
+    invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
+    invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
+    return normalized_code, invite, channel
+
+
 def has_allowed_role(member: discord.Member):
     has_role = any(role.name in DEFAULT_ALLOWED_ROLE_NAMES for role in member.roles)
     logger.debug("User %s allowed: %s", member, has_role)
@@ -4434,9 +4475,59 @@ async def send_safe_interaction_message(interaction: discord.Interaction, messag
         else:
             await interaction.response.send_message(message_text, ephemeral=ephemeral)
         return True
+    except discord.NotFound as exc:
+        logger.warning(
+            "Interaction expired before sending response message for user=%s command=%s code=%s",
+            interaction.user,
+            interaction.command.name if interaction.command else "unknown",
+            getattr(exc, "code", "unknown"),
+        )
+        return False
     except discord.HTTPException:
         logger.exception(
             "Failed sending interaction response message for user=%s command=%s",
+            interaction.user,
+            interaction.command.name if interaction.command else "unknown",
+        )
+        return False
+
+
+async def send_safe_interaction_modal(
+    interaction: discord.Interaction,
+    modal: discord.ui.Modal,
+    *,
+    stale_interaction_dm_text: str | None = None,
+):
+    try:
+        if interaction.response.is_done():
+            logger.warning(
+                "Cannot open modal because interaction response is already complete for user=%s command=%s",
+                interaction.user,
+                interaction.command.name if interaction.command else "unknown",
+            )
+            return False
+        await interaction.response.send_modal(modal)
+        return True
+    except discord.NotFound as exc:
+        logger.warning(
+            "Interaction expired before opening modal for user=%s command=%s code=%s",
+            interaction.user,
+            interaction.command.name if interaction.command else "unknown",
+            getattr(exc, "code", "unknown"),
+        )
+        if stale_interaction_dm_text:
+            try:
+                await interaction.user.send(stale_interaction_dm_text)
+            except discord.HTTPException:
+                logger.warning(
+                    "Failed sending stale interaction DM for user=%s command=%s",
+                    interaction.user,
+                    interaction.command.name if interaction.command else "unknown",
+                )
+        return False
+    except discord.HTTPException:
+        logger.exception(
+            "Failed opening interaction modal for user=%s command=%s",
             interaction.user,
             interaction.command.name if interaction.command else "unknown",
         )
@@ -8728,32 +8819,10 @@ async def submitrole(interaction: discord.Interaction, role: discord.Role):
     logger.info("/submitrole invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
-    if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
-        return
-    if role == interaction.guild.default_role:
-        await interaction.response.send_message("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
-        return
-    if role.managed:
-        await interaction.response.send_message(
-            "❌ That role is managed by an integration and cannot be used for invite/code access.",
-            ephemeral=True,
-        )
-        return
 
     await interaction.response.defer(ephemeral=True)
     try:
-        target_channel_id = get_effective_logging_channel_id(interaction.guild.id if interaction.guild else GUILD_ID)
-        channel = (
-            interaction.guild.get_channel(target_channel_id) if interaction.guild and target_channel_id > 0 else None
-        ) or interaction.channel
-        invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
-        code = generate_code()
-        guild_id = interaction.guild.id if interaction.guild else GUILD_ID
-        save_role_code(code, role.id, guild_id=guild_id)
-        save_invite_role(invite.code, role.id, guild_id=guild_id)
-        invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
-        invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
+        code, invite, channel = await create_role_access_mapping(interaction, role, generate_code())
 
         logger.info(
             "Generated invite %s and code %s for role %s using channel %s",
@@ -8769,6 +8838,45 @@ async def submitrole(interaction: discord.Interaction, role: discord.Role):
         )
     except Exception:
         logger.exception("Error in /submitrole")
+        await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
+
+
+@tree.command(
+    name="restore_code",
+    description="Restore a specific 6-digit code for a role and generate a fresh invite",
+)
+@app_commands.describe(
+    role="Role to map to the restored access code",
+    code="Exact 6-digit code to restore",
+)
+async def restore_code(interaction: discord.Interaction, role: discord.Role, code: str):
+    logger.info("/restore_code invoked by %s for role %s", interaction.user, role.id if role else "unknown")
+    if not await ensure_interaction_command_access(interaction, "restore_code"):
+        return
+
+    normalized_code = normalize_role_access_code(code)
+    if normalized_code is None:
+        await interaction.response.send_message("❌ Code must be exactly 6 digits.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        restored_code, invite, channel = await create_role_access_mapping(interaction, role, normalized_code)
+        logger.info(
+            "Restored invite %s and code %s for role %s using channel %s",
+            invite.url,
+            restored_code,
+            role.id,
+            channel.id,
+        )
+        await interaction.followup.send(
+            f"✅ Restored role: {role.mention}\nInvite link: {invite.url}\n🔢 Restored 6-digit code: `{restored_code}`",
+            ephemeral=True,
+        )
+    except ValueError as exc:
+        await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+    except Exception:
+        logger.exception("Error in /restore_code")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
 
 
@@ -8891,7 +8999,14 @@ async def enter_role(interaction: discord.Interaction):
     logger.info("/enter_role invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "enter_role"):
         return
-    await interaction.response.send_modal(CodeEntryModal())
+    await send_safe_interaction_modal(
+        interaction,
+        CodeEntryModal(),
+        stale_interaction_dm_text=(
+            "Discord expired your /enter_role prompt before the code window could open. "
+            "Please run /enter_role again."
+        ),
+    )
 
 
 @tree.command(
