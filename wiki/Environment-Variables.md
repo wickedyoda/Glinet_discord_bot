@@ -62,6 +62,9 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `YOUTUBE_NOTIFY_ENABLED` | `false` | Boolean | Enables the YouTube subscription monitor and web page |
 | `YOUTUBE_POLL_INTERVAL_SECONDS` | `1800` | Integer, `>= 60` | Poll cadence for YouTube subscriptions |
 | `YOUTUBE_REQUEST_TIMEOUT_SECONDS` | `20` | Integer, `>= 1` | Timeout for YouTube feed/channel requests |
+| `LINKEDIN_NOTIFY_ENABLED` | `true` | Boolean | Enables the LinkedIn profile monitor and web page |
+| `LINKEDIN_POLL_INTERVAL_SECONDS` | `900` | Integer, `>= 60` | Poll cadence for LinkedIn profile checks |
+| `LINKEDIN_REQUEST_TIMEOUT_SECONDS` | `15` | Integer, `>= 5` | Timeout for LinkedIn public profile requests |
 | `UPTIME_STATUS_ENABLED` | `false` | Boolean | Enables `/uptime` command |
 | `UPTIME_STATUS_PAGE_URL` | `https://status.example.invalid/status/everything` | URL | Public status page used for uptime summary lookups |
 | `UPTIME_STATUS_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for uptime status fetch |

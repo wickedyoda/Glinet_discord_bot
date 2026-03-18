@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import binascii
 import concurrent.futures
 import csv
 import hashlib
@@ -8,7 +9,6 @@ import io
 import json
 import logging
 import os
-import random
 import re
 import secrets
 import sqlite3
@@ -16,7 +16,6 @@ import sys
 import threading
 import time
 import urllib.parse
-import xml.etree.ElementTree as ET
 import zipfile
 from collections import deque
 from datetime import UTC, datetime, timedelta
@@ -30,6 +29,7 @@ import requests
 from bs4 import BeautifulSoup
 from croniter import croniter
 from cryptography.fernet import Fernet, InvalidToken
+from defusedxml import ElementTree as ET
 from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
@@ -57,12 +57,20 @@ YOUTUBE_CHANNEL_ID_META_PATTERNS = (
     re.compile(r'"browseId":"(UC[a-zA-Z0-9_-]{22})"'),
     re.compile(r'"https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{22})"'),
 )
+LINKEDIN_PROFILE_PATH_PATTERN = re.compile(r"^/(?:in|company|school)/[^/]+/?$")
+LINKEDIN_POST_URL_PATTERN = re.compile(r"^https://www\.linkedin\.com/(?:posts/[^/?#]+|feed/update/[^?#]+)$")
 REDDIT_REQUEST_USER_AGENT = "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
 DEFAULT_REDDIT_FEED_CHECK_SCHEDULE = "*/30 * * * *"
 REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
+LINKEDIN_REQUEST_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36"
+)
+LINKEDIN_MAX_POSTS_PER_RUN = 5
 MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
 MEMBER_ACTIVITY_WINDOW_SPECS = (
@@ -374,12 +382,13 @@ def _normalize_member_activity_fernet_key(raw_value: str):
     candidate = str(raw_value or "").strip()
     if not candidate:
         raise RuntimeError("Member activity encryption key is empty.")
+    decoded = b""
     try:
         decoded = base64.urlsafe_b64decode(candidate.encode("ascii"))
-        if len(decoded) == 32:
-            return candidate.encode("ascii")
-    except Exception:
-        pass
+    except (binascii.Error, ValueError, UnicodeEncodeError):
+        decoded = b""
+    if len(decoded) == 32:
+        return candidate.encode("ascii")
     return base64.urlsafe_b64encode(hashlib.sha256(candidate.encode("utf-8")).digest())
 
 
@@ -665,6 +674,12 @@ YOUTUBE_NOTIFY_ENABLED = is_truthy_env_value(
 )
 YOUTUBE_POLL_INTERVAL_SECONDS = parse_positive_int_env("YOUTUBE_POLL_INTERVAL_SECONDS", 300, minimum=30)
 YOUTUBE_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("YOUTUBE_REQUEST_TIMEOUT_SECONDS", 12, minimum=5)
+LINKEDIN_NOTIFY_ENABLED = is_truthy_env_value(
+    os.getenv("LINKEDIN_NOTIFY_ENABLED", "true"),
+    default_value=True,
+)
+LINKEDIN_POLL_INTERVAL_SECONDS = parse_positive_int_env("LINKEDIN_POLL_INTERVAL_SECONDS", 900, minimum=60)
+LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 15, minimum=5)
 UPTIME_STATUS_ENABLED = is_truthy_env_value(
     os.getenv("UPTIME_STATUS_ENABLED", "false"),
     default_value=False,
@@ -779,6 +794,7 @@ MODERATOR_ONLY_COMMAND_KEYS = {
     "edit_role",
     "kick_member",
     "random_choice",
+    "restore_code",
     "remove_role_member",
     "timeout_member",
     "unban_member",
@@ -868,6 +884,10 @@ COMMAND_PERMISSION_METADATA = {
     "submitrole": {
         "label": "/submitrole",
         "description": "Create role invite + code mapping.",
+    },
+    "restore_code": {
+        "label": "/restore_code",
+        "description": "Restore a specific 6-digit role access code.",
     },
     "bulk_assign_role_csv": {
         "label": "/bulk_assign_role_csv",
@@ -990,6 +1010,7 @@ docs_index_cache = {}
 firmware_monitor_task = None
 reddit_feed_monitor_task = None
 youtube_monitor_task = None
+linkedin_monitor_task = None
 member_activity_backfill_task = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
@@ -1198,6 +1219,28 @@ def ensure_db_schema():
                 UNIQUE(guild_id, channel_id, target_channel_id)
             );
 
+            CREATE TABLE IF NOT EXISTS linkedin_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                source_url TEXT NOT NULL,
+                profile_name TEXT NOT NULL DEFAULT '',
+                target_channel_id INTEGER NOT NULL,
+                target_channel_name TEXT NOT NULL DEFAULT '',
+                last_post_id TEXT NOT NULL DEFAULT '',
+                last_post_url TEXT NOT NULL DEFAULT '',
+                last_post_text TEXT NOT NULL DEFAULT '',
+                last_published_at TEXT NOT NULL DEFAULT '',
+                last_checked_at TEXT NOT NULL DEFAULT '',
+                last_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, source_url, target_channel_id)
+            );
+
             CREATE TABLE IF NOT EXISTS member_activity_summary (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -1259,6 +1302,8 @@ def ensure_db_schema():
                 ON reddit_feed_seen_posts(feed_id);
             CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_enabled
                 ON youtube_subscriptions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_linkedin_subscriptions_enabled
+                ON linkedin_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
                 ON member_activity_summary(last_message_at);
             CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
@@ -1645,6 +1690,12 @@ def ensure_db_schema():
             """
             CREATE INDEX IF NOT EXISTS idx_youtube_subscriptions_guild_id
                 ON youtube_subscriptions(guild_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_linkedin_subscriptions_guild_id
+                ON linkedin_subscriptions(guild_id)
             """
         )
         conn.execute(
@@ -3252,6 +3303,151 @@ def update_youtube_subscription_runtime_state(
         conn.commit()
 
 
+def list_linkedin_subscriptions(
+    guild_id: int | None = None,
+    enabled_only: bool = False,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    query = (
+        "SELECT id, guild_id, source_url, profile_name, target_channel_id, target_channel_name, "
+        "last_post_id, last_post_url, last_post_text, last_published_at, last_checked_at, "
+        "last_posted_at, last_error, enabled, created_at, updated_at, created_by_email, updated_by_email "
+        "FROM linkedin_subscriptions WHERE guild_id = ?"
+    )
+    params = [safe_guild_id]
+    if enabled_only:
+        query += " AND enabled = 1"
+    query += " ORDER BY profile_name COLLATE NOCASE ASC, target_channel_name COLLATE NOCASE ASC, id ASC"
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_or_update_linkedin_subscription(
+    guild_id: int | None,
+    *,
+    source_url: str,
+    profile_name: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    last_post_id: str,
+    last_post_url: str,
+    last_post_text: str,
+    last_published_at: str,
+    actor_email: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO linkedin_subscriptions (
+                guild_id, source_url, profile_name, target_channel_id, target_channel_name,
+                last_post_id, last_post_url, last_post_text, last_published_at, enabled,
+                created_at, updated_at, created_by_email, updated_by_email
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, source_url, target_channel_id) DO UPDATE SET
+                profile_name=excluded.profile_name,
+                target_channel_name=excluded.target_channel_name,
+                last_post_id=excluded.last_post_id,
+                last_post_url=excluded.last_post_url,
+                last_post_text=excluded.last_post_text,
+                last_published_at=excluded.last_published_at,
+                enabled=1,
+                updated_at=excluded.updated_at,
+                updated_by_email=excluded.updated_by_email
+            """,
+            (
+                safe_guild_id,
+                str(source_url or "").strip(),
+                clip_text(str(profile_name or "").strip(), max_chars=200),
+                int(target_channel_id),
+                str(target_channel_name or "").strip(),
+                str(last_post_id or "").strip(),
+                str(last_post_url or "").strip(),
+                clip_text(str(last_post_text or "").strip(), max_chars=1000),
+                str(last_published_at or "").strip(),
+                now_iso,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                str(actor_email or "").strip().lower(),
+            ),
+        )
+        conn.commit()
+
+
+def delete_linkedin_subscription(subscription_id: int, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            "DELETE FROM linkedin_subscriptions WHERE id = ? AND guild_id = ?",
+            (int(subscription_id), safe_guild_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def update_linkedin_subscription_runtime_state(
+    subscription_id: int,
+    *,
+    guild_id: int | None,
+    profile_name: str | None = None,
+    last_post_id: str | None = None,
+    last_post_url: str | None = None,
+    last_post_text: str | None = None,
+    last_published_at: str | None = None,
+    last_checked_at: str | None = None,
+    last_posted_at: str | None = None,
+    last_error: str | None = None,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    profile_name_value = clip_text(str(profile_name or "").strip(), max_chars=200) if profile_name is not None else None
+    last_post_id_value = str(last_post_id or "").strip() if last_post_id is not None else None
+    last_post_url_value = str(last_post_url or "").strip() if last_post_url is not None else None
+    last_post_text_value = clip_text(str(last_post_text or "").strip(), max_chars=1000) if last_post_text is not None else None
+    last_published_at_value = str(last_published_at or "").strip() if last_published_at is not None else None
+    last_checked_at_value = str(last_checked_at or "").strip() if last_checked_at is not None else None
+    last_posted_at_value = str(last_posted_at or "").strip() if last_posted_at is not None else None
+    last_error_value = clip_text(str(last_error or "").strip(), max_chars=500) if last_error is not None else None
+    updated_at_value = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            UPDATE linkedin_subscriptions
+            SET
+                profile_name = COALESCE(?, profile_name),
+                last_post_id = COALESCE(?, last_post_id),
+                last_post_url = COALESCE(?, last_post_url),
+                last_post_text = COALESCE(?, last_post_text),
+                last_published_at = COALESCE(?, last_published_at),
+                last_checked_at = COALESCE(?, last_checked_at),
+                last_posted_at = COALESCE(?, last_posted_at),
+                last_error = COALESCE(?, last_error),
+                updated_at = ?
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                profile_name_value,
+                last_post_id_value,
+                last_post_url_value,
+                last_post_text_value,
+                last_published_at_value,
+                last_checked_at_value,
+                last_posted_at_value,
+                last_error_value,
+                updated_at_value,
+                int(subscription_id),
+                safe_guild_id,
+            ),
+        )
+        conn.commit()
+
+
 def list_reddit_feed_subscriptions(enabled_only: bool = False, guild_id: int | None = None):
     conn = get_db_connection()
     query = (
@@ -3991,6 +4187,42 @@ def save_invite_role(invite_code, role_id, guild_id: int | None = None):
     )
 
 
+def normalize_role_access_code(value: str):
+    cleaned = re.sub(r"\D+", "", str(value or ""))
+    if len(cleaned) != 6:
+        return None
+    return cleaned
+
+
+async def create_role_access_mapping(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    code: str,
+):
+    if interaction.guild is None:
+        raise ValueError("This command can only be used in a server channel.")
+    if role == interaction.guild.default_role:
+        raise ValueError("The @everyone role cannot be assigned this way.")
+    if role.managed:
+        raise ValueError("That role is managed by an integration and cannot be used for invite/code access.")
+
+    normalized_code = normalize_role_access_code(code)
+    if normalized_code is None:
+        raise ValueError("Code must be exactly 6 digits.")
+
+    target_channel_id = get_effective_logging_channel_id(interaction.guild.id)
+    channel = (
+        interaction.guild.get_channel(target_channel_id) if target_channel_id > 0 else None
+    ) or interaction.channel
+    invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
+    guild_id = interaction.guild.id
+    save_role_code(normalized_code, role.id, guild_id=guild_id)
+    save_invite_role(invite.code, role.id, guild_id=guild_id)
+    invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
+    invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
+    return normalized_code, invite, channel
+
+
 def has_allowed_role(member: discord.Member):
     has_role = any(role.name in DEFAULT_ALLOWED_ROLE_NAMES for role in member.roles)
     logger.debug("User %s allowed: %s", member, has_role)
@@ -4243,9 +4475,59 @@ async def send_safe_interaction_message(interaction: discord.Interaction, messag
         else:
             await interaction.response.send_message(message_text, ephemeral=ephemeral)
         return True
+    except discord.NotFound as exc:
+        logger.warning(
+            "Interaction expired before sending response message for user=%s command=%s code=%s",
+            interaction.user,
+            interaction.command.name if interaction.command else "unknown",
+            getattr(exc, "code", "unknown"),
+        )
+        return False
     except discord.HTTPException:
         logger.exception(
             "Failed sending interaction response message for user=%s command=%s",
+            interaction.user,
+            interaction.command.name if interaction.command else "unknown",
+        )
+        return False
+
+
+async def send_safe_interaction_modal(
+    interaction: discord.Interaction,
+    modal: discord.ui.Modal,
+    *,
+    stale_interaction_dm_text: str | None = None,
+):
+    try:
+        if interaction.response.is_done():
+            logger.warning(
+                "Cannot open modal because interaction response is already complete for user=%s command=%s",
+                interaction.user,
+                interaction.command.name if interaction.command else "unknown",
+            )
+            return False
+        await interaction.response.send_modal(modal)
+        return True
+    except discord.NotFound as exc:
+        logger.warning(
+            "Interaction expired before opening modal for user=%s command=%s code=%s",
+            interaction.user,
+            interaction.command.name if interaction.command else "unknown",
+            getattr(exc, "code", "unknown"),
+        )
+        if stale_interaction_dm_text:
+            try:
+                await interaction.user.send(stale_interaction_dm_text)
+            except discord.HTTPException:
+                logger.warning(
+                    "Failed sending stale interaction DM for user=%s command=%s",
+                    interaction.user,
+                    interaction.command.name if interaction.command else "unknown",
+                )
+        return False
+    except discord.HTTPException:
+        logger.exception(
+            "Failed opening interaction modal for user=%s command=%s",
             interaction.user,
             interaction.command.name if interaction.command else "unknown",
         )
@@ -4530,6 +4812,91 @@ def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_
         return {"ok": False, "error": "Failed to manage YouTube subscriptions."}
 
     response = build_youtube_subscriptions_web_payload(safe_guild_id)
+    response["message"] = message
+    return response
+
+
+def build_linkedin_subscriptions_web_payload(guild_id: int):
+    return {
+        "ok": True,
+        "subscriptions": list_linkedin_subscriptions(
+            guild_id=normalize_target_guild_id(guild_id),
+            enabled_only=False,
+        ),
+    }
+
+
+def run_web_get_linkedin_subscriptions(guild_id: int):
+    try:
+        return build_linkedin_subscriptions_web_payload(guild_id)
+    except Exception:
+        logger.exception("Failed to build LinkedIn subscriptions payload for web admin")
+        return {
+            "ok": False,
+            "error": "Unexpected error while loading LinkedIn subscriptions.",
+        }
+
+
+def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild_id: int):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid LinkedIn subscription payload."}
+    action = str(payload.get("action") or "").strip().lower()
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    try:
+        if action == "add":
+            source_url = str(payload.get("source_url") or "").strip()
+            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
+            if target_channel_id <= 0:
+                return {"ok": False, "error": "Choose a valid Discord channel."}
+            resolved = resolve_linkedin_subscription_seed(source_url)
+            guild = bot.get_guild(safe_guild_id)
+            target_channel = guild.get_channel(target_channel_id) if guild else None
+            if not isinstance(target_channel, discord.TextChannel):
+                return {"ok": False, "error": "Choose a valid Discord text channel."}
+            target_channel_name = f"#{target_channel.name}"
+            create_or_update_linkedin_subscription(
+                safe_guild_id,
+                source_url=resolved["source_url"],
+                profile_name=resolved["profile_name"],
+                target_channel_id=target_channel_id,
+                target_channel_name=target_channel_name,
+                last_post_id=resolved["last_post_id"],
+                last_post_url=resolved["last_post_url"],
+                last_post_text=resolved["last_post_text"],
+                last_published_at=resolved["last_published_at"],
+                actor_email=actor_email,
+            )
+            record_action_safe(
+                action="linkedin_subscription_add",
+                status="success",
+                moderator=actor_email,
+                target=resolved["profile_name"],
+                reason=truncate_log_text(resolved["source_url"]),
+                guild_id=safe_guild_id,
+            )
+            message = "LinkedIn subscription saved."
+        elif action == "delete":
+            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
+            if not delete_linkedin_subscription(subscription_id, guild_id=safe_guild_id):
+                return {"ok": False, "error": "LinkedIn subscription entry was not found."}
+            record_action_safe(
+                action="linkedin_subscription_delete",
+                status="success",
+                moderator=actor_email,
+                target=str(subscription_id),
+                reason="Deleted via web admin",
+                guild_id=safe_guild_id,
+            )
+            message = "LinkedIn subscription deleted."
+        else:
+            return {"ok": False, "error": "Invalid LinkedIn subscription action."}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception:
+        logger.exception("Failed to manage LinkedIn subscriptions from web admin")
+        return {"ok": False, "error": "Failed to manage LinkedIn subscriptions."}
+
+    response = build_linkedin_subscriptions_web_payload(safe_guild_id)
     response["message"] = message
     return response
 
@@ -5908,6 +6275,165 @@ def resolve_youtube_subscription_seed(source_url: str):
     }
 
 
+def normalize_linkedin_profile_url(raw_url: str):
+    value = str(raw_url or "").strip()
+    if not value:
+        raise ValueError("LinkedIn profile URL is required.")
+    if "://" not in value:
+        value = f"https://{value}"
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Invalid LinkedIn URL.")
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host != "linkedin.com":
+        raise ValueError("LinkedIn URL must use linkedin.com.")
+    normalized_path = (parsed.path or "").rstrip("/") or "/"
+    if not LINKEDIN_PROFILE_PATH_PATTERN.fullmatch(normalized_path):
+        raise ValueError("LinkedIn URL must point to a public profile path such as /in/<name>.")
+    return urllib.parse.urlunparse(("https", "www.linkedin.com", normalized_path, "", "", ""))
+
+
+def _iter_linkedin_jsonld_objects(payload):
+    if isinstance(payload, dict):
+        yield payload
+        for value in payload.values():
+            yield from _iter_linkedin_jsonld_objects(value)
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _iter_linkedin_jsonld_objects(item)
+
+
+def _extract_linkedin_post_id(post_url: str):
+    text = str(post_url or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"activity[:\-](\d+)", text)
+    if match:
+        return match.group(1)
+    match = re.search(r"ugcPost[:\-](\d+)", text)
+    if match:
+        return match.group(1)
+    return text
+
+
+def _clean_linkedin_post_text(raw_text: str):
+    text = unescape(str(raw_text or ""))
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def fetch_linkedin_profile_posts(source_url: str):
+    normalized_url = normalize_linkedin_profile_url(source_url)
+    response = requests.get(
+        normalized_url,
+        timeout=LINKEDIN_REQUEST_TIMEOUT_SECONDS,
+        headers={
+            "User-Agent": LINKEDIN_REQUEST_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+        },
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"LinkedIn profile page returned HTTP {response.status_code}.")
+    final_url = str(response.url or "")
+    final_parsed = urllib.parse.urlparse(final_url)
+    final_host = (final_parsed.netloc or "").lower()
+    if final_host.startswith("www."):
+        final_host = final_host[4:]
+    if final_host and final_host != "linkedin.com":
+        raise RuntimeError("LinkedIn redirected the profile request to an unexpected host.")
+    if "/uas/login" in final_url or "/signup/" in final_url:
+        raise RuntimeError("LinkedIn redirected the profile request to sign-in. Make sure the profile is public.")
+
+    page_html = response.text
+    profile_name = ""
+    meta_match = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', page_html, re.IGNORECASE)
+    if meta_match:
+        profile_name = _clean_linkedin_post_text(meta_match.group(1).split(" | LinkedIn", 1)[0].split(" - ", 1)[0])
+
+    posts = []
+    seen_urls = set()
+    script_matches = re.findall(
+        r'<script[^>]+type="application/ld\+json"[^>]*>\s*(.*?)\s*</script>',
+        page_html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for raw_script in script_matches:
+        payload_text = unescape(str(raw_script or "")).strip()
+        if not payload_text:
+            continue
+        try:
+            parsed_payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            continue
+        for item in _iter_linkedin_jsonld_objects(parsed_payload):
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("@type") or "").strip()
+            if item_type != "DiscussionForumPosting":
+                continue
+            post_url = str(item.get("mainEntityOfPage") or item.get("url") or "").strip()
+            if not LINKEDIN_POST_URL_PATTERN.fullmatch(post_url):
+                continue
+            if post_url in seen_urls:
+                continue
+            seen_urls.add(post_url)
+            author = item.get("author")
+            author_name = ""
+            if isinstance(author, dict):
+                author_name = _clean_linkedin_post_text(author.get("name") or "")
+            posts.append(
+                {
+                    "post_id": _extract_linkedin_post_id(post_url),
+                    "post_url": post_url,
+                    "text": _clean_linkedin_post_text(item.get("text") or item.get("headline") or ""),
+                    "published_at": str(item.get("datePublished") or item.get("dateCreated") or "").strip(),
+                    "profile_name": author_name or profile_name or "LinkedIn Profile",
+                }
+            )
+
+    if not posts:
+        fallback_urls = re.findall(r'https://www\.linkedin\.com/posts/[^"\']+', page_html)
+        for fallback_url in fallback_urls:
+            cleaned_url = unescape(fallback_url).split("?", 1)[0]
+            if cleaned_url in seen_urls or not LINKEDIN_POST_URL_PATTERN.fullmatch(cleaned_url):
+                continue
+            seen_urls.add(cleaned_url)
+            posts.append(
+                {
+                    "post_id": _extract_linkedin_post_id(cleaned_url),
+                    "post_url": cleaned_url,
+                    "text": "",
+                    "published_at": "",
+                    "profile_name": profile_name or "LinkedIn Profile",
+                }
+            )
+
+    posts.sort(key=lambda item: (str(item.get("published_at") or ""), str(item.get("post_url") or "")), reverse=True)
+    return {
+        "source_url": normalized_url,
+        "profile_name": profile_name or (posts[0]["profile_name"] if posts else "LinkedIn Profile"),
+        "posts": posts,
+    }
+
+
+def resolve_linkedin_subscription_seed(source_url: str):
+    resolved = fetch_linkedin_profile_posts(source_url)
+    latest_post = resolved["posts"][0] if resolved["posts"] else None
+    return {
+        "source_url": resolved["source_url"],
+        "profile_name": resolved["profile_name"],
+        "last_post_id": str(latest_post.get("post_id") or "") if latest_post else "",
+        "last_post_url": str(latest_post.get("post_url") or "") if latest_post else "",
+        "last_post_text": str(latest_post.get("text") or "") if latest_post else "",
+        "last_published_at": str(latest_post.get("published_at") or "") if latest_post else "",
+    }
+
+
 def uptime_request_json(url: str):
     status, _, body_text = fetch_text_url(
         url,
@@ -6818,6 +7344,166 @@ def schedule_youtube_monitor_restart():
     loop.call_soon_threadsafe(restart_youtube_monitor_task)
 
 
+async def process_linkedin_subscription(subscription: dict):
+    subscription_id = int(subscription.get("id") or 0)
+    guild_id = int(subscription.get("guild_id") or 0)
+    source_url = str(subscription.get("source_url") or "").strip()
+    target_channel_id = int(subscription.get("target_channel_id") or 0)
+    last_post_url = str(subscription.get("last_post_url") or "").strip()
+    if subscription_id <= 0 or guild_id <= 0 or not source_url or target_channel_id <= 0:
+        return
+    if not is_managed_guild_id(guild_id):
+        return
+
+    checked_at = datetime.now(UTC).isoformat()
+    try:
+        resolved = await asyncio.to_thread(fetch_linkedin_profile_posts, source_url)
+    except Exception as exc:
+        update_linkedin_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error=str(exc),
+        )
+        raise
+
+    posts = resolved.get("posts") or []
+    profile_name = str(resolved.get("profile_name") or subscription.get("profile_name") or "LinkedIn Profile").strip()
+    if not posts:
+        update_linkedin_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            profile_name=profile_name,
+            last_checked_at=checked_at,
+            last_error="No public LinkedIn posts were found on the profile page.",
+        )
+        return
+
+    new_posts = []
+    for post in posts:
+        post_url = str(post.get("post_url") or "").strip()
+        if not post_url:
+            continue
+        if last_post_url and post_url == last_post_url:
+            break
+        new_posts.append(post)
+
+    if not new_posts:
+        update_linkedin_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            profile_name=profile_name,
+            last_checked_at=checked_at,
+            last_error="",
+        )
+        return
+
+    notify_channel = await get_text_channel(bot, target_channel_id)
+    if notify_channel is None or notify_channel.guild.id != guild_id:
+        update_linkedin_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            profile_name=profile_name,
+            last_checked_at=checked_at,
+            last_error="Notify channel not found in the selected guild.",
+        )
+        logger.warning(
+            "Notify channel %s not found for LinkedIn subscription %s",
+            target_channel_id,
+            subscription_id,
+        )
+        return
+
+    posts_to_send = list(reversed(new_posts[:LINKEDIN_MAX_POSTS_PER_RUN]))
+    for post in posts_to_send:
+        embed_kwargs = {
+            "title": f"New LinkedIn post from {profile_name}",
+            "description": clip_text(str(post.get("text") or "Open LinkedIn to view the new post."), max_chars=350),
+            "color": discord.Color.blue(),
+        }
+        post_url = str(post.get("post_url") or "").strip()
+        if post_url:
+            embed_kwargs["url"] = post_url
+        embed = discord.Embed(
+            **embed_kwargs,
+        )
+        published_at = str(post.get("published_at") or "").strip()
+        if published_at:
+            embed.add_field(name="Published", value=f"`{published_at}`", inline=False)
+        embed.set_footer(text="LinkedIn Notification")
+        await notify_channel.send(embed=embed)
+
+    newest_post = new_posts[0]
+    update_linkedin_subscription_runtime_state(
+        subscription_id,
+        guild_id=guild_id,
+        profile_name=profile_name,
+        last_post_id=str(newest_post.get("post_id") or "").strip(),
+        last_post_url=str(newest_post.get("post_url") or "").strip(),
+        last_post_text=str(newest_post.get("text") or "").strip(),
+        last_published_at=str(newest_post.get("published_at") or "").strip(),
+        last_checked_at=checked_at,
+        last_posted_at=datetime.now(UTC).isoformat(),
+        last_error="",
+    )
+    record_action_safe(
+        action="linkedin_notify",
+        status="success",
+        moderator="system",
+        target=f"{notify_channel.name} ({notify_channel.id})",
+        reason=truncate_log_text(f"{profile_name} - {newest_post.get('post_url') or ''}"),
+        guild_id=guild_id,
+    )
+    logger.info(
+        "LinkedIn subscription posted %d new post(s) for %s into channel %s",
+        len(posts_to_send),
+        profile_name,
+        notify_channel.id,
+    )
+
+
+async def poll_linkedin_subscriptions():
+    subscriptions = list_linkedin_subscriptions(enabled_only=True)
+    if not subscriptions:
+        return
+    for subscription in subscriptions:
+        try:
+            await process_linkedin_subscription(subscription)
+        except Exception:
+            logger.exception(
+                "LinkedIn subscription poll failed for id=%s",
+                subscription.get("id"),
+            )
+
+
+async def linkedin_monitor_loop():
+    logger.info(
+        "LinkedIn monitor active: polling every %s seconds",
+        LINKEDIN_POLL_INTERVAL_SECONDS,
+    )
+    await poll_linkedin_subscriptions()
+    while not bot.is_closed():
+        await asyncio.sleep(LINKEDIN_POLL_INTERVAL_SECONDS)
+        await poll_linkedin_subscriptions()
+
+
+def restart_linkedin_monitor_task():
+    global linkedin_monitor_task
+    if linkedin_monitor_task is not None and not linkedin_monitor_task.done():
+        linkedin_monitor_task.cancel()
+    if not LINKEDIN_NOTIFY_ENABLED:
+        linkedin_monitor_task = None
+        return
+    linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
+
+
+def schedule_linkedin_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_linkedin_monitor_task)
+
+
 def refresh_runtime_settings_from_env(_updated_values=None):
     global LOG_LEVEL
     global CONTAINER_LOG_LEVEL
@@ -6854,6 +7540,9 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global YOUTUBE_NOTIFY_ENABLED
     global YOUTUBE_POLL_INTERVAL_SECONDS
     global YOUTUBE_REQUEST_TIMEOUT_SECONDS
+    global LINKEDIN_NOTIFY_ENABLED
+    global LINKEDIN_POLL_INTERVAL_SECONDS
+    global LINKEDIN_REQUEST_TIMEOUT_SECONDS
     global UPTIME_STATUS_ENABLED
     global UPTIME_STATUS_TIMEOUT_SECONDS
 
@@ -6924,6 +7613,20 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     YOUTUBE_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
         os.getenv("YOUTUBE_REQUEST_TIMEOUT_SECONDS", YOUTUBE_REQUEST_TIMEOUT_SECONDS),
         YOUTUBE_REQUEST_TIMEOUT_SECONDS,
+        minimum=5,
+    )
+    LINKEDIN_NOTIFY_ENABLED = is_truthy_env_value(
+        os.getenv("LINKEDIN_NOTIFY_ENABLED", "true" if LINKEDIN_NOTIFY_ENABLED else "false"),
+        default_value=LINKEDIN_NOTIFY_ENABLED,
+    )
+    LINKEDIN_POLL_INTERVAL_SECONDS = parse_int_setting(
+        os.getenv("LINKEDIN_POLL_INTERVAL_SECONDS", LINKEDIN_POLL_INTERVAL_SECONDS),
+        LINKEDIN_POLL_INTERVAL_SECONDS,
+        minimum=60,
+    )
+    LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("LINKEDIN_REQUEST_TIMEOUT_SECONDS", LINKEDIN_REQUEST_TIMEOUT_SECONDS),
+        LINKEDIN_REQUEST_TIMEOUT_SECONDS,
         minimum=5,
     )
     UPTIME_STATUS_ENABLED = is_truthy_env_value(
@@ -7064,6 +7767,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     schedule_firmware_monitor_restart()
     schedule_reddit_feed_monitor_restart()
     schedule_youtube_monitor_restart()
+    schedule_linkedin_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
@@ -7258,6 +7962,8 @@ def start_web_admin_server():
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_youtube_subscriptions=run_web_get_youtube_subscriptions,
                     on_manage_youtube_subscriptions=run_web_manage_youtube_subscriptions,
+                    on_get_linkedin_subscriptions=run_web_get_linkedin_subscriptions,
+                    on_manage_linkedin_subscriptions=run_web_manage_linkedin_subscriptions,
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
@@ -7784,6 +8490,7 @@ async def on_ready():
     global firmware_monitor_task
     global reddit_feed_monitor_task
     global youtube_monitor_task
+    global linkedin_monitor_task
     global member_activity_backfill_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
     logger.info("Logged in as %s", bot.user.name)
@@ -7804,6 +8511,8 @@ async def on_ready():
         reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
     if YOUTUBE_NOTIFY_ENABLED and (youtube_monitor_task is None or youtube_monitor_task.done()):
         youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
+    if LINKEDIN_NOTIFY_ENABLED and (linkedin_monitor_task is None or linkedin_monitor_task.done()):
+        linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
     if MEMBER_ACTIVITY_BACKFILL_ENABLED and (member_activity_backfill_task is None or member_activity_backfill_task.done()):
         member_activity_backfill_task = asyncio.create_task(
             member_activity_backfill_job(),
@@ -8110,32 +8819,10 @@ async def submitrole(interaction: discord.Interaction, role: discord.Role):
     logger.info("/submitrole invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
-    if interaction.guild is None:
-        await interaction.response.send_message("❌ This command can only be used in a server channel.", ephemeral=True)
-        return
-    if role == interaction.guild.default_role:
-        await interaction.response.send_message("❌ The @everyone role cannot be assigned this way.", ephemeral=True)
-        return
-    if role.managed:
-        await interaction.response.send_message(
-            "❌ That role is managed by an integration and cannot be used for invite/code access.",
-            ephemeral=True,
-        )
-        return
 
     await interaction.response.defer(ephemeral=True)
     try:
-        target_channel_id = get_effective_logging_channel_id(interaction.guild.id if interaction.guild else GUILD_ID)
-        channel = (
-            interaction.guild.get_channel(target_channel_id) if interaction.guild and target_channel_id > 0 else None
-        ) or interaction.channel
-        invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
-        code = generate_code()
-        guild_id = interaction.guild.id if interaction.guild else GUILD_ID
-        save_role_code(code, role.id, guild_id=guild_id)
-        save_invite_role(invite.code, role.id, guild_id=guild_id)
-        invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
-        invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
+        code, invite, channel = await create_role_access_mapping(interaction, role, generate_code())
 
         logger.info(
             "Generated invite %s and code %s for role %s using channel %s",
@@ -8151,6 +8838,45 @@ async def submitrole(interaction: discord.Interaction, role: discord.Role):
         )
     except Exception:
         logger.exception("Error in /submitrole")
+        await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
+
+
+@tree.command(
+    name="restore_code",
+    description="Restore a specific 6-digit code for a role and generate a fresh invite",
+)
+@app_commands.describe(
+    role="Role to map to the restored access code",
+    code="Exact 6-digit code to restore",
+)
+async def restore_code(interaction: discord.Interaction, role: discord.Role, code: str):
+    logger.info("/restore_code invoked by %s for role %s", interaction.user, role.id if role else "unknown")
+    if not await ensure_interaction_command_access(interaction, "restore_code"):
+        return
+
+    normalized_code = normalize_role_access_code(code)
+    if normalized_code is None:
+        await interaction.response.send_message("❌ Code must be exactly 6 digits.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        restored_code, invite, channel = await create_role_access_mapping(interaction, role, normalized_code)
+        logger.info(
+            "Restored invite %s and code %s for role %s using channel %s",
+            invite.url,
+            restored_code,
+            role.id,
+            channel.id,
+        )
+        await interaction.followup.send(
+            f"✅ Restored role: {role.mention}\nInvite link: {invite.url}\n🔢 Restored 6-digit code: `{restored_code}`",
+            ephemeral=True,
+        )
+    except ValueError as exc:
+        await interaction.followup.send(f"❌ {exc}", ephemeral=True)
+    except Exception:
+        logger.exception("Error in /restore_code")
         await interaction.followup.send("❌ Something went wrong. Try again.", ephemeral=True)
 
 
@@ -8273,7 +8999,14 @@ async def enter_role(interaction: discord.Interaction):
     logger.info("/enter_role invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "enter_role"):
         return
-    await interaction.response.send_modal(CodeEntryModal())
+    await send_safe_interaction_modal(
+        interaction,
+        CodeEntryModal(),
+        stale_interaction_dm_text=(
+            "Discord expired your /enter_role prompt before the code window could open. "
+            "Please run /enter_role again."
+        ),
+    )
 
 
 @tree.command(
@@ -8889,7 +9622,7 @@ async def random_choice_slash(interaction: discord.Interaction):
         )
         return
 
-    chosen_member = random.choice(eligible_members)
+    chosen_member = secrets.choice(eligible_members)
     record_random_choice_selection(
         guild.id,
         chosen_member.id,
