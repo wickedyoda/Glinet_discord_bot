@@ -112,6 +112,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Server selector / entry page
 - Lists every Discord server the bot can currently access
 - Sets the active server context used by guild-scoped admin pages
+- Admin users can remove the bot from a server directly from this page using the per-server `Remove Bot` action
 - `Glinet` users do not stay here; they are redirected straight to `/admin/member-activity` using the primary guild
 
 ### `/admin/dashboard`
