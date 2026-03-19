@@ -5697,6 +5697,7 @@ async def run_web_bulk_role_assignment_async(guild_id: int, role_input: str, pay
     guild = bot.get_guild(normalize_target_guild_id(guild_id))
     if guild is None:
         return {"ok": False, "error": "Guild is not currently available to the bot."}
+    audit_actor = build_web_actor_audit_label(actor_email)
 
     role_id = parse_role_id_input(role_input)
     if role_id is None:
@@ -5732,14 +5733,14 @@ async def run_web_bulk_role_assignment_async(guild_id: int, role_input: str, pay
         guild=guild,
         role=role,
         payload=payload,
-        requested_by=f"web_admin:{actor_email}",
-        reason_actor=f"Bulk CSV role assignment by web admin {actor_email}",
+        requested_by=f"web_admin:{audit_actor}",
+        reason_actor=f"Bulk CSV role assignment by web admin {audit_actor}",
     )
     if error:
         return {"ok": False, "error": error}
 
     summary_lines = build_bulk_assignment_summary_lines(filename, role.mention, result)
-    report_text = build_bulk_assignment_report_text(role, f"web admin {actor_email}", filename, result)
+    report_text = build_bulk_assignment_report_text(role, f"web admin {audit_actor}", filename, result)
     return {
         "ok": True,
         "role_name": role.name,
@@ -6126,12 +6127,13 @@ async def run_web_update_bot_profile_async(
     )
     if validation_error:
         return {"ok": False, "error": validation_error}
+    audit_actor = build_web_actor_audit_label(actor_email)
 
     result = await apply_bot_profile_updates_async(
         guild_id=normalize_target_guild_id(guild_id),
         username=normalized_username,
         server_nickname=nickname_target,
-        actor_label=f"web admin {actor_email}",
+        actor_label=f"web admin {audit_actor}",
     )
     if result.get("ok"):
         logger.info(
