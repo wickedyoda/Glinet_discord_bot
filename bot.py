@@ -6533,7 +6533,7 @@ def fetch_text_url(url: str, timeout_seconds: int, accept: str):
             "GET",
             path,
             headers={
-                "User-Agent": "WickedYodaLittleHelper/1.0",
+                "User-Agent": "GLiNetUnofficialDiscordBot/1.0",
                 "Accept": accept,
             },
         )
@@ -6556,7 +6556,7 @@ def shortener_request(method: str, url: str, body: bytes | None = None, headers=
         path = f"{path}?{parsed.query}"
 
     connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-    request_headers = {"User-Agent": "WickedYodaLittleHelper/1.0"}
+    request_headers = {"User-Agent": "GLiNetUnofficialDiscordBot/1.0"}
     if headers:
         request_headers.update(headers)
 
