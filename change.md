@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-19] - GL.iNet Beta Program Monitor
+
+### Added
+- Guild-scoped GL.iNet beta program subscriptions in the web GUI.
+- `/admin/beta-programs` page for mapping the public GL.iNet beta page to Discord text channels.
+- Background monitor that posts notifications when beta programs are added to or removed from the GL.iNet beta page.
+
+### Notes
+- This watcher is a best-effort public-page monitor built around `https://www.gl-inet.com/beta-testing/#register`.
+
 ## [2026-03-17] - LinkedIn Profile Notifications
 
 ### Added
