@@ -2005,10 +2005,9 @@ def _render_layout(
         <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
         <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
         <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+        <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
         {% if current_role != "glinet" %}
         <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-        {% else %}
-        <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
         {% endif %}
       </div>
     </div>
@@ -2025,6 +2024,7 @@ def _render_layout(
           {% if current_role != "glinet" %}
           <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
           {% endif %}
+          <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
           <label class="sr-only" for="desktop-nav-page-select">Open page</label>
           <select id="desktop-nav-page-select" class="nav-select nav-page-select">
             <option value="">Go to page...</option>
@@ -2075,7 +2075,7 @@ def _render_layout(
     {% if current_email and current_role == "read_only" %}
       <div class="flash">Read-only account: you can view all pages, but configuration and management changes are blocked.</div>
     {% elif current_email and current_role == "glinet" %}
-      <div class="flash">Glinet account: access is limited to server selection and member activity.</div>
+      <div class="flash">Glinet account: access is pinned to the primary Discord server and limited to member activity.</div>
     {% endif %}
     {{ body_html | safe }}
   </div>
@@ -2438,6 +2438,17 @@ def create_web_app(
         return normalized, ""
 
     def _selected_guild_id():
+        user = _current_user()
+        if _is_glinet_user(user):
+            preferred = _preferred_glinet_guild()
+            if preferred is not None:
+                preferred_id = str(preferred.get("id") or "").strip()
+                if preferred_id:
+                    session["selected_guild_id"] = preferred_id
+                    return preferred_id
+            session.pop("selected_guild_id", None)
+            return ""
+
         selected = str(session.get("selected_guild_id", "")).strip()
         guilds, _error_text = _load_available_guilds()
         valid_ids = {str(entry.get("id") or "").strip() for entry in guilds}
@@ -2459,6 +2470,17 @@ def create_web_app(
 
     def _set_selected_guild_id(guild_id: str):
         selected = str(guild_id or "").strip()
+        user = _current_user()
+        if _is_glinet_user(user):
+            preferred = _preferred_glinet_guild()
+            if preferred is not None:
+                preferred_id = str(preferred.get("id") or "").strip()
+                if preferred_id:
+                    session["selected_guild_id"] = preferred_id
+                    return True
+            session.pop("selected_guild_id", None)
+            return False
+
         guilds, _error_text = _load_available_guilds()
         valid_ids = {str(entry.get("id") or "").strip() for entry in guilds}
         if selected and selected in valid_ids:
@@ -2466,6 +2488,21 @@ def create_web_app(
             return True
         session.pop("selected_guild_id", None)
         return False
+
+    def _preferred_glinet_guild():
+        guilds, _error_text = _load_available_guilds()
+        if not guilds:
+            return None
+        for entry in guilds:
+            if bool(entry.get("is_primary")):
+                return entry
+        for entry in guilds:
+            guild_name = str(entry.get("name") or "").casefold()
+            if "gl.i.net community" in guild_name or "glinet community" in guild_name:
+                return entry
+        if len(guilds) == 1:
+            return guilds[0]
+        return None
 
     def _require_selected_guild_redirect():
         if _selected_guild() is not None:
@@ -3174,6 +3211,12 @@ def create_web_app(
         selected_guild_id = _selected_guild_id()
         selected_guild = _selected_guild()
 
+        if _is_glinet_user(user):
+            if selected_guild is not None:
+                return redirect(url_for("member_activity_page"))
+            flash("No primary Discord server is available for the Glinet role.", "error")
+            return redirect(url_for("account"))
+
         cards = []
         for guild in guilds:
             guild_id = str(guild.get("id") or "")
@@ -3233,6 +3276,13 @@ def create_web_app(
     @app.route("/admin/select-guild", methods=["POST"])
     @login_required
     def select_guild():
+        user = _current_user()
+        if _is_glinet_user(user):
+            if not _set_selected_guild_id(""):
+                flash("No primary Discord server is available for the Glinet role.", "error")
+                return redirect(url_for("account"))
+            return redirect(url_for("member_activity_page"))
+
         guild_id = str(request.form.get("guild_id", "")).strip()
         if not guild_id:
             flash("Choose a Discord server first.", "error")
@@ -3241,7 +3291,6 @@ def create_web_app(
             flash("That Discord server is no longer available to the bot.", "error")
             return redirect(url_for("guilds_page"))
         flash("Discord server context updated.", "success")
-        user = _current_user()
         if _is_glinet_user(user):
             return redirect(url_for("member_activity_page"))
         return redirect(url_for("dashboard"))

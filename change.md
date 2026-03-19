@@ -35,6 +35,13 @@ All notable changes to this project are documented in this file.
   - email
 - Admins can now reset another web GUI user's password directly from that user's edit section.
 
+## [2026-03-19] - Glinet Web Role Guild Pinning
+
+### Changed
+
+- Glinet web users now auto-select the primary Discord server and go directly to member activity instead of choosing a server manually.
+- Added a direct logout button to the top web GUI header on desktop and mobile layouts.
+
 ## [2026-03-18] - Smarter Member Activity Backfill Coverage
 
 ### Changed
