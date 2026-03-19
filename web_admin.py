@@ -2185,6 +2185,7 @@ def create_web_app(
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
     on_request_restart=None,
+    on_leave_guild=None,
     logger=None,
 ):
     app = Flask(__name__)
@@ -3247,6 +3248,16 @@ def create_web_app(
                     <input type="hidden" name="guild_id" value="{escape(guild_id, quote=True)}" />
                     <button class="btn" type="submit"{" disabled" if is_selected else ""}>{"Currently Selected" if is_selected else "Manage This Server"}</button>
                   </form>
+                  {""
+                    if not is_admin else
+                    f'''
+                    <form method="post" action="{escape(url_for("leave_guild"), quote=True)}" style="margin-top:10px;" onsubmit="return confirm('Remove the bot from {escape(guild_name)}? This cannot be undone from the web GUI and will immediately disconnect the bot from that server.');">
+                      <input type="hidden" name="guild_id" value="{escape(guild_id, quote=True)}" />
+                      <input type="hidden" name="confirm" value="yes" />
+                      <button class="btn danger" type="submit">Remove Bot</button>
+                    </form>
+                    '''
+                  }
                 </div>
                 """
             )
@@ -3294,6 +3305,36 @@ def create_web_app(
         if _is_glinet_user(user):
             return redirect(url_for("member_activity_page"))
         return redirect(url_for("dashboard"))
+
+    @app.route("/admin/leave-guild", methods=["POST"])
+    @admin_required
+    def leave_guild():
+        user = _current_user()
+        guild_id = str(request.form.get("guild_id", "")).strip()
+        if request.form.get("confirm", "").strip().lower() != "yes":
+            flash("Leave-server confirmation is required.", "error")
+            return redirect(url_for("guilds_page"))
+        if not guild_id:
+            flash("A Discord server must be selected.", "error")
+            return redirect(url_for("guilds_page"))
+        if not callable(on_leave_guild):
+            flash("Leave-server callback is not configured in this runtime.", "error")
+            return redirect(url_for("guilds_page"))
+
+        response = on_leave_guild(guild_id, user["email"])
+        if not isinstance(response, dict):
+            flash("Invalid response from leave-server handler.", "error")
+        elif response.get("ok"):
+            flash(
+                response.get(
+                    "message",
+                    "The bot has left the selected Discord server.",
+                ),
+                "success",
+            )
+        else:
+            flash(response.get("error", "Failed to remove the bot from that Discord server."), "error")
+        return redirect(url_for("guilds_page"))
 
     @app.route("/admin/dashboard", methods=["GET"])
     @login_required
@@ -5864,6 +5905,7 @@ def start_web_admin_interface(
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
     on_request_restart=None,
+    on_leave_guild=None,
     logger=None,
 ):
     app = create_web_app(
@@ -5896,6 +5938,7 @@ def start_web_admin_interface(
         on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,
         on_request_restart=on_request_restart,
+        on_leave_guild=on_leave_guild,
         logger=logger,
     )
     servers = []

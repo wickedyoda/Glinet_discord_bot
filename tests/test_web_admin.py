@@ -141,6 +141,10 @@ def _make_app(tmp_path: Path):
             "ok": True,
             "subscriptions": [],
         },
+        on_leave_guild=lambda guild_id, actor_email: {
+            "ok": True,
+            "message": f"Bot left guild {guild_id} by {actor_email}.",
+        },
     )
     app.config["TESTING"] = True
     return app
@@ -269,6 +273,26 @@ def test_actions_page_renders_history(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"test_action" in response.data
+
+
+def test_admin_can_remove_bot_from_guild(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    response = client.post(
+        "/admin/leave-guild",
+        data={
+            "guild_id": "1234567890",
+            "confirm": "yes",
+            "csrf_token": _page_csrf_token(client, "/admin"),
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Bot left guild 1234567890 by admin@example.com." in response.data
 
 
 def test_youtube_page_renders_form(tmp_path: Path):
