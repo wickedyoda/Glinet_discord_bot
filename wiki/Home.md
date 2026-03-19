@@ -4,7 +4,7 @@
   <img src="../assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
 </p>
 
-This wiki is the complete operations and feature reference for `WickedYoda'sLittleHelper`.
+This wiki is the complete operations and feature reference for the `GL.iNet UnOfficial Discord Bot`.
 
 ## Platform Summary
 
