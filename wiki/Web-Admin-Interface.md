@@ -59,7 +59,7 @@ Read-only capabilities:
 `Glinet` capabilities:
 
 - Can sign in
-- Can select a guild/server
+- Is automatically pinned to the primary Discord server (intended for the GL.iNet Community Discord)
 - Can view `/admin/member-activity`
 - Can export member-activity ZIP archives from `/admin/member-activity/export`
 - Can manage their own `/admin/account` page
@@ -84,6 +84,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Main page lists the Discord servers the bot is currently in.
 - Select a server first, then open the server dashboard for guild-scoped admin actions.
 - Top menu uses dropdown-based section navigation.
+- Direct `Logout` action is available from the top header on desktop and mobile layouts.
 - Mobile layout uses a compact quickbar plus collapsible menu drawer for server jump, account access, theme switching, and primary page links.
 - Dedicated dashboard link is shown beside the dropdown.
 - Dashboard includes direct action buttons/cards for major admin workflows.
@@ -111,6 +112,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Server selector / entry page
 - Lists every Discord server the bot can currently access
 - Sets the active server context used by guild-scoped admin pages
+- `Glinet` users do not stay here; they are redirected straight to `/admin/member-activity` using the primary guild
 
 ### `/admin/dashboard`
 
