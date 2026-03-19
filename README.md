@@ -1,11 +1,13 @@
-# WickedYoda'sLittleHelper
+# GL.iNet UnOfficial Discord Bot
 
 <p align="center">
   <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
   <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Logo (Full)" width="240" />
 </p>
 
-Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper` identity, with invite/code role access, moderation tools, search helpers, firmware/YouTube/LinkedIn/beta-program monitoring, member-activity analytics, utility commands, and a secured multi-guild web admin GUI.
+Discord bot for GL.iNet community operations under the public `GL.iNet UnOfficial Discord Bot` name, with invite/code role access, moderation tools, search helpers, firmware/YouTube/LinkedIn/beta-program monitoring, member-activity analytics, utility commands, and a secured multi-guild web admin GUI.
+
+- Install / invite link: [Add GL.iNet UnOfficial Discord Bot to your server](https://discord.com/oauth2/authorize?client_id=1390519966050291734)
 
 ## Documentation
 
