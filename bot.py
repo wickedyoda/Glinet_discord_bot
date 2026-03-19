@@ -3,6 +3,7 @@ import base64
 import binascii
 import concurrent.futures
 import csv
+import gzip
 import hashlib
 import http.client
 import io
@@ -81,6 +82,7 @@ MEMBER_ACTIVITY_WINDOW_SPECS = (
 )
 MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL = 500
 MEMBER_ACTIVITY_ENCRYPTION_PREFIX = "enc:"
+GUILD_DATA_ARCHIVE_RETENTION_DAYS = 14
 RANDOM_CHOICE_COOLDOWN_DAYS = 7
 RANDOM_CHOICE_HISTORY_RETENTION_DAYS = 30
 
@@ -1291,6 +1293,13 @@ def ensure_db_schema():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS guild_data_archives (
+                guild_id INTEGER PRIMARY KEY,
+                archived_at TEXT NOT NULL,
+                purge_after_at TEXT NOT NULL,
+                payload BLOB NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
             CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
@@ -1314,6 +1323,8 @@ def ensure_db_schema():
                 ON random_choice_history(guild_id, selected_at);
             CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_user_selected_at
                 ON random_choice_history(guild_id, user_id, selected_at);
+            CREATE INDEX IF NOT EXISTS idx_guild_data_archives_purge_after_at
+                ON guild_data_archives(purge_after_at);
             """
         )
         command_permission_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()}
@@ -2124,6 +2135,285 @@ def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, paylo
         member_activity_backfill_state_key(guild_id, since_dt),
         json.dumps(payload, sort_keys=True),
     )
+
+
+GUILD_ARCHIVE_TABLE_NAMES = (
+    "role_codes",
+    "invite_roles",
+    "tag_responses",
+    "guild_settings",
+    "actions",
+    "command_permissions",
+    "reddit_feed_subscriptions",
+    "reddit_feed_seen_posts",
+    "youtube_subscriptions",
+    "linkedin_subscriptions",
+    "member_activity_summary",
+    "member_activity_recent_hourly",
+    "member_activity_seen_messages",
+    "random_choice_history",
+)
+GUILD_ARCHIVE_KV_PREFIXES = (
+    "guild_settings_updated_at:{guild_id}",
+    "tag_responses_updated_at:{guild_id}",
+    "command_permissions_updated_at:{guild_id}",
+    "command_permissions_updated_by:{guild_id}",
+)
+
+
+def _compress_guild_archive_payload(payload: dict) -> bytes:
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return gzip.compress(serialized)
+
+
+def _decompress_guild_archive_payload(payload_bytes: bytes) -> dict:
+    try:
+        raw_payload = gzip.decompress(bytes(payload_bytes or b""))
+        parsed = json.loads(raw_payload.decode("utf-8"))
+    except (OSError, ValueError, TypeError, UnicodeDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _select_guild_table_rows_locked(conn, table_name: str, guild_id: int):
+    rows = conn.execute(f"SELECT * FROM {table_name} WHERE guild_id = ?", (int(guild_id),)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _select_guild_archive_kv_rows_locked(conn, guild_id: int):
+    keys = [pattern.format(guild_id=int(guild_id)) for pattern in GUILD_ARCHIVE_KV_PREFIXES]
+    rows = []
+    for key in keys:
+        row = conn.execute("SELECT key, value, updated_at FROM kv_store WHERE key = ?", (key,)).fetchone()
+        if row is not None:
+            rows.append(dict(row))
+    prefix = f"member_activity_backfill:{int(guild_id)}:"
+    rows.extend(
+        dict(row)
+        for row in conn.execute(
+            "SELECT key, value, updated_at FROM kv_store WHERE key LIKE ?",
+            (f"{prefix}%",),
+        ).fetchall()
+    )
+    return rows
+
+
+def _delete_guild_archive_kv_rows_locked(conn, guild_id: int):
+    keys = [pattern.format(guild_id=int(guild_id)) for pattern in GUILD_ARCHIVE_KV_PREFIXES]
+    for key in keys:
+        conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
+    conn.execute(
+        "DELETE FROM kv_store WHERE key LIKE ?",
+        (f"member_activity_backfill:{int(guild_id)}:%",),
+    )
+
+
+def _delete_live_guild_data_locked(conn, guild_id: int):
+    safe_guild_id = int(guild_id)
+    conn.execute(
+        """
+        DELETE FROM reddit_feed_seen_posts
+        WHERE feed_id IN (
+            SELECT id FROM reddit_feed_subscriptions WHERE guild_id = ?
+        )
+        """,
+        (safe_guild_id,),
+    )
+    for table_name in (
+        "role_codes",
+        "invite_roles",
+        "tag_responses",
+        "guild_settings",
+        "actions",
+        "command_permissions",
+        "reddit_feed_subscriptions",
+        "youtube_subscriptions",
+        "linkedin_subscriptions",
+        "member_activity_summary",
+        "member_activity_recent_hourly",
+        "member_activity_seen_messages",
+        "random_choice_history",
+    ):
+        conn.execute(f"DELETE FROM {table_name} WHERE guild_id = ?", (safe_guild_id,))
+    _delete_guild_archive_kv_rows_locked(conn, safe_guild_id)
+
+
+def _insert_guild_table_rows_locked(conn, table_name: str, rows: list[dict]):
+    if not rows:
+        return
+    columns = list(rows[0].keys())
+    column_sql = ", ".join(columns)
+    placeholder_sql = ", ".join("?" for _ in columns)
+    values = [tuple(row.get(column) for column in columns) for row in rows]
+    conn.executemany(
+        f"INSERT OR REPLACE INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})",
+        values,
+    )
+
+
+def clear_guild_runtime_state(guild_id: int):
+    safe_guild_id = int(guild_id)
+    invite_roles_by_guild.pop(safe_guild_id, None)
+    invite_uses_by_guild.pop(safe_guild_id, None)
+    tag_response_cache.pop(safe_guild_id, None)
+    tag_command_names_by_guild.pop(safe_guild_id, None)
+    guild_settings_cache.pop(safe_guild_id, None)
+    command_permissions_cache.pop(safe_guild_id, None)
+    discord_catalog_cache.pop(safe_guild_id, None)
+
+
+def archive_guild_data(guild_id: int):
+    safe_guild_id = int(guild_id)
+    now_dt = datetime.now(UTC).replace(microsecond=0)
+    purge_after_dt = now_dt + timedelta(days=GUILD_DATA_ARCHIVE_RETENTION_DAYS)
+    conn = get_db_connection()
+    with db_lock:
+        ensure_member_activity_schema_locked(conn)
+        payload = {
+            "version": 1,
+            "guild_id": safe_guild_id,
+            "archived_at": now_dt.isoformat(),
+            "purge_after_at": purge_after_dt.isoformat(),
+            "tables": {
+                "role_codes": _select_guild_table_rows_locked(conn, "role_codes", safe_guild_id),
+                "invite_roles": _select_guild_table_rows_locked(conn, "invite_roles", safe_guild_id),
+                "tag_responses": _select_guild_table_rows_locked(conn, "tag_responses", safe_guild_id),
+                "guild_settings": _select_guild_table_rows_locked(conn, "guild_settings", safe_guild_id),
+                "actions": _select_guild_table_rows_locked(conn, "actions", safe_guild_id),
+                "command_permissions": _select_guild_table_rows_locked(conn, "command_permissions", safe_guild_id),
+                "reddit_feed_subscriptions": _select_guild_table_rows_locked(conn, "reddit_feed_subscriptions", safe_guild_id),
+                "reddit_feed_seen_posts": [
+                    dict(row)
+                    for row in conn.execute(
+                        """
+                        SELECT sp.*
+                        FROM reddit_feed_seen_posts sp
+                        JOIN reddit_feed_subscriptions fs ON fs.id = sp.feed_id
+                        WHERE fs.guild_id = ?
+                        """,
+                        (safe_guild_id,),
+                    ).fetchall()
+                ],
+                "youtube_subscriptions": _select_guild_table_rows_locked(conn, "youtube_subscriptions", safe_guild_id),
+                "linkedin_subscriptions": _select_guild_table_rows_locked(conn, "linkedin_subscriptions", safe_guild_id),
+                "member_activity_summary": _select_guild_table_rows_locked(conn, "member_activity_summary", safe_guild_id),
+                "member_activity_recent_hourly": _select_guild_table_rows_locked(conn, "member_activity_recent_hourly", safe_guild_id),
+                "member_activity_seen_messages": _select_guild_table_rows_locked(conn, "member_activity_seen_messages", safe_guild_id),
+                "random_choice_history": _select_guild_table_rows_locked(conn, "random_choice_history", safe_guild_id),
+            },
+            "kv_store": _select_guild_archive_kv_rows_locked(conn, safe_guild_id),
+        }
+        conn.execute(
+            """
+            INSERT INTO guild_data_archives (guild_id, archived_at, purge_after_at, payload)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                archived_at = excluded.archived_at,
+                purge_after_at = excluded.purge_after_at,
+                payload = excluded.payload
+            """,
+            (
+                safe_guild_id,
+                now_dt.isoformat(),
+                purge_after_dt.isoformat(),
+                _compress_guild_archive_payload(payload),
+            ),
+        )
+        _delete_live_guild_data_locked(conn, safe_guild_id)
+        conn.commit()
+    clear_guild_runtime_state(safe_guild_id)
+    return {
+        "archived_at": now_dt.isoformat(),
+        "purge_after_at": purge_after_dt.isoformat(),
+    }
+
+
+def restore_archived_guild_data(guild_id: int):
+    safe_guild_id = int(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        ensure_member_activity_schema_locked(conn)
+        row = conn.execute(
+            "SELECT archived_at, purge_after_at, payload FROM guild_data_archives WHERE guild_id = ?",
+            (safe_guild_id,),
+        ).fetchone()
+        if row is None:
+            return {"ok": False, "restored": False}
+        payload = _decompress_guild_archive_payload(row["payload"])
+        tables_payload = payload.get("tables") if isinstance(payload, dict) else {}
+        kv_rows = payload.get("kv_store") if isinstance(payload, dict) else []
+        if not isinstance(tables_payload, dict):
+            tables_payload = {}
+        if not isinstance(kv_rows, list):
+            kv_rows = []
+
+        _delete_live_guild_data_locked(conn, safe_guild_id)
+        restore_order = (
+            "role_codes",
+            "invite_roles",
+            "tag_responses",
+            "guild_settings",
+            "actions",
+            "command_permissions",
+            "reddit_feed_subscriptions",
+            "reddit_feed_seen_posts",
+            "youtube_subscriptions",
+            "linkedin_subscriptions",
+            "member_activity_summary",
+            "member_activity_recent_hourly",
+            "member_activity_seen_messages",
+            "random_choice_history",
+        )
+        for table_name in restore_order:
+            rows = tables_payload.get(table_name) or []
+            if isinstance(rows, list):
+                safe_rows = [row for row in rows if isinstance(row, dict)]
+                _insert_guild_table_rows_locked(conn, table_name, safe_rows)
+        for row_payload in kv_rows:
+            if not isinstance(row_payload, dict):
+                continue
+            key = str(row_payload.get("key") or "").strip()
+            value = str(row_payload.get("value") or "")
+            updated_at = str(row_payload.get("updated_at") or datetime.now(UTC).isoformat())
+            if not key:
+                continue
+            conn.execute(
+                """
+                INSERT INTO kv_store (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                """,
+                (key, value, updated_at),
+            )
+        conn.execute("DELETE FROM guild_data_archives WHERE guild_id = ?", (safe_guild_id,))
+        conn.commit()
+    clear_guild_runtime_state(safe_guild_id)
+    return {
+        "ok": True,
+        "restored": True,
+        "archived_at": str(row["archived_at"] or ""),
+        "purge_after_at": str(row["purge_after_at"] or ""),
+    }
+
+
+def purge_expired_guild_archives():
+    now_dt = datetime.now(UTC).replace(microsecond=0)
+    conn = get_db_connection()
+    purged_guild_ids = []
+    with db_lock:
+        rows = conn.execute(
+            "SELECT guild_id, purge_after_at FROM guild_data_archives WHERE purge_after_at <= ?",
+            (now_dt.isoformat(),),
+        ).fetchall()
+        for row in rows:
+            guild_id = int(row["guild_id"] or 0)
+            conn.execute("DELETE FROM guild_data_archives WHERE guild_id = ?", (guild_id,))
+            purged_guild_ids.append(guild_id)
+        if purged_guild_ids:
+            conn.commit()
+    for guild_id in purged_guild_ids:
+        clear_guild_runtime_state(guild_id)
+    return purged_guild_ids
 
 
 def list_member_activity_backfill_completed_ranges(guild_id: int):
@@ -8668,6 +8958,13 @@ async def on_ready():
     global linkedin_monitor_task
     global member_activity_backfill_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
+    purged_archives = purge_expired_guild_archives()
+    if purged_archives:
+        logger.info(
+            "Purged expired archived guild data for %s guild(s): %s",
+            len(purged_archives),
+            ", ".join(str(guild_id) for guild_id in purged_archives),
+        )
     logger.info("Logged in as %s", bot.user.name)
     await _flush_web_admin_pending_critical_alerts()
     if callable(globals().get("register_tag_commands_for_guild")):
@@ -8697,6 +8994,18 @@ async def on_ready():
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
+    try:
+        restored = restore_archived_guild_data(guild.id)
+        if restored.get("restored"):
+            logger.info(
+                "Restored archived guild data for %s (%s) archived_at=%s purge_after_at=%s",
+                guild.name,
+                guild.id,
+                restored.get("archived_at", ""),
+                restored.get("purge_after_at", ""),
+            )
+    except Exception:
+        logger.exception("Failed restoring archived guild data for %s (%s)", guild.name, guild.id)
     if not is_managed_guild_id(guild.id):
         logger.info(
             "Joined unmanaged guild %s (%s); skipping command sync due to MANAGED_GUILD_IDS filter",
@@ -8712,11 +9021,17 @@ async def on_guild_join(guild: discord.Guild):
 
 @bot.event
 async def on_guild_remove(guild: discord.Guild):
-    invite_roles_by_guild.pop(guild.id, None)
-    invite_uses_by_guild.pop(guild.id, None)
-    tag_response_cache.pop(guild.id, None)
-    tag_command_names_by_guild.pop(guild.id, None)
-    discord_catalog_cache.pop(guild.id, None)
+    try:
+        archive_info = archive_guild_data(guild.id)
+        logger.info(
+            "Archived guild data for %s (%s) until %s",
+            guild.name,
+            guild.id,
+            archive_info.get("purge_after_at", ""),
+        )
+    except Exception:
+        logger.exception("Failed archiving guild data for %s (%s)", guild.name, guild.id)
+        clear_guild_runtime_state(guild.id)
 
 
 @bot.event

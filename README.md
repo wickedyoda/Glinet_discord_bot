@@ -84,6 +84,7 @@ docker compose build
 - Member activity tracking with private `/stats` output, web top-20 views for rolling 90/30/7/1-day windows, and ZIP export from the web GUI
 - Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, LinkedIn profile subscriptions, and per-guild channel/tag/invite settings
 - Optional guild allowlist mode for multi-guild deployments and public invites
+- Guild-scoped data quarantine on bot removal with 14-day restore window on same-ID rejoin before permanent purge
 - SQLite persistence with legacy merge import on startup
 - Local verification tooling for lint, tests, security checks, and Docker builds
 

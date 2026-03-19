@@ -35,6 +35,14 @@ All notable changes to this project are documented in this file.
   - email
 - Admins can now reset another web GUI user's password directly from that user's edit section.
 
+## [2026-03-19] - Guild Data Archive and Restore Window
+
+### Added
+
+- When the bot leaves a guild, guild-scoped data is archived for 14 days instead of being discarded immediately.
+- If the bot rejoins the exact same guild ID within that 14-day window, the archived guild data is restored automatically.
+- Expired archived guild data is purged permanently on startup after the 14-day retention window passes.
+
 ## [2026-03-19] - Web GUI Guild Leave Action
 
 ### Added
