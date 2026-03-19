@@ -213,8 +213,8 @@ All notable changes to this project are documented in this file.
 
 ### Changed
 - Updated the public project/bot name shown in the docs to `GL.iNet UnOfficial Discord Bot`.
-- Updated the web GUI window title suffix to `WickedYoda'sLittleHelper Dashboard`.
-- Updated the web GUI bot-profile username placeholder to `WickedYoda'sLittleHelper`.
+- Updated the web GUI window title suffix to `GL.iNet UnOfficial Discord Bot Dashboard`.
+- Updated the web GUI bot-profile username placeholder to `GL.iNet UnOfficial Discord Bot`.
 
 ## [2026-03-14] - Web GUI Guild Selection
 
