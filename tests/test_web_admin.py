@@ -245,6 +245,9 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         response = client.get(path, base_url="https://docker.example:8443", follow_redirects=True)
         assert response.status_code == 200, path
 
+    header_response = client.get("/admin/dashboard", base_url="https://docker.example:8443", follow_redirects=True)
+    assert b">Logout<" in header_response.data
+
 
 def test_staus_redirects_to_status(tmp_path: Path):
     app = _make_app(tmp_path)
@@ -426,11 +429,20 @@ def test_glinet_role_is_limited_to_member_activity(tmp_path: Path):
 
     client = app.test_client()
     _login_as(client, "glinet@example.com", "Ab!12xy")
-    _select_guild(client)
+
+    guild_route_response = client.get(
+        "/admin",
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert guild_route_response.status_code == 200
+    assert b"Member Activity" in guild_route_response.data
+    assert b"Test Guild" in guild_route_response.data
 
     member_activity_response = client.get("/admin/member-activity", base_url="https://docker.example:8443")
     assert member_activity_response.status_code == 200
     assert b"Member Activity" in member_activity_response.data
+    assert b">Logout<" in member_activity_response.data
 
     dashboard_response = client.get(
         "/admin/dashboard",
