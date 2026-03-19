@@ -101,6 +101,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Custom-role mode requires at least one role ID or selected role.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
 - LinkedIn profile management page lets admins map public LinkedIn profiles to Discord text channels for new-post notifications.
+- GL.iNet beta program page lets admins map the public GL.iNet beta-testing page to Discord text channels for added/removed program notifications.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 - Member activity page shows top-20 member activity windows for the selected server.
 - Member activity exports are generated for the selected server only and match the currently retained 90-day dataset.
@@ -216,6 +217,14 @@ UI forms include show/hide password toggles and validation feedback.
 - Uses the public profile page to detect newer visible posts
 - Stores last seen post metadata so only newer posts are announced
 - Best-effort public-profile monitoring: private or login-gated activity will not be detected
+
+### `/admin/beta-programs`
+
+- Scoped to the selected server
+- Add the public GL.iNet beta-testing page monitor and target Discord text channel
+- Detects when beta programs are added to or removed from the page
+- Stores the last seen program snapshot per guild/channel so only changes are announced
+- Best-effort public-page monitoring: if GL.iNet changes the page structure, the watcher may need adjustment
 
 ### `/admin/documentation`
 

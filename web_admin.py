@@ -1939,6 +1939,7 @@ def _render_layout(
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
                 <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
                 <option value="{{ url_for('settings') }}">Global Settings</option>
                 <option value="{{ url_for('public_observability') }}">Observability</option>
@@ -2038,6 +2039,7 @@ def _render_layout(
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+            <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
             <option value="{{ url_for('settings') }}">Global Settings</option>
             <option value="{{ url_for('public_observability') }}">Observability</option>
@@ -2181,6 +2183,8 @@ def create_web_app(
     on_manage_youtube_subscriptions=None,
     on_get_linkedin_subscriptions=None,
     on_manage_linkedin_subscriptions=None,
+    on_get_beta_program_subscriptions=None,
+    on_manage_beta_program_subscriptions=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -2766,6 +2770,7 @@ def create_web_app(
             "reddit_feeds",
             "youtube_subscriptions",
             "linkedin_subscriptions",
+            "beta_program_subscriptions",
             "settings",
             "tag_responses",
             "bulk_role_csv",
@@ -3417,6 +3422,12 @@ def create_web_app(
             "Map public LinkedIn profiles to Discord channels and post new profile activity automatically.",
             url_for("linkedin_subscriptions"),
             "Open LinkedIn",
+        )
+        add_dashboard_card(
+            "GL.iNet Beta Programs",
+            "Monitor the GL.iNet beta testing page and notify a Discord channel when programs are added or removed.",
+            url_for("beta_program_subscriptions"),
+            "Open Beta Programs",
         )
         add_dashboard_card(
             "Guild Settings",
@@ -4849,6 +4860,172 @@ def create_web_app(
             str(user.get("display_name") or ""),
         )
 
+    @app.route("/admin/beta-programs", methods=["GET", "POST"])
+    @login_required
+    def beta_program_subscriptions():
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+
+        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
+        channel_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                channel_options = discord_catalog.get("channels", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
+        text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
+        channel_labels = {
+            str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
+            for option in text_channel_options
+            if str(option.get("id") or "").strip()
+        }
+
+        payload = (
+            on_get_beta_program_subscriptions(selected_guild_id)
+            if callable(on_get_beta_program_subscriptions)
+            else {"ok": False, "error": "GL.iNet beta program callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not callable(on_manage_beta_program_subscriptions):
+                flash("GL.iNet beta program update callback is not configured.", "error")
+            else:
+                callback_payload = {"action": action}
+                if action == "add":
+                    callback_payload["channel_id"] = str(request.form.get("channel_id", "")).strip()
+                elif action == "delete":
+                    callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                else:
+                    flash("Invalid GL.iNet beta program action.", "error")
+                    callback_payload = None
+
+                if callback_payload is not None:
+                    response = on_manage_beta_program_subscriptions(callback_payload, user["email"], selected_guild_id)
+                    if not isinstance(response, dict):
+                        flash("Invalid response from GL.iNet beta program handler.", "error")
+                    elif response.get("ok"):
+                        payload = response
+                        flash(
+                            str(response.get("message") or "GL.iNet beta programs updated."),
+                            "success",
+                        )
+                    else:
+                        flash(
+                            str(response.get("error") or "Failed to update GL.iNet beta programs."),
+                            "error",
+                        )
+
+            payload = (
+                on_get_beta_program_subscriptions(selected_guild_id)
+                if callable(on_get_beta_program_subscriptions)
+                else {"ok": False, "error": "GL.iNet beta program callbacks are not configured."}
+            )
+
+        subscriptions = payload.get("subscriptions", []) if isinstance(payload, dict) else []
+        subscriptions_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        source_url = str(payload.get("source_url") or "https://www.gl-inet.com/beta-testing/#register")
+        channel_select_html = _render_select_input(
+            "channel_id",
+            "",
+            text_channel_options,
+            placeholder="Select a Discord text channel...",
+        )
+        rows = []
+        for subscription in subscriptions:
+            subscription_id = str(subscription.get("id") or "")
+            channel_id = str(subscription.get("target_channel_id") or "").strip()
+            channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
+            program_count = len(subscription.get("programs") or [])
+            actions_html = (
+                f"""
+                <form method="post" style="display:inline;" onsubmit="return confirm('Delete this GL.iNet beta program monitor?');">
+                  <input type="hidden" name="action" value="delete" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <button class="btn danger" type="submit">Delete</button>
+                </form>
+                """
+                if is_admin
+                else "<button class='btn danger' type='button' disabled>Delete</button>"
+            )
+            rows.append(
+                f"""
+                <tr>
+                  <td>{escape(str(subscription.get("source_name") or "GL.iNet Beta Programs"))}</td>
+                  <td><a href="{escape(str(subscription.get("source_url") or source_url), quote=True)}" target="_blank" rel="noopener">{escape(str(subscription.get("source_url") or source_url))}</a></td>
+                  <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
+                  <td>{program_count}</td>
+                  <td class="muted">{escape(str(subscription.get("last_checked_at") or "Never"))}</td>
+                  <td class="muted">{escape(str(subscription.get("last_error") or "")) or "OK"}</td>
+                  <td>{actions_html}</td>
+                </tr>
+                """
+            )
+
+        catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        add_disabled_attr = "" if text_channel_options and is_admin else " disabled"
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Add GL.iNet Beta Program Monitor</h2>
+            <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+            <p class="muted">Monitor the GL.iNet beta testing page and notify a Discord text channel whenever beta programs are added or removed.</p>
+            <p class="muted">Source page: <a href="{escape(source_url, quote=True)}" target="_blank" rel="noopener">{escape(source_url)}</a></p>
+            {catalog_note}
+            <form method="post">
+              <input type="hidden" name="action" value="add" />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {channel_select_html}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{add_disabled_attr}>Save Monitor</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured GL.iNet Beta Program Monitors</h2>
+          <p class="muted">This watcher polls the public GL.iNet beta page and compares the current program list against the last seen snapshot for the selected guild.</p>
+          {f"<p class='muted'>Could not load subscriptions: {escape(subscriptions_error)}</p>" if subscriptions_error else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Page URL</th>
+                <th>Discord Channel</th>
+                <th>Known Programs</th>
+                <th>Last Checked</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(rows) if rows else "<tr><td colspan='7' class='muted'>No GL.iNet beta program monitors are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page(
+            "GL.iNet Beta Programs",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
     @login_required
     def command_permissions():
@@ -5901,6 +6078,8 @@ def start_web_admin_interface(
     on_manage_youtube_subscriptions=None,
     on_get_linkedin_subscriptions=None,
     on_manage_linkedin_subscriptions=None,
+    on_get_beta_program_subscriptions=None,
+    on_manage_beta_program_subscriptions=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -5934,6 +6113,8 @@ def start_web_admin_interface(
         on_manage_youtube_subscriptions=on_manage_youtube_subscriptions,
         on_get_linkedin_subscriptions=on_get_linkedin_subscriptions,
         on_manage_linkedin_subscriptions=on_manage_linkedin_subscriptions,
+        on_get_beta_program_subscriptions=on_get_beta_program_subscriptions,
+        on_manage_beta_program_subscriptions=on_manage_beta_program_subscriptions,
         on_get_bot_profile=on_get_bot_profile,
         on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,

@@ -3,7 +3,6 @@ import base64
 import binascii
 import concurrent.futures
 import csv
-import gzip
 import hashlib
 import http.client
 import io
@@ -35,6 +34,19 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from app.guild_archive import GuildArchiveManager
+from app.member_activity_backfill import (
+    compute_missing_ranges as compute_member_activity_backfill_missing_ranges,
+)
+from app.member_activity_backfill import (
+    extract_completed_ranges as extract_member_activity_backfill_completed_ranges,
+)
+from app.member_activity_backfill import (
+    parse_backfill_since as parse_member_activity_backfill_since,
+)
+from app.member_activity_backfill import (
+    state_key as member_activity_backfill_state_key,
+)
 from web_admin import start_web_admin_interface
 
 load_dotenv()
@@ -60,6 +72,9 @@ YOUTUBE_CHANNEL_ID_META_PATTERNS = (
 )
 LINKEDIN_PROFILE_PATH_PATTERN = re.compile(r"^/(?:in|company|school)/[^/]+/?$")
 LINKEDIN_POST_URL_PATTERN = re.compile(r"^https://www\.linkedin\.com/(?:posts/[^/?#]+|feed/update/[^?#]+)$")
+BETA_PROGRAM_HEADING_PATTERN = re.compile(r"\bbeta testing products\b", re.IGNORECASE)
+BETA_PROGRAM_STOP_HEADING_PATTERN = re.compile(r"\bregister to join\b", re.IGNORECASE)
+BETA_PROGRAM_DEADLINE_PATTERN = re.compile(r"^Deadline:\s*(.+)$", re.IGNORECASE)
 REDDIT_REQUEST_USER_AGENT = "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
 DEFAULT_REDDIT_FEED_CHECK_SCHEDULE = "*/30 * * * *"
 REDDIT_FEED_FETCH_LIMIT = 10
@@ -72,6 +87,12 @@ LINKEDIN_REQUEST_USER_AGENT = (
     "Chrome/137.0.0.0 Safari/537.36"
 )
 LINKEDIN_MAX_POSTS_PER_RUN = 5
+BETA_PROGRAM_REQUEST_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36"
+)
+BETA_PROGRAM_MAX_NOTIFICATIONS_PER_RUN = 10
 MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
 MEMBER_ACTIVITY_WINDOW_SPECS = (
@@ -682,6 +703,17 @@ LINKEDIN_NOTIFY_ENABLED = is_truthy_env_value(
 )
 LINKEDIN_POLL_INTERVAL_SECONDS = parse_positive_int_env("LINKEDIN_POLL_INTERVAL_SECONDS", 900, minimum=60)
 LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 15, minimum=5)
+BETA_PROGRAM_PAGE_URL = normalize_http_url_setting(
+    os.getenv("BETA_PROGRAM_PAGE_URL", ""),
+    "https://www.gl-inet.com/beta-testing/#register",
+    "BETA_PROGRAM_PAGE_URL",
+)
+BETA_PROGRAM_NOTIFY_ENABLED = is_truthy_env_value(
+    os.getenv("BETA_PROGRAM_NOTIFY_ENABLED", "true"),
+    default_value=True,
+)
+BETA_PROGRAM_POLL_INTERVAL_SECONDS = parse_positive_int_env("BETA_PROGRAM_POLL_INTERVAL_SECONDS", 900, minimum=60)
+BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS", 20, minimum=5)
 UPTIME_STATUS_ENABLED = is_truthy_env_value(
     os.getenv("UPTIME_STATUS_ENABLED", "false"),
     default_value=False,
@@ -1013,6 +1045,7 @@ firmware_monitor_task = None
 reddit_feed_monitor_task = None
 youtube_monitor_task = None
 linkedin_monitor_task = None
+beta_program_monitor_task = None
 member_activity_backfill_task = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
@@ -1243,6 +1276,25 @@ def ensure_db_schema():
                 UNIQUE(guild_id, source_url, target_channel_id)
             );
 
+            CREATE TABLE IF NOT EXISTS beta_program_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                source_url TEXT NOT NULL,
+                source_name TEXT NOT NULL DEFAULT '',
+                target_channel_id INTEGER NOT NULL,
+                target_channel_name TEXT NOT NULL DEFAULT '',
+                last_snapshot_json TEXT NOT NULL DEFAULT '[]',
+                last_checked_at TEXT NOT NULL DEFAULT '',
+                last_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, source_url, target_channel_id)
+            );
+
             CREATE TABLE IF NOT EXISTS member_activity_summary (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -1313,6 +1365,8 @@ def ensure_db_schema():
                 ON youtube_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_linkedin_subscriptions_enabled
                 ON linkedin_subscriptions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_beta_program_subscriptions_enabled
+                ON beta_program_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
                 ON member_activity_summary(last_message_at);
             CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
@@ -1711,6 +1765,12 @@ def ensure_db_schema():
         )
         conn.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_beta_program_subscriptions_guild_id
+                ON beta_program_subscriptions(guild_id)
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_member_activity_summary_guild_id
                 ON member_activity_summary(guild_id)
             """
@@ -1812,6 +1872,14 @@ def default_guild_settings():
         "updated_at": "",
         "updated_by_email": "",
     }
+
+
+def build_web_actor_audit_label(actor_email: str):
+    normalized = str(actor_email or "").strip().lower()
+    if not normalized:
+        return "web_user:unknown"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"web_user:{digest}"
 
 
 def load_guild_settings(guild_id: int | None = None):
@@ -2089,19 +2157,6 @@ def normalize_activity_timestamp(raw_value=None) -> datetime:
     return parsed
 
 
-def parse_member_activity_backfill_since(raw_value: str) -> datetime | None:
-    text = str(raw_value or "").strip()
-    if not text:
-        return None
-    candidate = text
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
-        candidate = f"{candidate}T00:00:00+00:00"
-    parsed = parse_iso_datetime_utc(candidate)
-    if parsed is None:
-        return None
-    return parsed.replace(minute=0, second=0, microsecond=0)
-
-
 def get_member_activity_backfill_target_guild_id() -> int:
     raw_value = MEMBER_ACTIVITY_BACKFILL_GUILD_ID_RAW
     if not raw_value:
@@ -2113,10 +2168,6 @@ def get_member_activity_backfill_target_guild_id() -> int:
     if parsed <= 0:
         raise RuntimeError("MEMBER_ACTIVITY_BACKFILL_GUILD_ID must be a positive guild ID.")
     return parsed
-
-
-def member_activity_backfill_state_key(guild_id: int, since_dt: datetime) -> str:
-    return f"member_activity_backfill:{int(guild_id)}:{since_dt.isoformat()}"
 
 
 def load_member_activity_backfill_state(guild_id: int, since_dt: datetime) -> dict:
@@ -2137,120 +2188,6 @@ def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, paylo
     )
 
 
-GUILD_ARCHIVE_TABLE_NAMES = (
-    "role_codes",
-    "invite_roles",
-    "tag_responses",
-    "guild_settings",
-    "actions",
-    "command_permissions",
-    "reddit_feed_subscriptions",
-    "reddit_feed_seen_posts",
-    "youtube_subscriptions",
-    "linkedin_subscriptions",
-    "member_activity_summary",
-    "member_activity_recent_hourly",
-    "member_activity_seen_messages",
-    "random_choice_history",
-)
-GUILD_ARCHIVE_KV_PREFIXES = (
-    "guild_settings_updated_at:{guild_id}",
-    "tag_responses_updated_at:{guild_id}",
-    "command_permissions_updated_at:{guild_id}",
-    "command_permissions_updated_by:{guild_id}",
-)
-
-
-def _compress_guild_archive_payload(payload: dict) -> bytes:
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return gzip.compress(serialized)
-
-
-def _decompress_guild_archive_payload(payload_bytes: bytes) -> dict:
-    try:
-        raw_payload = gzip.decompress(bytes(payload_bytes or b""))
-        parsed = json.loads(raw_payload.decode("utf-8"))
-    except (OSError, ValueError, TypeError, UnicodeDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _select_guild_table_rows_locked(conn, table_name: str, guild_id: int):
-    rows = conn.execute(f"SELECT * FROM {table_name} WHERE guild_id = ?", (int(guild_id),)).fetchall()
-    return [dict(row) for row in rows]
-
-
-def _select_guild_archive_kv_rows_locked(conn, guild_id: int):
-    keys = [pattern.format(guild_id=int(guild_id)) for pattern in GUILD_ARCHIVE_KV_PREFIXES]
-    rows = []
-    for key in keys:
-        row = conn.execute("SELECT key, value, updated_at FROM kv_store WHERE key = ?", (key,)).fetchone()
-        if row is not None:
-            rows.append(dict(row))
-    prefix = f"member_activity_backfill:{int(guild_id)}:"
-    rows.extend(
-        dict(row)
-        for row in conn.execute(
-            "SELECT key, value, updated_at FROM kv_store WHERE key LIKE ?",
-            (f"{prefix}%",),
-        ).fetchall()
-    )
-    return rows
-
-
-def _delete_guild_archive_kv_rows_locked(conn, guild_id: int):
-    keys = [pattern.format(guild_id=int(guild_id)) for pattern in GUILD_ARCHIVE_KV_PREFIXES]
-    for key in keys:
-        conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
-    conn.execute(
-        "DELETE FROM kv_store WHERE key LIKE ?",
-        (f"member_activity_backfill:{int(guild_id)}:%",),
-    )
-
-
-def _delete_live_guild_data_locked(conn, guild_id: int):
-    safe_guild_id = int(guild_id)
-    conn.execute(
-        """
-        DELETE FROM reddit_feed_seen_posts
-        WHERE feed_id IN (
-            SELECT id FROM reddit_feed_subscriptions WHERE guild_id = ?
-        )
-        """,
-        (safe_guild_id,),
-    )
-    for table_name in (
-        "role_codes",
-        "invite_roles",
-        "tag_responses",
-        "guild_settings",
-        "actions",
-        "command_permissions",
-        "reddit_feed_subscriptions",
-        "youtube_subscriptions",
-        "linkedin_subscriptions",
-        "member_activity_summary",
-        "member_activity_recent_hourly",
-        "member_activity_seen_messages",
-        "random_choice_history",
-    ):
-        conn.execute(f"DELETE FROM {table_name} WHERE guild_id = ?", (safe_guild_id,))
-    _delete_guild_archive_kv_rows_locked(conn, safe_guild_id)
-
-
-def _insert_guild_table_rows_locked(conn, table_name: str, rows: list[dict]):
-    if not rows:
-        return
-    columns = list(rows[0].keys())
-    column_sql = ", ".join(columns)
-    placeholder_sql = ", ".join("?" for _ in columns)
-    values = [tuple(row.get(column) for column in columns) for row in rows]
-    conn.executemany(
-        f"INSERT OR REPLACE INTO {table_name} ({column_sql}) VALUES ({placeholder_sql})",
-        values,
-    )
-
-
 def clear_guild_runtime_state(guild_id: int):
     safe_guild_id = int(guild_id)
     invite_roles_by_guild.pop(safe_guild_id, None)
@@ -2260,160 +2197,6 @@ def clear_guild_runtime_state(guild_id: int):
     guild_settings_cache.pop(safe_guild_id, None)
     command_permissions_cache.pop(safe_guild_id, None)
     discord_catalog_cache.pop(safe_guild_id, None)
-
-
-def archive_guild_data(guild_id: int):
-    safe_guild_id = int(guild_id)
-    now_dt = datetime.now(UTC).replace(microsecond=0)
-    purge_after_dt = now_dt + timedelta(days=GUILD_DATA_ARCHIVE_RETENTION_DAYS)
-    conn = get_db_connection()
-    with db_lock:
-        ensure_member_activity_schema_locked(conn)
-        payload = {
-            "version": 1,
-            "guild_id": safe_guild_id,
-            "archived_at": now_dt.isoformat(),
-            "purge_after_at": purge_after_dt.isoformat(),
-            "tables": {
-                "role_codes": _select_guild_table_rows_locked(conn, "role_codes", safe_guild_id),
-                "invite_roles": _select_guild_table_rows_locked(conn, "invite_roles", safe_guild_id),
-                "tag_responses": _select_guild_table_rows_locked(conn, "tag_responses", safe_guild_id),
-                "guild_settings": _select_guild_table_rows_locked(conn, "guild_settings", safe_guild_id),
-                "actions": _select_guild_table_rows_locked(conn, "actions", safe_guild_id),
-                "command_permissions": _select_guild_table_rows_locked(conn, "command_permissions", safe_guild_id),
-                "reddit_feed_subscriptions": _select_guild_table_rows_locked(conn, "reddit_feed_subscriptions", safe_guild_id),
-                "reddit_feed_seen_posts": [
-                    dict(row)
-                    for row in conn.execute(
-                        """
-                        SELECT sp.*
-                        FROM reddit_feed_seen_posts sp
-                        JOIN reddit_feed_subscriptions fs ON fs.id = sp.feed_id
-                        WHERE fs.guild_id = ?
-                        """,
-                        (safe_guild_id,),
-                    ).fetchall()
-                ],
-                "youtube_subscriptions": _select_guild_table_rows_locked(conn, "youtube_subscriptions", safe_guild_id),
-                "linkedin_subscriptions": _select_guild_table_rows_locked(conn, "linkedin_subscriptions", safe_guild_id),
-                "member_activity_summary": _select_guild_table_rows_locked(conn, "member_activity_summary", safe_guild_id),
-                "member_activity_recent_hourly": _select_guild_table_rows_locked(conn, "member_activity_recent_hourly", safe_guild_id),
-                "member_activity_seen_messages": _select_guild_table_rows_locked(conn, "member_activity_seen_messages", safe_guild_id),
-                "random_choice_history": _select_guild_table_rows_locked(conn, "random_choice_history", safe_guild_id),
-            },
-            "kv_store": _select_guild_archive_kv_rows_locked(conn, safe_guild_id),
-        }
-        conn.execute(
-            """
-            INSERT INTO guild_data_archives (guild_id, archived_at, purge_after_at, payload)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(guild_id) DO UPDATE SET
-                archived_at = excluded.archived_at,
-                purge_after_at = excluded.purge_after_at,
-                payload = excluded.payload
-            """,
-            (
-                safe_guild_id,
-                now_dt.isoformat(),
-                purge_after_dt.isoformat(),
-                _compress_guild_archive_payload(payload),
-            ),
-        )
-        _delete_live_guild_data_locked(conn, safe_guild_id)
-        conn.commit()
-    clear_guild_runtime_state(safe_guild_id)
-    return {
-        "archived_at": now_dt.isoformat(),
-        "purge_after_at": purge_after_dt.isoformat(),
-    }
-
-
-def restore_archived_guild_data(guild_id: int):
-    safe_guild_id = int(guild_id)
-    conn = get_db_connection()
-    with db_lock:
-        ensure_member_activity_schema_locked(conn)
-        row = conn.execute(
-            "SELECT archived_at, purge_after_at, payload FROM guild_data_archives WHERE guild_id = ?",
-            (safe_guild_id,),
-        ).fetchone()
-        if row is None:
-            return {"ok": False, "restored": False}
-        payload = _decompress_guild_archive_payload(row["payload"])
-        tables_payload = payload.get("tables") if isinstance(payload, dict) else {}
-        kv_rows = payload.get("kv_store") if isinstance(payload, dict) else []
-        if not isinstance(tables_payload, dict):
-            tables_payload = {}
-        if not isinstance(kv_rows, list):
-            kv_rows = []
-
-        _delete_live_guild_data_locked(conn, safe_guild_id)
-        restore_order = (
-            "role_codes",
-            "invite_roles",
-            "tag_responses",
-            "guild_settings",
-            "actions",
-            "command_permissions",
-            "reddit_feed_subscriptions",
-            "reddit_feed_seen_posts",
-            "youtube_subscriptions",
-            "linkedin_subscriptions",
-            "member_activity_summary",
-            "member_activity_recent_hourly",
-            "member_activity_seen_messages",
-            "random_choice_history",
-        )
-        for table_name in restore_order:
-            rows = tables_payload.get(table_name) or []
-            if isinstance(rows, list):
-                safe_rows = [row for row in rows if isinstance(row, dict)]
-                _insert_guild_table_rows_locked(conn, table_name, safe_rows)
-        for row_payload in kv_rows:
-            if not isinstance(row_payload, dict):
-                continue
-            key = str(row_payload.get("key") or "").strip()
-            value = str(row_payload.get("value") or "")
-            updated_at = str(row_payload.get("updated_at") or datetime.now(UTC).isoformat())
-            if not key:
-                continue
-            conn.execute(
-                """
-                INSERT INTO kv_store (key, value, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
-                """,
-                (key, value, updated_at),
-            )
-        conn.execute("DELETE FROM guild_data_archives WHERE guild_id = ?", (safe_guild_id,))
-        conn.commit()
-    clear_guild_runtime_state(safe_guild_id)
-    return {
-        "ok": True,
-        "restored": True,
-        "archived_at": str(row["archived_at"] or ""),
-        "purge_after_at": str(row["purge_after_at"] or ""),
-    }
-
-
-def purge_expired_guild_archives():
-    now_dt = datetime.now(UTC).replace(microsecond=0)
-    conn = get_db_connection()
-    purged_guild_ids = []
-    with db_lock:
-        rows = conn.execute(
-            "SELECT guild_id, purge_after_at FROM guild_data_archives WHERE purge_after_at <= ?",
-            (now_dt.isoformat(),),
-        ).fetchall()
-        for row in rows:
-            guild_id = int(row["guild_id"] or 0)
-            conn.execute("DELETE FROM guild_data_archives WHERE guild_id = ?", (guild_id,))
-            purged_guild_ids.append(guild_id)
-        if purged_guild_ids:
-            conn.commit()
-    for guild_id in purged_guild_ids:
-        clear_guild_runtime_state(guild_id)
-    return purged_guild_ids
 
 
 def list_member_activity_backfill_completed_ranges(guild_id: int):
@@ -2428,75 +2211,14 @@ def list_member_activity_backfill_completed_ranges(guild_id: int):
             """,
             (f"member_activity_backfill:{safe_guild_id}:%",),
         ).fetchall()
-
-    ranges = []
+    kv_rows = []
     for row in rows:
         try:
             payload = json.loads(str(row["value"] or ""))
         except ValueError:
             continue
-        if not isinstance(payload, dict):
-            continue
-        if str(payload.get("status") or "").strip().lower() != "completed":
-            continue
-        since_dt = parse_iso_datetime_utc(payload.get("since_at"))
-        until_dt = parse_iso_datetime_utc(payload.get("until_at"))
-        if since_dt is None or until_dt is None:
-            continue
-        if until_dt <= since_dt:
-            continue
-        ranges.append((since_dt, until_dt))
-    return ranges
-
-
-def merge_member_activity_backfill_ranges(ranges):
-    normalized = []
-    for start_dt, end_dt in ranges:
-        safe_start = normalize_activity_timestamp(start_dt)
-        safe_end = normalize_activity_timestamp(end_dt)
-        if safe_end <= safe_start:
-            continue
-        normalized.append((safe_start, safe_end))
-    if not normalized:
-        return []
-
-    normalized.sort(key=lambda item: item[0])
-    merged = [normalized[0]]
-    for start_dt, end_dt in normalized[1:]:
-        last_start, last_end = merged[-1]
-        if start_dt <= last_end:
-            merged[-1] = (last_start, max(last_end, end_dt))
-            continue
-        merged.append((start_dt, end_dt))
-    return merged
-
-
-def compute_member_activity_backfill_missing_ranges(requested_since: datetime, requested_until: datetime, completed_ranges):
-    safe_requested_since = normalize_activity_timestamp(requested_since)
-    safe_requested_until = normalize_activity_timestamp(requested_until)
-    if safe_requested_until <= safe_requested_since:
-        return []
-
-    merged_ranges = merge_member_activity_backfill_ranges(completed_ranges)
-    missing_ranges = []
-    cursor = safe_requested_since
-    for completed_start, completed_end in merged_ranges:
-        if completed_end <= safe_requested_since:
-            continue
-        if completed_start >= safe_requested_until:
-            break
-        clipped_start = max(completed_start, safe_requested_since)
-        clipped_end = min(completed_end, safe_requested_until)
-        if clipped_end <= clipped_start:
-            continue
-        if clipped_start > cursor:
-            missing_ranges.append((cursor, clipped_start))
-        cursor = max(cursor, clipped_end)
-        if cursor >= safe_requested_until:
-            break
-    if cursor < safe_requested_until:
-        missing_ranges.append((cursor, safe_requested_until))
-    return missing_ranges
+        kv_rows.append({"payload": payload})
+    return extract_member_activity_backfill_completed_ranges(kv_rows, parse_iso_datetime_utc)
 
 
 def ensure_member_activity_schema_locked(conn):
@@ -2705,6 +2427,27 @@ def ensure_member_activity_schema_locked(conn):
             )
             logger.info("Encrypted %s existing member activity profile row(s).", len(updates))
         member_activity_encryption_migration_checked = True
+
+
+guild_archive_manager = GuildArchiveManager(
+    get_db_connection=get_db_connection,
+    db_lock=db_lock,
+    ensure_member_activity_schema_locked=ensure_member_activity_schema_locked,
+    clear_guild_runtime_state=clear_guild_runtime_state,
+    retention_days=GUILD_DATA_ARCHIVE_RETENTION_DAYS,
+)
+
+
+def archive_guild_data(guild_id: int):
+    return guild_archive_manager.archive_guild_data(guild_id)
+
+
+def restore_archived_guild_data(guild_id: int):
+    return guild_archive_manager.restore_archived_guild_data(guild_id)
+
+
+def purge_expired_guild_archives():
+    return guild_archive_manager.purge_expired_guild_archives()
 
 
 def compute_member_activity_metrics(message_count: int, active_days: int, period_start: datetime, period_end: datetime):
@@ -3854,6 +3597,167 @@ def update_linkedin_subscription_runtime_state(
                 last_post_url_value,
                 last_post_text_value,
                 last_published_at_value,
+                last_checked_at_value,
+                last_posted_at_value,
+                last_error_value,
+                updated_at_value,
+                int(subscription_id),
+                safe_guild_id,
+            ),
+        )
+        conn.commit()
+
+
+def parse_beta_program_snapshot_json(raw_value) -> list[dict]:
+    try:
+        parsed = json.loads(str(raw_value or "[]"))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    programs = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        program_id = str(item.get("program_id") or "").strip()
+        title = clip_text(str(item.get("title") or "").strip(), max_chars=200)
+        if not program_id or not title:
+            continue
+        programs.append(
+            {
+                "program_id": program_id,
+                "title": title,
+                "summary": clip_text(str(item.get("summary") or "").strip(), max_chars=400),
+                "deadline": clip_text(str(item.get("deadline") or "").strip(), max_chars=120),
+                "apply_url": str(item.get("apply_url") or "").strip(),
+            }
+        )
+    programs.sort(key=lambda item: (item["title"].casefold(), item["program_id"]))
+    return programs
+
+
+def serialize_beta_program_snapshot(programs: list[dict]) -> str:
+    normalized = parse_beta_program_snapshot_json(json.dumps(programs))
+    return json.dumps(normalized, separators=(",", ":"), sort_keys=True)
+
+
+def list_beta_program_subscriptions(
+    guild_id: int | None = None,
+    enabled_only: bool = False,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    query = (
+        "SELECT id, guild_id, source_url, source_name, target_channel_id, target_channel_name, "
+        "last_snapshot_json, last_checked_at, last_posted_at, last_error, enabled, "
+        "created_at, updated_at, created_by_email, updated_by_email "
+        "FROM beta_program_subscriptions WHERE guild_id = ?"
+    )
+    params = [safe_guild_id]
+    if enabled_only:
+        query += " AND enabled = 1"
+    query += " ORDER BY target_channel_name COLLATE NOCASE ASC, id ASC"
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    subscriptions = []
+    for row in rows:
+        item = dict(row)
+        item["programs"] = parse_beta_program_snapshot_json(item.get("last_snapshot_json"))
+        subscriptions.append(item)
+    return subscriptions
+
+
+def create_or_update_beta_program_subscription(
+    guild_id: int | None,
+    *,
+    source_url: str,
+    source_name: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    last_snapshot_json: str,
+    actor_email: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO beta_program_subscriptions (
+                guild_id, source_url, source_name, target_channel_id, target_channel_name,
+                last_snapshot_json, enabled, created_at, updated_at, created_by_email, updated_by_email
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, source_url, target_channel_id) DO UPDATE SET
+                source_name=excluded.source_name,
+                target_channel_name=excluded.target_channel_name,
+                last_snapshot_json=excluded.last_snapshot_json,
+                enabled=1,
+                updated_at=excluded.updated_at,
+                updated_by_email=excluded.updated_by_email
+            """,
+            (
+                safe_guild_id,
+                str(source_url or "").strip(),
+                clip_text(str(source_name or "").strip(), max_chars=120),
+                int(target_channel_id),
+                str(target_channel_name or "").strip(),
+                str(last_snapshot_json or "[]").strip() or "[]",
+                now_iso,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                str(actor_email or "").strip().lower(),
+            ),
+        )
+        conn.commit()
+
+
+def delete_beta_program_subscription(subscription_id: int, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            "DELETE FROM beta_program_subscriptions WHERE id = ? AND guild_id = ?",
+            (int(subscription_id), safe_guild_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def update_beta_program_subscription_runtime_state(
+    subscription_id: int,
+    *,
+    guild_id: int | None,
+    source_name: str | None = None,
+    last_snapshot_json: str | None = None,
+    last_checked_at: str | None = None,
+    last_posted_at: str | None = None,
+    last_error: str | None = None,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    source_name_value = clip_text(str(source_name or "").strip(), max_chars=120) if source_name is not None else None
+    last_snapshot_json_value = str(last_snapshot_json or "").strip() if last_snapshot_json is not None else None
+    last_checked_at_value = str(last_checked_at or "").strip() if last_checked_at is not None else None
+    last_posted_at_value = str(last_posted_at or "").strip() if last_posted_at is not None else None
+    last_error_value = clip_text(str(last_error or "").strip(), max_chars=500) if last_error is not None else None
+    updated_at_value = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            UPDATE beta_program_subscriptions
+            SET
+                source_name = COALESCE(?, source_name),
+                last_snapshot_json = COALESCE(?, last_snapshot_json),
+                last_checked_at = COALESCE(?, last_checked_at),
+                last_posted_at = COALESCE(?, last_posted_at),
+                last_error = COALESCE(?, last_error),
+                updated_at = ?
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                source_name_value,
+                last_snapshot_json_value,
                 last_checked_at_value,
                 last_posted_at_value,
                 last_error_value,
@@ -5176,6 +5080,7 @@ def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_
         return {"ok": False, "error": "Invalid YouTube subscription payload."}
     action = str(payload.get("action") or "").strip().lower()
     safe_guild_id = normalize_target_guild_id(guild_id)
+    audit_actor = build_web_actor_audit_label(actor_email)
     try:
         if action == "add":
             source_url = str(payload.get("source_url") or "").strip()
@@ -5201,7 +5106,7 @@ def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_
             record_action_safe(
                 action="youtube_subscription_add",
                 status="success",
-                moderator=actor_email,
+                moderator=audit_actor,
                 target=resolved["channel_title"],
                 reason=truncate_log_text(resolved["source_url"]),
                 guild_id=safe_guild_id,
@@ -5214,7 +5119,7 @@ def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_
             record_action_safe(
                 action="youtube_subscription_delete",
                 status="success",
-                moderator=actor_email,
+                moderator=audit_actor,
                 target=str(subscription_id),
                 reason="Deleted via web admin",
                 guild_id=safe_guild_id,
@@ -5259,6 +5164,7 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
         return {"ok": False, "error": "Invalid LinkedIn subscription payload."}
     action = str(payload.get("action") or "").strip().lower()
     safe_guild_id = normalize_target_guild_id(guild_id)
+    audit_actor = build_web_actor_audit_label(actor_email)
     try:
         if action == "add":
             source_url = str(payload.get("source_url") or "").strip()
@@ -5286,7 +5192,7 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
             record_action_safe(
                 action="linkedin_subscription_add",
                 status="success",
-                moderator=actor_email,
+                moderator=audit_actor,
                 target=resolved["profile_name"],
                 reason=truncate_log_text(resolved["source_url"]),
                 guild_id=safe_guild_id,
@@ -5299,7 +5205,7 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
             record_action_safe(
                 action="linkedin_subscription_delete",
                 status="success",
-                moderator=actor_email,
+                moderator=audit_actor,
                 target=str(subscription_id),
                 reason="Deleted via web admin",
                 guild_id=safe_guild_id,
@@ -5314,6 +5220,92 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
         return {"ok": False, "error": "Failed to manage LinkedIn subscriptions."}
 
     response = build_linkedin_subscriptions_web_payload(safe_guild_id)
+    response["message"] = message
+    return response
+
+
+def build_beta_program_subscriptions_web_payload(guild_id: int):
+    subscriptions = list_beta_program_subscriptions(
+        guild_id=normalize_target_guild_id(guild_id),
+        enabled_only=False,
+    )
+    for subscription in subscriptions:
+        subscription["program_count"] = len(subscription.get("programs") or [])
+    return {
+        "ok": True,
+        "source_url": BETA_PROGRAM_PAGE_URL,
+        "subscriptions": subscriptions,
+    }
+
+
+def run_web_get_beta_program_subscriptions(guild_id: int):
+    try:
+        return build_beta_program_subscriptions_web_payload(guild_id)
+    except Exception:
+        logger.exception("Failed to build GL.iNet beta program subscriptions payload for web admin")
+        return {
+            "ok": False,
+            "error": "Unexpected error while loading GL.iNet beta program subscriptions.",
+        }
+
+
+def run_web_manage_beta_program_subscriptions(payload: dict, actor_email: str, guild_id: int):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid GL.iNet beta program payload."}
+    action = str(payload.get("action") or "").strip().lower()
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    audit_actor = build_web_actor_audit_label(actor_email)
+    try:
+        if action == "add":
+            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
+            if target_channel_id <= 0:
+                return {"ok": False, "error": "Choose a valid Discord channel."}
+            resolved = resolve_beta_program_subscription_seed(BETA_PROGRAM_PAGE_URL)
+            guild = bot.get_guild(safe_guild_id)
+            target_channel = guild.get_channel(target_channel_id) if guild else None
+            if not isinstance(target_channel, discord.TextChannel):
+                return {"ok": False, "error": "Choose a valid Discord text channel."}
+            target_channel_name = f"#{target_channel.name}"
+            create_or_update_beta_program_subscription(
+                safe_guild_id,
+                source_url=resolved["source_url"],
+                source_name=resolved["source_name"],
+                target_channel_id=target_channel_id,
+                target_channel_name=target_channel_name,
+                last_snapshot_json=resolved["last_snapshot_json"],
+                actor_email=actor_email,
+            )
+            record_action_safe(
+                action="beta_program_subscription_add",
+                status="success",
+                moderator=audit_actor,
+                target=target_channel_name,
+                reason=truncate_log_text(resolved["source_url"]),
+                guild_id=safe_guild_id,
+            )
+            message = "GL.iNet beta program monitor saved."
+        elif action == "delete":
+            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
+            if not delete_beta_program_subscription(subscription_id, guild_id=safe_guild_id):
+                return {"ok": False, "error": "GL.iNet beta program entry was not found."}
+            record_action_safe(
+                action="beta_program_subscription_delete",
+                status="success",
+                moderator=audit_actor,
+                target=str(subscription_id),
+                reason="Deleted via web admin",
+                guild_id=safe_guild_id,
+            )
+            message = "GL.iNet beta program monitor deleted."
+        else:
+            return {"ok": False, "error": "Invalid GL.iNet beta program action."}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception:
+        logger.exception("Failed to manage GL.iNet beta program subscriptions from web admin")
+        return {"ok": False, "error": "Failed to manage GL.iNet beta program subscriptions."}
+
+    response = build_beta_program_subscriptions_web_payload(safe_guild_id)
     response["message"] = message
     return response
 
@@ -6226,6 +6218,7 @@ async def run_web_leave_guild_async(guild_id: int, actor_email: str):
 
     guild_name = guild.name
     guild_identifier = f"{guild_name} ({guild.id})"
+    audit_actor = build_web_actor_audit_label(actor_email)
     try:
         await guild.leave()
     except discord.Forbidden:
@@ -6234,11 +6227,11 @@ async def run_web_leave_guild_async(guild_id: int, actor_email: str):
         logger.exception("Unexpected failure while leaving guild %s", guild.id)
         return {"ok": False, "error": "Unexpected Discord error while leaving that guild."}
 
-    logger.warning("Web admin requested bot leave guild %s by %s", guild_identifier, actor_email)
+    logger.warning("Web admin requested bot leave guild %s by %s", guild_identifier, audit_actor)
     record_action_safe(
         action="leave_guild",
         status="success",
-        moderator=str(actor_email or "").strip(),
+        moderator=audit_actor,
         target=guild_identifier,
         reason="Web admin requested bot leave guild",
         guild_id=guild.id,
@@ -6895,6 +6888,199 @@ def resolve_linkedin_subscription_seed(source_url: str):
         "last_post_url": str(latest_post.get("post_url") or "") if latest_post else "",
         "last_post_text": str(latest_post.get("text") or "") if latest_post else "",
         "last_published_at": str(latest_post.get("published_at") or "") if latest_post else "",
+    }
+
+
+def _find_beta_program_section_heading(soup: BeautifulSoup):
+    for tag in soup.find_all(re.compile(r"^h[1-6]$")):
+        heading_text = clean_search_text(tag.get_text(" ", strip=True))
+        if BETA_PROGRAM_HEADING_PATTERN.search(heading_text):
+            return tag
+    return None
+
+
+def _iter_beta_program_section_nodes(heading_tag):
+    for node in heading_tag.next_elements:
+        if node is heading_tag:
+            continue
+        if getattr(node, "name", None) and re.fullmatch(r"h[1-6]", str(node.name), flags=re.IGNORECASE):
+            heading_text = clean_search_text(node.get_text(" ", strip=True))
+            if BETA_PROGRAM_STOP_HEADING_PATTERN.search(heading_text):
+                break
+        yield node
+
+
+def _find_beta_program_card_container(link_tag):
+    container_names = {"article", "section", "div", "li"}
+    for candidate in (link_tag, *link_tag.parents):
+        name = getattr(candidate, "name", None)
+        if name not in container_names:
+            continue
+        apply_links = [
+            link
+            for link in candidate.find_all("a", href=True)
+            if "apply" in clean_search_text(link.get_text(" ", strip=True)).casefold()
+        ]
+        if len(apply_links) != 1:
+            continue
+        texts = [clean_search_text(text) for text in candidate.stripped_strings]
+        texts = [text for text in texts if text]
+        if len(texts) >= 2:
+            return candidate
+    return link_tag.parent or link_tag
+
+
+def _extract_beta_program_card_texts(container) -> list[str]:
+    texts = []
+    previous = None
+    for raw_text in container.stripped_strings:
+        cleaned = clean_search_text(raw_text)
+        if not cleaned or cleaned == previous:
+            continue
+        previous = cleaned
+        texts.append(cleaned)
+    return texts
+
+
+def _extract_beta_programs_from_select_inputs(soup: BeautifulSoup, source_url: str):
+    programs = []
+    seen_program_ids = set()
+    for select_tag in soup.find_all("select"):
+        select_name = str(select_tag.get("name") or "")
+        select_id = str(select_tag.get("id") or "")
+        identity = f"{select_name} {select_id}".strip().casefold()
+        if not identity:
+            continue
+        if "dropdown1" not in identity and "product" not in identity:
+            continue
+        for option_tag in select_tag.find_all("option"):
+            raw_value = str(option_tag.get("value") or "").strip()
+            title = clean_search_text(option_tag.get_text(" ", strip=True))
+            if not title or title.casefold() in {"select product", "product", "choose product"}:
+                continue
+            if not raw_value and not title:
+                continue
+            apply_url = urllib.parse.urljoin(source_url, raw_value) if raw_value else source_url
+            program_id = hashlib.sha256(f"{title}|{apply_url}".encode()).hexdigest()[:24]
+            if program_id in seen_program_ids:
+                continue
+            seen_program_ids.add(program_id)
+            programs.append(
+                {
+                    "program_id": program_id,
+                    "title": clip_text(title, max_chars=200),
+                    "summary": "",
+                    "deadline": "",
+                    "apply_url": apply_url,
+                }
+            )
+    programs.sort(key=lambda item: (item["title"].casefold(), item["apply_url"]))
+    return programs
+
+
+def parse_beta_testing_programs(page_html: str, source_url: str):
+    soup = BeautifulSoup(page_html, "html.parser")
+    select_programs = _extract_beta_programs_from_select_inputs(soup, source_url)
+    heading_tag = _find_beta_program_section_heading(soup)
+    if heading_tag is None and select_programs:
+        return select_programs
+    if heading_tag is None:
+        raise RuntimeError("Could not find the Beta Testing Products section on the GL.iNet beta page.")
+
+    seen_program_ids = set()
+    programs = []
+    for node in _iter_beta_program_section_nodes(heading_tag):
+        if getattr(node, "name", None) != "a":
+            continue
+        if not node.has_attr("href"):
+            continue
+        link_text = clean_search_text(node.get_text(" ", strip=True))
+        if "apply" not in link_text.casefold():
+            continue
+        apply_url = urllib.parse.urljoin(source_url, str(node.get("href") or "").strip())
+        if not apply_url:
+            continue
+        container = _find_beta_program_card_container(node)
+        texts = _extract_beta_program_card_texts(container)
+        deadline = ""
+        content_lines = []
+        for text in texts:
+            deadline_match = BETA_PROGRAM_DEADLINE_PATTERN.match(text)
+            if deadline_match:
+                deadline = clip_text(deadline_match.group(1).strip(), max_chars=120)
+                continue
+            if text.casefold() == "apply here":
+                continue
+            content_lines.append(text)
+        title = clip_text(content_lines[0], max_chars=200) if content_lines else ""
+        if not title or title.casefold() == clean_search_text(heading_tag.get_text(" ", strip=True)).casefold():
+            continue
+        summary = clip_text(content_lines[1], max_chars=400) if len(content_lines) > 1 else ""
+        program_id = hashlib.sha256(f"{title}|{apply_url}".encode()).hexdigest()[:24]
+        if program_id in seen_program_ids:
+            continue
+        seen_program_ids.add(program_id)
+        programs.append(
+            {
+                "program_id": program_id,
+                "title": title,
+                "summary": summary,
+                "deadline": deadline,
+                "apply_url": apply_url,
+            }
+        )
+
+    programs.sort(key=lambda item: (item["title"].casefold(), item["apply_url"]))
+    if select_programs:
+        existing_by_title = {item["title"].casefold(): item for item in programs}
+        for select_program in select_programs:
+            existing = existing_by_title.get(select_program["title"].casefold())
+            if existing is None:
+                programs.append(select_program)
+                continue
+            if not existing.get("apply_url"):
+                existing["apply_url"] = select_program["apply_url"]
+    return programs
+
+
+def fetch_beta_testing_programs(source_url: str = ""):
+    normalized_url = normalize_http_url_setting(
+        source_url,
+        BETA_PROGRAM_PAGE_URL,
+        "BETA_PROGRAM_PAGE_URL",
+    )
+    response = requests.get(
+        normalized_url,
+        timeout=BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS,
+        headers={
+            "User-Agent": BETA_PROGRAM_REQUEST_USER_AGENT,
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+        },
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"GL.iNet beta page returned HTTP {response.status_code}.")
+    final_url = str(response.url or "")
+    final_host = (urllib.parse.urlparse(final_url).netloc or "").lower()
+    if final_host.startswith("www."):
+        final_host = final_host[4:]
+    if final_host and final_host != "gl-inet.com":
+        raise RuntimeError("GL.iNet beta page redirected to an unexpected host.")
+    programs = parse_beta_testing_programs(response.text, final_url or normalized_url)
+    return {
+        "source_url": final_url or normalized_url,
+        "source_name": "GL.iNet Beta Programs",
+        "programs": programs,
+    }
+
+
+def resolve_beta_program_subscription_seed(source_url: str = ""):
+    resolved = fetch_beta_testing_programs(source_url)
+    return {
+        "source_url": resolved["source_url"],
+        "source_name": resolved["source_name"],
+        "last_snapshot_json": serialize_beta_program_snapshot(resolved["programs"]),
     }
 
 
@@ -7968,6 +8154,182 @@ def schedule_linkedin_monitor_restart():
     loop.call_soon_threadsafe(restart_linkedin_monitor_task)
 
 
+async def process_beta_program_subscription(subscription: dict):
+    subscription_id = int(subscription.get("id") or 0)
+    guild_id = int(subscription.get("guild_id") or 0)
+    source_url = str(subscription.get("source_url") or "").strip()
+    target_channel_id = int(subscription.get("target_channel_id") or 0)
+    if subscription_id <= 0 or guild_id <= 0 or not source_url or target_channel_id <= 0:
+        return
+    if not is_managed_guild_id(guild_id):
+        return
+
+    checked_at = datetime.now(UTC).isoformat()
+    try:
+        resolved = await asyncio.to_thread(fetch_beta_testing_programs, source_url)
+    except Exception as exc:
+        update_beta_program_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error=str(exc),
+        )
+        raise
+
+    current_programs = resolved.get("programs") or []
+    source_name = str(
+        resolved.get("source_name") or subscription.get("source_name") or "GL.iNet Beta Programs"
+    ).strip()
+    previous_programs = parse_beta_program_snapshot_json(subscription.get("last_snapshot_json"))
+    previous_programs_by_id = {str(item.get("program_id") or ""): item for item in previous_programs}
+    current_programs_by_id = {str(item.get("program_id") or ""): item for item in current_programs}
+    added_programs = [item for item in current_programs if item["program_id"] not in previous_programs_by_id]
+    removed_programs = [item for item in previous_programs if item["program_id"] not in current_programs_by_id]
+    snapshot_json = serialize_beta_program_snapshot(current_programs)
+
+    if not added_programs and not removed_programs:
+        update_beta_program_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            source_name=source_name,
+            last_snapshot_json=snapshot_json,
+            last_checked_at=checked_at,
+            last_error="",
+        )
+        return
+
+    notify_channel = await get_text_channel(bot, target_channel_id)
+    if notify_channel is None or notify_channel.guild.id != guild_id:
+        update_beta_program_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            source_name=source_name,
+            last_snapshot_json=snapshot_json,
+            last_checked_at=checked_at,
+            last_error="Notify channel not found in the selected guild.",
+        )
+        logger.warning(
+            "Notify channel %s not found for GL.iNet beta program subscription %s",
+            target_channel_id,
+            subscription_id,
+        )
+        return
+
+    if added_programs:
+        embed = discord.Embed(
+            title="New GL.iNet beta program(s)",
+            description="A new beta program was added to the GL.iNet beta testing page.",
+            color=discord.Color.green(),
+            url=source_url,
+        )
+        for program in added_programs[:BETA_PROGRAM_MAX_NOTIFICATIONS_PER_RUN]:
+            value_lines = []
+            if program.get("summary"):
+                value_lines.append(clip_text(str(program["summary"]), max_chars=200))
+            if program.get("deadline"):
+                value_lines.append(f"Deadline: `{program['deadline']}`")
+            if program.get("apply_url"):
+                value_lines.append(f"[Apply here]({program['apply_url']})")
+            embed.add_field(
+                name=clip_text(str(program.get("title") or "Unknown Program"), max_chars=120),
+                value="\n".join(value_lines) or "Open the beta page for details.",
+                inline=False,
+            )
+        embed.set_footer(text="GL.iNet Beta Programs")
+        await notify_channel.send(embed=embed)
+
+    if removed_programs:
+        embed = discord.Embed(
+            title="GL.iNet beta program(s) removed",
+            description="A beta program is no longer listed on the GL.iNet beta testing page.",
+            color=discord.Color.orange(),
+            url=source_url,
+        )
+        for program in removed_programs[:BETA_PROGRAM_MAX_NOTIFICATIONS_PER_RUN]:
+            value_lines = []
+            if program.get("summary"):
+                value_lines.append(clip_text(str(program["summary"]), max_chars=200))
+            if program.get("deadline"):
+                value_lines.append(f"Last seen deadline: `{program['deadline']}`")
+            if program.get("apply_url"):
+                value_lines.append(f"[Last known link]({program['apply_url']})")
+            embed.add_field(
+                name=clip_text(str(program.get("title") or "Unknown Program"), max_chars=120),
+                value="\n".join(value_lines) or "This program disappeared from the beta page.",
+                inline=False,
+            )
+        embed.set_footer(text="GL.iNet Beta Programs")
+        await notify_channel.send(embed=embed)
+
+    update_beta_program_subscription_runtime_state(
+        subscription_id,
+        guild_id=guild_id,
+        source_name=source_name,
+        last_snapshot_json=snapshot_json,
+        last_checked_at=checked_at,
+        last_posted_at=datetime.now(UTC).isoformat(),
+        last_error="",
+    )
+    record_action_safe(
+        action="beta_program_notify",
+        status="success",
+        moderator="system",
+        target=f"{notify_channel.name} ({notify_channel.id})",
+        reason=truncate_log_text(
+            f"added={len(added_programs)} removed={len(removed_programs)} source={source_url}",
+        ),
+        guild_id=guild_id,
+    )
+    logger.info(
+        "GL.iNet beta program subscription posted %d added and %d removed program(s) into channel %s",
+        len(added_programs),
+        len(removed_programs),
+        notify_channel.id,
+    )
+
+
+async def poll_beta_program_subscriptions():
+    subscriptions = list_beta_program_subscriptions(enabled_only=True)
+    if not subscriptions:
+        return
+    for subscription in subscriptions:
+        try:
+            await process_beta_program_subscription(subscription)
+        except Exception:
+            logger.exception(
+                "GL.iNet beta program subscription poll failed for id=%s",
+                subscription.get("id"),
+            )
+
+
+async def beta_program_monitor_loop():
+    logger.info(
+        "GL.iNet beta program monitor active: polling every %s seconds",
+        BETA_PROGRAM_POLL_INTERVAL_SECONDS,
+    )
+    await poll_beta_program_subscriptions()
+    while not bot.is_closed():
+        await asyncio.sleep(BETA_PROGRAM_POLL_INTERVAL_SECONDS)
+        await poll_beta_program_subscriptions()
+
+
+def restart_beta_program_monitor_task():
+    global beta_program_monitor_task
+    if beta_program_monitor_task is not None and not beta_program_monitor_task.done():
+        beta_program_monitor_task.cancel()
+    if not BETA_PROGRAM_NOTIFY_ENABLED:
+        beta_program_monitor_task = None
+        return
+    beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
+
+
+def schedule_beta_program_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_beta_program_monitor_task)
+
+
 def refresh_runtime_settings_from_env(_updated_values=None):
     global LOG_LEVEL
     global CONTAINER_LOG_LEVEL
@@ -8007,6 +8369,10 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global LINKEDIN_NOTIFY_ENABLED
     global LINKEDIN_POLL_INTERVAL_SECONDS
     global LINKEDIN_REQUEST_TIMEOUT_SECONDS
+    global BETA_PROGRAM_PAGE_URL
+    global BETA_PROGRAM_NOTIFY_ENABLED
+    global BETA_PROGRAM_POLL_INTERVAL_SECONDS
+    global BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS
     global UPTIME_STATUS_ENABLED
     global UPTIME_STATUS_TIMEOUT_SECONDS
 
@@ -8091,6 +8457,25 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
         os.getenv("LINKEDIN_REQUEST_TIMEOUT_SECONDS", LINKEDIN_REQUEST_TIMEOUT_SECONDS),
         LINKEDIN_REQUEST_TIMEOUT_SECONDS,
+        minimum=5,
+    )
+    BETA_PROGRAM_PAGE_URL = normalize_http_url_setting(
+        os.getenv("BETA_PROGRAM_PAGE_URL", BETA_PROGRAM_PAGE_URL),
+        BETA_PROGRAM_PAGE_URL,
+        "BETA_PROGRAM_PAGE_URL",
+    )
+    BETA_PROGRAM_NOTIFY_ENABLED = is_truthy_env_value(
+        os.getenv("BETA_PROGRAM_NOTIFY_ENABLED", "true" if BETA_PROGRAM_NOTIFY_ENABLED else "false"),
+        default_value=BETA_PROGRAM_NOTIFY_ENABLED,
+    )
+    BETA_PROGRAM_POLL_INTERVAL_SECONDS = parse_int_setting(
+        os.getenv("BETA_PROGRAM_POLL_INTERVAL_SECONDS", BETA_PROGRAM_POLL_INTERVAL_SECONDS),
+        BETA_PROGRAM_POLL_INTERVAL_SECONDS,
+        minimum=60,
+    )
+    BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS", BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS),
+        BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS,
         minimum=5,
     )
     UPTIME_STATUS_ENABLED = is_truthy_env_value(
@@ -8232,6 +8617,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     schedule_reddit_feed_monitor_restart()
     schedule_youtube_monitor_restart()
     schedule_linkedin_monitor_restart()
+    schedule_beta_program_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
@@ -8428,6 +8814,8 @@ def start_web_admin_server():
                     on_manage_youtube_subscriptions=run_web_manage_youtube_subscriptions,
                     on_get_linkedin_subscriptions=run_web_get_linkedin_subscriptions,
                     on_manage_linkedin_subscriptions=run_web_manage_linkedin_subscriptions,
+                    on_get_beta_program_subscriptions=run_web_get_beta_program_subscriptions,
+                    on_manage_beta_program_subscriptions=run_web_manage_beta_program_subscriptions,
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
@@ -8956,6 +9344,7 @@ async def on_ready():
     global reddit_feed_monitor_task
     global youtube_monitor_task
     global linkedin_monitor_task
+    global beta_program_monitor_task
     global member_activity_backfill_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
     purged_archives = purge_expired_guild_archives()
@@ -8985,6 +9374,8 @@ async def on_ready():
         youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
     if LINKEDIN_NOTIFY_ENABLED and (linkedin_monitor_task is None or linkedin_monitor_task.done()):
         linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
+    if BETA_PROGRAM_NOTIFY_ENABLED and (beta_program_monitor_task is None or beta_program_monitor_task.done()):
+        beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
     if MEMBER_ACTIVITY_BACKFILL_ENABLED and (member_activity_backfill_task is None or member_activity_backfill_task.done()):
         member_activity_backfill_task = asyncio.create_task(
             member_activity_backfill_job(),
