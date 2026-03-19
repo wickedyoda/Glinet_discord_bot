@@ -27,7 +27,7 @@ Core capabilities:
 - Three web-user roles:
   - `Admin`
   - `Read-only`
-  - `Glinet` (member-activity-only access)
+  - `Glinet` (member-activity-only access pinned to the primary guild)
 - SQLite-backed persistence with legacy merge imports on startup
 
 ## Read by Goal

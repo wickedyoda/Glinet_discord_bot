@@ -5929,6 +5929,53 @@ def run_web_request_restart(actor_email: str):
     }
 
 
+async def run_web_leave_guild_async(guild_id: int, actor_email: str):
+    guild = bot.get_guild(normalize_target_guild_id(guild_id))
+    if guild is None:
+        return {"ok": False, "error": "Guild is not currently available to the bot."}
+
+    guild_name = guild.name
+    guild_identifier = f"{guild_name} ({guild.id})"
+    try:
+        await guild.leave()
+    except discord.Forbidden:
+        return {"ok": False, "error": "Discord denied the leave request for that guild."}
+    except discord.HTTPException:
+        logger.exception("Unexpected failure while leaving guild %s", guild.id)
+        return {"ok": False, "error": "Unexpected Discord error while leaving that guild."}
+
+    logger.warning("Web admin requested bot leave guild %s by %s", guild_identifier, actor_email)
+    record_action_safe(
+        action="leave_guild",
+        status="success",
+        moderator=str(actor_email or "").strip(),
+        target=guild_identifier,
+        reason="Web admin requested bot leave guild",
+        guild_id=guild.id,
+    )
+    return {"ok": True, "message": f"The bot has left {guild_name}."}
+
+
+def run_web_leave_guild(guild_id: int | str, actor_email: str):
+    try:
+        safe_guild_id = int(str(guild_id or "").strip())
+    except ValueError:
+        return {"ok": False, "error": "Guild ID is invalid."}
+
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+    future = asyncio.run_coroutine_threadsafe(run_web_leave_guild_async(safe_guild_id, actor_email), loop)
+    try:
+        return future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while asking the bot to leave that guild."}
+    except Exception:
+        logger.exception("Unexpected failure while requesting guild leave")
+        return {"ok": False, "error": "Unexpected error while leaving that guild."}
+
+
 def parse_timeout_duration(value: str):
     match = TIMEOUT_DURATION_PATTERN.fullmatch(value or "")
     if not match:
@@ -8095,6 +8142,7 @@ def start_web_admin_server():
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
                     on_request_restart=run_web_request_restart,
+                    on_leave_guild=run_web_leave_guild,
                     logger=logger,
                 )
                 stop_reason = "stopped unexpectedly without exception"

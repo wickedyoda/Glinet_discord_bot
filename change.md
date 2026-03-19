@@ -35,6 +35,12 @@ All notable changes to this project are documented in this file.
   - email
 - Admins can now reset another web GUI user's password directly from that user's edit section.
 
+## [2026-03-19] - Web GUI Guild Leave Action
+
+### Added
+
+- Admin-only `Remove Bot` action on the server-selection page to make the bot leave a Discord server directly from the web GUI.
+
 ## [2026-03-19] - Glinet Web Role Guild Pinning
 
 ### Changed
