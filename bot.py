@@ -44,6 +44,7 @@ from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
 from app.guild_archive import GuildArchiveManager
+from app.guild_state import GuildStateManager
 from app.help_content import build_help_message_for_command as build_help_content_message_for_command
 from app.member_activity_backfill import (
     compute_missing_ranges as compute_member_activity_backfill_missing_ranges,
@@ -1875,66 +1876,15 @@ def db_kv_delete(key: str):
 
 
 def default_guild_settings():
-    return {
-        "bot_log_channel_id": BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else 0,
-        "mod_log_channel_id": MOD_LOG_CHANNEL_ID if MOD_LOG_CHANNEL_ID > 0 else 0,
-        "firmware_notify_channel_id": (FIRMWARE_NOTIFY_CHANNEL_ID if FIRMWARE_NOTIFY_CHANNEL_ID > 0 else 0),
-        "access_role_id": 0,
-        "updated_at": "",
-        "updated_by_email": "",
-    }
+    return guild_state_manager.default_guild_settings()
 
 
 def build_web_actor_audit_label(actor_email: str):
-    normalized = str(actor_email or "").strip().lower()
-    if not normalized:
-        return "web_user:unknown"
-    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
-    return f"web_user:{digest}"
+    return guild_state_manager.build_web_actor_audit_label(actor_email)
 
 
 def load_guild_settings(guild_id: int | None = None):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    version = db_kv_get(f"guild_settings_updated_at:{safe_guild_id}") or "bootstrap"
-    cached = guild_settings_cache.get(safe_guild_id) or {}
-    if cached.get("mtime") == version:
-        return dict(cached.get("settings") or default_guild_settings())
-
-    settings = default_guild_settings()
-    conn = get_db_connection()
-    with db_lock:
-        row = conn.execute(
-            """
-            SELECT bot_log_channel_id, mod_log_channel_id, firmware_notify_channel_id,
-                   access_role_id, updated_at, updated_by_email
-            FROM guild_settings
-            WHERE guild_id = ?
-            """,
-            (safe_guild_id,),
-        ).fetchone()
-    if row is not None:
-        settings.update(
-            {
-                "bot_log_channel_id": int(row["bot_log_channel_id"] or 0),
-                "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
-                "firmware_notify_channel_id": int(row["firmware_notify_channel_id"] or 0),
-                "access_role_id": int(row["access_role_id"] or 0),
-                "updated_at": str(row["updated_at"] or ""),
-                "updated_by_email": str(row["updated_by_email"] or ""),
-            }
-        )
-    else:
-        role_id_raw = db_kv_get("access_role_id")
-        if role_id_raw is None and os.path.exists(ROLE_FILE):
-            try:
-                with open(ROLE_FILE) as handle:
-                    role_id_raw = handle.read().strip()
-            except Exception:
-                logger.exception("Failed reading legacy access role from %s", ROLE_FILE)
-        settings["access_role_id"] = parse_int_setting(role_id_raw, 0, minimum=0)
-
-    guild_settings_cache[safe_guild_id] = {"mtime": version, "settings": dict(settings)}
-    return settings
+    return guild_state_manager.load_guild_settings(guild_id)
 
 
 def save_guild_settings(
@@ -1942,79 +1892,15 @@ def save_guild_settings(
     payload: dict | None,
     actor_email: str = "",
 ):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    current = load_guild_settings(safe_guild_id)
-    updated_at = datetime.now(UTC).isoformat()
-    merged = dict(current)
-    source = payload or {}
-    for key in (
-        "bot_log_channel_id",
-        "mod_log_channel_id",
-        "firmware_notify_channel_id",
-        "access_role_id",
-    ):
-        merged[key] = parse_int_setting(source.get(key, current.get(key, 0)), 0, minimum=0)
-
-    conn = get_db_connection()
-    with db_lock:
-        conn.execute(
-            """
-            INSERT INTO guild_settings (
-                guild_id,
-                bot_log_channel_id,
-                mod_log_channel_id,
-                firmware_notify_channel_id,
-                access_role_id,
-                updated_at,
-                updated_by_email
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(guild_id) DO UPDATE SET
-                bot_log_channel_id=excluded.bot_log_channel_id,
-                mod_log_channel_id=excluded.mod_log_channel_id,
-                firmware_notify_channel_id=excluded.firmware_notify_channel_id,
-                access_role_id=excluded.access_role_id,
-                updated_at=excluded.updated_at,
-                updated_by_email=excluded.updated_by_email
-            """,
-            (
-                safe_guild_id,
-                merged["bot_log_channel_id"],
-                merged["mod_log_channel_id"],
-                merged["firmware_notify_channel_id"],
-                merged["access_role_id"],
-                updated_at,
-                actor_email or "unknown",
-            ),
-        )
-        conn.commit()
-
-    db_kv_set(f"guild_settings_updated_at:{safe_guild_id}", updated_at)
-    guild_settings_cache[safe_guild_id] = {
-        "mtime": updated_at,
-        "settings": {
-            **merged,
-            "updated_at": updated_at,
-            "updated_by_email": actor_email or "unknown",
-        },
-    }
-    return load_guild_settings(safe_guild_id)
+    return guild_state_manager.save_guild_settings(guild_id, payload, actor_email=actor_email)
 
 
 def get_effective_guild_setting(guild_id: int | None, key: str, fallback_value: int = 0):
-    settings = load_guild_settings(guild_id)
-    value = parse_int_setting(settings.get(key, 0), 0, minimum=0)
-    if value > 0:
-        return value
-    return parse_int_setting(fallback_value, 0, minimum=0)
+    return guild_state_manager.get_effective_guild_setting(guild_id, key, fallback_value)
 
 
 def get_effective_logging_channel_id(guild_id: int | None):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    bot_log_channel_id = get_effective_guild_setting(safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID)
-    if bot_log_channel_id > 0:
-        return bot_log_channel_id
-    return get_effective_guild_setting(safe_guild_id, "mod_log_channel_id", MOD_LOG_CHANNEL_ID)
+    return guild_state_manager.get_effective_logging_channel_id(guild_id)
 
 
 def record_action_safe(
@@ -2025,87 +1911,30 @@ def record_action_safe(
     reason: str = "",
     guild_id: int | None = None,
 ):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
-        conn.execute(
-            """
-            INSERT INTO actions (guild_id, created_at, action, status, moderator, target, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                safe_guild_id,
-                datetime.now(UTC).isoformat(),
-                str(action or "").strip(),
-                str(status or "").strip(),
-                str(moderator or "").strip(),
-                str(target or "").strip(),
-                str(reason or "").strip(),
-            ),
-        )
-        conn.commit()
+    return guild_state_manager.record_action_safe(
+        action,
+        status,
+        moderator=moderator,
+        target=target,
+        reason=reason,
+        guild_id=guild_id,
+    )
 
 
 def list_recent_actions(guild_id: int | None, limit: int = 200):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    safe_limit = max(1, min(500, int(limit)))
-    conn = get_db_connection()
-    with db_lock:
-        rows = conn.execute(
-            """
-            SELECT id, guild_id, created_at, action, status, moderator, target, reason
-            FROM actions
-            WHERE guild_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (safe_guild_id, safe_limit),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    return guild_state_manager.list_recent_actions(guild_id, limit)
 
 
 def ensure_random_choice_history_schema_locked(conn):
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS random_choice_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            selected_at TEXT NOT NULL,
-            selected_by_user_id INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_selected_at
-            ON random_choice_history(guild_id, selected_at);
-        CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_user_selected_at
-            ON random_choice_history(guild_id, user_id, selected_at);
-        """
-    )
+    return guild_state_manager.ensure_random_choice_history_schema_locked(conn)
 
 
 def prune_random_choice_history_locked(conn, current_dt: datetime):
-    cutoff_dt = normalize_activity_timestamp(current_dt) - timedelta(days=RANDOM_CHOICE_HISTORY_RETENTION_DAYS)
-    conn.execute(
-        "DELETE FROM random_choice_history WHERE selected_at < ?",
-        (cutoff_dt.isoformat(),),
-    )
+    return guild_state_manager.prune_random_choice_history_locked(conn, current_dt)
 
 
 def list_recent_random_choice_user_ids(guild_id: int | None, since_dt: datetime):
-    safe_guild_id = require_managed_guild_id(guild_id, context="random choice guild")
-    safe_since_dt = normalize_activity_timestamp(since_dt)
-    conn = get_db_connection()
-    with db_lock:
-        ensure_random_choice_history_schema_locked(conn)
-        prune_random_choice_history_locked(conn, safe_since_dt)
-        rows = conn.execute(
-            """
-            SELECT DISTINCT user_id
-            FROM random_choice_history
-            WHERE guild_id = ? AND selected_at >= ?
-            """,
-            (safe_guild_id, safe_since_dt.isoformat()),
-        ).fetchall()
-    return {int(row["user_id"]) for row in rows}
+    return guild_state_manager.list_recent_random_choice_user_ids(guild_id, since_dt)
 
 
 def record_random_choice_selection(
@@ -2115,122 +1944,68 @@ def record_random_choice_selection(
     selected_by_user_id: int = 0,
     selected_at: datetime | None = None,
 ):
-    safe_guild_id = require_managed_guild_id(guild_id, context="random choice guild")
-    safe_selected_at = normalize_activity_timestamp(selected_at)
-    conn = get_db_connection()
-    with db_lock:
-        ensure_random_choice_history_schema_locked(conn)
-        prune_random_choice_history_locked(conn, safe_selected_at)
-        conn.execute(
-            """
-            INSERT INTO random_choice_history (
-                guild_id,
-                user_id,
-                selected_at,
-                selected_by_user_id
-            )
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                safe_guild_id,
-                int(user_id),
-                safe_selected_at.isoformat(),
-                int(selected_by_user_id or 0),
-            ),
-        )
-        conn.commit()
-
-
-def parse_iso_datetime_utc(raw_value) -> datetime | None:
-    text = str(raw_value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
-
-
-def normalize_activity_timestamp(raw_value=None) -> datetime:
-    if isinstance(raw_value, datetime):
-        parsed = raw_value
-    else:
-        parsed = parse_iso_datetime_utc(raw_value)
-    if parsed is None:
-        parsed = datetime.now(UTC)
-    elif parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    else:
-        parsed = parsed.astimezone(UTC)
-    return parsed
-
-
-def get_member_activity_backfill_target_guild_id() -> int:
-    raw_value = MEMBER_ACTIVITY_BACKFILL_GUILD_ID_RAW
-    if not raw_value:
-        return int(GUILD_ID)
-    try:
-        parsed = int(raw_value)
-    except ValueError as exc:
-        raise RuntimeError("MEMBER_ACTIVITY_BACKFILL_GUILD_ID must be a numeric guild ID.") from exc
-    if parsed <= 0:
-        raise RuntimeError("MEMBER_ACTIVITY_BACKFILL_GUILD_ID must be a positive guild ID.")
-    return parsed
-
-
-def load_member_activity_backfill_state(guild_id: int, since_dt: datetime) -> dict:
-    raw_value = db_kv_get(member_activity_backfill_state_key(guild_id, since_dt))
-    if not raw_value:
-        return {}
-    try:
-        payload = json.loads(raw_value)
-    except ValueError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, payload: dict):
-    db_kv_set(
-        member_activity_backfill_state_key(guild_id, since_dt),
-        json.dumps(payload, sort_keys=True),
+    return guild_state_manager.record_random_choice_selection(
+        guild_id,
+        user_id,
+        selected_by_user_id=selected_by_user_id,
+        selected_at=selected_at,
     )
 
 
+def parse_iso_datetime_utc(raw_value) -> datetime | None:
+    return guild_state_manager.parse_iso_datetime_utc(raw_value)
+
+
+def normalize_activity_timestamp(raw_value=None) -> datetime:
+    return guild_state_manager.normalize_activity_timestamp(raw_value)
+
+
+def get_member_activity_backfill_target_guild_id() -> int:
+    return guild_state_manager.get_member_activity_backfill_target_guild_id()
+
+
+def load_member_activity_backfill_state(guild_id: int, since_dt: datetime) -> dict:
+    return guild_state_manager.load_member_activity_backfill_state(guild_id, since_dt)
+
+
+def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, payload: dict):
+    return guild_state_manager.save_member_activity_backfill_state(guild_id, since_dt, payload)
+
+
 def clear_guild_runtime_state(guild_id: int):
-    safe_guild_id = int(guild_id)
-    invite_roles_by_guild.pop(safe_guild_id, None)
-    invite_uses_by_guild.pop(safe_guild_id, None)
-    tag_response_cache.pop(safe_guild_id, None)
-    tag_command_names_by_guild.pop(safe_guild_id, None)
-    guild_settings_cache.pop(safe_guild_id, None)
-    command_permissions_cache.pop(safe_guild_id, None)
-    discord_catalog_cache.pop(safe_guild_id, None)
+    return guild_state_manager.clear_guild_runtime_state(guild_id)
 
 
 def list_member_activity_backfill_completed_ranges(guild_id: int):
-    safe_guild_id = int(guild_id)
-    conn = get_db_connection()
-    with db_lock:
-        rows = conn.execute(
-            """
-            SELECT key, value
-            FROM kv_store
-            WHERE key LIKE ?
-            """,
-            (f"member_activity_backfill:{safe_guild_id}:%",),
-        ).fetchall()
-    kv_rows = []
-    for row in rows:
-        try:
-            payload = json.loads(str(row["value"] or ""))
-        except ValueError:
-            continue
-        kv_rows.append({"payload": payload})
-    return extract_member_activity_backfill_completed_ranges(kv_rows, parse_iso_datetime_utc)
+    return guild_state_manager.list_member_activity_backfill_completed_ranges(guild_id)
 
+
+guild_state_manager = GuildStateManager(
+    get_db_connection=get_db_connection,
+    db_lock=db_lock,
+    normalize_target_guild_id=normalize_target_guild_id,
+    require_managed_guild_id=require_managed_guild_id,
+    db_kv_get=db_kv_get,
+    db_kv_set=db_kv_set,
+    parse_int_setting=parse_int_setting,
+    logger=logger,
+    role_file=ROLE_FILE,
+    bot_log_channel_id=BOT_LOG_CHANNEL_ID,
+    mod_log_channel_id=MOD_LOG_CHANNEL_ID,
+    firmware_notify_channel_id=FIRMWARE_NOTIFY_CHANNEL_ID,
+    random_choice_history_retention_days=RANDOM_CHOICE_HISTORY_RETENTION_DAYS,
+    member_activity_backfill_guild_id_raw=MEMBER_ACTIVITY_BACKFILL_GUILD_ID_RAW,
+    default_guild_id=GUILD_ID,
+    member_activity_backfill_state_key=member_activity_backfill_state_key,
+    extract_member_activity_backfill_completed_ranges=extract_member_activity_backfill_completed_ranges,
+    invite_roles_by_guild=invite_roles_by_guild,
+    invite_uses_by_guild=invite_uses_by_guild,
+    tag_response_cache=tag_response_cache,
+    tag_command_names_by_guild=tag_command_names_by_guild,
+    guild_settings_cache=guild_settings_cache,
+    command_permissions_cache=command_permissions_cache,
+    discord_catalog_cache=discord_catalog_cache,
+)
 
 def ensure_member_activity_schema_locked(conn):
     global member_activity_encryption_migration_checked
@@ -9072,7 +8847,8 @@ initialize_storage()
 upgrade_legacy_default_tag_responses(GUILD_ID)
 
 # Runtime caches for invite tracking
-invite_roles_by_guild = load_invite_roles()
+invite_roles_by_guild.clear()
+invite_roles_by_guild.update(load_invite_roles())
 
 
 @bot.event
