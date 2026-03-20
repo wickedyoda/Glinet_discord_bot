@@ -59,16 +59,23 @@ ports:
 Equivalent `.env` values for that mapping:
 
 ```env
-WEB_HTTP_HOST_BIND=127.0.0.1
-WEB_HTTPS_HOST_BIND=127.0.0.1
+WEB_HTTP_PUBLISH=127.0.0.1:8080
+WEB_HTTPS_PUBLISH=127.0.0.1:8081
 ```
 
-If you are not using a same-host reverse proxy and need direct browser access to the Docker host on `8080`/`8081`, change those to:
+If your reverse proxy is on another machine, disable explicit host/IP pinning or publish on the Docker host LAN IP instead:
 
 ```env
-WEB_HTTP_HOST_BIND=0.0.0.0
-WEB_HTTPS_HOST_BIND=0.0.0.0
+# Disabled explicit host/IP pinning:
+# WEB_HTTP_PUBLISH=8080
+# WEB_HTTPS_PUBLISH=8081
+
+# Or pin to the Docker host LAN IP:
+# WEB_HTTP_PUBLISH=192.168.1.50:8080
+# WEB_HTTPS_PUBLISH=192.168.1.50:8081
 ```
+
+Restrict access to those ports with a firewall so only the proxy machine can reach them.
 
 ## Nginx Example
 

@@ -139,16 +139,16 @@ All notable changes to this project are documented in this file.
 - Added `MEMBER_ACTIVITY_ENCRYPTION_KEY` for deployments that want external key management instead of the generated `${DATA_DIR}/member_activity.key` file.
 - Guild-scoped member-activity and random-choice history paths now fail closed on invalid or unmanaged guild IDs instead of falling back to the primary guild.
 
-## [2026-03-16] - Web GUI Host Bind Configuration
+## [2026-03-16] - Web GUI Publish Configuration
 
 ### Added
-- New Compose/env controls for web GUI host-side port publishing:
-  - `WEB_HTTP_HOST_BIND`
-  - `WEB_HTTPS_HOST_BIND`
+- New Compose/env controls for explicit web GUI host-side publish overrides:
+  - `WEB_HTTP_PUBLISH`
+  - `WEB_HTTPS_PUBLISH`
 
 ### Changed
-- Docker Compose web port publishing is no longer hardcoded to `127.0.0.1`.
-- Documentation now distinguishes same-host proxy-only localhost binding from direct host exposure using `0.0.0.0`.
+- Docker Compose web publish overrides can now be left unset to disable explicit host/IP pinning.
+- Documentation now distinguishes same-host proxy-only localhost binding from proxy-on-another-machine access via LAN IP or unrestricted publish plus firewall.
 
 ## [2026-03-15] - Dependency Security Update
 
@@ -480,6 +480,12 @@ All notable changes to this project are documented in this file.
 - Persistent role-code pairing.
 - Code generation constraints to avoid long repeated-digit patterns.
 - `/getaccess` for default access role assignment.
+
+## [2026-03-20] - Deployment Publish Override Update
+
+### Changed
+- Docker/Compose web publish settings now use optional `WEB_HTTP_PUBLISH` and `WEB_HTTPS_PUBLISH` overrides.
+- Leaving those values unset disables explicit host/IP pinning, which is the correct mode when the reverse proxy lives on another machine.
 
 ## [2025-07-05] - Core Functional Bot Build
 
