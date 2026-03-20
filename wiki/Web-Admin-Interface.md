@@ -137,7 +137,8 @@ UI forms include show/hide password toggles and validation feedback.
 - Live dropdowns for known channel and role fields load from the currently selected server
 - Managed-guild allowlist and utility integration settings
 - Web-session/security settings
-- Auto-logout selection (5 to 30 minutes)
+- Auto-logout selection (`5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, `120` minutes)
+- Writes to `WEB_ENV_FILE`, which should point to a writable path such as `${DATA_DIR}/web-settings.env`
 
 ### `/status/everything` (Public Read-Only Status)
 
