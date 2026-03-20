@@ -6,6 +6,7 @@ import re
 import secrets
 import sqlite3
 import ssl
+import subprocess
 import threading
 import time
 from collections import deque
@@ -51,6 +52,7 @@ POST_FORM_TAG_PATTERN = re.compile(
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "select_guild"}
 WEB_GUI_TITLE_SUFFIX = "GL.iNet UnOfficial Discord Bot Dashboard"
+WEB_GUI_VERSION_PREFIX = "v1.0"
 OBSERVABILITY_LOG_LINE_LIMIT = 500
 OBSERVABILITY_LOG_OPTIONS = (
     ("bot.log", "Bot Runtime Log"),
@@ -110,6 +112,43 @@ SENSITIVE_KEYS = {
     "WEB_ADMIN_DEFAULT_PASSWORD",
     "WEB_ADMIN_SESSION_SECRET",
 }
+
+
+def _resolve_web_gui_version_label() -> str:
+    explicit = str(os.getenv("WEB_GUI_VERSION", "")).strip()
+    if explicit:
+        return explicit
+
+    repo_root = Path(__file__).resolve().parent
+    if (repo_root / ".git").exists():
+        try:
+            completed = subprocess.run(
+                [
+                    "git",
+                    "log",
+                    "-1",
+                    "--date=format-local:%Y%m%d.%H%M%S",
+                    "--format=%cd",
+                ],
+                cwd=repo_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            stamp = completed.stdout.strip()
+            if stamp:
+                return f"{WEB_GUI_VERSION_PREFIX}-{stamp}"
+        except Exception:
+            pass
+
+    try:
+        modified_stamp = datetime.fromtimestamp(Path(__file__).stat().st_mtime, tz=UTC).strftime("%Y%m%d.%H%M%S")
+        return f"{WEB_GUI_VERSION_PREFIX}-{modified_stamp}"
+    except Exception:
+        return f"{WEB_GUI_VERSION_PREFIX}-unknown"
+
+
+WEB_GUI_VERSION_LABEL = _resolve_web_gui_version_label()
 
 
 def _clip_text(value: str, max_chars: int = 120):
@@ -1697,6 +1736,14 @@ def _render_layout(
     }
     .header-toprow { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
     .header-brand { min-width: 170px; }
+    .header-brand strong { display: block; }
+    .header-version {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 0.82rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
     .header-tools { display: flex; align-items: center; gap: 12px; margin-left: auto; }
     .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
     .desktop-nav { display: flex; }
@@ -1917,7 +1964,10 @@ def _render_layout(
 <body data-theme="black">
   <header>
     <div class="header-toprow">
-      <div class="header-brand"><strong>Discord Bot Admin</strong></div>
+      <div class="header-brand">
+        <strong>Discord Bot Admin</strong>
+        <span class="header-version">{{ web_gui_version }}</span>
+      </div>
       <div class="header-tools">
         {% if current_email %}
         <details class="mobile-nav">
@@ -2160,6 +2210,7 @@ def _render_layout(
         current_guild_name=current_guild_name,
         github_wiki_url=github_wiki_url,
         restart_enabled=restart_enabled,
+        web_gui_version=WEB_GUI_VERSION_LABEL,
     )
 
 
