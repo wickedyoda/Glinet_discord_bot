@@ -82,9 +82,6 @@ YOUTUBE_CHANNEL_ID_META_PATTERNS = (
 )
 LINKEDIN_PROFILE_PATH_PATTERN = re.compile(r"^/(?:in|company|school)/[^/]+/?$")
 LINKEDIN_POST_URL_PATTERN = re.compile(r"^https://www\.linkedin\.com/(?:posts/[^/?#]+|feed/update/[^?#]+)$")
-BETA_PROGRAM_HEADING_PATTERN = re.compile(r"\bbeta testing products\b", re.IGNORECASE)
-BETA_PROGRAM_STOP_HEADING_PATTERN = re.compile(r"\bregister to join\b", re.IGNORECASE)
-BETA_PROGRAM_DEADLINE_PATTERN = re.compile(r"^Deadline:\s*(.+)$", re.IGNORECASE)
 REDDIT_REQUEST_USER_AGENT = "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
 DEFAULT_REDDIT_FEED_CHECK_SCHEDULE = "*/30 * * * *"
 REDDIT_FEED_FETCH_LIMIT = 10
@@ -3621,36 +3618,11 @@ def update_linkedin_subscription_runtime_state(
 
 
 def parse_beta_program_snapshot_json(raw_value) -> list[dict]:
-    try:
-        parsed = json.loads(str(raw_value or "[]"))
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(parsed, list):
-        return []
-    programs = []
-    for item in parsed:
-        if not isinstance(item, dict):
-            continue
-        program_id = str(item.get("program_id") or "").strip()
-        title = clip_text(str(item.get("title") or "").strip(), max_chars=200)
-        if not program_id or not title:
-            continue
-        programs.append(
-            {
-                "program_id": program_id,
-                "title": title,
-                "summary": clip_text(str(item.get("summary") or "").strip(), max_chars=400),
-                "deadline": clip_text(str(item.get("deadline") or "").strip(), max_chars=120),
-                "apply_url": str(item.get("apply_url") or "").strip(),
-            }
-        )
-    programs.sort(key=lambda item: (item["title"].casefold(), item["program_id"]))
-    return programs
+    return parse_beta_program_snapshot_json_impl(raw_value)
 
 
 def serialize_beta_program_snapshot(programs: list[dict]) -> str:
-    normalized = parse_beta_program_snapshot_json(json.dumps(programs))
-    return json.dumps(normalized, separators=(",", ":"), sort_keys=True)
+    return serialize_beta_program_snapshot_impl(programs)
 
 
 def list_beta_program_subscriptions(
@@ -6905,188 +6877,13 @@ def resolve_linkedin_subscription_seed(source_url: str):
     }
 
 
-def _find_beta_program_section_heading(soup: BeautifulSoup):
-    for tag in soup.find_all(re.compile(r"^h[1-6]$")):
-        heading_text = clean_search_text(tag.get_text(" ", strip=True))
-        if BETA_PROGRAM_HEADING_PATTERN.search(heading_text):
-            return tag
-    return None
-
-
-def _iter_beta_program_section_nodes(heading_tag):
-    for node in heading_tag.next_elements:
-        if node is heading_tag:
-            continue
-        if getattr(node, "name", None) and re.fullmatch(r"h[1-6]", str(node.name), flags=re.IGNORECASE):
-            heading_text = clean_search_text(node.get_text(" ", strip=True))
-            if BETA_PROGRAM_STOP_HEADING_PATTERN.search(heading_text):
-                break
-        yield node
-
-
-def _find_beta_program_card_container(link_tag):
-    container_names = {"article", "section", "div", "li"}
-    for candidate in (link_tag, *link_tag.parents):
-        name = getattr(candidate, "name", None)
-        if name not in container_names:
-            continue
-        apply_links = [
-            link
-            for link in candidate.find_all("a", href=True)
-            if "apply" in clean_search_text(link.get_text(" ", strip=True)).casefold()
-        ]
-        if len(apply_links) != 1:
-            continue
-        texts = [clean_search_text(text) for text in candidate.stripped_strings]
-        texts = [text for text in texts if text]
-        if len(texts) >= 2:
-            return candidate
-    return link_tag.parent or link_tag
-
-
-def _extract_beta_program_card_texts(container) -> list[str]:
-    texts = []
-    previous = None
-    for raw_text in container.stripped_strings:
-        cleaned = clean_search_text(raw_text)
-        if not cleaned or cleaned == previous:
-            continue
-        previous = cleaned
-        texts.append(cleaned)
-    return texts
-
-
-def _extract_beta_programs_from_select_inputs(soup: BeautifulSoup, source_url: str):
-    programs = []
-    seen_program_ids = set()
-    for select_tag in soup.find_all("select"):
-        select_name = str(select_tag.get("name") or "")
-        select_id = str(select_tag.get("id") or "")
-        identity = f"{select_name} {select_id}".strip().casefold()
-        if not identity:
-            continue
-        if "dropdown1" not in identity and "product" not in identity:
-            continue
-        for option_tag in select_tag.find_all("option"):
-            raw_value = str(option_tag.get("value") or "").strip()
-            title = clean_search_text(option_tag.get_text(" ", strip=True))
-            if not title or title.casefold() in {"select product", "product", "choose product"}:
-                continue
-            if not raw_value and not title:
-                continue
-            apply_url = urllib.parse.urljoin(source_url, raw_value) if raw_value else source_url
-            program_id = hashlib.sha256(f"{title}|{apply_url}".encode()).hexdigest()[:24]
-            if program_id in seen_program_ids:
-                continue
-            seen_program_ids.add(program_id)
-            programs.append(
-                {
-                    "program_id": program_id,
-                    "title": clip_text(title, max_chars=200),
-                    "summary": "",
-                    "deadline": "",
-                    "apply_url": apply_url,
-                }
-            )
-    programs.sort(key=lambda item: (item["title"].casefold(), item["apply_url"]))
-    return programs
-
-
-def parse_beta_testing_programs(page_html: str, source_url: str):
-    soup = BeautifulSoup(page_html, "html.parser")
-    select_programs = _extract_beta_programs_from_select_inputs(soup, source_url)
-    heading_tag = _find_beta_program_section_heading(soup)
-    if heading_tag is None and select_programs:
-        return select_programs
-    if heading_tag is None:
-        raise RuntimeError("Could not find the Beta Testing Products section on the GL.iNet beta page.")
-
-    seen_program_ids = set()
-    programs = []
-    for node in _iter_beta_program_section_nodes(heading_tag):
-        if getattr(node, "name", None) != "a":
-            continue
-        if not node.has_attr("href"):
-            continue
-        link_text = clean_search_text(node.get_text(" ", strip=True))
-        if "apply" not in link_text.casefold():
-            continue
-        apply_url = urllib.parse.urljoin(source_url, str(node.get("href") or "").strip())
-        if not apply_url:
-            continue
-        container = _find_beta_program_card_container(node)
-        texts = _extract_beta_program_card_texts(container)
-        deadline = ""
-        content_lines = []
-        for text in texts:
-            deadline_match = BETA_PROGRAM_DEADLINE_PATTERN.match(text)
-            if deadline_match:
-                deadline = clip_text(deadline_match.group(1).strip(), max_chars=120)
-                continue
-            if text.casefold() == "apply here":
-                continue
-            content_lines.append(text)
-        title = clip_text(content_lines[0], max_chars=200) if content_lines else ""
-        if not title or title.casefold() == clean_search_text(heading_tag.get_text(" ", strip=True)).casefold():
-            continue
-        summary = clip_text(content_lines[1], max_chars=400) if len(content_lines) > 1 else ""
-        program_id = hashlib.sha256(f"{title}|{apply_url}".encode()).hexdigest()[:24]
-        if program_id in seen_program_ids:
-            continue
-        seen_program_ids.add(program_id)
-        programs.append(
-            {
-                "program_id": program_id,
-                "title": title,
-                "summary": summary,
-                "deadline": deadline,
-                "apply_url": apply_url,
-            }
-        )
-
-    programs.sort(key=lambda item: (item["title"].casefold(), item["apply_url"]))
-    if select_programs:
-        existing_by_title = {item["title"].casefold(): item for item in programs}
-        for select_program in select_programs:
-            existing = existing_by_title.get(select_program["title"].casefold())
-            if existing is None:
-                programs.append(select_program)
-                continue
-            if not existing.get("apply_url"):
-                existing["apply_url"] = select_program["apply_url"]
-    return programs
-
-
 def fetch_beta_testing_programs(source_url: str = ""):
-    normalized_url = normalize_http_url_setting(
+    return fetch_beta_testing_programs_impl(
         source_url,
-        BETA_PROGRAM_PAGE_URL,
-        "BETA_PROGRAM_PAGE_URL",
+        fallback_url=BETA_PROGRAM_PAGE_URL,
+        request_timeout_seconds=BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS,
+        request_user_agent=BETA_PROGRAM_REQUEST_USER_AGENT,
     )
-    response = requests.get(
-        normalized_url,
-        timeout=BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS,
-        headers={
-            "User-Agent": BETA_PROGRAM_REQUEST_USER_AGENT,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
-        },
-    )
-    if response.status_code >= 400:
-        raise RuntimeError(f"GL.iNet beta page returned HTTP {response.status_code}.")
-    final_url = str(response.url or "")
-    final_host = (urllib.parse.urlparse(final_url).netloc or "").lower()
-    if final_host.startswith("www."):
-        final_host = final_host[4:]
-    if final_host and final_host != "gl-inet.com":
-        raise RuntimeError("GL.iNet beta page redirected to an unexpected host.")
-    programs = parse_beta_testing_programs(response.text, final_url or normalized_url)
-    return {
-        "source_url": final_url or normalized_url,
-        "source_name": "GL.iNet Beta Programs",
-        "programs": programs,
-    }
 
 
 def resolve_beta_program_subscription_seed(source_url: str = ""):
@@ -9268,182 +9065,18 @@ def build_help_message():
     return build_help_message_for_command(None)
 
 
-HELP_COMMAND_ALIASES = {
-    "list": "list",
-    "help": "help",
-    "ping": "ping",
-    "sayhi": "sayhi",
-    "happy": "happy",
-    "shorten": "shorten",
-    "expand": "expand",
-    "uptime": "uptime",
-    "stats": "stats",
-    "submitrole": "submitrole",
-    "restore_code": "restore_code",
-    "enter_role": "enter_role",
-    "enterrole": "enter_role",
-    "getaccess": "getaccess",
-    "bulk_assign_role_csv": "bulk_assign_role_csv",
-    "bulkassignrolecsv": "bulk_assign_role_csv",
-    "country": "country",
-    "clear_country": "clear_country",
-    "clearcountry": "clear_country",
-    "search_reddit": "search_reddit",
-    "searchreddit": "search_reddit",
-    "search_forum": "search_forum",
-    "searchforum": "search_forum",
-    "search_openwrt_forum": "search_openwrt_forum",
-    "searchopenwrtforum": "search_openwrt_forum",
-    "search_kvm": "search_kvm",
-    "searchkvm": "search_kvm",
-    "search_iot": "search_iot",
-    "searchiot": "search_iot",
-    "search_router": "search_router",
-    "searchrouter": "search_router",
-    "create_role": "create_role",
-    "createrole": "create_role",
-    "edit_role": "edit_role",
-    "editrole": "edit_role",
-    "delete_role": "delete_role",
-    "deleterole": "delete_role",
-    "add_role_member": "add_role_member",
-    "addrolemember": "add_role_member",
-    "remove_role_member": "remove_role_member",
-    "removerolemember": "remove_role_member",
-    "ban_member": "ban_member",
-    "banmember": "ban_member",
-    "unban_member": "unban_member",
-    "unbanmember": "unban_member",
-    "kick_member": "kick_member",
-    "kickmember": "kick_member",
-    "timeout_member": "timeout_member",
-    "timeoutmember": "timeout_member",
-    "untimeout_member": "untimeout_member",
-    "untimeoutmember": "untimeout_member",
-    "prune_messages": "prune_messages",
-    "prune": "prune_messages",
-    "modlog_test": "modlog_test",
-    "modlogtest": "modlog_test",
-    "logs": "logs",
-    "random_choice": "random_choice",
-    "randomchoice": "random_choice",
-}
-
-HELP_WIKI_PAGE_BY_COMMAND = {
-    "help": ["Command-Reference.md", "Search-and-Docs.md"],
-    "list": ["Tag-Responses.md", "Command-Reference.md"],
-    "tag_commands": ["Tag-Responses.md", "Command-Reference.md"],
-    "submitrole": ["Role-Access-and-Invites.md", "Command-Reference.md"],
-    "restore_code": ["Role-Access-and-Invites.md", "Command-Reference.md"],
-    "enter_role": ["Role-Access-and-Invites.md", "Command-Reference.md"],
-    "getaccess": ["Role-Access-and-Invites.md", "Command-Reference.md"],
-    "bulk_assign_role_csv": ["Bulk-CSV-Role-Assignment.md", "Command-Reference.md"],
-    "search_reddit": ["Search-and-Docs.md", "Command-Reference.md"],
-    "search_forum": ["Search-and-Docs.md", "Command-Reference.md"],
-    "search_openwrt_forum": ["Search-and-Docs.md", "Command-Reference.md"],
-    "search_kvm": ["Search-and-Docs.md", "Command-Reference.md"],
-    "search_iot": ["Search-and-Docs.md", "Command-Reference.md"],
-    "search_router": ["Search-and-Docs.md", "Command-Reference.md"],
-    "country": ["Country-Code-Commands.md", "Command-Reference.md"],
-    "clear_country": ["Country-Code-Commands.md", "Command-Reference.md"],
-    "create_role": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "edit_role": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "delete_role": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "add_role_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "remove_role_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "ban_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "unban_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "kick_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "timeout_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "untimeout_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "prune_messages": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "modlog_test": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "logs": ["Moderation-and-Logs.md", "Command-Reference.md"],
-    "random_choice": ["Moderation-and-Logs.md", "Command-Reference.md"],
-}
-
-
-def build_wiki_page_url(page_name: str):
-    cleaned_page_name = str(page_name or "").strip().lstrip("/")
-    if not cleaned_page_name:
-        return BOT_HELP_WIKI_URL
-    return f"{BOT_HELP_WIKI_ROOT_URL}/{cleaned_page_name}"
-
-
-def normalize_help_command_name(raw_value: str | None):
-    cleaned = str(raw_value or "").strip().lower()
-    if not cleaned:
-        return ""
-    cleaned = cleaned.lstrip("/!")
-    return HELP_COMMAND_ALIASES.get(cleaned, cleaned)
-
-
-def command_default_access_label(command_key: str):
-    default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
-    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS:
-        return "Moderator"
-    return "Member/Public"
-
-
-def build_help_wiki_links(command_key: str):
-    page_names = HELP_WIKI_PAGE_BY_COMMAND.get(command_key, ["Command-Reference.md"])
-    seen_pages = set()
-    links = []
-    for page_name in page_names:
-        if page_name in seen_pages:
-            continue
-        seen_pages.add(page_name)
-        links.append((page_name.replace(".md", "").replace("-", " "), build_wiki_page_url(page_name)))
-    if ("Wiki Home", BOT_HELP_WIKI_URL) not in links:
-        links.append(("Wiki Home", BOT_HELP_WIKI_URL))
-    return links
-
-
 def build_help_message_for_command(command_name: str | None):
-    normalized_command = normalize_help_command_name(command_name)
-    if not normalized_command:
-        lines = [
-            f"🤖 **{BOT_PUBLIC_NAME} Help**",
-            "",
-            "Use `/help command:<name>` for details on a specific command.",
-            "",
-            "Common command groups:",
-            "- Role access and invites (`/submitrole`, `/enter_role`, `/restore_code`, `/getaccess`)",
-            "- Search (`/search_reddit`, `/search_forum`, `/search_openwrt_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
-            "- Utilities (`/ping`, `/sayhi`, `/happy`, `/shorten`, `/expand`, `/uptime`, `/stats`)",
-            "- Country nickname tools (`/country`, `/clear_country`)",
-            "- Moderation and role management (`/ban_member`, `/kick_member`, `/timeout_member`, `/create_role`, `/random_choice`)",
-            "",
-            "Docs:",
-            f"- Command Reference: {build_wiki_page_url('Command-Reference.md')}",
-            f"- Search and Docs: {build_wiki_page_url('Search-and-Docs.md')}",
-            f"- Role Access and Invites: {build_wiki_page_url('Role-Access-and-Invites.md')}",
-            f"- Moderation and Logs: {build_wiki_page_url('Moderation-and-Logs.md')}",
-            f"- Wiki Home: {BOT_HELP_WIKI_URL}",
-        ]
-        return trim_search_message("\n".join(lines))
-
-    metadata = COMMAND_PERMISSION_METADATA.get(normalized_command)
-    if metadata is None and normalized_command not in {"list"}:
-        lines = [
-            f"❌ I do not have help details for `{command_name}`.",
-            f"Use `/help` for the overview or check the full command reference: {build_wiki_page_url('Command-Reference.md')}",
-        ]
-        return trim_search_message("\n".join(lines))
-
-    label = metadata["label"] if metadata else "!list"
-    description = metadata["description"] if metadata else "Lists configured tag commands."
-    wiki_links = build_help_wiki_links(normalized_command)
-    lines = [
-        f"🤖 **Help: {label}**",
-        f"- Default Access: `{command_default_access_label(normalized_command)}`",
-        f"- Description: {description}",
-        "",
-        "More info:",
-    ]
-    for link_label, link_url in wiki_links:
-        lines.append(f"- {link_label}: {link_url}")
-    return trim_search_message("\n".join(lines))
+    return trim_search_message(
+        build_help_content_message_for_command(
+            command_name,
+            bot_public_name=BOT_PUBLIC_NAME,
+            bot_help_wiki_url=BOT_HELP_WIKI_URL,
+            bot_help_wiki_root_url=BOT_HELP_WIKI_ROOT_URL,
+            command_permission_defaults=COMMAND_PERMISSION_DEFAULTS,
+            moderator_policy_value=COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+            command_permission_metadata=COMMAND_PERMISSION_METADATA,
+        )
+    )
 
 
 def format_member_activity_last_seen(raw_value: str):
