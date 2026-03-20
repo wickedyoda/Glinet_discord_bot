@@ -49,7 +49,7 @@ Web variation:
 
 | Command | Type | Default Access | Parameters | Notes |
 |---|---|---|---|---|
-| `/help` | Slash | Member/Public | none | Quick summary of bot capabilities + link to GitHub wiki for advanced options |
+| `/help` | Slash | Member/Public | optional `command` name | Shows overview help or command-specific help plus relevant wiki links |
 | `/search_reddit` | Slash | Member/Public | query text | Top 5 matches from configured subreddit (default `r/GlInet`) |
 | `!searchreddit` | Prefix | Member/Public | query text | Prefix Reddit search |
 | `/search_forum` | Slash | Member/Public | query text | Forum-only results |
@@ -68,7 +68,7 @@ Web variation:
 | Command | Type | Default Access | Parameters | Notes |
 |---|---|---|---|---|
 | `/ping` | Slash | Member/Public | none | Basic bot responsiveness check |
-| `/sayhi` | Slash | Member/Public | none | Sends a short greeting |
+| `/sayhi` | Slash | Member/Public | none | Sends a short greeting and points users to `/help` |
 | `/happy` | Slash | Member/Public | none | Sends a random puppy image when enabled |
 | `/shorten` | Slash | Member/Public | `url` | Creates a shortened URL using the configured shortener |
 | `/expand` | Slash | Member/Public | shortened URL or code | Expands a shortened URL |

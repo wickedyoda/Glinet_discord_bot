@@ -106,6 +106,7 @@ MEMBER_ACTIVITY_ENCRYPTION_PREFIX = "enc:"
 GUILD_DATA_ARCHIVE_RETENTION_DAYS = 14
 RANDOM_CHOICE_COOLDOWN_DAYS = 7
 RANDOM_CHOICE_HISTORY_RETENTION_DAYS = 30
+BOT_PUBLIC_NAME = "GL.iNet UnOfficial Discord Bot"
 
 
 def normalize_log_level(raw_value: str, fallback: str = "INFO"):
@@ -597,6 +598,7 @@ BOT_HELP_WIKI_URL = normalize_http_url_setting(
     "https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md",
     "BOT_HELP_WIKI_URL",
 )
+BOT_HELP_WIKI_ROOT_URL = BOT_HELP_WIKI_URL.rsplit("/", 1)[0] if "/" in BOT_HELP_WIKI_URL else BOT_HELP_WIKI_URL
 FIRMWARE_FEED_URL = normalize_http_url_setting(
     os.getenv("FIRMWARE_FEED_URL", ""),
     "https://gl-fw.remotetohome.io/",
@@ -881,7 +883,7 @@ COMMAND_PERMISSION_METADATA = {
     },
     "help": {
         "label": "/help",
-        "description": "Show quick bot capabilities and wiki link.",
+        "description": "Show command help and wiki links.",
     },
     "ping": {
         "label": "/ping",
@@ -889,7 +891,7 @@ COMMAND_PERMISSION_METADATA = {
     },
     "sayhi": {
         "label": "/sayhi",
-        "description": "Post a short bot introduction.",
+        "description": "Post a short bot introduction and point users to /help.",
     },
     "happy": {
         "label": "/happy",
@@ -9253,19 +9255,184 @@ def build_reddit_search_message(query: str):
 
 
 def build_help_message():
+    return build_help_message_for_command(None)
+
+
+HELP_COMMAND_ALIASES = {
+    "list": "list",
+    "help": "help",
+    "ping": "ping",
+    "sayhi": "sayhi",
+    "happy": "happy",
+    "shorten": "shorten",
+    "expand": "expand",
+    "uptime": "uptime",
+    "stats": "stats",
+    "submitrole": "submitrole",
+    "restore_code": "restore_code",
+    "enter_role": "enter_role",
+    "enterrole": "enter_role",
+    "getaccess": "getaccess",
+    "bulk_assign_role_csv": "bulk_assign_role_csv",
+    "bulkassignrolecsv": "bulk_assign_role_csv",
+    "country": "country",
+    "clear_country": "clear_country",
+    "clearcountry": "clear_country",
+    "search_reddit": "search_reddit",
+    "searchreddit": "search_reddit",
+    "search_forum": "search_forum",
+    "searchforum": "search_forum",
+    "search_openwrt_forum": "search_openwrt_forum",
+    "searchopenwrtforum": "search_openwrt_forum",
+    "search_kvm": "search_kvm",
+    "searchkvm": "search_kvm",
+    "search_iot": "search_iot",
+    "searchiot": "search_iot",
+    "search_router": "search_router",
+    "searchrouter": "search_router",
+    "create_role": "create_role",
+    "createrole": "create_role",
+    "edit_role": "edit_role",
+    "editrole": "edit_role",
+    "delete_role": "delete_role",
+    "deleterole": "delete_role",
+    "add_role_member": "add_role_member",
+    "addrolemember": "add_role_member",
+    "remove_role_member": "remove_role_member",
+    "removerolemember": "remove_role_member",
+    "ban_member": "ban_member",
+    "banmember": "ban_member",
+    "unban_member": "unban_member",
+    "unbanmember": "unban_member",
+    "kick_member": "kick_member",
+    "kickmember": "kick_member",
+    "timeout_member": "timeout_member",
+    "timeoutmember": "timeout_member",
+    "untimeout_member": "untimeout_member",
+    "untimeoutmember": "untimeout_member",
+    "prune_messages": "prune_messages",
+    "prune": "prune_messages",
+    "modlog_test": "modlog_test",
+    "modlogtest": "modlog_test",
+    "logs": "logs",
+    "random_choice": "random_choice",
+    "randomchoice": "random_choice",
+}
+
+HELP_WIKI_PAGE_BY_COMMAND = {
+    "help": ["Command-Reference.md", "Search-and-Docs.md"],
+    "list": ["Tag-Responses.md", "Command-Reference.md"],
+    "tag_commands": ["Tag-Responses.md", "Command-Reference.md"],
+    "submitrole": ["Role-Access-and-Invites.md", "Command-Reference.md"],
+    "restore_code": ["Role-Access-and-Invites.md", "Command-Reference.md"],
+    "enter_role": ["Role-Access-and-Invites.md", "Command-Reference.md"],
+    "getaccess": ["Role-Access-and-Invites.md", "Command-Reference.md"],
+    "bulk_assign_role_csv": ["Bulk-CSV-Role-Assignment.md", "Command-Reference.md"],
+    "search_reddit": ["Search-and-Docs.md", "Command-Reference.md"],
+    "search_forum": ["Search-and-Docs.md", "Command-Reference.md"],
+    "search_openwrt_forum": ["Search-and-Docs.md", "Command-Reference.md"],
+    "search_kvm": ["Search-and-Docs.md", "Command-Reference.md"],
+    "search_iot": ["Search-and-Docs.md", "Command-Reference.md"],
+    "search_router": ["Search-and-Docs.md", "Command-Reference.md"],
+    "country": ["Country-Code-Commands.md", "Command-Reference.md"],
+    "clear_country": ["Country-Code-Commands.md", "Command-Reference.md"],
+    "create_role": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "edit_role": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "delete_role": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "add_role_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "remove_role_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "ban_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "unban_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "kick_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "timeout_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "untimeout_member": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "prune_messages": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "modlog_test": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "logs": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "random_choice": ["Moderation-and-Logs.md", "Command-Reference.md"],
+}
+
+
+def build_wiki_page_url(page_name: str):
+    cleaned_page_name = str(page_name or "").strip().lstrip("/")
+    if not cleaned_page_name:
+        return BOT_HELP_WIKI_URL
+    return f"{BOT_HELP_WIKI_ROOT_URL}/{cleaned_page_name}"
+
+
+def normalize_help_command_name(raw_value: str | None):
+    cleaned = str(raw_value or "").strip().lower()
+    if not cleaned:
+        return ""
+    cleaned = cleaned.lstrip("/!")
+    return HELP_COMMAND_ALIASES.get(cleaned, cleaned)
+
+
+def command_default_access_label(command_key: str):
+    default_policy = COMMAND_PERMISSION_DEFAULTS.get(command_key, COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC)
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS:
+        return "Moderator"
+    return "Member/Public"
+
+
+def build_help_wiki_links(command_key: str):
+    page_names = HELP_WIKI_PAGE_BY_COMMAND.get(command_key, ["Command-Reference.md"])
+    seen_pages = set()
+    links = []
+    for page_name in page_names:
+        if page_name in seen_pages:
+            continue
+        seen_pages.add(page_name)
+        links.append((page_name.replace(".md", "").replace("-", " "), build_wiki_page_url(page_name)))
+    if ("Wiki Home", BOT_HELP_WIKI_URL) not in links:
+        links.append(("Wiki Home", BOT_HELP_WIKI_URL))
+    return links
+
+
+def build_help_message_for_command(command_name: str | None):
+    normalized_command = normalize_help_command_name(command_name)
+    if not normalized_command:
+        lines = [
+            f"🤖 **{BOT_PUBLIC_NAME} Help**",
+            "",
+            "Use `/help command:<name>` for details on a specific command.",
+            "",
+            "Common command groups:",
+            "- Role access and invites (`/submitrole`, `/enter_role`, `/restore_code`, `/getaccess`)",
+            "- Search (`/search_reddit`, `/search_forum`, `/search_openwrt_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
+            "- Utilities (`/ping`, `/sayhi`, `/happy`, `/shorten`, `/expand`, `/uptime`, `/stats`)",
+            "- Country nickname tools (`/country`, `/clear_country`)",
+            "- Moderation and role management (`/ban_member`, `/kick_member`, `/timeout_member`, `/create_role`, `/random_choice`)",
+            "",
+            "Docs:",
+            f"- Command Reference: {build_wiki_page_url('Command-Reference.md')}",
+            f"- Search and Docs: {build_wiki_page_url('Search-and-Docs.md')}",
+            f"- Role Access and Invites: {build_wiki_page_url('Role-Access-and-Invites.md')}",
+            f"- Moderation and Logs: {build_wiki_page_url('Moderation-and-Logs.md')}",
+            f"- Wiki Home: {BOT_HELP_WIKI_URL}",
+        ]
+        return trim_search_message("\n".join(lines))
+
+    metadata = COMMAND_PERMISSION_METADATA.get(normalized_command)
+    if metadata is None and normalized_command not in {"list"}:
+        lines = [
+            f"❌ I do not have help details for `{command_name}`.",
+            f"Use `/help` for the overview or check the full command reference: {build_wiki_page_url('Command-Reference.md')}",
+        ]
+        return trim_search_message("\n".join(lines))
+
+    label = metadata["label"] if metadata else "!list"
+    description = metadata["description"] if metadata else "Lists configured tag commands."
+    wiki_links = build_help_wiki_links(normalized_command)
     lines = [
-        "🤖 **Bot Quick Help**",
+        f"🤖 **Help: {label}**",
+        f"- Default Access: `{command_default_access_label(normalized_command)}`",
+        f"- Description: {description}",
         "",
-        "Use this bot for:",
-        "- Role access and invites (`/submitrole`, `/enter_role`, `/getaccess`)",
-        "- Search (`/search_reddit`, `/search_forum`, `/search_openwrt_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
-        "- Utilities (`/ping`, `/sayhi`, `/happy`, `/shorten`, `/expand`, `/uptime`, `/stats`)",
-        "- Country nickname tools (`/country`, `/clear_country`)",
-        "- Tag shortcuts (`!list` and dynamic slash tag commands)",
-        "- Moderation and member/role management (restricted by role/permissions)",
-        "",
-        f"📚 Advanced options and full docs: {BOT_HELP_WIKI_URL}",
+        "More info:",
     ]
+    for link_label, link_url in wiki_links:
+        lines.append(f"- {link_label}: {link_url}")
     return trim_search_message("\n".join(lines))
 
 
@@ -11866,7 +12033,11 @@ async def sayhi_slash(interaction: discord.Interaction):
     logger.info("/sayhi invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "sayhi"):
         return
-    intro = "Hi everyone, I am WickedYoda's Little Helper.\nI can help with moderation, search, feeds, and utility actions."
+    intro = (
+        f"Hi everyone, I am the {BOT_PUBLIC_NAME}.\n"
+        "I can help with moderation, search, feeds, role access, and utility actions.\n"
+        "Use `/help` for bot command help and wiki links."
+    )
     await interaction.response.send_message(
         intro,
         ephemeral=COMMAND_RESPONSES_EPHEMERAL,
@@ -12121,14 +12292,15 @@ async def stats_slash(interaction: discord.Interaction):
 
 @tree.command(
     name="help",
-    description="Quick bot help and link to advanced docs",
+    description="Bot command help and wiki links",
 )
-async def help_slash(interaction: discord.Interaction):
+@app_commands.describe(command="Optional command name like sayhi, submitrole, or ban_member")
+async def help_slash(interaction: discord.Interaction, command: str | None = None):
     logger.info("/help invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "help"):
         return
     await interaction.response.send_message(
-        build_help_message(),
+        build_help_message_for_command(command),
         ephemeral=COMMAND_RESPONSES_EPHEMERAL,
     )
 

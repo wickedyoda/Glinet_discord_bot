@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-20] - Help Command Refresh
+
+### Changed
+- Updated `/sayhi` to use the public bot name `GL.iNet UnOfficial Discord Bot`.
+- Updated `/sayhi` to direct users to `/help` for command guidance.
+- Expanded `/help` to support command-specific help and wiki links for the relevant command area.
+
 ## [2026-03-19] - GL.iNet Beta Program Monitor
 
 ### Added
