@@ -5431,7 +5431,7 @@ def create_web_app(
                 "LINKEDIN_NOTIFY_ENABLED",
                 "UPTIME_STATUS_ENABLED",
             }:
-                safe_value = "true" if _is_truthy_env_value(safe_value, False) else "false"
+                safe_value = "true" if _is_truthy_env_value(safe_value) else "false"
                 static_select_options = [
                     {"value": "false", "label": "false"},
                     {"value": "true", "label": "true"},

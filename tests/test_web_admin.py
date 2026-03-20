@@ -241,6 +241,8 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
     for path in [
         "/admin",
         "/admin/dashboard",
+        "/admin/guild-settings",
+        "/admin/settings",
         "/admin/users",
         "/admin/actions",
         "/admin/member-activity",
