@@ -4,7 +4,6 @@ import hashlib
 import json
 import re
 import urllib.parse
-from html import unescape
 
 import requests
 from bs4 import BeautifulSoup
