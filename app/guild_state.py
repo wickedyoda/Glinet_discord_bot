@@ -27,6 +27,7 @@ class GuildStateManager:
         default_guild_id: int,
         member_activity_backfill_state_key,
         extract_member_activity_backfill_completed_ranges,
+        audit_hash_secret: str,
         invite_roles_by_guild,
         invite_uses_by_guild,
         tag_response_cache,
@@ -52,6 +53,7 @@ class GuildStateManager:
         self.default_guild_id = int(default_guild_id)
         self.member_activity_backfill_state_key = member_activity_backfill_state_key
         self.extract_member_activity_backfill_completed_ranges = extract_member_activity_backfill_completed_ranges
+        self.audit_hash_secret = str(audit_hash_secret or "").strip()
         self.invite_roles_by_guild = invite_roles_by_guild
         self.invite_uses_by_guild = invite_uses_by_guild
         self.tag_response_cache = tag_response_cache
@@ -74,7 +76,15 @@ class GuildStateManager:
         normalized = str(actor_email or "").strip().lower()
         if not normalized:
             return "web_user:unknown"
-        digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+        salt = (self.audit_hash_secret or "glinet-web-audit-label").encode("utf-8")
+        digest = hashlib.scrypt(
+            normalized.encode("utf-8"),
+            salt=salt,
+            n=2**14,
+            r=8,
+            p=1,
+            dklen=12,
+        ).hex()
         return f"web_user:{digest}"
 
     def load_guild_settings(self, guild_id: int | None = None):

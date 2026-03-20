@@ -31,6 +31,7 @@ def build_manager(**overrides):
         "default_guild_id": 123,
         "member_activity_backfill_state_key": lambda guild_id, since_dt: f"{guild_id}:{since_dt.isoformat()}",
         "extract_member_activity_backfill_completed_ranges": lambda rows, parser: rows,
+        "audit_hash_secret": "test-audit-secret",
         **state,
     }
     params.update(overrides)
