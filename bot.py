@@ -16,7 +16,6 @@ import sys
 import threading
 import time
 import urllib.parse
-import zipfile
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
@@ -34,6 +33,33 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
+from app.beta_programs import (
+    fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
+)
+from app.beta_programs import (
+    parse_beta_program_snapshot_json as parse_beta_program_snapshot_json_impl,
+)
+from app.beta_programs import (
+    serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
+)
+from app.guild_archive import GuildArchiveManager
+from app.guild_state import GuildStateManager
+from app.help_content import build_help_message_for_command as build_help_content_message_for_command
+from app.member_activity import MemberActivityManager
+from app.member_activity_backfill import (
+    compute_missing_ranges as compute_member_activity_backfill_missing_ranges,
+)
+from app.member_activity_backfill import (
+    extract_completed_ranges as extract_member_activity_backfill_completed_ranges,
+)
+from app.member_activity_backfill import (
+    parse_backfill_since as parse_member_activity_backfill_since,
+)
+from app.member_activity_backfill import (
+    state_key as member_activity_backfill_state_key,
+)
+from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
+from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
 from web_admin import start_web_admin_interface
 
 load_dotenv()
@@ -71,6 +97,12 @@ LINKEDIN_REQUEST_USER_AGENT = (
     "Chrome/137.0.0.0 Safari/537.36"
 )
 LINKEDIN_MAX_POSTS_PER_RUN = 5
+BETA_PROGRAM_REQUEST_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/137.0.0.0 Safari/537.36"
+)
+BETA_PROGRAM_MAX_NOTIFICATIONS_PER_RUN = 10
 MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
 MEMBER_ACTIVITY_WINDOW_SPECS = (
@@ -81,8 +113,10 @@ MEMBER_ACTIVITY_WINDOW_SPECS = (
 )
 MEMBER_ACTIVITY_BACKFILL_PROGRESS_LOG_INTERVAL = 500
 MEMBER_ACTIVITY_ENCRYPTION_PREFIX = "enc:"
+GUILD_DATA_ARCHIVE_RETENTION_DAYS = 14
 RANDOM_CHOICE_COOLDOWN_DAYS = 7
 RANDOM_CHOICE_HISTORY_RETENTION_DAYS = 30
+BOT_PUBLIC_NAME = "GL.iNet UnOfficial Discord Bot"
 
 
 def normalize_log_level(raw_value: str, fallback: str = "INFO"):
@@ -574,6 +608,7 @@ BOT_HELP_WIKI_URL = normalize_http_url_setting(
     "https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md",
     "BOT_HELP_WIKI_URL",
 )
+BOT_HELP_WIKI_ROOT_URL = BOT_HELP_WIKI_URL.rsplit("/", 1)[0] if "/" in BOT_HELP_WIKI_URL else BOT_HELP_WIKI_URL
 FIRMWARE_FEED_URL = normalize_http_url_setting(
     os.getenv("FIRMWARE_FEED_URL", ""),
     "https://gl-fw.remotetohome.io/",
@@ -680,6 +715,17 @@ LINKEDIN_NOTIFY_ENABLED = is_truthy_env_value(
 )
 LINKEDIN_POLL_INTERVAL_SECONDS = parse_positive_int_env("LINKEDIN_POLL_INTERVAL_SECONDS", 900, minimum=60)
 LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 15, minimum=5)
+BETA_PROGRAM_PAGE_URL = normalize_http_url_setting(
+    os.getenv("BETA_PROGRAM_PAGE_URL", ""),
+    "https://www.gl-inet.com/beta-testing/#register",
+    "BETA_PROGRAM_PAGE_URL",
+)
+BETA_PROGRAM_NOTIFY_ENABLED = is_truthy_env_value(
+    os.getenv("BETA_PROGRAM_NOTIFY_ENABLED", "true"),
+    default_value=True,
+)
+BETA_PROGRAM_POLL_INTERVAL_SECONDS = parse_positive_int_env("BETA_PROGRAM_POLL_INTERVAL_SECONDS", 900, minimum=60)
+BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS", 20, minimum=5)
 UPTIME_STATUS_ENABLED = is_truthy_env_value(
     os.getenv("UPTIME_STATUS_ENABLED", "false"),
     default_value=False,
@@ -847,7 +893,7 @@ COMMAND_PERMISSION_METADATA = {
     },
     "help": {
         "label": "/help",
-        "description": "Show quick bot capabilities and wiki link.",
+        "description": "Show command help and wiki links.",
     },
     "ping": {
         "label": "/ping",
@@ -855,7 +901,7 @@ COMMAND_PERMISSION_METADATA = {
     },
     "sayhi": {
         "label": "/sayhi",
-        "description": "Post a short bot introduction.",
+        "description": "Post a short bot introduction and point users to /help.",
     },
     "happy": {
         "label": "/happy",
@@ -1011,6 +1057,7 @@ firmware_monitor_task = None
 reddit_feed_monitor_task = None
 youtube_monitor_task = None
 linkedin_monitor_task = None
+beta_program_monitor_task = None
 member_activity_backfill_task = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
@@ -1241,6 +1288,25 @@ def ensure_db_schema():
                 UNIQUE(guild_id, source_url, target_channel_id)
             );
 
+            CREATE TABLE IF NOT EXISTS beta_program_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                source_url TEXT NOT NULL,
+                source_name TEXT NOT NULL DEFAULT '',
+                target_channel_id INTEGER NOT NULL,
+                target_channel_name TEXT NOT NULL DEFAULT '',
+                last_snapshot_json TEXT NOT NULL DEFAULT '[]',
+                last_checked_at TEXT NOT NULL DEFAULT '',
+                last_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, source_url, target_channel_id)
+            );
+
             CREATE TABLE IF NOT EXISTS member_activity_summary (
                 guild_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -1291,6 +1357,13 @@ def ensure_db_schema():
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS guild_data_archives (
+                guild_id INTEGER PRIMARY KEY,
+                archived_at TEXT NOT NULL,
+                purge_after_at TEXT NOT NULL,
+                payload BLOB NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
             CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
@@ -1304,6 +1377,8 @@ def ensure_db_schema():
                 ON youtube_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_linkedin_subscriptions_enabled
                 ON linkedin_subscriptions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_beta_program_subscriptions_enabled
+                ON beta_program_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
                 ON member_activity_summary(last_message_at);
             CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
@@ -1314,6 +1389,8 @@ def ensure_db_schema():
                 ON random_choice_history(guild_id, selected_at);
             CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_user_selected_at
                 ON random_choice_history(guild_id, user_id, selected_at);
+            CREATE INDEX IF NOT EXISTS idx_guild_data_archives_purge_after_at
+                ON guild_data_archives(purge_after_at);
             """
         )
         command_permission_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()}
@@ -1700,6 +1777,12 @@ def ensure_db_schema():
         )
         conn.execute(
             """
+            CREATE INDEX IF NOT EXISTS idx_beta_program_subscriptions_guild_id
+                ON beta_program_subscriptions(guild_id)
+            """
+        )
+        conn.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_member_activity_summary_guild_id
                 ON member_activity_summary(guild_id)
             """
@@ -1793,58 +1876,15 @@ def db_kv_delete(key: str):
 
 
 def default_guild_settings():
-    return {
-        "bot_log_channel_id": BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else 0,
-        "mod_log_channel_id": MOD_LOG_CHANNEL_ID if MOD_LOG_CHANNEL_ID > 0 else 0,
-        "firmware_notify_channel_id": (FIRMWARE_NOTIFY_CHANNEL_ID if FIRMWARE_NOTIFY_CHANNEL_ID > 0 else 0),
-        "access_role_id": 0,
-        "updated_at": "",
-        "updated_by_email": "",
-    }
+    return guild_state_manager.default_guild_settings()
+
+
+def build_web_actor_audit_label(actor_email: str):
+    return guild_state_manager.build_web_actor_audit_label(actor_email)
 
 
 def load_guild_settings(guild_id: int | None = None):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    version = db_kv_get(f"guild_settings_updated_at:{safe_guild_id}") or "bootstrap"
-    cached = guild_settings_cache.get(safe_guild_id) or {}
-    if cached.get("mtime") == version:
-        return dict(cached.get("settings") or default_guild_settings())
-
-    settings = default_guild_settings()
-    conn = get_db_connection()
-    with db_lock:
-        row = conn.execute(
-            """
-            SELECT bot_log_channel_id, mod_log_channel_id, firmware_notify_channel_id,
-                   access_role_id, updated_at, updated_by_email
-            FROM guild_settings
-            WHERE guild_id = ?
-            """,
-            (safe_guild_id,),
-        ).fetchone()
-    if row is not None:
-        settings.update(
-            {
-                "bot_log_channel_id": int(row["bot_log_channel_id"] or 0),
-                "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
-                "firmware_notify_channel_id": int(row["firmware_notify_channel_id"] or 0),
-                "access_role_id": int(row["access_role_id"] or 0),
-                "updated_at": str(row["updated_at"] or ""),
-                "updated_by_email": str(row["updated_by_email"] or ""),
-            }
-        )
-    else:
-        role_id_raw = db_kv_get("access_role_id")
-        if role_id_raw is None and os.path.exists(ROLE_FILE):
-            try:
-                with open(ROLE_FILE) as handle:
-                    role_id_raw = handle.read().strip()
-            except Exception:
-                logger.exception("Failed reading legacy access role from %s", ROLE_FILE)
-        settings["access_role_id"] = parse_int_setting(role_id_raw, 0, minimum=0)
-
-    guild_settings_cache[safe_guild_id] = {"mtime": version, "settings": dict(settings)}
-    return settings
+    return guild_state_manager.load_guild_settings(guild_id)
 
 
 def save_guild_settings(
@@ -1852,79 +1892,15 @@ def save_guild_settings(
     payload: dict | None,
     actor_email: str = "",
 ):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    current = load_guild_settings(safe_guild_id)
-    updated_at = datetime.now(UTC).isoformat()
-    merged = dict(current)
-    source = payload or {}
-    for key in (
-        "bot_log_channel_id",
-        "mod_log_channel_id",
-        "firmware_notify_channel_id",
-        "access_role_id",
-    ):
-        merged[key] = parse_int_setting(source.get(key, current.get(key, 0)), 0, minimum=0)
-
-    conn = get_db_connection()
-    with db_lock:
-        conn.execute(
-            """
-            INSERT INTO guild_settings (
-                guild_id,
-                bot_log_channel_id,
-                mod_log_channel_id,
-                firmware_notify_channel_id,
-                access_role_id,
-                updated_at,
-                updated_by_email
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(guild_id) DO UPDATE SET
-                bot_log_channel_id=excluded.bot_log_channel_id,
-                mod_log_channel_id=excluded.mod_log_channel_id,
-                firmware_notify_channel_id=excluded.firmware_notify_channel_id,
-                access_role_id=excluded.access_role_id,
-                updated_at=excluded.updated_at,
-                updated_by_email=excluded.updated_by_email
-            """,
-            (
-                safe_guild_id,
-                merged["bot_log_channel_id"],
-                merged["mod_log_channel_id"],
-                merged["firmware_notify_channel_id"],
-                merged["access_role_id"],
-                updated_at,
-                actor_email or "unknown",
-            ),
-        )
-        conn.commit()
-
-    db_kv_set(f"guild_settings_updated_at:{safe_guild_id}", updated_at)
-    guild_settings_cache[safe_guild_id] = {
-        "mtime": updated_at,
-        "settings": {
-            **merged,
-            "updated_at": updated_at,
-            "updated_by_email": actor_email or "unknown",
-        },
-    }
-    return load_guild_settings(safe_guild_id)
+    return guild_state_manager.save_guild_settings(guild_id, payload, actor_email=actor_email)
 
 
 def get_effective_guild_setting(guild_id: int | None, key: str, fallback_value: int = 0):
-    settings = load_guild_settings(guild_id)
-    value = parse_int_setting(settings.get(key, 0), 0, minimum=0)
-    if value > 0:
-        return value
-    return parse_int_setting(fallback_value, 0, minimum=0)
+    return guild_state_manager.get_effective_guild_setting(guild_id, key, fallback_value)
 
 
 def get_effective_logging_channel_id(guild_id: int | None):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    bot_log_channel_id = get_effective_guild_setting(safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID)
-    if bot_log_channel_id > 0:
-        return bot_log_channel_id
-    return get_effective_guild_setting(safe_guild_id, "mod_log_channel_id", MOD_LOG_CHANNEL_ID)
+    return guild_state_manager.get_effective_logging_channel_id(guild_id)
 
 
 def record_action_safe(
@@ -1935,87 +1911,30 @@ def record_action_safe(
     reason: str = "",
     guild_id: int | None = None,
 ):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
-        conn.execute(
-            """
-            INSERT INTO actions (guild_id, created_at, action, status, moderator, target, reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                safe_guild_id,
-                datetime.now(UTC).isoformat(),
-                str(action or "").strip(),
-                str(status or "").strip(),
-                str(moderator or "").strip(),
-                str(target or "").strip(),
-                str(reason or "").strip(),
-            ),
-        )
-        conn.commit()
+    return guild_state_manager.record_action_safe(
+        action,
+        status,
+        moderator=moderator,
+        target=target,
+        reason=reason,
+        guild_id=guild_id,
+    )
 
 
 def list_recent_actions(guild_id: int | None, limit: int = 200):
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    safe_limit = max(1, min(500, int(limit)))
-    conn = get_db_connection()
-    with db_lock:
-        rows = conn.execute(
-            """
-            SELECT id, guild_id, created_at, action, status, moderator, target, reason
-            FROM actions
-            WHERE guild_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (safe_guild_id, safe_limit),
-        ).fetchall()
-    return [dict(row) for row in rows]
+    return guild_state_manager.list_recent_actions(guild_id, limit)
 
 
 def ensure_random_choice_history_schema_locked(conn):
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS random_choice_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            selected_at TEXT NOT NULL,
-            selected_by_user_id INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_selected_at
-            ON random_choice_history(guild_id, selected_at);
-        CREATE INDEX IF NOT EXISTS idx_random_choice_history_guild_user_selected_at
-            ON random_choice_history(guild_id, user_id, selected_at);
-        """
-    )
+    return guild_state_manager.ensure_random_choice_history_schema_locked(conn)
 
 
 def prune_random_choice_history_locked(conn, current_dt: datetime):
-    cutoff_dt = normalize_activity_timestamp(current_dt) - timedelta(days=RANDOM_CHOICE_HISTORY_RETENTION_DAYS)
-    conn.execute(
-        "DELETE FROM random_choice_history WHERE selected_at < ?",
-        (cutoff_dt.isoformat(),),
-    )
+    return guild_state_manager.prune_random_choice_history_locked(conn, current_dt)
 
 
 def list_recent_random_choice_user_ids(guild_id: int | None, since_dt: datetime):
-    safe_guild_id = require_managed_guild_id(guild_id, context="random choice guild")
-    safe_since_dt = normalize_activity_timestamp(since_dt)
-    conn = get_db_connection()
-    with db_lock:
-        ensure_random_choice_history_schema_locked(conn)
-        prune_random_choice_history_locked(conn, safe_since_dt)
-        rows = conn.execute(
-            """
-            SELECT DISTINCT user_id
-            FROM random_choice_history
-            WHERE guild_id = ? AND selected_at >= ?
-            """,
-            (safe_guild_id, safe_since_dt.isoformat()),
-        ).fetchall()
-    return {int(row["user_id"]) for row in rows}
+    return guild_state_manager.list_recent_random_choice_user_ids(guild_id, since_dt)
 
 
 def record_random_choice_selection(
@@ -2025,409 +1944,125 @@ def record_random_choice_selection(
     selected_by_user_id: int = 0,
     selected_at: datetime | None = None,
 ):
-    safe_guild_id = require_managed_guild_id(guild_id, context="random choice guild")
-    safe_selected_at = normalize_activity_timestamp(selected_at)
-    conn = get_db_connection()
-    with db_lock:
-        ensure_random_choice_history_schema_locked(conn)
-        prune_random_choice_history_locked(conn, safe_selected_at)
-        conn.execute(
-            """
-            INSERT INTO random_choice_history (
-                guild_id,
-                user_id,
-                selected_at,
-                selected_by_user_id
-            )
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                safe_guild_id,
-                int(user_id),
-                safe_selected_at.isoformat(),
-                int(selected_by_user_id or 0),
-            ),
-        )
-        conn.commit()
+    return guild_state_manager.record_random_choice_selection(
+        guild_id,
+        user_id,
+        selected_by_user_id=selected_by_user_id,
+        selected_at=selected_at,
+    )
 
 
 def parse_iso_datetime_utc(raw_value) -> datetime | None:
-    text = str(raw_value or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    return guild_state_manager.parse_iso_datetime_utc(raw_value)
 
 
 def normalize_activity_timestamp(raw_value=None) -> datetime:
-    if isinstance(raw_value, datetime):
-        parsed = raw_value
-    else:
-        parsed = parse_iso_datetime_utc(raw_value)
-    if parsed is None:
-        parsed = datetime.now(UTC)
-    elif parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    else:
-        parsed = parsed.astimezone(UTC)
-    return parsed
-
-
-def parse_member_activity_backfill_since(raw_value: str) -> datetime | None:
-    text = str(raw_value or "").strip()
-    if not text:
-        return None
-    candidate = text
-    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", candidate):
-        candidate = f"{candidate}T00:00:00+00:00"
-    parsed = parse_iso_datetime_utc(candidate)
-    if parsed is None:
-        return None
-    return parsed.replace(minute=0, second=0, microsecond=0)
+    return guild_state_manager.normalize_activity_timestamp(raw_value)
 
 
 def get_member_activity_backfill_target_guild_id() -> int:
-    raw_value = MEMBER_ACTIVITY_BACKFILL_GUILD_ID_RAW
-    if not raw_value:
-        return int(GUILD_ID)
-    try:
-        parsed = int(raw_value)
-    except ValueError as exc:
-        raise RuntimeError("MEMBER_ACTIVITY_BACKFILL_GUILD_ID must be a numeric guild ID.") from exc
-    if parsed <= 0:
-        raise RuntimeError("MEMBER_ACTIVITY_BACKFILL_GUILD_ID must be a positive guild ID.")
-    return parsed
-
-
-def member_activity_backfill_state_key(guild_id: int, since_dt: datetime) -> str:
-    return f"member_activity_backfill:{int(guild_id)}:{since_dt.isoformat()}"
+    return guild_state_manager.get_member_activity_backfill_target_guild_id()
 
 
 def load_member_activity_backfill_state(guild_id: int, since_dt: datetime) -> dict:
-    raw_value = db_kv_get(member_activity_backfill_state_key(guild_id, since_dt))
-    if not raw_value:
-        return {}
-    try:
-        payload = json.loads(raw_value)
-    except ValueError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
+    return guild_state_manager.load_member_activity_backfill_state(guild_id, since_dt)
 
 
 def save_member_activity_backfill_state(guild_id: int, since_dt: datetime, payload: dict):
-    db_kv_set(
-        member_activity_backfill_state_key(guild_id, since_dt),
-        json.dumps(payload, sort_keys=True),
-    )
+    return guild_state_manager.save_member_activity_backfill_state(guild_id, since_dt, payload)
+
+
+def clear_guild_runtime_state(guild_id: int):
+    return guild_state_manager.clear_guild_runtime_state(guild_id)
 
 
 def list_member_activity_backfill_completed_ranges(guild_id: int):
-    safe_guild_id = int(guild_id)
-    conn = get_db_connection()
-    with db_lock:
-        rows = conn.execute(
-            """
-            SELECT key, value
-            FROM kv_store
-            WHERE key LIKE ?
-            """,
-            (f"member_activity_backfill:{safe_guild_id}:%",),
-        ).fetchall()
-
-    ranges = []
-    for row in rows:
-        try:
-            payload = json.loads(str(row["value"] or ""))
-        except ValueError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        if str(payload.get("status") or "").strip().lower() != "completed":
-            continue
-        since_dt = parse_iso_datetime_utc(payload.get("since_at"))
-        until_dt = parse_iso_datetime_utc(payload.get("until_at"))
-        if since_dt is None or until_dt is None:
-            continue
-        if until_dt <= since_dt:
-            continue
-        ranges.append((since_dt, until_dt))
-    return ranges
+    return guild_state_manager.list_member_activity_backfill_completed_ranges(guild_id)
 
 
-def merge_member_activity_backfill_ranges(ranges):
-    normalized = []
-    for start_dt, end_dt in ranges:
-        safe_start = normalize_activity_timestamp(start_dt)
-        safe_end = normalize_activity_timestamp(end_dt)
-        if safe_end <= safe_start:
-            continue
-        normalized.append((safe_start, safe_end))
-    if not normalized:
-        return []
+guild_state_manager = GuildStateManager(
+    get_db_connection=get_db_connection,
+    db_lock=db_lock,
+    normalize_target_guild_id=normalize_target_guild_id,
+    require_managed_guild_id=require_managed_guild_id,
+    db_kv_get=db_kv_get,
+    db_kv_set=db_kv_set,
+    parse_int_setting=parse_int_setting,
+    logger=logger,
+    role_file=ROLE_FILE,
+    bot_log_channel_id=BOT_LOG_CHANNEL_ID,
+    mod_log_channel_id=MOD_LOG_CHANNEL_ID,
+    firmware_notify_channel_id=FIRMWARE_NOTIFY_CHANNEL_ID,
+    random_choice_history_retention_days=RANDOM_CHOICE_HISTORY_RETENTION_DAYS,
+    member_activity_backfill_guild_id_raw=MEMBER_ACTIVITY_BACKFILL_GUILD_ID_RAW,
+    default_guild_id=GUILD_ID,
+    member_activity_backfill_state_key=member_activity_backfill_state_key,
+    extract_member_activity_backfill_completed_ranges=extract_member_activity_backfill_completed_ranges,
+    invite_roles_by_guild=invite_roles_by_guild,
+    invite_uses_by_guild=invite_uses_by_guild,
+    tag_response_cache=tag_response_cache,
+    tag_command_names_by_guild=tag_command_names_by_guild,
+    guild_settings_cache=guild_settings_cache,
+    command_permissions_cache=command_permissions_cache,
+    discord_catalog_cache=discord_catalog_cache,
+)
 
-    normalized.sort(key=lambda item: item[0])
-    merged = [normalized[0]]
-    for start_dt, end_dt in normalized[1:]:
-        last_start, last_end = merged[-1]
-        if start_dt <= last_end:
-            merged[-1] = (last_start, max(last_end, end_dt))
-            continue
-        merged.append((start_dt, end_dt))
-    return merged
+guild_archive_manager = GuildArchiveManager(
+    get_db_connection=get_db_connection,
+    db_lock=db_lock,
+    ensure_member_activity_schema_locked=lambda conn: ensure_member_activity_schema_locked(conn),
+    clear_guild_runtime_state=clear_guild_runtime_state,
+    retention_days=GUILD_DATA_ARCHIVE_RETENTION_DAYS,
+)
 
 
-def compute_member_activity_backfill_missing_ranges(requested_since: datetime, requested_until: datetime, completed_ranges):
-    safe_requested_since = normalize_activity_timestamp(requested_since)
-    safe_requested_until = normalize_activity_timestamp(requested_until)
-    if safe_requested_until <= safe_requested_since:
-        return []
+def archive_guild_data(guild_id: int):
+    return guild_archive_manager.archive_guild_data(guild_id)
 
-    merged_ranges = merge_member_activity_backfill_ranges(completed_ranges)
-    missing_ranges = []
-    cursor = safe_requested_since
-    for completed_start, completed_end in merged_ranges:
-        if completed_end <= safe_requested_since:
-            continue
-        if completed_start >= safe_requested_until:
-            break
-        clipped_start = max(completed_start, safe_requested_since)
-        clipped_end = min(completed_end, safe_requested_until)
-        if clipped_end <= clipped_start:
-            continue
-        if clipped_start > cursor:
-            missing_ranges.append((cursor, clipped_start))
-        cursor = max(cursor, clipped_end)
-        if cursor >= safe_requested_until:
-            break
-    if cursor < safe_requested_until:
-        missing_ranges.append((cursor, safe_requested_until))
-    return missing_ranges
+
+def restore_archived_guild_data(guild_id: int):
+    return guild_archive_manager.restore_archived_guild_data(guild_id)
+
+
+def purge_expired_guild_archives():
+    return guild_archive_manager.purge_expired_guild_archives()
+
+
+member_activity_manager = None
+
+
+def _get_member_activity_manager():
+    global member_activity_manager
+    if member_activity_manager is None:
+        member_activity_manager = MemberActivityManager(
+            get_db_connection=get_db_connection,
+            db_lock=db_lock,
+            require_managed_guild_id=require_managed_guild_id,
+            is_managed_guild_id=is_managed_guild_id,
+            normalize_activity_timestamp=normalize_activity_timestamp,
+            encrypt_member_activity_identity=encrypt_member_activity_identity,
+            decrypt_member_activity_identity=decrypt_member_activity_identity,
+            clip_text=clip_text,
+            logger=logger,
+            bot=bot,
+            enable_members_intent=ENABLE_MEMBERS_INTENT,
+            member_activity_window_specs=MEMBER_ACTIVITY_WINDOW_SPECS,
+            member_activity_web_top_limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT,
+            member_activity_recent_retention_days=MEMBER_ACTIVITY_RECENT_RETENTION_DAYS,
+            has_moderator_access=has_moderator_access,
+            has_allowed_role=has_allowed_role,
+            moderator_role_ids=MODERATOR_ROLE_IDS,
+            default_allowed_role_names=DEFAULT_ALLOWED_ROLE_NAMES,
+        )
+    return member_activity_manager
 
 
 def ensure_member_activity_schema_locked(conn):
-    global member_activity_encryption_migration_checked
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS member_activity_summary (
-            guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            username TEXT NOT NULL DEFAULT '',
-            display_name TEXT NOT NULL DEFAULT '',
-            first_message_at TEXT NOT NULL,
-            last_message_at TEXT NOT NULL,
-            total_messages INTEGER NOT NULL DEFAULT 0,
-            total_active_days INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (guild_id, user_id)
-        );
-
-        CREATE TABLE IF NOT EXISTS member_activity_recent_hourly (
-            guild_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            hour_bucket TEXT NOT NULL,
-            message_count INTEGER NOT NULL DEFAULT 0,
-            last_message_at TEXT NOT NULL,
-            PRIMARY KEY (guild_id, user_id, hour_bucket)
-        );
-
-        CREATE TABLE IF NOT EXISTS member_activity_seen_messages (
-            guild_id INTEGER NOT NULL,
-            message_id INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY (guild_id, message_id)
-        );
-        """
-    )
-
-    member_activity_summary_columns = {
-        str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_summary)").fetchall()
-    }
-    if member_activity_summary_columns and "guild_id" not in member_activity_summary_columns:
-        conn.executescript(
-            """
-            CREATE TABLE member_activity_summary_new (
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                username TEXT NOT NULL DEFAULT '',
-                display_name TEXT NOT NULL DEFAULT '',
-                first_message_at TEXT NOT NULL,
-                last_message_at TEXT NOT NULL,
-                total_messages INTEGER NOT NULL DEFAULT 0,
-                total_active_days INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (guild_id, user_id)
-            );
-            INSERT INTO member_activity_summary_new (
-                guild_id,
-                user_id,
-                username,
-                display_name,
-                first_message_at,
-                last_message_at,
-                total_messages,
-                total_active_days
-            )
-            SELECT
-                0,
-                user_id,
-                username,
-                display_name,
-                first_message_at,
-                last_message_at,
-                total_messages,
-                total_active_days
-            FROM member_activity_summary;
-            DROP TABLE member_activity_summary;
-            ALTER TABLE member_activity_summary_new RENAME TO member_activity_summary;
-            """
-        )
-
-    member_activity_recent_columns = {
-        str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_recent_hourly)").fetchall()
-    }
-    if member_activity_recent_columns and "guild_id" not in member_activity_recent_columns:
-        conn.executescript(
-            """
-            CREATE TABLE member_activity_recent_hourly_new (
-                guild_id INTEGER NOT NULL,
-                user_id INTEGER NOT NULL,
-                hour_bucket TEXT NOT NULL,
-                message_count INTEGER NOT NULL DEFAULT 0,
-                last_message_at TEXT NOT NULL,
-                PRIMARY KEY (guild_id, user_id, hour_bucket)
-            );
-            INSERT INTO member_activity_recent_hourly_new (
-                guild_id,
-                user_id,
-                hour_bucket,
-                message_count,
-                last_message_at
-            )
-            SELECT
-                0,
-                user_id,
-                hour_bucket,
-                message_count,
-                last_message_at
-            FROM member_activity_recent_hourly;
-            DROP TABLE member_activity_recent_hourly;
-            ALTER TABLE member_activity_recent_hourly_new RENAME TO member_activity_recent_hourly;
-            """
-        )
-
-    member_activity_seen_columns = {
-        str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_seen_messages)").fetchall()
-    }
-    if member_activity_seen_columns and "guild_id" not in member_activity_seen_columns:
-        conn.executescript(
-            """
-            CREATE TABLE member_activity_seen_messages_new (
-                guild_id INTEGER NOT NULL,
-                message_id INTEGER NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (guild_id, message_id)
-            );
-            INSERT INTO member_activity_seen_messages_new (
-                guild_id,
-                message_id,
-                created_at
-            )
-            SELECT
-                0,
-                message_id,
-                created_at
-            FROM member_activity_seen_messages;
-            DROP TABLE member_activity_seen_messages;
-            ALTER TABLE member_activity_seen_messages_new RENAME TO member_activity_seen_messages;
-            """
-        )
-
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
-            ON member_activity_summary(last_message_at)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
-            ON member_activity_recent_hourly(hour_bucket)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_created_at
-            ON member_activity_seen_messages(created_at)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_member_activity_summary_guild_id
-            ON member_activity_summary(guild_id)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_guild_bucket
-            ON member_activity_recent_hourly(guild_id, hour_bucket)
-        """
-    )
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_member_activity_seen_messages_guild_created
-            ON member_activity_seen_messages(guild_id, created_at)
-        """
-    )
-    if not member_activity_encryption_migration_checked:
-        rows = conn.execute(
-            """
-            SELECT guild_id, user_id, username, display_name
-            FROM member_activity_summary
-            """
-        ).fetchall()
-        updates = []
-        for row in rows:
-            username = str(row["username"] or "")
-            display_name = str(row["display_name"] or "")
-            encrypted_username = encrypt_member_activity_identity(username)
-            encrypted_display_name = encrypt_member_activity_identity(display_name)
-            if encrypted_username != username or encrypted_display_name != display_name:
-                updates.append(
-                    (
-                        encrypted_username,
-                        encrypted_display_name,
-                        int(row["guild_id"] or 0),
-                        int(row["user_id"] or 0),
-                    )
-                )
-        if updates:
-            conn.executemany(
-                """
-                UPDATE member_activity_summary
-                SET username = ?,
-                    display_name = ?
-                WHERE guild_id = ? AND user_id = ?
-                """,
-                updates,
-            )
-            logger.info("Encrypted %s existing member activity profile row(s).", len(updates))
-        member_activity_encryption_migration_checked = True
+    return _get_member_activity_manager().ensure_member_activity_schema_locked(conn)
 
 
 def compute_member_activity_metrics(message_count: int, active_days: int, period_start: datetime, period_end: datetime):
-    total_seconds = max((period_end - period_start).total_seconds(), 3600.0)
-    period_days = max(total_seconds / 86400.0, 1 / 24)
-    safe_messages = max(int(message_count or 0), 0)
-    safe_active_days = max(int(active_days or 0), 0)
-    return {
-        "period_days": period_days,
-        "messages_per_day": (safe_messages / period_days) if safe_messages else 0.0,
-        "messages_per_active_day": (safe_messages / safe_active_days) if safe_messages and safe_active_days else 0.0,
-        "active_day_ratio": min(1.0, safe_active_days / period_days) if safe_active_days else 0.0,
-    }
+    return _get_member_activity_manager().compute_member_activity_metrics(message_count, active_days, period_start, period_end)
 
 
 def build_member_activity_window_record(
@@ -2441,57 +2076,20 @@ def build_member_activity_window_record(
     first_message_at: str = "",
     last_message_at: str = "",
 ):
-    metrics = compute_member_activity_metrics(message_count, active_days, period_start, period_end)
-    return {
-        "key": key,
-        "label": label,
-        "message_count": int(message_count or 0),
-        "active_days": int(active_days or 0),
-        "period_days": metrics["period_days"],
-        "messages_per_day": metrics["messages_per_day"],
-        "messages_per_active_day": metrics["messages_per_active_day"],
-        "active_day_ratio": metrics["active_day_ratio"],
-        "first_message_at": str(first_message_at or ""),
-        "last_message_at": str(last_message_at or ""),
-    }
+    return _get_member_activity_manager().build_member_activity_window_record(
+        key,
+        label,
+        message_count,
+        active_days,
+        period_start,
+        period_end,
+        first_message_at=first_message_at,
+        last_message_at=last_message_at,
+    )
 
 
 def prune_member_activity_recent_hourly(conn, current_dt: datetime):
-    global member_activity_recent_prune_marker
-    current_hour_bucket = current_dt.replace(minute=0, second=0, microsecond=0).isoformat()
-    if member_activity_recent_prune_marker == current_hour_bucket:
-        return
-    cutoff_dt = current_dt - timedelta(days=MEMBER_ACTIVITY_RECENT_RETENTION_DAYS)
-    cutoff_bucket = cutoff_dt.replace(
-        minute=0,
-        second=0,
-        microsecond=0,
-    ).isoformat()
-    conn.execute(
-        "DELETE FROM member_activity_recent_hourly WHERE hour_bucket < ?",
-        (cutoff_bucket,),
-    )
-    conn.execute(
-        "DELETE FROM member_activity_seen_messages WHERE created_at < ?",
-        (cutoff_dt.isoformat(),),
-    )
-    conn.execute(
-        """
-        DELETE FROM member_activity_summary
-        WHERE last_message_at IS NULL OR last_message_at < ?
-        """,
-        (cutoff_dt.isoformat(),),
-    )
-    # Lifetime counters are no longer surfaced. Keep this table as a 90-day
-    # profile cache only so inactive members age out cleanly.
-    conn.execute(
-        """
-        UPDATE member_activity_summary
-        SET total_messages = 0,
-            total_active_days = 0
-        """
-    )
-    member_activity_recent_prune_marker = current_hour_bucket
+    return _get_member_activity_manager().prune_member_activity_recent_hourly(conn, current_dt)
 
 
 def _record_member_message_activity_locked(
@@ -2504,213 +2102,35 @@ def _record_member_message_activity_locked(
     message_id: int,
     message_dt: datetime,
 ):
-    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
-    encrypted_username = encrypt_member_activity_identity(username)
-    encrypted_display_name = encrypt_member_activity_identity(display_name)
-    message_iso = message_dt.isoformat()
-    hour_bucket = message_dt.replace(minute=0, second=0, microsecond=0).isoformat()
-    inserted = conn.execute(
-        """
-        INSERT OR IGNORE INTO member_activity_seen_messages (
-            guild_id,
-            message_id,
-            created_at
-        )
-        VALUES (?, ?, ?)
-        """,
-        (
-            safe_guild_id,
-            int(message_id),
-            message_iso,
-        ),
+    return _get_member_activity_manager().record_member_message_activity_locked(
+        conn,
+        guild_id=guild_id,
+        user_id=user_id,
+        username=username,
+        display_name=display_name,
+        message_id=message_id,
+        message_dt=message_dt,
     )
-    if inserted.rowcount == 0:
-        return False
-    prune_member_activity_recent_hourly(conn, message_dt)
-    summary_row = conn.execute(
-        """
-        SELECT first_message_at, last_message_at
-        FROM member_activity_summary
-        WHERE guild_id = ? AND user_id = ?
-        """,
-        (safe_guild_id, user_id),
-    ).fetchone()
-
-    if summary_row is None:
-        conn.execute(
-            """
-            INSERT INTO member_activity_summary (
-                guild_id,
-                user_id,
-                username,
-                display_name,
-                first_message_at,
-                last_message_at,
-                total_messages,
-                total_active_days
-            )
-            VALUES (?, ?, ?, ?, ?, ?, 0, 0)
-            """,
-            (
-                safe_guild_id,
-                user_id,
-                encrypted_username,
-                encrypted_display_name,
-                message_iso,
-                message_iso,
-            ),
-        )
-    else:
-        conn.execute(
-            """
-            UPDATE member_activity_summary
-            SET username = ?,
-                display_name = ?,
-                last_message_at = ?,
-                total_messages = 0,
-                total_active_days = 0
-            WHERE guild_id = ? AND user_id = ?
-            """,
-            (
-                encrypted_username,
-                encrypted_display_name,
-                message_iso,
-                safe_guild_id,
-                user_id,
-            ),
-        )
-
-    conn.execute(
-        """
-        INSERT INTO member_activity_recent_hourly (
-            guild_id,
-            user_id,
-            hour_bucket,
-            message_count,
-            last_message_at
-        )
-        VALUES (?, ?, ?, 1, ?)
-        ON CONFLICT(guild_id, user_id, hour_bucket) DO UPDATE SET
-            message_count = member_activity_recent_hourly.message_count + 1,
-            last_message_at = excluded.last_message_at
-        """,
-        (
-            safe_guild_id,
-            user_id,
-            hour_bucket,
-            message_iso,
-        ),
-    )
-    return True
 
 
 def record_member_message_activity(message: discord.Message):
-    if message.guild is None or message.author.bot:
-        return False
-    if not is_managed_guild_id(message.guild.id):
-        return False
-
-    conn = get_db_connection()
-    with db_lock:
-        ensure_member_activity_schema_locked(conn)
-        changed = _record_member_message_activity_locked(
-            conn,
-            guild_id=message.guild.id,
-            user_id=int(message.author.id),
-            username=clip_text(str(message.author), max_chars=120),
-            display_name=clip_text(getattr(message.author, "display_name", str(message.author)), max_chars=120),
-            message_id=int(message.id),
-            message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
-        )
-        conn.commit()
-    return changed
+    return _get_member_activity_manager().record_member_message_activity(message)
 
 
 def normalize_optional_role_id(value) -> int | None:
-    try:
-        role_id = int(str(value or "").strip())
-    except (TypeError, ValueError):
-        return None
-    return role_id if role_id > 0 else None
+    return _get_member_activity_manager().normalize_optional_role_id(value)
 
 
 def is_member_activity_ranking_eligible(member: discord.Member | None, role_id: int | None = None):
-    if not isinstance(member, discord.Member):
-        return False
-    if member.bot:
-        return False
-    if has_moderator_access(member) or has_allowed_role(member):
-        return False
-    if role_id is not None and not any(role.id == role_id for role in member.roles):
-        return False
-    return True
+    return _get_member_activity_manager().is_member_activity_ranking_eligible(member, role_id=role_id)
 
 
 async def resolve_member_activity_members_async(guild_id: int, user_ids: list[int]):
-    guild = bot.get_guild(int(guild_id))
-    if guild is None:
-        return {}
-
-    members_by_id = {}
-    if ENABLE_MEMBERS_INTENT and not guild.chunked:
-        try:
-            await guild.chunk(cache=True)
-        except Exception:
-            logger.debug("Falling back to partial guild member cache for activity rankings", exc_info=True)
-
-    missing_ids = []
-    for user_id in user_ids:
-        member = guild.get_member(int(user_id))
-        if member is not None:
-            members_by_id[int(user_id)] = member
-        else:
-            missing_ids.append(int(user_id))
-
-    for user_id in missing_ids:
-        try:
-            member = await guild.fetch_member(int(user_id))
-        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-            continue
-        members_by_id[int(user_id)] = member
-    return members_by_id
+    return await _get_member_activity_manager().resolve_member_activity_members_async(guild_id, user_ids)
 
 
 def resolve_member_activity_members(guild_id: int, user_ids: list[int]):
-    unique_user_ids = []
-    seen = set()
-    for user_id in user_ids:
-        try:
-            normalized = int(user_id)
-        except (TypeError, ValueError):
-            continue
-        if normalized <= 0 or normalized in seen:
-            continue
-        seen.add(normalized)
-        unique_user_ids.append(normalized)
-    if not unique_user_ids:
-        return {}
-
-    loop = getattr(bot, "loop", None)
-    if loop is None or not loop.is_running():
-        guild = bot.get_guild(int(guild_id))
-        if guild is None:
-            return {}
-        return {
-            user_id: member
-            for user_id in unique_user_ids
-            if (member := guild.get_member(user_id)) is not None
-        }
-
-    future = asyncio.run_coroutine_threadsafe(resolve_member_activity_members_async(int(guild_id), unique_user_ids), loop)
-    try:
-        return future.result(timeout=20)
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        logger.warning("Timed out resolving guild members for activity rankings (guild=%s).", guild_id)
-        return {}
-    except Exception:
-        logger.exception("Failed resolving guild members for activity rankings (guild=%s).", guild_id)
-        return {}
+    return _get_member_activity_manager().resolve_member_activity_members(guild_id, user_ids)
 
 
 def list_member_activity_top_window(
@@ -2720,291 +2140,24 @@ def list_member_activity_top_window(
     *,
     role_id: int | None = None,
 ):
-    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
-    safe_limit = max(1, min(int(limit or MEMBER_ACTIVITY_WEB_TOP_LIMIT), 100))
-    safe_role_id = normalize_optional_role_id(role_id)
-    now_dt = datetime.now(UTC)
-    conn = get_db_connection()
-    with db_lock:
-        ensure_member_activity_schema_locked(conn)
-        window_duration = next((duration for key, _label, duration in MEMBER_ACTIVITY_WINDOW_SPECS if key == window_key), None)
-        if window_duration is None:
-            raise ValueError(f"Unsupported member activity window: {window_key}")
-        cutoff_dt = now_dt - window_duration
-        rows = conn.execute(
-            """
-            SELECT
-                h.user_id,
-                s.username,
-                s.display_name,
-                MAX(h.last_message_at) AS last_message_at,
-                SUM(h.message_count) AS message_count,
-                COUNT(DISTINCT substr(h.hour_bucket, 1, 10)) AS active_days
-            FROM member_activity_recent_hourly h
-            LEFT JOIN member_activity_summary s
-              ON s.guild_id = h.guild_id AND s.user_id = h.user_id
-            WHERE h.guild_id = ?
-              AND h.hour_bucket >= ?
-            GROUP BY h.user_id, s.username, s.display_name
-            ORDER BY message_count DESC, last_message_at DESC
-            """,
-            (
-                safe_guild_id,
-                cutoff_dt.replace(minute=0, second=0, microsecond=0).isoformat(),
-            ),
-        ).fetchall()
-    members = []
-    label = next((item_label for key, item_label, _duration in MEMBER_ACTIVITY_WINDOW_SPECS if key == window_key), window_key)
-    batch_size = max(safe_limit * 5, 100)
-    for batch_start in range(0, len(rows), batch_size):
-        batch_rows = rows[batch_start : batch_start + batch_size]
-        member_map = resolve_member_activity_members(
-            safe_guild_id,
-            [int(row["user_id"] or 0) for row in batch_rows],
-        )
-        for row in batch_rows:
-            user_id = int(row["user_id"] or 0)
-            if not is_member_activity_ranking_eligible(member_map.get(user_id), role_id=safe_role_id):
-                continue
-            stats = build_member_activity_window_record(
-                window_key,
-                label,
-                int(row["message_count"] or 0),
-                int(row["active_days"] or 0),
-                cutoff_dt,
-                now_dt,
-                first_message_at="",
-                last_message_at=str(row["last_message_at"] or ""),
-            )
-            stats.update(
-                {
-                    "rank": len(members) + 1,
-                    "user_id": user_id,
-                    "username": decrypt_member_activity_identity(str(row["username"] or "")),
-                    "display_name": decrypt_member_activity_identity(str(row["display_name"] or "")),
-                }
-            )
-            members.append(stats)
-            if len(members) >= safe_limit:
-                return members
-    return members
+    return _get_member_activity_manager().list_member_activity_top_window(
+        guild_id,
+        window_key,
+        limit,
+        role_id=role_id,
+    )
 
 
 def get_member_activity_snapshot(guild_id: int | None, user_id: int):
-    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
-    now_dt = datetime.now(UTC)
-    conn = get_db_connection()
-    with db_lock:
-        ensure_member_activity_schema_locked(conn)
-        summary_row = conn.execute(
-            """
-            SELECT
-                user_id,
-                username,
-                display_name,
-                first_message_at,
-                last_message_at,
-                total_messages,
-                total_active_days
-            FROM member_activity_summary
-            WHERE guild_id = ? AND user_id = ?
-            """,
-            (safe_guild_id, int(user_id)),
-        ).fetchone()
-        if summary_row is None:
-            return {
-                "ok": True,
-                "user_id": int(user_id),
-                "username": "",
-                "display_name": "",
-                "windows": [],
-            }
-
-        windows = []
-        for window_key, label, window_duration in MEMBER_ACTIVITY_WINDOW_SPECS:
-            cutoff_dt = now_dt - window_duration
-            row = conn.execute(
-                """
-                SELECT
-                    SUM(message_count) AS message_count,
-                    COUNT(DISTINCT substr(hour_bucket, 1, 10)) AS active_days,
-                    MAX(last_message_at) AS last_message_at
-                FROM member_activity_recent_hourly
-                WHERE guild_id = ?
-                  AND user_id = ?
-                  AND hour_bucket >= ?
-                """,
-                (
-                    safe_guild_id,
-                    int(user_id),
-                    cutoff_dt.replace(minute=0, second=0, microsecond=0).isoformat(),
-                ),
-            ).fetchone()
-            windows.append(
-                build_member_activity_window_record(
-                    window_key,
-                    label,
-                    int((row["message_count"] or 0) if row is not None else 0),
-                    int((row["active_days"] or 0) if row is not None else 0),
-                    cutoff_dt,
-                    now_dt,
-                    first_message_at="",
-                    last_message_at=str((row["last_message_at"] or "") if row is not None else ""),
-                )
-            )
-        return {
-            "ok": True,
-            "user_id": int(summary_row["user_id"] or 0),
-            "username": decrypt_member_activity_identity(str(summary_row["username"] or "")),
-            "display_name": decrypt_member_activity_identity(str(summary_row["display_name"] or "")),
-            "windows": windows,
-        }
+    return _get_member_activity_manager().get_member_activity_snapshot(guild_id, user_id)
 
 
 def build_member_activity_web_payload(guild_id: int, role_id: int | None = None):
-    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
-    safe_role_id = normalize_optional_role_id(role_id)
-    windows = []
-    for window_key, label, _duration in MEMBER_ACTIVITY_WINDOW_SPECS:
-        windows.append(
-            {
-                "key": window_key,
-                "label": label,
-                "members": list_member_activity_top_window(
-                    safe_guild_id,
-                    window_key,
-                    limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT,
-                    role_id=safe_role_id,
-                ),
-            }
-        )
-    return {
-        "ok": True,
-        "guild_id": safe_guild_id,
-        "generated_at": datetime.now(UTC).isoformat(),
-        "top_limit": MEMBER_ACTIVITY_WEB_TOP_LIMIT,
-        "selected_role_id": safe_role_id or 0,
-        "excluded_role_ids": sorted(MODERATOR_ROLE_IDS),
-        "excluded_role_names": sorted(DEFAULT_ALLOWED_ROLE_NAMES),
-        "windows": windows,
-    }
+    return _get_member_activity_manager().build_member_activity_web_payload(guild_id, role_id=role_id)
 
 
 def export_member_activity_archive(guild_id: int, role_id: int | None = None):
-    safe_guild_id = require_managed_guild_id(guild_id, context="member activity guild")
-    safe_role_id = normalize_optional_role_id(role_id)
-    payload = build_member_activity_web_payload(safe_guild_id, role_id=safe_role_id)
-    generated_at = datetime.now(UTC).replace(microsecond=0)
-    conn = get_db_connection()
-    with db_lock:
-        summary_rows = conn.execute(
-            """
-            SELECT guild_id, user_id, username, display_name, first_message_at, last_message_at
-            FROM member_activity_summary
-            WHERE guild_id = ?
-            ORDER BY last_message_at DESC, user_id ASC
-            """,
-            (safe_guild_id,),
-        ).fetchall()
-        hourly_rows = conn.execute(
-            """
-            SELECT guild_id, user_id, hour_bucket, message_count, last_message_at
-            FROM member_activity_recent_hourly
-            WHERE guild_id = ?
-            ORDER BY hour_bucket DESC, user_id ASC
-            """,
-            (safe_guild_id,),
-        ).fetchall()
-
-    def build_csv_bytes(headers: list[str], rows: list[list[object]]):
-        buffer = io.StringIO()
-        writer = csv.writer(buffer)
-        writer.writerow(headers)
-        writer.writerows(rows)
-        return buffer.getvalue().encode("utf-8")
-
-    archive_buffer = io.BytesIO()
-    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr(
-            "summary.json",
-            json.dumps(
-                {
-                    "guild_id": safe_guild_id,
-                    "generated_at": generated_at.isoformat(),
-                    "retention_days": MEMBER_ACTIVITY_RECENT_RETENTION_DAYS,
-                    "windows": payload.get("windows", []),
-                },
-                indent=2,
-                sort_keys=True,
-            ).encode("utf-8"),
-        )
-
-        for window in payload.get("windows", []):
-            window_key = str(window.get("key") or "window")
-            members = window.get("members", []) if isinstance(window, dict) else []
-            archive.writestr(
-                f"{window_key}.csv",
-                build_csv_bytes(
-                    ["rank", "user_id", "display_name", "username", "message_count", "active_days", "last_message_at"],
-                    [
-                        [
-                            int(member.get("rank") or 0),
-                            int(member.get("user_id") or 0),
-                            str(member.get("display_name") or ""),
-                            str(member.get("username") or ""),
-                            int(member.get("message_count") or 0),
-                            int(member.get("active_days") or 0),
-                            str(member.get("last_message_at") or ""),
-                        ]
-                        for member in members
-                    ],
-                ),
-            )
-
-        archive.writestr(
-            "member_activity_summary.csv",
-            build_csv_bytes(
-                ["guild_id", "user_id", "username", "display_name", "first_message_at", "last_message_at"],
-                [
-                    [
-                        int(row["guild_id"] or 0),
-                        int(row["user_id"] or 0),
-                        decrypt_member_activity_identity(str(row["username"] or "")),
-                        decrypt_member_activity_identity(str(row["display_name"] or "")),
-                        str(row["first_message_at"] or ""),
-                        str(row["last_message_at"] or ""),
-                    ]
-                    for row in summary_rows
-                ],
-            ),
-        )
-        archive.writestr(
-            "member_activity_recent_hourly.csv",
-            build_csv_bytes(
-                ["guild_id", "user_id", "hour_bucket", "message_count", "last_message_at"],
-                [
-                    [
-                        int(row["guild_id"] or 0),
-                        int(row["user_id"] or 0),
-                        str(row["hour_bucket"] or ""),
-                        int(row["message_count"] or 0),
-                        str(row["last_message_at"] or ""),
-                    ]
-                    for row in hourly_rows
-                ],
-            ),
-        )
-
-    role_suffix = f"_role_{safe_role_id}" if safe_role_id is not None else ""
-    file_name = f"member_activity_guild_{safe_guild_id}{role_suffix}_{generated_at.strftime('%Y%m%dT%H%M%SZ')}.zip"
-    return {
-        "ok": True,
-        "filename": file_name,
-        "content_type": "application/zip",
-        "data": archive_buffer.getvalue(),
-        "generated_at": generated_at.isoformat(),
-    }
-
+    return _get_member_activity_manager().export_member_activity_archive(guild_id, role_id=role_id)
 
 def run_web_get_member_activity(guild_id: int, role_id: int | None = None):
     try:
@@ -3564,6 +2717,142 @@ def update_linkedin_subscription_runtime_state(
                 last_post_url_value,
                 last_post_text_value,
                 last_published_at_value,
+                last_checked_at_value,
+                last_posted_at_value,
+                last_error_value,
+                updated_at_value,
+                int(subscription_id),
+                safe_guild_id,
+            ),
+        )
+        conn.commit()
+
+
+def parse_beta_program_snapshot_json(raw_value) -> list[dict]:
+    return parse_beta_program_snapshot_json_impl(raw_value)
+
+
+def serialize_beta_program_snapshot(programs: list[dict]) -> str:
+    return serialize_beta_program_snapshot_impl(programs)
+
+
+def list_beta_program_subscriptions(
+    guild_id: int | None = None,
+    enabled_only: bool = False,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    query = (
+        "SELECT id, guild_id, source_url, source_name, target_channel_id, target_channel_name, "
+        "last_snapshot_json, last_checked_at, last_posted_at, last_error, enabled, "
+        "created_at, updated_at, created_by_email, updated_by_email "
+        "FROM beta_program_subscriptions WHERE guild_id = ?"
+    )
+    params = [safe_guild_id]
+    if enabled_only:
+        query += " AND enabled = 1"
+    query += " ORDER BY target_channel_name COLLATE NOCASE ASC, id ASC"
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    subscriptions = []
+    for row in rows:
+        item = dict(row)
+        item["programs"] = parse_beta_program_snapshot_json(item.get("last_snapshot_json"))
+        subscriptions.append(item)
+    return subscriptions
+
+
+def create_or_update_beta_program_subscription(
+    guild_id: int | None,
+    *,
+    source_url: str,
+    source_name: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    last_snapshot_json: str,
+    actor_email: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO beta_program_subscriptions (
+                guild_id, source_url, source_name, target_channel_id, target_channel_name,
+                last_snapshot_json, enabled, created_at, updated_at, created_by_email, updated_by_email
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, source_url, target_channel_id) DO UPDATE SET
+                source_name=excluded.source_name,
+                target_channel_name=excluded.target_channel_name,
+                last_snapshot_json=excluded.last_snapshot_json,
+                enabled=1,
+                updated_at=excluded.updated_at,
+                updated_by_email=excluded.updated_by_email
+            """,
+            (
+                safe_guild_id,
+                str(source_url or "").strip(),
+                clip_text(str(source_name or "").strip(), max_chars=120),
+                int(target_channel_id),
+                str(target_channel_name or "").strip(),
+                str(last_snapshot_json or "[]").strip() or "[]",
+                now_iso,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                str(actor_email or "").strip().lower(),
+            ),
+        )
+        conn.commit()
+
+
+def delete_beta_program_subscription(subscription_id: int, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            "DELETE FROM beta_program_subscriptions WHERE id = ? AND guild_id = ?",
+            (int(subscription_id), safe_guild_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def update_beta_program_subscription_runtime_state(
+    subscription_id: int,
+    *,
+    guild_id: int | None,
+    source_name: str | None = None,
+    last_snapshot_json: str | None = None,
+    last_checked_at: str | None = None,
+    last_posted_at: str | None = None,
+    last_error: str | None = None,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    source_name_value = clip_text(str(source_name or "").strip(), max_chars=120) if source_name is not None else None
+    last_snapshot_json_value = str(last_snapshot_json or "").strip() if last_snapshot_json is not None else None
+    last_checked_at_value = str(last_checked_at or "").strip() if last_checked_at is not None else None
+    last_posted_at_value = str(last_posted_at or "").strip() if last_posted_at is not None else None
+    last_error_value = clip_text(str(last_error or "").strip(), max_chars=500) if last_error is not None else None
+    updated_at_value = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            UPDATE beta_program_subscriptions
+            SET
+                source_name = COALESCE(?, source_name),
+                last_snapshot_json = COALESCE(?, last_snapshot_json),
+                last_checked_at = COALESCE(?, last_checked_at),
+                last_posted_at = COALESCE(?, last_posted_at),
+                last_error = COALESCE(?, last_error),
+                updated_at = ?
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                source_name_value,
+                last_snapshot_json_value,
                 last_checked_at_value,
                 last_posted_at_value,
                 last_error_value,
@@ -4886,6 +4175,7 @@ def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_
         return {"ok": False, "error": "Invalid YouTube subscription payload."}
     action = str(payload.get("action") or "").strip().lower()
     safe_guild_id = normalize_target_guild_id(guild_id)
+    audit_actor = build_web_actor_audit_label(actor_email)
     try:
         if action == "add":
             source_url = str(payload.get("source_url") or "").strip()
@@ -4911,7 +4201,7 @@ def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_
             record_action_safe(
                 action="youtube_subscription_add",
                 status="success",
-                moderator=actor_email,
+                moderator=audit_actor,
                 target=resolved["channel_title"],
                 reason=truncate_log_text(resolved["source_url"]),
                 guild_id=safe_guild_id,
@@ -4924,7 +4214,7 @@ def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_
             record_action_safe(
                 action="youtube_subscription_delete",
                 status="success",
-                moderator=actor_email,
+                moderator=audit_actor,
                 target=str(subscription_id),
                 reason="Deleted via web admin",
                 guild_id=safe_guild_id,
@@ -4969,6 +4259,7 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
         return {"ok": False, "error": "Invalid LinkedIn subscription payload."}
     action = str(payload.get("action") or "").strip().lower()
     safe_guild_id = normalize_target_guild_id(guild_id)
+    audit_actor = build_web_actor_audit_label(actor_email)
     try:
         if action == "add":
             source_url = str(payload.get("source_url") or "").strip()
@@ -4996,7 +4287,7 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
             record_action_safe(
                 action="linkedin_subscription_add",
                 status="success",
-                moderator=actor_email,
+                moderator=audit_actor,
                 target=resolved["profile_name"],
                 reason=truncate_log_text(resolved["source_url"]),
                 guild_id=safe_guild_id,
@@ -5009,7 +4300,7 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
             record_action_safe(
                 action="linkedin_subscription_delete",
                 status="success",
-                moderator=actor_email,
+                moderator=audit_actor,
                 target=str(subscription_id),
                 reason="Deleted via web admin",
                 guild_id=safe_guild_id,
@@ -5024,6 +4315,92 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
         return {"ok": False, "error": "Failed to manage LinkedIn subscriptions."}
 
     response = build_linkedin_subscriptions_web_payload(safe_guild_id)
+    response["message"] = message
+    return response
+
+
+def build_beta_program_subscriptions_web_payload(guild_id: int):
+    subscriptions = list_beta_program_subscriptions(
+        guild_id=normalize_target_guild_id(guild_id),
+        enabled_only=False,
+    )
+    for subscription in subscriptions:
+        subscription["program_count"] = len(subscription.get("programs") or [])
+    return {
+        "ok": True,
+        "source_url": BETA_PROGRAM_PAGE_URL,
+        "subscriptions": subscriptions,
+    }
+
+
+def run_web_get_beta_program_subscriptions(guild_id: int):
+    try:
+        return build_beta_program_subscriptions_web_payload(guild_id)
+    except Exception:
+        logger.exception("Failed to build GL.iNet beta program subscriptions payload for web admin")
+        return {
+            "ok": False,
+            "error": "Unexpected error while loading GL.iNet beta program subscriptions.",
+        }
+
+
+def run_web_manage_beta_program_subscriptions(payload: dict, actor_email: str, guild_id: int):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid GL.iNet beta program payload."}
+    action = str(payload.get("action") or "").strip().lower()
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    audit_actor = build_web_actor_audit_label(actor_email)
+    try:
+        if action == "add":
+            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
+            if target_channel_id <= 0:
+                return {"ok": False, "error": "Choose a valid Discord channel."}
+            resolved = resolve_beta_program_subscription_seed(BETA_PROGRAM_PAGE_URL)
+            guild = bot.get_guild(safe_guild_id)
+            target_channel = guild.get_channel(target_channel_id) if guild else None
+            if not isinstance(target_channel, discord.TextChannel):
+                return {"ok": False, "error": "Choose a valid Discord text channel."}
+            target_channel_name = f"#{target_channel.name}"
+            create_or_update_beta_program_subscription(
+                safe_guild_id,
+                source_url=resolved["source_url"],
+                source_name=resolved["source_name"],
+                target_channel_id=target_channel_id,
+                target_channel_name=target_channel_name,
+                last_snapshot_json=resolved["last_snapshot_json"],
+                actor_email=actor_email,
+            )
+            record_action_safe(
+                action="beta_program_subscription_add",
+                status="success",
+                moderator=audit_actor,
+                target=target_channel_name,
+                reason=truncate_log_text(resolved["source_url"]),
+                guild_id=safe_guild_id,
+            )
+            message = "GL.iNet beta program monitor saved."
+        elif action == "delete":
+            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
+            if not delete_beta_program_subscription(subscription_id, guild_id=safe_guild_id):
+                return {"ok": False, "error": "GL.iNet beta program entry was not found."}
+            record_action_safe(
+                action="beta_program_subscription_delete",
+                status="success",
+                moderator=audit_actor,
+                target=str(subscription_id),
+                reason="Deleted via web admin",
+                guild_id=safe_guild_id,
+            )
+            message = "GL.iNet beta program monitor deleted."
+        else:
+            return {"ok": False, "error": "Invalid GL.iNet beta program action."}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception:
+        logger.exception("Failed to manage GL.iNet beta program subscriptions from web admin")
+        return {"ok": False, "error": "Failed to manage GL.iNet beta program subscriptions."}
+
+    response = build_beta_program_subscriptions_web_payload(safe_guild_id)
     response["message"] = message
     return response
 
@@ -5415,6 +4792,7 @@ async def run_web_bulk_role_assignment_async(guild_id: int, role_input: str, pay
     guild = bot.get_guild(normalize_target_guild_id(guild_id))
     if guild is None:
         return {"ok": False, "error": "Guild is not currently available to the bot."}
+    audit_actor = build_web_actor_audit_label(actor_email)
 
     role_id = parse_role_id_input(role_input)
     if role_id is None:
@@ -5450,14 +4828,14 @@ async def run_web_bulk_role_assignment_async(guild_id: int, role_input: str, pay
         guild=guild,
         role=role,
         payload=payload,
-        requested_by=f"web_admin:{actor_email}",
-        reason_actor=f"Bulk CSV role assignment by web admin {actor_email}",
+        requested_by=f"web_admin:{audit_actor}",
+        reason_actor=f"Bulk CSV role assignment by web admin {audit_actor}",
     )
     if error:
         return {"ok": False, "error": error}
 
     summary_lines = build_bulk_assignment_summary_lines(filename, role.mention, result)
-    report_text = build_bulk_assignment_report_text(role, f"web admin {actor_email}", filename, result)
+    report_text = build_bulk_assignment_report_text(role, f"web admin {audit_actor}", filename, result)
     return {
         "ok": True,
         "role_name": role.name,
@@ -5844,12 +5222,13 @@ async def run_web_update_bot_profile_async(
     )
     if validation_error:
         return {"ok": False, "error": validation_error}
+    audit_actor = build_web_actor_audit_label(actor_email)
 
     result = await apply_bot_profile_updates_async(
         guild_id=normalize_target_guild_id(guild_id),
         username=normalized_username,
         server_nickname=nickname_target,
-        actor_label=f"web admin {actor_email}",
+        actor_label=f"web admin {audit_actor}",
     )
     if result.get("ok"):
         logger.info(
@@ -5936,6 +5315,7 @@ async def run_web_leave_guild_async(guild_id: int, actor_email: str):
 
     guild_name = guild.name
     guild_identifier = f"{guild_name} ({guild.id})"
+    audit_actor = build_web_actor_audit_label(actor_email)
     try:
         await guild.leave()
     except discord.Forbidden:
@@ -5944,11 +5324,11 @@ async def run_web_leave_guild_async(guild_id: int, actor_email: str):
         logger.exception("Unexpected failure while leaving guild %s", guild.id)
         return {"ok": False, "error": "Unexpected Discord error while leaving that guild."}
 
-    logger.warning("Web admin requested bot leave guild %s by %s", guild_identifier, actor_email)
+    logger.warning("Web admin requested bot leave guild %s by %s", guild_identifier, audit_actor)
     record_action_safe(
         action="leave_guild",
         status="success",
-        moderator=str(actor_email or "").strip(),
+        moderator=audit_actor,
         target=guild_identifier,
         reason="Web admin requested bot leave guild",
         guild_id=guild.id,
@@ -6250,7 +5630,7 @@ def fetch_text_url(url: str, timeout_seconds: int, accept: str):
             "GET",
             path,
             headers={
-                "User-Agent": "WickedYodaLittleHelper/1.0",
+                "User-Agent": "GLiNetUnofficialDiscordBot/1.0",
                 "Accept": accept,
             },
         )
@@ -6273,7 +5653,7 @@ def shortener_request(method: str, url: str, body: bytes | None = None, headers=
         path = f"{path}?{parsed.query}"
 
     connection_cls = http.client.HTTPSConnection if parsed.scheme == "https" else http.client.HTTPConnection
-    request_headers = {"User-Agent": "WickedYodaLittleHelper/1.0"}
+    request_headers = {"User-Agent": "GLiNetUnofficialDiscordBot/1.0"}
     if headers:
         request_headers.update(headers)
 
@@ -6608,6 +5988,24 @@ def resolve_linkedin_subscription_seed(source_url: str):
     }
 
 
+def fetch_beta_testing_programs(source_url: str = ""):
+    return fetch_beta_testing_programs_impl(
+        source_url,
+        fallback_url=BETA_PROGRAM_PAGE_URL,
+        request_timeout_seconds=BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS,
+        request_user_agent=BETA_PROGRAM_REQUEST_USER_AGENT,
+    )
+
+
+def resolve_beta_program_subscription_seed(source_url: str = ""):
+    resolved = fetch_beta_testing_programs(source_url)
+    return {
+        "source_url": resolved["source_url"],
+        "source_name": resolved["source_name"],
+        "last_snapshot_json": serialize_beta_program_snapshot(resolved["programs"]),
+    }
+
+
 def uptime_request_json(url: str):
     status, _, body_text = fetch_text_url(
         url,
@@ -6625,100 +6023,23 @@ def uptime_request_json(url: str):
     return parsed_body
 
 
-def _status_label(status_code: int):
-    return {0: "down", 1: "up", 2: "pending", 3: "maintenance"}.get(status_code, "unknown")
-
-
 def fetch_uptime_snapshot():
-    if not UPTIME_API_CONFIG_URL or not UPTIME_API_HEARTBEAT_URL:
-        raise RuntimeError("UPTIME_STATUS_PAGE_URL is not configured correctly.")
-    config_payload = uptime_request_json(UPTIME_API_CONFIG_URL)
-    heartbeat_payload = uptime_request_json(UPTIME_API_HEARTBEAT_URL)
-    group_list = config_payload.get("publicGroupList", [])
-    heartbeat_list = heartbeat_payload.get("heartbeatList", {})
-    uptime_list = heartbeat_payload.get("uptimeList", {})
-    if not isinstance(group_list, list) or not isinstance(heartbeat_list, dict):
-        raise RuntimeError("Uptime payload is missing expected fields.")
-
-    monitor_names = {}
-    for group in group_list:
-        if not isinstance(group, dict):
-            continue
-        monitors = group.get("monitorList", [])
-        if not isinstance(monitors, list):
-            continue
-        for monitor in monitors:
-            if not isinstance(monitor, dict):
-                continue
-            monitor_id = monitor.get("id")
-            monitor_name = monitor.get("name")
-            if isinstance(monitor_id, int) and isinstance(monitor_name, str):
-                monitor_names[monitor_id] = monitor_name.strip()
-
-    status_counts = {"up": 0, "down": 0, "pending": 0, "maintenance": 0, "unknown": 0}
-    down_monitors = []
-    latest_timestamp = ""
-    monitor_ids = sorted(monitor_names.keys())
-    if not monitor_ids:
-        monitor_ids = sorted(int(key) for key in heartbeat_list.keys() if str(key).isdigit())
-
-    for monitor_id in monitor_ids:
-        entries = heartbeat_list.get(str(monitor_id), [])
-        latest_entry = entries[-1] if isinstance(entries, list) and entries else None
-        if not isinstance(latest_entry, dict):
-            status_counts["unknown"] += 1
-            continue
-        status_code = latest_entry.get("status")
-        status_label = _status_label(status_code) if isinstance(status_code, int) else "unknown"
-        status_counts[status_label] += 1
-        current_time = latest_entry.get("time")
-        if isinstance(current_time, str) and current_time > latest_timestamp:
-            latest_timestamp = current_time
-        if status_label == "down":
-            monitor_name = monitor_names.get(monitor_id, f"Monitor {monitor_id}")
-            uptime_key = f"{monitor_id}_24"
-            uptime_value = uptime_list.get(uptime_key) if isinstance(uptime_list, dict) else None
-            if isinstance(uptime_value, (int, float)):
-                down_monitors.append(f"{monitor_name} ({uptime_value * 100:.1f}% 24h)")
-            else:
-                down_monitors.append(monitor_name)
-
-    return {
-        "title": config_payload.get("config", {}).get("title", "Uptime Status"),
-        "page_url": UPTIME_STATUS_PAGE_URL,
-        "total": len(monitor_ids),
-        "counts": status_counts,
-        "down_monitors": down_monitors,
-        "last_sample": latest_timestamp,
-    }
+    return fetch_uptime_snapshot_impl(
+        config_url=UPTIME_API_CONFIG_URL,
+        heartbeat_url=UPTIME_API_HEARTBEAT_URL,
+        page_url=UPTIME_STATUS_PAGE_URL,
+        fetch_json=uptime_request_json,
+    )
 
 
 def format_uptime_summary(snapshot: dict):
-    counts = snapshot.get("counts", {})
-    total = int(snapshot.get("total", 0))
-    up = int(counts.get("up", 0))
-    down = int(counts.get("down", 0))
-    pending = int(counts.get("pending", 0))
-    maintenance = int(counts.get("maintenance", 0))
-    unknown = int(counts.get("unknown", 0))
-    lines = [
-        f"**{snapshot.get('title', 'Uptime Status')}**",
-        f"Page: {snapshot.get('page_url', UPTIME_STATUS_PAGE_URL)}",
-        f"Monitors: {total} | Up: {up} | Down: {down} | Pending: {pending} | Maintenance: {maintenance} | Unknown: {unknown}",
-    ]
-    last_sample = str(snapshot.get("last_sample", "")).strip()
-    if last_sample:
-        lines.append(f"Last sample: {last_sample} UTC")
-    down_monitors = snapshot.get("down_monitors", [])
-    if isinstance(down_monitors, list) and down_monitors:
-        lines.append("Down monitors:")
-        for item in down_monitors[:10]:
-            lines.append(f"- {truncate_log_text(str(item), max_length=120)}")
-        if len(down_monitors) > 10:
-            lines.append(f"- ...and {len(down_monitors) - 10} more")
-    else:
-        lines.append("No monitors are currently down.")
-    return trim_search_message("\n".join(lines))
+    return trim_search_message(
+        format_uptime_summary_impl(
+            snapshot,
+            page_url=UPTIME_STATUS_PAGE_URL,
+            truncate_text=truncate_log_text,
+        )
+    )
 
 
 def read_recent_log_lines(path: str, max_lines: int):
@@ -7678,6 +6999,182 @@ def schedule_linkedin_monitor_restart():
     loop.call_soon_threadsafe(restart_linkedin_monitor_task)
 
 
+async def process_beta_program_subscription(subscription: dict):
+    subscription_id = int(subscription.get("id") or 0)
+    guild_id = int(subscription.get("guild_id") or 0)
+    source_url = str(subscription.get("source_url") or "").strip()
+    target_channel_id = int(subscription.get("target_channel_id") or 0)
+    if subscription_id <= 0 or guild_id <= 0 or not source_url or target_channel_id <= 0:
+        return
+    if not is_managed_guild_id(guild_id):
+        return
+
+    checked_at = datetime.now(UTC).isoformat()
+    try:
+        resolved = await asyncio.to_thread(fetch_beta_testing_programs, source_url)
+    except Exception as exc:
+        update_beta_program_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error=str(exc),
+        )
+        raise
+
+    current_programs = resolved.get("programs") or []
+    source_name = str(
+        resolved.get("source_name") or subscription.get("source_name") or "GL.iNet Beta Programs"
+    ).strip()
+    previous_programs = parse_beta_program_snapshot_json(subscription.get("last_snapshot_json"))
+    previous_programs_by_id = {str(item.get("program_id") or ""): item for item in previous_programs}
+    current_programs_by_id = {str(item.get("program_id") or ""): item for item in current_programs}
+    added_programs = [item for item in current_programs if item["program_id"] not in previous_programs_by_id]
+    removed_programs = [item for item in previous_programs if item["program_id"] not in current_programs_by_id]
+    snapshot_json = serialize_beta_program_snapshot(current_programs)
+
+    if not added_programs and not removed_programs:
+        update_beta_program_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            source_name=source_name,
+            last_snapshot_json=snapshot_json,
+            last_checked_at=checked_at,
+            last_error="",
+        )
+        return
+
+    notify_channel = await get_text_channel(bot, target_channel_id)
+    if notify_channel is None or notify_channel.guild.id != guild_id:
+        update_beta_program_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            source_name=source_name,
+            last_snapshot_json=snapshot_json,
+            last_checked_at=checked_at,
+            last_error="Notify channel not found in the selected guild.",
+        )
+        logger.warning(
+            "Notify channel %s not found for GL.iNet beta program subscription %s",
+            target_channel_id,
+            subscription_id,
+        )
+        return
+
+    if added_programs:
+        embed = discord.Embed(
+            title="New GL.iNet beta program(s)",
+            description="A new beta program was added to the GL.iNet beta testing page.",
+            color=discord.Color.green(),
+            url=source_url,
+        )
+        for program in added_programs[:BETA_PROGRAM_MAX_NOTIFICATIONS_PER_RUN]:
+            value_lines = []
+            if program.get("summary"):
+                value_lines.append(clip_text(str(program["summary"]), max_chars=200))
+            if program.get("deadline"):
+                value_lines.append(f"Deadline: `{program['deadline']}`")
+            if program.get("apply_url"):
+                value_lines.append(f"[Apply here]({program['apply_url']})")
+            embed.add_field(
+                name=clip_text(str(program.get("title") or "Unknown Program"), max_chars=120),
+                value="\n".join(value_lines) or "Open the beta page for details.",
+                inline=False,
+            )
+        embed.set_footer(text="GL.iNet Beta Programs")
+        await notify_channel.send(embed=embed)
+
+    if removed_programs:
+        embed = discord.Embed(
+            title="GL.iNet beta program(s) removed",
+            description="A beta program is no longer listed on the GL.iNet beta testing page.",
+            color=discord.Color.orange(),
+            url=source_url,
+        )
+        for program in removed_programs[:BETA_PROGRAM_MAX_NOTIFICATIONS_PER_RUN]:
+            value_lines = []
+            if program.get("summary"):
+                value_lines.append(clip_text(str(program["summary"]), max_chars=200))
+            if program.get("deadline"):
+                value_lines.append(f"Last seen deadline: `{program['deadline']}`")
+            if program.get("apply_url"):
+                value_lines.append(f"[Last known link]({program['apply_url']})")
+            embed.add_field(
+                name=clip_text(str(program.get("title") or "Unknown Program"), max_chars=120),
+                value="\n".join(value_lines) or "This program disappeared from the beta page.",
+                inline=False,
+            )
+        embed.set_footer(text="GL.iNet Beta Programs")
+        await notify_channel.send(embed=embed)
+
+    update_beta_program_subscription_runtime_state(
+        subscription_id,
+        guild_id=guild_id,
+        source_name=source_name,
+        last_snapshot_json=snapshot_json,
+        last_checked_at=checked_at,
+        last_posted_at=datetime.now(UTC).isoformat(),
+        last_error="",
+    )
+    record_action_safe(
+        action="beta_program_notify",
+        status="success",
+        moderator="system",
+        target=f"{notify_channel.name} ({notify_channel.id})",
+        reason=truncate_log_text(
+            f"added={len(added_programs)} removed={len(removed_programs)} source={source_url}",
+        ),
+        guild_id=guild_id,
+    )
+    logger.info(
+        "GL.iNet beta program subscription posted %d added and %d removed program(s) into channel %s",
+        len(added_programs),
+        len(removed_programs),
+        notify_channel.id,
+    )
+
+
+async def poll_beta_program_subscriptions():
+    subscriptions = list_beta_program_subscriptions(enabled_only=True)
+    if not subscriptions:
+        return
+    for subscription in subscriptions:
+        try:
+            await process_beta_program_subscription(subscription)
+        except Exception:
+            logger.exception(
+                "GL.iNet beta program subscription poll failed for id=%s",
+                subscription.get("id"),
+            )
+
+
+async def beta_program_monitor_loop():
+    logger.info(
+        "GL.iNet beta program monitor active: polling every %s seconds",
+        BETA_PROGRAM_POLL_INTERVAL_SECONDS,
+    )
+    await poll_beta_program_subscriptions()
+    while not bot.is_closed():
+        await asyncio.sleep(BETA_PROGRAM_POLL_INTERVAL_SECONDS)
+        await poll_beta_program_subscriptions()
+
+
+def restart_beta_program_monitor_task():
+    global beta_program_monitor_task
+    if beta_program_monitor_task is not None and not beta_program_monitor_task.done():
+        beta_program_monitor_task.cancel()
+    if not BETA_PROGRAM_NOTIFY_ENABLED:
+        beta_program_monitor_task = None
+        return
+    beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
+
+
+def schedule_beta_program_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_beta_program_monitor_task)
+
+
 def refresh_runtime_settings_from_env(_updated_values=None):
     global LOG_LEVEL
     global CONTAINER_LOG_LEVEL
@@ -7717,6 +7214,10 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global LINKEDIN_NOTIFY_ENABLED
     global LINKEDIN_POLL_INTERVAL_SECONDS
     global LINKEDIN_REQUEST_TIMEOUT_SECONDS
+    global BETA_PROGRAM_PAGE_URL
+    global BETA_PROGRAM_NOTIFY_ENABLED
+    global BETA_PROGRAM_POLL_INTERVAL_SECONDS
+    global BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS
     global UPTIME_STATUS_ENABLED
     global UPTIME_STATUS_TIMEOUT_SECONDS
 
@@ -7801,6 +7302,25 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
         os.getenv("LINKEDIN_REQUEST_TIMEOUT_SECONDS", LINKEDIN_REQUEST_TIMEOUT_SECONDS),
         LINKEDIN_REQUEST_TIMEOUT_SECONDS,
+        minimum=5,
+    )
+    BETA_PROGRAM_PAGE_URL = normalize_http_url_setting(
+        os.getenv("BETA_PROGRAM_PAGE_URL", BETA_PROGRAM_PAGE_URL),
+        BETA_PROGRAM_PAGE_URL,
+        "BETA_PROGRAM_PAGE_URL",
+    )
+    BETA_PROGRAM_NOTIFY_ENABLED = is_truthy_env_value(
+        os.getenv("BETA_PROGRAM_NOTIFY_ENABLED", "true" if BETA_PROGRAM_NOTIFY_ENABLED else "false"),
+        default_value=BETA_PROGRAM_NOTIFY_ENABLED,
+    )
+    BETA_PROGRAM_POLL_INTERVAL_SECONDS = parse_int_setting(
+        os.getenv("BETA_PROGRAM_POLL_INTERVAL_SECONDS", BETA_PROGRAM_POLL_INTERVAL_SECONDS),
+        BETA_PROGRAM_POLL_INTERVAL_SECONDS,
+        minimum=60,
+    )
+    BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS", BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS),
+        BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS,
         minimum=5,
     )
     UPTIME_STATUS_ENABLED = is_truthy_env_value(
@@ -7942,6 +7462,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     schedule_reddit_feed_monitor_restart()
     schedule_youtube_monitor_restart()
     schedule_linkedin_monitor_restart()
+    schedule_beta_program_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
@@ -8138,6 +7659,8 @@ def start_web_admin_server():
                     on_manage_youtube_subscriptions=run_web_manage_youtube_subscriptions,
                     on_get_linkedin_subscriptions=run_web_get_linkedin_subscriptions,
                     on_manage_linkedin_subscriptions=run_web_manage_linkedin_subscriptions,
+                    on_get_beta_program_subscriptions=run_web_get_beta_program_subscriptions,
+                    on_manage_beta_program_subscriptions=run_web_manage_beta_program_subscriptions,
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
@@ -8573,20 +8096,21 @@ def build_reddit_search_message(query: str):
 
 
 def build_help_message():
-    lines = [
-        "🤖 **Bot Quick Help**",
-        "",
-        "Use this bot for:",
-        "- Role access and invites (`/submitrole`, `/enter_role`, `/getaccess`)",
-        "- Search (`/search_reddit`, `/search_forum`, `/search_openwrt_forum`, `/search_kvm`, `/search_iot`, `/search_router`)",
-        "- Utilities (`/ping`, `/sayhi`, `/happy`, `/shorten`, `/expand`, `/uptime`, `/stats`)",
-        "- Country nickname tools (`/country`, `/clear_country`)",
-        "- Tag shortcuts (`!list` and dynamic slash tag commands)",
-        "- Moderation and member/role management (restricted by role/permissions)",
-        "",
-        f"📚 Advanced options and full docs: {BOT_HELP_WIKI_URL}",
-    ]
-    return trim_search_message("\n".join(lines))
+    return build_help_message_for_command(None)
+
+
+def build_help_message_for_command(command_name: str | None):
+    return trim_search_message(
+        build_help_content_message_for_command(
+            command_name,
+            bot_public_name=BOT_PUBLIC_NAME,
+            bot_help_wiki_url=BOT_HELP_WIKI_URL,
+            bot_help_wiki_root_url=BOT_HELP_WIKI_ROOT_URL,
+            command_permission_defaults=COMMAND_PERMISSION_DEFAULTS,
+            moderator_policy_value=COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+            command_permission_metadata=COMMAND_PERMISSION_METADATA,
+        )
+    )
 
 
 def format_member_activity_last_seen(raw_value: str):
@@ -8657,7 +8181,8 @@ initialize_storage()
 upgrade_legacy_default_tag_responses(GUILD_ID)
 
 # Runtime caches for invite tracking
-invite_roles_by_guild = load_invite_roles()
+invite_roles_by_guild.clear()
+invite_roles_by_guild.update(load_invite_roles())
 
 
 @bot.event
@@ -8666,8 +8191,16 @@ async def on_ready():
     global reddit_feed_monitor_task
     global youtube_monitor_task
     global linkedin_monitor_task
+    global beta_program_monitor_task
     global member_activity_backfill_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
+    purged_archives = purge_expired_guild_archives()
+    if purged_archives:
+        logger.info(
+            "Purged expired archived guild data for %s guild(s): %s",
+            len(purged_archives),
+            ", ".join(str(guild_id) for guild_id in purged_archives),
+        )
     logger.info("Logged in as %s", bot.user.name)
     await _flush_web_admin_pending_critical_alerts()
     if callable(globals().get("register_tag_commands_for_guild")):
@@ -8688,6 +8221,8 @@ async def on_ready():
         youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
     if LINKEDIN_NOTIFY_ENABLED and (linkedin_monitor_task is None or linkedin_monitor_task.done()):
         linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
+    if BETA_PROGRAM_NOTIFY_ENABLED and (beta_program_monitor_task is None or beta_program_monitor_task.done()):
+        beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
     if MEMBER_ACTIVITY_BACKFILL_ENABLED and (member_activity_backfill_task is None or member_activity_backfill_task.done()):
         member_activity_backfill_task = asyncio.create_task(
             member_activity_backfill_job(),
@@ -8697,6 +8232,18 @@ async def on_ready():
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
+    try:
+        restored = restore_archived_guild_data(guild.id)
+        if restored.get("restored"):
+            logger.info(
+                "Restored archived guild data for %s (%s) archived_at=%s purge_after_at=%s",
+                guild.name,
+                guild.id,
+                restored.get("archived_at", ""),
+                restored.get("purge_after_at", ""),
+            )
+    except Exception:
+        logger.exception("Failed restoring archived guild data for %s (%s)", guild.name, guild.id)
     if not is_managed_guild_id(guild.id):
         logger.info(
             "Joined unmanaged guild %s (%s); skipping command sync due to MANAGED_GUILD_IDS filter",
@@ -8712,11 +8259,17 @@ async def on_guild_join(guild: discord.Guild):
 
 @bot.event
 async def on_guild_remove(guild: discord.Guild):
-    invite_roles_by_guild.pop(guild.id, None)
-    invite_uses_by_guild.pop(guild.id, None)
-    tag_response_cache.pop(guild.id, None)
-    tag_command_names_by_guild.pop(guild.id, None)
-    discord_catalog_cache.pop(guild.id, None)
+    try:
+        archive_info = archive_guild_data(guild.id)
+        logger.info(
+            "Archived guild data for %s (%s) until %s",
+            guild.name,
+            guild.id,
+            archive_info.get("purge_after_at", ""),
+        )
+    except Exception:
+        logger.exception("Failed archiving guild data for %s (%s)", guild.name, guild.id)
+        clear_guild_runtime_state(guild.id)
 
 
 @bot.event
@@ -11158,7 +10711,11 @@ async def sayhi_slash(interaction: discord.Interaction):
     logger.info("/sayhi invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "sayhi"):
         return
-    intro = "Hi everyone, I am WickedYoda's Little Helper.\nI can help with moderation, search, feeds, and utility actions."
+    intro = (
+        f"Hi everyone, I am the {BOT_PUBLIC_NAME}.\n"
+        "I can help with moderation, search, feeds, role access, and utility actions.\n"
+        "Use `/help` for bot command help and wiki links."
+    )
     await interaction.response.send_message(
         intro,
         ephemeral=COMMAND_RESPONSES_EPHEMERAL,
@@ -11413,14 +10970,15 @@ async def stats_slash(interaction: discord.Interaction):
 
 @tree.command(
     name="help",
-    description="Quick bot help and link to advanced docs",
+    description="Bot command help and wiki links",
 )
-async def help_slash(interaction: discord.Interaction):
+@app_commands.describe(command="Optional command name like sayhi, submitrole, or ban_member")
+async def help_slash(interaction: discord.Interaction, command: str | None = None):
     logger.info("/help invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "help"):
         return
     await interaction.response.send_message(
-        build_help_message(),
+        build_help_message_for_command(command),
         ephemeral=COMMAND_RESPONSES_EPHEMERAL,
     )
 

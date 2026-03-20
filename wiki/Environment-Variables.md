@@ -65,6 +65,10 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `LINKEDIN_NOTIFY_ENABLED` | `true` | Boolean | Enables the LinkedIn profile monitor and web page |
 | `LINKEDIN_POLL_INTERVAL_SECONDS` | `900` | Integer, `>= 60` | Poll cadence for LinkedIn profile checks |
 | `LINKEDIN_REQUEST_TIMEOUT_SECONDS` | `15` | Integer, `>= 5` | Timeout for LinkedIn public profile requests |
+| `BETA_PROGRAM_PAGE_URL` | `https://www.gl-inet.com/beta-testing/#register` | URL | GL.iNet beta testing page monitored for program changes |
+| `BETA_PROGRAM_NOTIFY_ENABLED` | `true` | Boolean | Enables the GL.iNet beta program monitor and web page |
+| `BETA_PROGRAM_POLL_INTERVAL_SECONDS` | `900` | Integer, `>= 60` | Poll cadence for GL.iNet beta program checks |
+| `BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for GL.iNet beta page requests |
 | `UPTIME_STATUS_ENABLED` | `false` | Boolean | Enables `/uptime` command |
 | `UPTIME_STATUS_PAGE_URL` | `https://status.example.invalid/status/everything` | URL | Public status page used for uptime summary lookups |
 | `UPTIME_STATUS_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for uptime status fetch |

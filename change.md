@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-20] - Help Command Refresh
+
+### Changed
+- Updated `/sayhi` to use the public bot name `GL.iNet UnOfficial Discord Bot`.
+- Updated `/sayhi` to direct users to `/help` for command guidance.
+- Expanded `/help` to support command-specific help and wiki links for the relevant command area.
+
+## [2026-03-19] - GL.iNet Beta Program Monitor
+
+### Added
+- Guild-scoped GL.iNet beta program subscriptions in the web GUI.
+- `/admin/beta-programs` page for mapping the public GL.iNet beta page to Discord text channels.
+- Background monitor that posts notifications when beta programs are added to or removed from the GL.iNet beta page.
+
+### Notes
+- This watcher is a best-effort public-page monitor built around `https://www.gl-inet.com/beta-testing/#register`.
+
 ## [2026-03-17] - LinkedIn Profile Notifications
 
 ### Added
@@ -34,6 +51,14 @@ All notable changes to this project are documented in this file.
   - display name
   - email
 - Admins can now reset another web GUI user's password directly from that user's edit section.
+
+## [2026-03-19] - Guild Data Archive and Restore Window
+
+### Added
+
+- When the bot leaves a guild, guild-scoped data is archived for 14 days instead of being discarded immediately.
+- If the bot rejoins the exact same guild ID within that 14-day window, the archived guild data is restored automatically.
+- Expired archived guild data is purged permanently on startup after the 14-day retention window passes.
 
 ## [2026-03-19] - Web GUI Guild Leave Action
 
@@ -194,9 +219,9 @@ All notable changes to this project are documented in this file.
 ## [2026-03-15] - Bot Identity Naming
 
 ### Changed
-- Updated the primary project/bot name shown in the README to `WickedYoda'sLittleHelper`.
-- Updated the web GUI window title suffix to `WickedYoda'sLittleHelper Dashboard`.
-- Updated the web GUI bot-profile username placeholder to `WickedYoda'sLittleHelper`.
+- Updated the public project/bot name shown in the docs to `GL.iNet UnOfficial Discord Bot`.
+- Updated the web GUI window title suffix to `GL.iNet UnOfficial Discord Bot Dashboard`.
+- Updated the web GUI bot-profile username placeholder to `GL.iNet UnOfficial Discord Bot`.
 
 ## [2026-03-14] - Web GUI Guild Selection
 

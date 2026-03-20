@@ -4,7 +4,7 @@
   <img src="../assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
 </p>
 
-This wiki is the complete operations and feature reference for `WickedYoda'sLittleHelper`.
+This wiki is the complete operations and feature reference for the `GL.iNet UnOfficial Discord Bot`.
 
 ## Platform Summary
 
@@ -24,6 +24,7 @@ Core capabilities:
 - Member activity analytics with private `/stats`, rolling 90-day retention, optional startup backfill, and ZIP export from the web GUI
 - Secure web admin interface with per-command permissions, action history, observability, Reddit/YouTube/LinkedIn subscriptions, member activity views, and user management
 - Multi-guild admin model with optional managed-guild allowlist filtering
+- Guild data archival for 14 days after the bot leaves a server, with automatic restore on same-ID rejoin during that window
 - Three web-user roles:
   - `Admin`
   - `Read-only`
