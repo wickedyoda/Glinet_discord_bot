@@ -1998,6 +1998,7 @@ guild_state_manager = GuildStateManager(
     default_guild_id=GUILD_ID,
     member_activity_backfill_state_key=member_activity_backfill_state_key,
     extract_member_activity_backfill_completed_ranges=extract_member_activity_backfill_completed_ranges,
+    audit_hash_secret=os.getenv("WEB_ADMIN_SESSION_SECRET", ""),
     invite_roles_by_guild=invite_roles_by_guild,
     invite_uses_by_guild=invite_uses_by_guild,
     tag_response_cache=tag_response_cache,
