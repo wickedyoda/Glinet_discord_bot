@@ -1,11 +1,13 @@
-# WickedYoda'sLittleHelper
+# GL.iNet UnOfficial Discord Bot
 
 <p align="center">
   <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
   <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Logo (Full)" width="240" />
 </p>
 
-Discord bot for GL.iNet community operations under the `WickedYoda'sLittleHelper` identity, with invite/code role access, moderation tools, search helpers, firmware and YouTube monitoring, member-activity analytics, utility commands, and a secured multi-guild web admin GUI.
+Discord bot for GL.iNet community operations under the public `GL.iNet UnOfficial Discord Bot` name, with invite/code role access, moderation tools, search helpers, firmware/YouTube/LinkedIn/beta-program monitoring, member-activity analytics, utility commands, and a secured multi-guild web admin GUI.
+
+- Install / invite link: [Add GL.iNet UnOfficial Discord Bot to your server](https://discord.com/oauth2/authorize?client_id=1390519966050291734)
 
 ## Documentation
 
@@ -80,10 +82,12 @@ docker compose build
 - Firmware monitor (baseline + delta notifications)
 - YouTube subscription monitor with channel-to-Discord posting
 - LinkedIn public profile monitor with channel-to-Discord posting
+- GL.iNet beta program page monitor with add/remove notifications into Discord
 - Web-managed Reddit feed posting for new subreddit submissions
 - Member activity tracking with private `/stats` output, web top-20 views for rolling 90/30/7/1-day windows, and ZIP export from the web GUI
-- Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, LinkedIn profile subscriptions, and per-guild channel/tag/invite settings
+- Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, LinkedIn profile subscriptions, GL.iNet beta-program monitoring, and per-guild channel/tag/invite settings
 - Optional guild allowlist mode for multi-guild deployments and public invites
+- Guild-scoped data quarantine on bot removal with 14-day restore window on same-ID rejoin before permanent purge
 - SQLite persistence with legacy merge import on startup
 - Local verification tooling for lint, tests, security checks, and Docker builds
 
