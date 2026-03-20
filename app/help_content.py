@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 HELP_COMMAND_ALIASES = {
     "list": "list",
     "help": "help",
