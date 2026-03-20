@@ -43,7 +43,7 @@ REMEMBER_LOGIN_DAYS = 5
 AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
 PASSWORD_HASH_METHOD = "pbkdf2:sha256:600000"  # nosec B105
-SESSION_TIMEOUT_MINUTE_OPTIONS = (60,)
+SESSION_TIMEOUT_MINUTE_OPTIONS = (5, 10, 15, 20, 30, 45, 60, 90, 120)
 WEB_INACTIVITY_TIMEOUT_MINUTES = 60
 POST_FORM_TAG_PATTERN = re.compile(
     r"(<form\b[^>]*\bmethod\s*=\s*[\"']?post[\"']?[^>]*>)",
@@ -378,7 +378,7 @@ ENV_FIELDS = [
     (
         "WEB_SESSION_TIMEOUT_MINUTES",
         "Web Auto Logout (Minutes)",
-        "Session inactivity timeout in minutes (fixed at 60).",
+        "Session inactivity timeout in minutes (allowed: 5, 10, 15, 20, 30, 45, 60, 90, 120).",
     ),
     (
         "WEB_DISCORD_CATALOG_TTL_SECONDS",
@@ -1339,6 +1339,25 @@ def _write_env_file(env_file: Path, values: dict):
         pass
 
 
+def _format_env_write_error(env_file: Path, exc: OSError) -> str:
+    errno_value = getattr(exc, "errno", None)
+    if isinstance(exc, PermissionError) or errno_value in {1, 13, 30}:
+        return (
+            f"Could not save settings to {env_file}. That path is read-only or not writable in this container. "
+            "Set WEB_ENV_FILE to a writable file such as /app/data/web-settings.env."
+        )
+    return f"Could not save settings to {env_file}: {exc}"
+
+
+def _try_write_env_file(env_file: Path, values: dict) -> tuple[bool, str]:
+    try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        _write_env_file(env_file, values)
+    except OSError as exc:
+        return False, _format_env_write_error(env_file, exc)
+    return True, ""
+
+
 def _normalize_url_env_value(value: str):
     text = str(value or "").strip()
     if not text:
@@ -1535,7 +1554,7 @@ def _validate_env_updates(updated_values: dict):
         if key == "WEB_SESSION_TIMEOUT_MINUTES":
             parsed = _normalize_session_timeout_minutes(value, default_value=-1)
             if parsed == -1:
-                errors.append("WEB_SESSION_TIMEOUT_MINUTES must be 60.")
+                errors.append("WEB_SESSION_TIMEOUT_MINUTES must be one of: 5, 10, 15, 20, 30, 45, 60, 90, 120.")
         if key == "WEB_GITHUB_WIKI_URL" and value and not value.startswith(("http://", "https://")):
             errors.append("WEB_GITHUB_WIKI_URL must start with http:// or https://.")
         if key == "WEB_PUBLIC_BASE_URL" and value and not value.startswith(("http://", "https://")):
@@ -4389,13 +4408,18 @@ def create_web_app(
                 if selected_schedule not in allowed_schedules:
                     flash("Choose a valid Reddit feed schedule option.", "error")
                 else:
-                    file_values["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
-                    os.environ["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
-                    _write_env_file(env_file, file_values)
-                    if callable(on_env_settings_saved):
-                        on_env_settings_saved({"REDDIT_FEED_CHECK_SCHEDULE": selected_schedule})
-                    current_schedule = selected_schedule
-                    flash("Reddit feed schedule updated.", "success")
+                    updated_file_values = dict(file_values)
+                    updated_file_values["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
+                    saved, save_error = _try_write_env_file(env_file, updated_file_values)
+                    if not saved:
+                        flash(save_error, "error")
+                    else:
+                        file_values = updated_file_values
+                        os.environ["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
+                        if callable(on_env_settings_saved):
+                            on_env_settings_saved({"REDDIT_FEED_CHECK_SCHEDULE": selected_schedule})
+                        current_schedule = selected_schedule
+                        flash("Reddit feed schedule updated.", "success")
             elif not callable(on_manage_reddit_feeds):
                 flash("Reddit feed update callback is not configured.", "error")
             else:
@@ -5389,10 +5413,13 @@ def create_web_app(
         file_values = _parse_env_file(env_file)
         normalized_file_values = _normalize_env_updates(file_values)
         if normalized_file_values != file_values:
-            _write_env_file(env_file, normalized_file_values)
-            file_values = normalized_file_values
-            for key, value in file_values.items():
-                os.environ[key] = value
+            saved, save_error = _try_write_env_file(env_file, normalized_file_values)
+            if not saved:
+                flash(save_error, "warning")
+            else:
+                file_values = normalized_file_values
+                for key, value in file_values.items():
+                    os.environ[key] = value
         discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) and selected_guild_id else None
         channel_options = []
         role_options = []
@@ -5424,30 +5451,39 @@ def create_web_app(
                 for key, value in updated_values.items():
                     if value == "":
                         final_values.pop(key, None)
-                        os.environ.pop(key, None)
                     else:
                         final_values[key] = value
-                        os.environ[key] = value
                 for legacy_keys in ENV_KEY_ALIASES.values():
                     for legacy_key in legacy_keys:
                         final_values.pop(legacy_key, None)
-                        os.environ.pop(legacy_key, None)
-                _write_env_file(env_file, final_values)
-                effective_timeout_minutes = _normalize_session_timeout_minutes(
-                    final_values.get(
-                        "WEB_SESSION_TIMEOUT_MINUTES",
-                        os.getenv(
+                saved, save_error = _try_write_env_file(env_file, final_values)
+                if not saved:
+                    file_values = final_values
+                    flash(save_error, "error")
+                else:
+                    for key, value in updated_values.items():
+                        if value == "":
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = value
+                    for legacy_keys in ENV_KEY_ALIASES.values():
+                        for legacy_key in legacy_keys:
+                            os.environ.pop(legacy_key, None)
+                    effective_timeout_minutes = _normalize_session_timeout_minutes(
+                        final_values.get(
                             "WEB_SESSION_TIMEOUT_MINUTES",
-                            str(WEB_INACTIVITY_TIMEOUT_MINUTES),
+                            os.getenv(
+                                "WEB_SESSION_TIMEOUT_MINUTES",
+                                str(WEB_INACTIVITY_TIMEOUT_MINUTES),
+                            ),
                         ),
-                    ),
-                    default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
-                )
-                session_timeout_state["minutes"] = effective_timeout_minutes
-                if callable(on_env_settings_saved):
-                    on_env_settings_saved(updated_values)
-                flash("Settings saved to .env and applied where supported.", "success")
-                file_values = _parse_env_file(env_file)
+                        default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
+                    )
+                    session_timeout_state["minutes"] = effective_timeout_minutes
+                    if callable(on_env_settings_saved):
+                        on_env_settings_saved(updated_values)
+                    flash(f"Settings saved to {env_file} and applied where supported.", "success")
+                    file_values = _parse_env_file(env_file)
 
         rows = []
         for key, label, description in ENV_FIELDS:

@@ -108,6 +108,12 @@ Example image:
 
 - `ghcr.io/wickedyoda/discord_invite_bot:latest`
 
+Recommended web settings persistence:
+
+- keep the source `.env` mounted read-only
+- set `WEB_ENV_FILE=/app/data/web-settings.env`
+- let the web GUI write only that writable file inside `/app/data`
+
 Recommended persistent volume:
 
 - `/root/docker/linkbot/data:/app/data`

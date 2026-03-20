@@ -63,6 +63,8 @@ from app.uptime_status import format_uptime_summary as format_uptime_summary_imp
 from web_admin import start_web_admin_interface
 
 load_dotenv()
+BOOTSTRAP_WEB_ENV_FILE = str(os.getenv("WEB_ENV_FILE", ".env") or ".env").strip() or ".env"
+load_dotenv(BOOTSTRAP_WEB_ENV_FILE, override=True)
 
 # Directory to persist data files. This folder is mounted as a Docker volume
 # so codes and invites survive container rebuilds.

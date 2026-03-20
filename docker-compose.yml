@@ -63,7 +63,7 @@ services:
       WEB_SSL_CERT_FILE: ${WEB_SSL_CERT_FILE:-tls.crt}
       WEB_SSL_KEY_FILE: ${WEB_SSL_KEY_FILE:-tls.key}
       WEB_SSL_COMMON_NAME: ${WEB_SSL_COMMON_NAME:-localhost}
-      WEB_ENV_FILE: ${WEB_ENV_FILE:-/app/.env}
+      WEB_ENV_FILE: ${WEB_ENV_FILE:-/app/data/web-settings.env}
       WEB_RESTART_ENABLED: ${WEB_RESTART_ENABLED:-true}
       WEB_GITHUB_WIKI_URL: ${WEB_GITHUB_WIKI_URL:-http://discord.glinet.wickedyoda.com/wiki}
       WEB_ADMIN_DEFAULT_USERNAME: ${WEB_ADMIN_DEFAULT_USERNAME:-admin@example.com}
@@ -89,5 +89,5 @@ services:
     volumes:
       - ./data:/app/data
       - ./logs:/logs
-      - ./.env:/app/.env
+      - ./.env:/app/.env:ro
     restart: unless-stopped

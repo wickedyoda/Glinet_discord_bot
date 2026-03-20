@@ -1,6 +1,9 @@
 import re
 from pathlib import Path
 
+from bs4 import BeautifulSoup
+
+import web_admin
 from web_admin import create_web_app
 
 
@@ -49,6 +52,40 @@ def _make_app(tmp_path: Path):
             ],
         }
 
+    guild_settings_state = {
+        "bot_log_channel_id": "",
+        "mod_log_channel_id": "",
+        "firmware_notify_channel_id": "",
+        "access_role_id": "",
+    }
+
+    def get_guild_settings(guild_id):
+        settings = dict(guild_settings_state)
+        return {
+            "ok": True,
+            "guild_id": str(guild_id),
+            "settings": settings,
+            "effective": settings,
+        }
+
+    def save_guild_settings(payload, actor_email, guild_id):
+        guild_settings_state.update(
+            {
+                "bot_log_channel_id": str(payload.get("bot_log_channel_id") or "").strip(),
+                "mod_log_channel_id": str(payload.get("mod_log_channel_id") or "").strip(),
+                "firmware_notify_channel_id": str(payload.get("firmware_notify_channel_id") or "").strip(),
+                "access_role_id": str(payload.get("access_role_id") or "").strip(),
+            }
+        )
+        settings = dict(guild_settings_state)
+        return {
+            "ok": True,
+            "guild_id": str(guild_id),
+            "message": f"Guild settings updated by {actor_email}.",
+            "settings": settings,
+            "effective": settings,
+        }
+
     app = create_web_app(
         data_dir=str(tmp_path),
         env_file_path=str(env_file),
@@ -57,6 +94,8 @@ def _make_app(tmp_path: Path):
         default_admin_password="Ab!12xy",
         on_get_guilds=guilds,
         on_get_discord_catalog=catalog,
+        on_get_guild_settings=get_guild_settings,
+        on_save_guild_settings=save_guild_settings,
         on_get_actions=lambda guild_id: {
             "ok": True,
             "actions": [
@@ -203,6 +242,25 @@ def _page_csrf_token(client, path: str):
     response = client.get(path, base_url="https://docker.example:8443")
     assert response.status_code == 200
     return _extract_csrf_token(response)
+
+
+def _form_payload(client, path: str):
+    response = client.get(path, base_url="https://docker.example:8443")
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.get_data(as_text=True), "html.parser")
+    payload = {}
+    for input_tag in soup.select("form input[name]"):
+        name = input_tag.get("name", "")
+        input_type = (input_tag.get("type") or "text").lower()
+        if input_type in {"submit", "button", "file"}:
+            continue
+        payload[name] = input_tag.get("value", "")
+    for select_tag in soup.select("form select[name]"):
+        selected_option = select_tag.find("option", selected=True)
+        if selected_option is None:
+            selected_option = select_tag.find("option")
+        payload[select_tag.get("name", "")] = selected_option.get("value", "") if selected_option else ""
+    return payload
 
 
 def test_healthz_route(tmp_path: Path):
@@ -387,6 +445,123 @@ def test_command_permissions_page_supports_disabled_mode(tmp_path: Path):
     assert b"Command Permissions" in response.data
     assert b"Disabled" in response.data
     assert b'value="disabled" selected' in response.data
+
+
+def test_admin_can_save_guild_settings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    payload = _form_payload(client, "/admin/guild-settings")
+    payload.update(
+        {
+            "bot_log_channel_id": "9999",
+            "mod_log_channel_id": "9999",
+            "firmware_notify_channel_id": "9999",
+            "access_role_id": "111",
+        }
+    )
+
+    response = client.post(
+        "/admin/guild-settings",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Guild settings updated by admin@example.com." in response.data
+    assert b"Current value (not found): 9999" not in response.data
+
+
+def test_admin_can_save_global_settings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    payload = _form_payload(client, "/admin/settings")
+    payload["WEB_SESSION_TIMEOUT_MINUTES"] = "90"
+    payload["WEB_RESTART_ENABLED"] = "true"
+    payload["WEB_SESSION_COOKIE_SECURE"] = "true"
+    payload["WEB_TRUST_PROXY_HEADERS"] = "true"
+    payload["WEB_ENFORCE_CSRF"] = "false"
+    payload["WEB_ENFORCE_SAME_ORIGIN_POSTS"] = "false"
+    payload["WEB_HARDEN_FILE_PERMISSIONS"] = "true"
+    payload["WEB_HTTPS_ENABLED"] = "true"
+
+    response = client.post(
+        "/admin/settings",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Settings saved to" in response.data
+    assert b"90 minutes" in response.data
+
+
+def test_settings_post_handles_read_only_env_file(tmp_path: Path, monkeypatch):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    payload = _form_payload(client, "/admin/settings")
+    payload["WEB_SESSION_TIMEOUT_MINUTES"] = "120"
+    payload["WEB_RESTART_ENABLED"] = "true"
+    payload["WEB_SESSION_COOKIE_SECURE"] = "true"
+    payload["WEB_TRUST_PROXY_HEADERS"] = "true"
+    payload["WEB_ENFORCE_CSRF"] = "false"
+    payload["WEB_ENFORCE_SAME_ORIGIN_POSTS"] = "false"
+    payload["WEB_HARDEN_FILE_PERMISSIONS"] = "true"
+    payload["WEB_HTTPS_ENABLED"] = "true"
+
+    def _raise_read_only(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(web_admin, "_write_env_file", _raise_read_only)
+
+    response = client.post(
+        "/admin/settings",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Could not save settings to" in response.data
+    assert b"read-only" in response.data.lower()
+
+
+def test_reddit_schedule_handles_read_only_env_file(tmp_path: Path, monkeypatch):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    payload = {
+        "csrf_token": _page_csrf_token(client, "/admin/reddit-feeds"),
+        "action": "schedule",
+        "reddit_feed_schedule": "*/10 * * * *",
+    }
+
+    def _raise_read_only(*args, **kwargs):
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(web_admin, "_write_env_file", _raise_read_only)
+
+    response = client.post(
+        "/admin/reddit-feeds",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Could not save settings to" in response.data
 
 
 def test_admin_can_edit_user_and_reset_password(tmp_path: Path):
