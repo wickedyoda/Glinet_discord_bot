@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-20] - Web Settings Save Hardening
+
+### Changed
+- Hardened env-backed web settings saves so read-only or non-writable `WEB_ENV_FILE` paths return a normal flash error instead of a Flask `500`.
+- Delayed runtime env mutation until after the web settings file is written successfully, preventing partial in-memory changes when persistence fails.
+- Applied the same safe-write behavior to Reddit feed schedule saves, since they use the same env-backed persistence path.
+- Docker defaults now point `WEB_ENV_FILE` at `/app/data/web-settings.env` and load that file again on startup so web-edited settings persist across container restarts.
+- Updated tests to verify guild settings saves, global settings saves, and read-only env-file failure handling.
+
 ## [2026-03-20] - Help Command Refresh
 
 ### Changed
@@ -480,6 +489,11 @@ All notable changes to this project are documented in this file.
 - Persistent role-code pairing.
 - Code generation constraints to avoid long repeated-digit patterns.
 - `/getaccess` for default access role assignment.
+
+## [2026-03-20] - Web Session Timeout Options
+
+### Changed
+- `WEB_SESSION_TIMEOUT_MINUTES` now supports 5, 10, 15, 20, 30, 45, 60, 90, and 120 minute auto-logout values in the web GUI and env validation.
 
 ## [2026-03-20] - Deployment Publish Override Update
 

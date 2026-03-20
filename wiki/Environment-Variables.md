@@ -112,13 +112,13 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `WEB_HTTPS_ENABLED` | `true` | Boolean | Enable built-in HTTPS listener |
 | `WEB_HTTPS_PORT` | `8081` | Integer port | Internal HTTPS web service port |
 | `WEB_HTTPS_PUBLISH` | `8081` | `HOST_PORT` or `HOST_IP:HOST_PORT` | Optional Docker Compose HTTPS publish override. Leave unset to disable explicit host/IP pinning and publish `8081` on all host interfaces. |
-| `WEB_SESSION_TIMEOUT_MINUTES` | `60` | `60` | Inactivity timeout for all users (including remember-login sessions) |
+| `WEB_SESSION_TIMEOUT_MINUTES` | `60` | `5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, `120` | Inactivity timeout for all users (including remember-login sessions) |
 | `WEB_PUBLIC_BASE_URL` | empty | URL with `http://` or `https://` | External URL used for origin checks behind proxy |
 | `WEB_SSL_DIR` | `${DATA_DIR}/ssl` | Path string | Directory used for HTTPS certificate and key files |
 | `WEB_SSL_CERT_FILE` | `tls.crt` | Filename or absolute path | Certificate file used by built-in HTTPS |
 | `WEB_SSL_KEY_FILE` | `tls.key` | Filename or absolute path | Private key file used by built-in HTTPS |
 | `WEB_SSL_COMMON_NAME` | `localhost` | Hostname string | Subject/Common Name used when generating a self-signed fallback certificate |
-| `WEB_ENV_FILE` | `.env` | Path string | Env file path used by web settings editor |
+| `WEB_ENV_FILE` | `${DATA_DIR}/web-settings.env` | Path string | Writable env file path used by the web settings editor and loaded again on startup |
 | `WEB_RESTART_ENABLED` | `true` | Boolean | Enables admin restart button |
 | `WEB_GITHUB_WIKI_URL` | `http://discord.glinet.wickedyoda.com/wiki` | URL with `http://` or `https://` | Header docs link |
 | `WEB_ADMIN_DEFAULT_USERNAME` | `admin@example.com` | Valid email | First-boot admin email |
