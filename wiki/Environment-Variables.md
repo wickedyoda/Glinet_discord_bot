@@ -108,12 +108,10 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `WEB_ENABLED` | `true` | Boolean | Enable/disable web admin interface |
 | `WEB_BIND_HOST` | `127.0.0.1` | Host/IP string | Use `0.0.0.0` in container deployments |
 | `WEB_PORT` | `8080` | Integer port | Internal web service port |
-| `WEB_HTTP_HOST_BIND` | `127.0.0.1` | Host/IP string | Host-side bind address for the HTTP port publish in Docker Compose. Use `0.0.0.0` if clients must reach `8080` directly from other machines. |
-| `WEB_HOST_PORT` | `8080` | Integer port | Compose host mapping variable |
+| `WEB_HTTP_PUBLISH` | `8080` | `HOST_PORT` or `HOST_IP:HOST_PORT` | Optional Docker Compose HTTP publish override. Leave unset to disable explicit host/IP pinning and publish `8080` on all host interfaces. |
 | `WEB_HTTPS_ENABLED` | `true` | Boolean | Enable built-in HTTPS listener |
 | `WEB_HTTPS_PORT` | `8081` | Integer port | Internal HTTPS web service port |
-| `WEB_HTTPS_HOST_BIND` | `127.0.0.1` | Host/IP string | Host-side bind address for the HTTPS port publish in Docker Compose. Use `0.0.0.0` if clients must reach `8081` directly from other machines. |
-| `WEB_HTTPS_HOST_PORT` | `8081` | Integer port | Compose host mapping variable for HTTPS |
+| `WEB_HTTPS_PUBLISH` | `8081` | `HOST_PORT` or `HOST_IP:HOST_PORT` | Optional Docker Compose HTTPS publish override. Leave unset to disable explicit host/IP pinning and publish `8081` on all host interfaces. |
 | `WEB_SESSION_TIMEOUT_MINUTES` | `60` | `60` | Inactivity timeout for all users (including remember-login sessions) |
 | `WEB_PUBLIC_BASE_URL` | empty | URL with `http://` or `https://` | External URL used for origin checks behind proxy |
 | `WEB_SSL_DIR` | `${DATA_DIR}/ssl` | Path string | Directory used for HTTPS certificate and key files |
@@ -163,12 +161,10 @@ This page lists all supported environment variables, defaults, and accepted opti
 ```env
 WEB_BIND_HOST=0.0.0.0
 WEB_PORT=8080
-WEB_HTTP_HOST_BIND=0.0.0.0
-WEB_HOST_PORT=8080
+WEB_HTTP_PUBLISH=8080
 WEB_HTTPS_ENABLED=true
 WEB_HTTPS_PORT=8081
-WEB_HTTPS_HOST_BIND=0.0.0.0
-WEB_HTTPS_HOST_PORT=8081
+WEB_HTTPS_PUBLISH=8081
 WEB_PUBLIC_BASE_URL=http://localhost:8080/
 WEB_SESSION_COOKIE_SECURE=false
 WEB_TRUST_PROXY_HEADERS=false
@@ -181,10 +177,10 @@ WEB_ENFORCE_SAME_ORIGIN_POSTS=true
 ```env
 WEB_BIND_HOST=0.0.0.0
 WEB_PORT=8080
-WEB_HTTP_HOST_BIND=127.0.0.1
+WEB_HTTP_PUBLISH=127.0.0.1:8080
 WEB_HTTPS_ENABLED=true
 WEB_HTTPS_PORT=8081
-WEB_HTTPS_HOST_BIND=127.0.0.1
+WEB_HTTPS_PUBLISH=127.0.0.1:8081
 WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/
 WEB_SESSION_COOKIE_SECURE=true
 WEB_TRUST_PROXY_HEADERS=true
