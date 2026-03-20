@@ -597,7 +597,15 @@ def _audit_user_label_from_email(email: str) -> str:
     normalized_email = _normalize_email(email)
     if not normalized_email:
         return "anonymous"
-    digest = hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:12]
+    salt = (os.getenv("WEB_ADMIN_SESSION_SECRET", "") or "glinet-web-audit-label").encode("utf-8")
+    digest = hashlib.scrypt(
+        normalized_email.encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=12,
+    ).hex()
     return f"user_{digest}"
 
 
