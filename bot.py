@@ -35,6 +35,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 
 from app.guild_archive import GuildArchiveManager
+from app.help_content import build_help_message_for_command as build_help_content_message_for_command
 from app.member_activity_backfill import (
     compute_missing_ranges as compute_member_activity_backfill_missing_ranges,
 )
@@ -46,6 +47,15 @@ from app.member_activity_backfill import (
 )
 from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
+)
+from app.beta_programs import (
+    fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
+)
+from app.beta_programs import (
+    parse_beta_program_snapshot_json as parse_beta_program_snapshot_json_impl,
+)
+from app.beta_programs import (
+    serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
 from web_admin import start_web_admin_interface
 
