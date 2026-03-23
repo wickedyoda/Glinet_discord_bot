@@ -70,6 +70,9 @@ load_dotenv(BOOTSTRAP_WEB_ENV_FILE, override=True)
 # so codes and invites survive container rebuilds.
 DATA_DIR = os.getenv("DATA_DIR", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+BOOTSTRAP_WEB_ENV_FALLBACK_FILE = os.path.join(DATA_DIR, "web-settings.env")
+if os.path.abspath(BOOTSTRAP_WEB_ENV_FALLBACK_FILE) != os.path.abspath(BOOTSTRAP_WEB_ENV_FILE):
+    load_dotenv(BOOTSTRAP_WEB_ENV_FALLBACK_FILE, override=True)
 
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
 SENSITIVE_LOG_VALUE_PATTERN = re.compile(r"(?i)\b(password|token|secret|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)")
