@@ -265,8 +265,8 @@ UI forms include show/hide password toggles and validation feedback.
 ### `/admin/bot-profile`
 
 - Read bot identity
-- Rename bot username
-- Set server nickname/listing label for the selected server
+- Update server nickname/listing label for the selected server
+- Rename bot username using a separate dedicated form/action
 - Upload avatar image
 
 Rename/profile updates are admin-only and web-GUI-only (read-only users can view this page but cannot apply changes).
