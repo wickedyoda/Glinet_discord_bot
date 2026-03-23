@@ -15,7 +15,7 @@ Password-protected admin UI for runtime bot and policy management.
 - Replace `${DATA_DIR}/ssl/tls.crt` and `${DATA_DIR}/ssl/tls.key` with your own files if you want a browser-trusted HTTPS listener.
 - Login uses email + password (web-only account model)
 - Optional "Keep me signed in" extends session to 5 days on device
-- Inactivity timeout is configurable: 5 to 30 minutes in 5-minute steps
+- Inactivity timeout is configurable: `5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, or `120` minutes
 - Theme options in header: `Light` and `Black`
 
 Security controls include:
@@ -120,6 +120,11 @@ UI forms include show/hide password toggles and validation feedback.
 
 - Server dashboard overview
 - Quick links to settings, users, moderation tooling, and logs-related actions for the selected server
+- Includes a `Command Status` table for the selected server
+- Lists each command with:
+  - effective access level (`Public`, `Mod Only`, `Named Roles`, `Custom Roles`, or `Disabled`)
+  - current enabled/disabled state
+- Uses the same guild-scoped command-permissions data the bot enforces at runtime
 
 ### `/admin/guild-settings`
 
@@ -191,7 +196,7 @@ UI forms include show/hide password toggles and validation feedback.
 ### `/admin/command-permissions`
 
 - Per-command access policy editor for the selected server
-- Modes: `default`, `public`, `custom_roles`
+- Modes: `default`, `public`, `disabled`, `custom_roles`
 - Multi-select role dropdown by role name
 - Manual role-ID entry fallback if catalog is incomplete
 
@@ -265,8 +270,8 @@ UI forms include show/hide password toggles and validation feedback.
 ### `/admin/bot-profile`
 
 - Read bot identity
-- Update server nickname/listing label for the selected server
-- Rename bot username using a separate dedicated form/action
+- Update server nickname/listing label for the selected server using a guild-scoped form
+- Rename bot username using a separate dedicated global form/action
 - Upload avatar image
 
 Rename/profile updates are admin-only and web-GUI-only (read-only users can view this page but cannot apply changes).

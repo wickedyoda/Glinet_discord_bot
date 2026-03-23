@@ -23,6 +23,7 @@ Core capabilities:
 - LinkedIn public profile monitor with channel-to-Discord posting
 - Member activity analytics with private `/stats`, rolling 90-day retention, optional startup backfill, and ZIP export from the web GUI
 - Secure web admin interface with per-command permissions, action history, observability, Reddit/YouTube/LinkedIn subscriptions, member activity views, and user management
+- Dashboard command-status view showing the selected server's commands, effective access level, and enabled/disabled state
 - Multi-guild admin model with optional managed-guild allowlist filtering
 - Guild data archival for 14 days after the bot leaves a server, with automatic restore on same-ID rejoin during that window
 - Three web-user roles:
