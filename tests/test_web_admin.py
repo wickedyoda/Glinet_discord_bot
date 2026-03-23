@@ -773,7 +773,7 @@ def test_admin_can_edit_user_and_reset_password(tmp_path: Path):
     assert b"target-renamed@example.com" in password_response.data
 
 
-def test_glinet_role_is_limited_to_member_activity(tmp_path: Path):
+def test_glinet_read_only_role_is_pinned_to_primary_guild(tmp_path: Path):
     app = _make_app(tmp_path)
     admin_client = app.test_client()
     _login(admin_client)
@@ -789,14 +789,14 @@ def test_glinet_role_is_limited_to_member_activity(tmp_path: Path):
             "email": "glinet@example.com",
             "password": "Ab!12xy",
             "confirm_password": "Ab!12xy",
-            "role": "glinet",
+            "role": "glinet_read_only",
         },
         base_url="https://docker.example:8443",
         follow_redirects=True,
     )
     assert create_response.status_code == 200
     assert b"glinet@example.com" in create_response.data
-    assert b"Glinet" in create_response.data
+    assert b"Glinet-Read-Only" in create_response.data
 
     client = app.test_client()
     _login_as(client, "glinet@example.com", "Ab!12xy")
@@ -807,7 +807,8 @@ def test_glinet_role_is_limited_to_member_activity(tmp_path: Path):
         follow_redirects=True,
     )
     assert guild_route_response.status_code == 200
-    assert b"Member Activity" in guild_route_response.data
+    assert b"Dashboard" in guild_route_response.data
+    assert b"Command Status" in guild_route_response.data
     assert b"Test Guild" in guild_route_response.data
 
     member_activity_response = client.get("/admin/member-activity", base_url="https://docker.example:8443")
@@ -821,5 +822,73 @@ def test_glinet_role_is_limited_to_member_activity(tmp_path: Path):
         follow_redirects=True,
     )
     assert dashboard_response.status_code == 200
-    assert b"Member Activity" in dashboard_response.data
-    assert b"Glinet access is limited to member activity only." in dashboard_response.data
+    assert b"Dashboard" in dashboard_response.data
+    assert b"Glinet-Read-Only account" in dashboard_response.data
+
+    settings_response = client.get(
+        "/admin/settings",
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert settings_response.status_code == 200
+    assert b"GL.iNet-scoped access is limited to the primary GL.iNet Community Discord server." in settings_response.data
+    assert b"Dashboard" in settings_response.data
+
+
+def test_glinet_rw_role_can_edit_only_primary_guild_scoped_settings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    admin_client = app.test_client()
+    _login(admin_client)
+
+    create_response = admin_client.post(
+        "/admin/users",
+        data={
+            "action": "create",
+            "csrf_token": _page_csrf_token(admin_client, "/admin/users"),
+            "first_name": "Glinet",
+            "last_name": "Editor",
+            "display_name": "Glinet Editor",
+            "email": "glinet-rw@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+            "role": "glinet_rw",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_response.status_code == 200
+    assert b"glinet-rw@example.com" in create_response.data
+    assert b"Glinet-RW" in create_response.data
+
+    client = app.test_client()
+    _login_as(client, "glinet-rw@example.com", "Ab!12xy")
+
+    guild_settings_response = client.post(
+        "/admin/guild-settings",
+        data={
+            "bot_log_channel_id": "9999",
+            "mod_log_channel_id": "",
+            "firmware_notify_channel_id": "",
+            "access_role_id": "111",
+            "csrf_token": _page_csrf_token(client, "/admin/guild-settings"),
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert guild_settings_response.status_code == 200
+    assert b"Guild settings updated by glinet-rw@example.com." in guild_settings_response.data
+
+    global_settings_response = client.post(
+        "/admin/settings",
+        data={
+            "WEB_PORT": "8080",
+            "WEB_HTTPS_PORT": "8081",
+            "WEB_SESSION_TIMEOUT_MINUTES": "30",
+            "csrf_token": _page_csrf_token(client, "/admin/dashboard"),
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert global_settings_response.status_code == 200
+    assert b"GL.iNet-scoped access is limited to the primary GL.iNet Community Discord server." in global_settings_response.data
+    assert b"Dashboard" in global_settings_response.data
