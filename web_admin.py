@@ -4220,28 +4220,43 @@ def create_web_app(
 
         if request.method == "POST":
             action = str(request.form.get("action", "avatar")).strip().lower()
-            if action == "identity":
+            if action in {"nickname", "username"}:
                 if not callable(on_update_bot_profile):
                     flash("Bot profile update callback is not configured.", "error")
                 else:
-                    username_input = str(request.form.get("bot_name", ""))
-                    server_nickname_input = str(request.form.get("server_nickname", ""))
-                    clear_server_nickname = str(request.form.get("clear_server_nickname", "")).strip().lower() in {
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    }
-                    username_value = username_input.strip() or None
-                    server_nickname_value = server_nickname_input.strip() or None
-                    response = on_update_bot_profile(
-                        selected_guild_id,
-                        username_value,
-                        server_nickname_value,
-                        clear_server_nickname,
-                        user["email"],
-                    )
-                    if not isinstance(response, dict):
+                    response = None
+                    if action == "username":
+                        username_input = str(request.form.get("bot_name", ""))
+                        username_value = username_input.strip() or None
+                        if username_value is None:
+                            flash("Enter a global bot username to update.", "error")
+                        else:
+                            response = on_update_bot_profile(
+                                selected_guild_id,
+                                username_value,
+                                None,
+                                False,
+                                user["email"],
+                            )
+                    else:
+                        server_nickname_input = str(request.form.get("server_nickname", ""))
+                        clear_server_nickname = str(request.form.get("clear_server_nickname", "")).strip().lower() in {
+                            "1",
+                            "true",
+                            "yes",
+                            "on",
+                        }
+                        server_nickname_value = server_nickname_input.strip() or None
+                        response = on_update_bot_profile(
+                            selected_guild_id,
+                            None,
+                            server_nickname_value,
+                            clear_server_nickname,
+                            user["email"],
+                        )
+                    if response is None:
+                        pass
+                    elif not isinstance(response, dict):
                         flash("Invalid response from bot profile update handler.", "error")
                     elif not response.get("ok"):
                         flash(
@@ -4321,21 +4336,30 @@ def create_web_app(
         body = f"""
         <div class="grid">
           <div class="card">
-            <h2>Bot Identity</h2>
-            <p class="muted">Set bot username and the server nickname used in <strong>{escape(str(selected_guild.get("name") or "this server"))}</strong>.</p>
-            <p class="muted">Discord may rate-limit username changes.</p>
+            <h2>Server Nickname</h2>
+            <p class="muted">Update the nickname used in <strong>{escape(str(selected_guild.get("name") or "this server"))}</strong>. This does not change the bot's main Discord username.</p>
             <form method="post">
-              <input type="hidden" name="action" value="identity" />
-              <label>Bot username (global)</label>
-              <input type="text" name="bot_name" placeholder="GL.iNet UnOfficial Discord Bot" />
-              <label style="margin-top:10px;display:block;">Server nickname (this guild)</label>
+              <input type="hidden" name="action" value="nickname" />
+              <label>Server nickname (this guild)</label>
               <input type="text" name="server_nickname" placeholder="Leave blank to keep current nickname" />
               <label style="margin-top:10px;display:block;">
                 <input type="checkbox" name="clear_server_nickname" value="1" />
                 Clear server nickname
               </label>
               <div style="margin-top:14px;">
-                <button class="btn" type="submit">Update Identity</button>
+                <button class="btn" type="submit">Update Server Nickname</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Global Bot Username</h2>
+            <p class="muted">This changes the bot's main Discord username everywhere. Discord may rate-limit username changes, so it is intentionally separate from guild nickname edits.</p>
+            <form method="post">
+              <input type="hidden" name="action" value="username" />
+              <label>Bot username (global)</label>
+              <input type="text" name="bot_name" placeholder="GL.iNet UnOfficial Discord Bot" />
+              <div style="margin-top:14px;">
+                <button class="btn secondary" type="submit">Update Global Username</button>
               </div>
             </form>
           </div>
