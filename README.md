@@ -73,9 +73,9 @@ docker compose build
 
 - Role access via invite links and 6-digit access codes
 - Bulk CSV role assignment
-- Dynamic guild-scoped tag responses (`!tag` + slash variants)
+- Guild-scoped tag responses (`!tag` + `/tag` selector)
 - Source-specific search commands for GL.iNet forums, OpenWrt forums, Reddit, and docs
-- Utility commands for `ping`, uptime/status, URL shortening/expansion, and quick image/greeting helpers
+- Utility commands for `ping`, uptime/status, URL shortening/expansion, quick image/greeting helpers, and fun commands like coin flip, 8-ball, meme, and dad joke
 - Country nickname suffix commands
 - Extended moderation commands and event logging
 - Moderator-only random member selection command that excludes staff roles and enforces a 7-day per-guild cooldown before the same member can be picked again

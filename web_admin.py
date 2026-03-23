@@ -612,21 +612,34 @@ def _is_admin_user(user: dict | None) -> bool:
 
 def _normalize_web_user_role(value: str | None, *, is_admin: bool = False) -> str:
     raw = str(value or "").strip().lower()
-    if raw in {"admin", "read_only", "glinet"}:
+    if raw == "glinet":
+        return "glinet_read_only"
+    if raw in {"admin", "read_only", "glinet_read_only", "glinet_rw"}:
         return raw
     return "admin" if bool(is_admin) else "read_only"
 
 
-def _is_glinet_user(user: dict | None) -> bool:
-    return _normalize_web_user_role((user or {}).get("role", "")) == "glinet"
+def _is_glinet_read_only_user(user: dict | None) -> bool:
+    return _normalize_web_user_role((user or {}).get("role", "")) == "glinet_read_only"
+
+
+def _is_glinet_rw_user(user: dict | None) -> bool:
+    return _normalize_web_user_role((user or {}).get("role", "")) == "glinet_rw"
+
+
+def _is_glinet_scoped_user(user: dict | None) -> bool:
+    normalized = _normalize_web_user_role((user or {}).get("role", ""))
+    return normalized in {"glinet_read_only", "glinet_rw"}
 
 
 def _user_role_label(role_value: str | None = None, *, is_admin: bool = False) -> str:
     normalized = _normalize_web_user_role(role_value, is_admin=is_admin)
     if normalized == "admin":
         return "Admin"
-    if normalized == "glinet":
-        return "Glinet"
+    if normalized == "glinet_rw":
+        return "Glinet-RW"
+    if normalized == "glinet_read_only":
+        return "Glinet-Read-Only"
     return "Read-only"
 
 
@@ -2034,7 +2047,19 @@ def _render_layout(
                 <option value="{{ url_for('guilds_page') }}">Servers</option>
                 <option value="{{ url_for('account') }}">My Account</option>
                 <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
-                {% if current_role != "glinet" %}
+                {% if current_role in ("glinet_read_only", "glinet_rw") %}
+                <option value="{{ url_for('dashboard') }}">Dashboard</option>
+                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('actions_page') }}">Action History</option>
+                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+                {% else %}
                 <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
@@ -2062,12 +2087,14 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
                 <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
                 <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
-                {% if current_role != "glinet" %}
+                {% if current_role in ("glinet_read_only", "glinet_rw") %}
+                <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+                <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
+                {% else %}
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
-                {% else %}
-                <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
                 {% endif %}
               </div>
             </div>
@@ -2109,7 +2136,7 @@ def _render_layout(
         <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
         <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
         <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
-        {% if current_role != "glinet" %}
+        {% if current_role not in ("glinet_read_only", "glinet_rw") %}
         <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
         {% endif %}
       </div>
@@ -2123,8 +2150,8 @@ def _render_layout(
             <span class="current-user-email">({{ current_email }})</span>
           {% endif %}
           {% if current_guild_name %}<span class="current-user">Server: {{ current_guild_name }}</span>{% endif %}
+          {% if current_role not in ("glinet_read_only", "glinet_rw") %}
           <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
-          {% if current_role != "glinet" %}
           <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
           {% endif %}
           <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
@@ -2134,7 +2161,19 @@ def _render_layout(
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('account') }}">My Account</option>
             <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
-            {% if current_role != "glinet" %}
+            {% if current_role in ("glinet_read_only", "glinet_rw") %}
+            <option value="{{ url_for('dashboard') }}">Dashboard</option>
+            <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+            <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+            <option value="{{ url_for('actions_page') }}">Action History</option>
+            <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+            <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+            <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+            <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+            <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+            <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+            <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+            {% else %}
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
@@ -2178,8 +2217,10 @@ def _render_layout(
     {% endwith %}
     {% if current_email and current_role == "read_only" %}
       <div class="flash">Read-only account: you can view all pages, but configuration and management changes are blocked.</div>
-    {% elif current_email and current_role == "glinet" %}
-      <div class="flash">Glinet account: access is pinned to the primary Discord server and limited to member activity.</div>
+    {% elif current_email and current_role == "glinet_read_only" %}
+      <div class="flash">Glinet-Read-Only account: access is pinned to the primary GL.iNet Community Discord server and limited to view-only access there.</div>
+    {% elif current_email and current_role == "glinet_rw" %}
+      <div class="flash">Glinet-RW account: access is pinned to the primary GL.iNet Community Discord server and limited to guild-scoped changes there.</div>
     {% endif %}
     {{ body_html | safe }}
   </div>
@@ -2547,7 +2588,7 @@ def create_web_app(
 
     def _selected_guild_id():
         user = _current_user()
-        if _is_glinet_user(user):
+        if _is_glinet_scoped_user(user):
             preferred = _preferred_glinet_guild()
             if preferred is not None:
                 preferred_id = str(preferred.get("id") or "").strip()
@@ -2579,7 +2620,7 @@ def create_web_app(
     def _set_selected_guild_id(guild_id: str):
         selected = str(guild_id or "").strip()
         user = _current_user()
-        if _is_glinet_user(user):
+        if _is_glinet_scoped_user(user):
             preferred = _preferred_glinet_guild()
             if preferred is not None:
                 preferred_id = str(preferred.get("id") or "").strip()
@@ -2859,6 +2900,25 @@ def create_web_app(
             return None
         if _is_admin_user(user):
             return None
+        if _is_glinet_rw_user(user):
+            glinet_rw_write_endpoints = {
+                "account",
+                "guild_settings",
+                "command_permissions",
+                "reddit_feeds",
+                "youtube_subscriptions",
+                "linkedin_subscriptions",
+                "beta_program_subscriptions",
+                "tag_responses",
+                "bot_profile",
+            }
+            if request.endpoint in glinet_rw_write_endpoints:
+                if request.endpoint == "bot_profile":
+                    action = str(request.form.get("action", "") or "").strip().lower()
+                    if action not in {"nickname"}:
+                        flash("Glinet-RW can only edit the bot nickname for the GL.iNet Community Discord.", "error")
+                        return redirect(url_for("bot_profile"))
+                return None
         if logger:
             logger.warning(
                 "Blocked write request for read-only user: endpoint=%s method=%s ip=%s",
@@ -2886,7 +2946,7 @@ def create_web_app(
     @app.before_request
     def enforce_glinet_role_route_restrictions():
         user = _current_user()
-        if user is None or not _is_glinet_user(user):
+        if user is None or not _is_glinet_scoped_user(user):
             return None
         allowed_endpoints = {
             "index",
@@ -2897,14 +2957,25 @@ def create_web_app(
             "account",
             "guilds_page",
             "select_guild",
+            "dashboard",
+            "guild_settings",
+            "actions_page",
             "member_activity_page",
             "member_activity_export",
+            "command_permissions",
+            "reddit_feeds",
+            "youtube_subscriptions",
+            "linkedin_subscriptions",
+            "beta_program_subscriptions",
+            "tag_responses",
+            "bulk_role_csv",
+            "bot_profile",
         }
         if request.endpoint in allowed_endpoints:
             return None
-        flash("Glinet access is limited to member activity only.", "error")
+        flash("GL.iNet-scoped access is limited to the primary GL.iNet Community Discord server.", "error")
         if _selected_guild():
-            return redirect(url_for("member_activity_page"))
+            return redirect(url_for("dashboard"))
         return redirect(url_for("guilds_page"))
 
     def _prune_login_attempts(client_ip: str):
@@ -3320,10 +3391,10 @@ def create_web_app(
         selected_guild_id = _selected_guild_id()
         selected_guild = _selected_guild()
 
-        if _is_glinet_user(user):
+        if _is_glinet_scoped_user(user):
             if selected_guild is not None:
-                return redirect(url_for("member_activity_page"))
-            flash("No primary Discord server is available for the Glinet role.", "error")
+                return redirect(url_for("dashboard"))
+            flash("No primary Discord server is available for the GL.iNet-scoped role.", "error")
             return redirect(url_for("account"))
 
         cards = []
@@ -3372,11 +3443,11 @@ def create_web_app(
 
         selected_note = ""
         if isinstance(selected_guild, dict):
-            selected_target = url_for("member_activity_page") if _is_glinet_user(user) else url_for("dashboard")
+            selected_target = url_for("dashboard")
             selected_note = (
                 f"<p>Current server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong> "
                 f"(<span class='mono'>{escape(str(selected_guild.get('id') or ''))}</span>). "
-                f"<a href='{escape(selected_target, quote=True)}'>{'Open member activity' if _is_glinet_user(user) else 'Open dashboard'}</a>.</p>"
+                f"<a href='{escape(selected_target, quote=True)}'>Open dashboard</a>.</p>"
             )
         error_html = f"<p class='muted'>Could not load guild list: {escape(guild_error)}</p>" if guild_error else ""
         body = f"""
@@ -3396,11 +3467,11 @@ def create_web_app(
     @login_required
     def select_guild():
         user = _current_user()
-        if _is_glinet_user(user):
+        if _is_glinet_scoped_user(user):
             if not _set_selected_guild_id(""):
-                flash("No primary Discord server is available for the Glinet role.", "error")
+                flash("No primary Discord server is available for the GL.iNet-scoped role.", "error")
                 return redirect(url_for("account"))
-            return redirect(url_for("member_activity_page"))
+            return redirect(url_for("dashboard"))
 
         guild_id = str(request.form.get("guild_id", "")).strip()
         if not guild_id:
@@ -3410,8 +3481,8 @@ def create_web_app(
             flash("That Discord server is no longer available to the bot.", "error")
             return redirect(url_for("guilds_page"))
         flash("Discord server context updated.", "success")
-        if _is_glinet_user(user):
-            return redirect(url_for("member_activity_page"))
+        if _is_glinet_scoped_user(user):
+            return redirect(url_for("dashboard"))
         return redirect(url_for("dashboard"))
 
     @app.route("/admin/leave-guild", methods=["POST"])
@@ -6103,7 +6174,8 @@ def create_web_app(
                 current_role_value,
                 [
                     {"value": "read_only", "label": "Read-only"},
-                    {"value": "glinet", "label": "Glinet"},
+                    {"value": "glinet_read_only", "label": "Glinet-Read-Only"},
+                    {"value": "glinet_rw", "label": "Glinet-RW"},
                     {"value": "admin", "label": "Admin"},
                 ],
                 "Select role...",
@@ -6211,7 +6283,8 @@ def create_web_app(
               <label style="margin-top:10px;display:block;">Role</label>
               <select name="role">
                 <option value="read_only">Read-only</option>
-                <option value="glinet">Glinet</option>
+                <option value="glinet_read_only">Glinet-Read-Only</option>
+                <option value="glinet_rw">Glinet-RW</option>
                 <option value="admin">Admin</option>
               </select>
               <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>

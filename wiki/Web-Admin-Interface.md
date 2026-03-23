@@ -34,7 +34,7 @@ Each web user includes:
 - First name
 - Last name
 - Display name (shown in GUI)
-- Role (`Admin`, `Read-only`, or `Glinet`)
+- Role (`Admin`, `Read-only`, `Glinet-Read-Only`, or `Glinet-RW`)
 - Password age metadata (90-day rotation enforcement)
 
 User self-service capabilities:
@@ -56,14 +56,26 @@ Read-only capabilities:
 - Can view all settings/options/data exposed by the web GUI
 - Cannot apply management/configuration changes (save/update/delete/restart actions are blocked server-side)
 
-`Glinet` capabilities:
+`Glinet-Read-Only` capabilities:
 
 - Can sign in
 - Is automatically pinned to the primary Discord server (intended for the GL.iNet Community Discord)
-- Can view `/admin/member-activity`
+- Can view the guild-scoped GL.iNet pages for that primary server, including dashboard, command permissions, actions, feeds, bot profile, guild settings, tag responses, bulk role CSV, and member activity
 - Can export member-activity ZIP archives from `/admin/member-activity/export`
 - Can manage their own `/admin/account` page
-- Cannot access dashboard, logs, settings, documentation, user management, or other admin pages
+- Cannot access global settings, logs, documentation, user management, or other non-guild/global admin pages
+
+`Glinet-RW` capabilities:
+
+- Includes all `Glinet-Read-Only` viewing access
+- Is pinned to the same primary Discord server only
+- Can save guild-scoped settings/pages for that server:
+  - command permissions
+  - guild settings
+  - Reddit/YouTube/LinkedIn/Beta subscriptions
+  - tag responses
+  - bot nickname on the selected server
+- Cannot access global settings, user management, container restart, or cross-guild selection
 
 No Discord `/login` or `!login` flow exists for web-user creation.
 
@@ -114,7 +126,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Lists every Discord server the bot can currently access
 - Sets the active server context used by guild-scoped admin pages
 - Admin users can remove the bot from a server directly from this page using the per-server `Remove Bot` action
-- `Glinet` users do not stay here; they are redirected straight to `/admin/member-activity` using the primary guild
+- `Glinet-Read-Only` and `Glinet-RW` users do not stay here; they are redirected to `/admin/dashboard` using the primary guild
 
 ### `/admin/dashboard`
 
@@ -257,7 +269,7 @@ UI forms include show/hide password toggles and validation feedback.
 
 ### `/admin/users`
 
-- User and role management (`Admin` / `Read-only` / `Glinet`)
+- User and role management (`Admin` / `Read-only` / `Glinet-Read-Only` / `Glinet-RW`)
 - User creation with password policy enforcement
 - Admins can edit another web user's:
   - first name
