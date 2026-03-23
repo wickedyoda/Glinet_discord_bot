@@ -837,6 +837,7 @@ MODERATOR_ONLY_COMMAND_KEYS = {
     "add_role_member",
     "ban_member",
     "bulk_assign_role_csv",
+    "clear_member_nickname",
     "create_role",
     "delete_role",
     "edit_role",
@@ -844,9 +845,14 @@ MODERATOR_ONLY_COMMAND_KEYS = {
     "random_choice",
     "restore_code",
     "remove_role_member",
+    "set_member_nickname",
     "timeout_member",
     "unban_member",
     "untimeout_member",
+    "voice_deafen_member",
+    "voice_disconnect_member",
+    "voice_move_member",
+    "voice_mute_member",
 }
 COMMAND_PERMISSION_DEFAULTS = {
     "list": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -854,6 +860,10 @@ COMMAND_PERMISSION_DEFAULTS = {
     "ping": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "sayhi": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "happy": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "coin_flip": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "eight_ball": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "meme": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "dad_joke": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "shorten": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "expand": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "uptime": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -909,6 +919,22 @@ COMMAND_PERMISSION_METADATA = {
         "label": "/happy",
         "description": "Post a random puppy image.",
     },
+    "coin_flip": {
+        "label": "/coin_flip",
+        "description": "Flip a coin.",
+    },
+    "eight_ball": {
+        "label": "/eight_ball",
+        "description": "Ask the magic 8-ball a question.",
+    },
+    "meme": {
+        "label": "/meme",
+        "description": "Post a random meme.",
+    },
+    "dad_joke": {
+        "label": "/dad_joke",
+        "description": "Post a dad joke.",
+    },
     "shorten": {
         "label": "/shorten",
         "description": "Create a short URL through the configured shortener.",
@@ -926,8 +952,8 @@ COMMAND_PERMISSION_METADATA = {
         "description": "Show your private member activity stats.",
     },
     "tag_commands": {
-        "label": "Dynamic Tag Commands",
-        "description": "Slash/message tag responses loaded from persistent storage.",
+        "label": "/tag",
+        "description": "Send a configured slash tag response from persistent storage.",
     },
     "submitrole": {
         "label": "/submitrole",
@@ -935,7 +961,7 @@ COMMAND_PERMISSION_METADATA = {
     },
     "restore_code": {
         "label": "/restore_code",
-        "description": "Restore a specific 6-digit role access code.",
+        "description": "Restore a specific 6-digit role access code and optional invite.",
     },
     "bulk_assign_role_csv": {
         "label": "/bulk_assign_role_csv",
@@ -1000,6 +1026,30 @@ COMMAND_PERMISSION_METADATA = {
     "remove_role_member": {
         "label": "/remove_role_member, !removerolemember",
         "description": "Remove a role from a member.",
+    },
+    "set_member_nickname": {
+        "label": "/set_member_nickname",
+        "description": "Set another member's server nickname.",
+    },
+    "clear_member_nickname": {
+        "label": "/clear_member_nickname",
+        "description": "Clear another member's server nickname.",
+    },
+    "voice_mute_member": {
+        "label": "/voice_mute_member",
+        "description": "Mute or unmute a member in voice chat.",
+    },
+    "voice_deafen_member": {
+        "label": "/voice_deafen_member",
+        "description": "Deafen or undeafen a member in voice chat.",
+    },
+    "voice_disconnect_member": {
+        "label": "/voice_disconnect_member",
+        "description": "Disconnect a member from voice chat.",
+    },
+    "voice_move_member": {
+        "label": "/voice_move_member",
+        "description": "Move a member to another voice channel.",
     },
     "prune_messages": {
         "label": "/prune_messages, !prune",
@@ -3402,75 +3452,43 @@ def build_command_list(guild_id: int | None = None):
     return "Tag commands:\n" + "\n".join(tags)
 
 
+def find_tag_response_key(raw_value: str, guild_id: int | None = None):
+    requested = normalize_tag(raw_value)
+    if not requested:
+        return None
+    tags = get_tag_responses(guild_id)
+    if requested in tags:
+        return requested
+    if not requested.startswith("!"):
+        prefixed = f"!{requested}"
+        if prefixed in tags:
+            return prefixed
+    return None
+
+
+async def autocomplete_tag_response_name(
+    interaction: discord.Interaction,
+    current: str,
+):
+    guild_id = interaction.guild.id if interaction.guild else GUILD_ID
+    requested = normalize_tag(current or "").lstrip("!")
+    choices = []
+    for tag in sorted(get_tag_responses(guild_id).keys()):
+        candidate = str(tag or "").strip()
+        if not candidate:
+            continue
+        match_text = candidate.lower().lstrip("!")
+        if requested and requested not in match_text:
+            continue
+        choices.append(app_commands.Choice(name=candidate, value=candidate))
+        if len(choices) >= 25:
+            break
+    return choices
+
+
 def register_tag_commands_for_guild(guild_id: int | None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    guild_obj = discord.Object(id=safe_guild_id)
-    tag_commands = {}
-    for tag in get_tag_responses(safe_guild_id).keys():
-        command_name = tag_to_command_name(tag)
-        if not command_name:
-            continue
-        tag_commands[command_name] = tag
-
-    existing_names = {cmd.name for cmd in tree.get_commands(guild=guild_obj)}
-    registered_names = set()
-    for command_name, tag in tag_commands.items():
-        if command_name in existing_names:
-            logger.warning(
-                "Skipping tag slash command /%s in guild %s due to name conflict",
-                command_name,
-                safe_guild_id,
-            )
-            continue
-
-        def make_tag_reply(tag_key: str):
-            async def tag_reply(interaction: discord.Interaction):
-                if not can_use_command(
-                    interaction.user,
-                    "tag_commands",
-                    guild_id=interaction.guild.id if interaction.guild else None,
-                ):
-                    await interaction.response.send_message(
-                        build_command_permission_denied_message(
-                            "tag_commands",
-                            interaction.guild,
-                            guild_id=interaction.guild.id if interaction.guild else None,
-                        ),
-                        ephemeral=True,
-                    )
-                    return
-                effective_guild_id = interaction.guild.id if interaction.guild else safe_guild_id
-                tag_response = str(get_tag_responses(effective_guild_id).get(tag_key, "")).strip()
-                if not tag_response:
-                    await interaction.response.send_message("❌ This tag response is not configured.", ephemeral=True)
-                    return
-                await interaction.response.send_message(tag_response)
-
-            return tag_reply
-
-        try:
-            tree.add_command(
-                app_commands.Command(
-                    name=command_name,
-                    description=f"Tag response for {command_name}",
-                    callback=make_tag_reply(tag),
-                ),
-                guild=guild_obj,
-            )
-            registered_names.add(command_name)
-        except app_commands.errors.CommandAlreadyRegistered:
-            logger.info(
-                "Tag slash command /%s already registered in guild %s",
-                command_name,
-                safe_guild_id,
-            )
-        except TypeError:
-            logger.exception(
-                "Failed to register tag slash command /%s in guild %s",
-                command_name,
-                safe_guild_id,
-            )
-    tag_command_names_by_guild[safe_guild_id] = registered_names
+    tag_command_names_by_guild[safe_guild_id] = set(get_tag_responses(safe_guild_id).keys())
 
 
 async def sync_commands_for_guild(guild: discord.Guild):
@@ -3486,24 +3504,16 @@ async def sync_commands_for_guild(guild: discord.Guild):
 async def reload_tag_commands_runtime(guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
     try:
-        guild = bot.get_guild(safe_guild_id)
-        if guild is None:
-            logger.warning(
-                "Cannot reload tag commands for guild %s: guild unavailable",
-                safe_guild_id,
-            )
-            return
         previous_count = len(tag_command_names_by_guild.get(safe_guild_id) or set())
-        synced = await sync_commands_for_guild(guild)
+        register_tag_commands_for_guild(safe_guild_id)
         logger.info(
-            "Tag commands reloaded for guild %s: previous=%s current=%s synced=%s",
+            "Tag responses reloaded for guild %s: previous=%s current=%s",
             safe_guild_id,
             previous_count,
             len(tag_command_names_by_guild.get(safe_guild_id) or set()),
-            len(synced),
         )
     except Exception:
-        logger.exception("Failed to reload tag slash commands for guild %s", safe_guild_id)
+        logger.exception("Failed to reload tag responses for guild %s", safe_guild_id)
 
 
 def schedule_tag_command_refresh(guild_id: int | None = None):
@@ -3613,6 +3623,37 @@ def normalize_role_access_code(value: str):
     return cleaned
 
 
+def normalize_discord_invite_code(value: str | None):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    parsed = urllib.parse.urlparse(raw)
+    if parsed.scheme and parsed.netloc:
+        host = parsed.netloc.lower()
+        if host not in {
+            "discord.gg",
+            "www.discord.gg",
+            "discord.com",
+            "www.discord.com",
+        }:
+            return None
+        path_parts = [part for part in parsed.path.split("/") if part]
+        if not path_parts:
+            return None
+        if host.endswith("discord.com"):
+            if len(path_parts) < 2 or path_parts[0] != "invite":
+                return None
+            candidate = path_parts[1]
+        else:
+            candidate = path_parts[0]
+        normalized = candidate.strip()
+    else:
+        normalized = raw
+    if not re.fullmatch(r"[A-Za-z0-9-]{2,32}", normalized):
+        return None
+    return normalized
+
+
 async def create_role_access_mapping(
     interaction: discord.Interaction,
     role: discord.Role,
@@ -3640,6 +3681,49 @@ async def create_role_access_mapping(
     invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
     invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
     return normalized_code, invite, channel
+
+
+async def restore_role_access_mapping(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    code: str,
+    invite_input: str | None = None,
+):
+    normalized_code = normalize_role_access_code(code)
+    if normalized_code is None:
+        raise ValueError("Code must be exactly 6 digits.")
+
+    normalized_invite_code = normalize_discord_invite_code(invite_input)
+    if invite_input and normalized_invite_code is None:
+        raise ValueError("Invite must be a valid Discord invite URL or invite code.")
+
+    if normalized_invite_code is None:
+        return await create_role_access_mapping(interaction, role, normalized_code)
+
+    if interaction.guild is None:
+        raise ValueError("This command can only be used in a server channel.")
+    if role == interaction.guild.default_role:
+        raise ValueError("The @everyone role cannot be assigned this way.")
+    if role.managed:
+        raise ValueError("That role is managed by an integration and cannot be used for invite/code access.")
+
+    try:
+        invite = await bot.fetch_invite(normalized_invite_code)
+    except discord.NotFound as exc:
+        raise ValueError("That Discord invite does not exist or is no longer valid.") from exc
+    except discord.HTTPException as exc:
+        raise ValueError("Discord could not validate that invite right now. Try again.") from exc
+
+    invite_guild = getattr(invite, "guild", None)
+    if invite_guild is None or invite_guild.id != interaction.guild.id:
+        raise ValueError("That invite does not belong to this Discord server.")
+
+    guild_id = interaction.guild.id
+    save_role_code(normalized_code, role.id, guild_id=guild_id)
+    save_invite_role(invite.code, role.id, guild_id=guild_id)
+    invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
+    invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
+    return normalized_code, invite, getattr(invite, "channel", None)
 
 
 def has_allowed_role(member: discord.Member):
@@ -5728,6 +5812,55 @@ def fetch_random_puppy_image_url():
     return image_url
 
 
+def fetch_random_meme_payload():
+    status, _, body_text = fetch_text_url(
+        "https://meme-api.com/gimme",
+        timeout_seconds=PUPPY_IMAGE_TIMEOUT_SECONDS,
+        accept="application/json",
+    )
+    if status >= 400:
+        raise RuntimeError(f"Meme API returned HTTP {status}.")
+    try:
+        parsed_body = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Meme API returned invalid JSON.") from exc
+    if not isinstance(parsed_body, dict):
+        raise RuntimeError("Meme API returned an unexpected payload.")
+    title = str(parsed_body.get("title") or "").strip() or "Random Meme"
+    image_url = str(parsed_body.get("url") or "").strip()
+    post_url = str(parsed_body.get("postLink") or "").strip()
+    subreddit = str(parsed_body.get("subreddit") or "").strip()
+    parsed_image_url = urllib.parse.urlparse(image_url)
+    if parsed_image_url.scheme not in {"http", "https"} or not parsed_image_url.netloc:
+        raise RuntimeError("Meme API response did not include a valid image URL.")
+    return {
+        "title": title,
+        "image_url": image_url,
+        "post_url": post_url,
+        "subreddit": subreddit,
+    }
+
+
+def fetch_dad_joke_text():
+    status, _, body_text = fetch_text_url(
+        "https://icanhazdadjoke.com/",
+        timeout_seconds=PUPPY_IMAGE_TIMEOUT_SECONDS,
+        accept="application/json",
+    )
+    if status >= 400:
+        raise RuntimeError(f"Dad joke API returned HTTP {status}.")
+    try:
+        parsed_body = json.loads(body_text)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Dad joke API returned invalid JSON.") from exc
+    if not isinstance(parsed_body, dict):
+        raise RuntimeError("Dad joke API returned an unexpected payload.")
+    joke = str(parsed_body.get("joke") or "").strip()
+    if not joke:
+        raise RuntimeError("Dad joke API did not return a joke.")
+    return joke
+
+
 def normalize_youtube_channel_url(raw_url: str):
     value = str(raw_url or "").strip()
     if not value:
@@ -7474,12 +7607,12 @@ def refresh_tag_responses_from_web(guild_id: int | str | None = None):
     get_tag_responses(safe_guild_id)
     if schedule_tag_command_refresh(safe_guild_id):
         logger.info(
-            "Tag responses refreshed from storage for guild %s; slash command refresh scheduled",
+            "Tag responses refreshed from storage for guild %s; runtime cache refresh scheduled",
             safe_guild_id,
         )
     else:
         logger.info(
-            "Tag responses refreshed from storage for guild %s; slash command refresh deferred until bot loop is ready",
+            "Tag responses refreshed from storage for guild %s; runtime cache refresh deferred until bot loop is ready",
             safe_guild_id,
         )
 
@@ -8542,6 +8675,31 @@ async def list_commands(ctx: commands.Context):
 
 
 @tree.command(
+    name="tag",
+    description="Send a configured tag response",
+)
+@app_commands.describe(tag="Select the tag response to post")
+@app_commands.autocomplete(tag=autocomplete_tag_response_name)
+async def tag_slash(interaction: discord.Interaction, tag: str):
+    logger.info("/tag invoked by %s with tag %s", interaction.user, tag)
+    if not await ensure_interaction_command_access(interaction, "tag_commands"):
+        return
+
+    guild_id = interaction.guild.id if interaction.guild else GUILD_ID
+    tag_key = find_tag_response_key(tag, guild_id=guild_id)
+    if not tag_key:
+        await interaction.response.send_message("❌ That tag response is not configured.", ephemeral=True)
+        return
+
+    tag_response = str(get_tag_responses(guild_id).get(tag_key, "")).strip()
+    if not tag_response:
+        await interaction.response.send_message("❌ That tag response is not configured.", ephemeral=True)
+        return
+
+    await interaction.response.send_message(tag_response)
+
+
+@tree.command(
     name="submitrole",
     description="Submit a role for invite/code linking",
 )
@@ -8574,13 +8732,14 @@ async def submitrole(interaction: discord.Interaction, role: discord.Role):
 
 @tree.command(
     name="restore_code",
-    description="Restore a specific 6-digit code for a role and generate a fresh invite",
+    description="Restore a specific 6-digit code for a role and optionally reuse an invite",
 )
 @app_commands.describe(
     role="Role to map to the restored access code",
     code="Exact 6-digit code to restore",
+    invite="Optional Discord invite URL or code to restore with the access code",
 )
-async def restore_code(interaction: discord.Interaction, role: discord.Role, code: str):
+async def restore_code(interaction: discord.Interaction, role: discord.Role, code: str, invite: str | None = None):
     logger.info("/restore_code invoked by %s for role %s", interaction.user, role.id if role else "unknown")
     if not await ensure_interaction_command_access(interaction, "restore_code"):
         return
@@ -8592,16 +8751,21 @@ async def restore_code(interaction: discord.Interaction, role: discord.Role, cod
 
     await interaction.response.defer(ephemeral=True)
     try:
-        restored_code, invite, channel = await create_role_access_mapping(interaction, role, normalized_code)
+        restored_code, restored_invite, channel = await restore_role_access_mapping(
+            interaction,
+            role,
+            normalized_code,
+            invite_input=invite,
+        )
         logger.info(
             "Restored invite %s and code %s for role %s using channel %s",
-            invite.url,
+            restored_invite.url,
             restored_code,
             role.id,
-            channel.id,
+            getattr(channel, "id", "unknown"),
         )
         await interaction.followup.send(
-            f"✅ Restored role: {role.mention}\nInvite link: {invite.url}\n🔢 Restored 6-digit code: `{restored_code}`",
+            f"✅ Restored role: {role.mention}\nInvite link: {restored_invite.url}\n🔢 Restored 6-digit code: `{restored_code}`",
             ephemeral=True,
         )
     except ValueError as exc:
@@ -10572,6 +10736,600 @@ async def remove_role_member_prefix(
 
 
 @tree.command(
+    name="set_member_nickname",
+    description="Set another member's server nickname",
+)
+@app_commands.describe(member="Member to update", nickname="New server nickname", reason="Reason for nickname change")
+async def set_member_nickname_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    nickname: str,
+    reason: str | None = None,
+):
+    logger.info("/set_member_nickname invoked by %s targeting %s", interaction.user, member)
+    if not await ensure_interaction_command_access(interaction, "set_member_nickname"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_member = interaction.guild.me
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_nicknames:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Nicknames` permission to manage member nicknames.",
+            ephemeral=True,
+        )
+        return
+
+    normalized_nickname = str(nickname or "").strip()
+    if not normalized_nickname:
+        await interaction.response.send_message("❌ Nickname cannot be blank.", ephemeral=True)
+        return
+    if len(normalized_nickname) > 32:
+        await interaction.response.send_message("❌ Nickname must be 32 characters or fewer.", ephemeral=True)
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "set_member_nickname",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    if member.nick == normalized_nickname:
+        await interaction.response.send_message("ℹ️ That member already has that nickname.", ephemeral=True)
+        return
+
+    action_reason = (reason or "").strip() or f"Nickname updated by {interaction.user} via bot"
+    try:
+        await member.edit(nick=normalized_nickname, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to update nickname for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "set_member_nickname",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Nicknames` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't update that nickname. Check `Manage Nicknames` and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to update nickname for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "set_member_nickname",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while updating nickname.",
+        )
+        await interaction.response.send_message("❌ Failed to update that nickname. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "set_member_nickname",
+        target=member,
+        reason=action_reason,
+        details=f"Set server nickname to `{normalized_nickname}`.",
+    )
+    await interaction.response.send_message(
+        f"✅ Updated {member.mention}'s nickname to `{normalized_nickname}`.",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="clear_member_nickname",
+    description="Clear another member's server nickname",
+)
+@app_commands.describe(member="Member to update", reason="Reason for clearing the nickname")
+async def clear_member_nickname_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str | None = None,
+):
+    logger.info("/clear_member_nickname invoked by %s targeting %s", interaction.user, member)
+    if not await ensure_interaction_command_access(interaction, "clear_member_nickname"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_member = interaction.guild.me
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.manage_nicknames:
+        await interaction.response.send_message(
+            "❌ I need the `Manage Nicknames` permission to manage member nicknames.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "clear_member_nickname",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    if member.nick is None:
+        await interaction.response.send_message("ℹ️ That member does not currently have a server nickname.", ephemeral=True)
+        return
+
+    action_reason = (reason or "").strip() or f"Nickname cleared by {interaction.user} via bot"
+    try:
+        await member.edit(nick=None, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to clear nickname for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "clear_member_nickname",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Nicknames` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't clear that nickname. Check `Manage Nicknames` and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to clear nickname for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "clear_member_nickname",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while clearing nickname.",
+        )
+        await interaction.response.send_message("❌ Failed to clear that nickname. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "clear_member_nickname",
+        target=member,
+        reason=action_reason,
+        details="Cleared server nickname.",
+    )
+    await interaction.response.send_message(
+        f"✅ Cleared {member.mention}'s server nickname.",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="voice_mute_member",
+    description="Mute or unmute a member in voice chat",
+)
+@app_commands.describe(member="Member to update", mute="Whether to server mute the member", reason="Reason for the voice mute change")
+async def voice_mute_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    mute: bool,
+    reason: str | None = None,
+):
+    logger.info("/voice_mute_member invoked by %s targeting %s mute=%s", interaction.user, member, mute)
+    if not await ensure_interaction_command_access(interaction, "voice_mute_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_member = interaction.guild.me
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.mute_members:
+        await interaction.response.send_message(
+            "❌ I need the `Mute Members` permission to manage voice mute state.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_mute_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    voice_state = member.voice
+    if voice_state is None or voice_state.channel is None:
+        await interaction.response.send_message("❌ That member is not currently in a voice channel.", ephemeral=True)
+        return
+    if bool(voice_state.mute) == bool(mute):
+        await interaction.response.send_message(
+            f"ℹ️ That member is already {'muted' if mute else 'unmuted'} in voice chat.",
+            ephemeral=True,
+        )
+        return
+
+    action_reason = (reason or "").strip() or f"Voice mute updated by {interaction.user} via bot"
+    try:
+        await member.edit(mute=mute, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to update voice mute for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_mute_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Mute Members` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't change that voice mute state. Check `Mute Members` and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to update voice mute for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_mute_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while changing voice mute state.",
+        )
+        await interaction.response.send_message("❌ Failed to change voice mute state. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "voice_mute_member",
+        target=member,
+        reason=action_reason,
+        details=f"{'Muted' if mute else 'Unmuted'} in voice channel {voice_state.channel.mention}.",
+    )
+    await interaction.response.send_message(
+        f"✅ {'Muted' if mute else 'Unmuted'} {member.mention} in voice chat.",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="voice_deafen_member",
+    description="Deafen or undeafen a member in voice chat",
+)
+@app_commands.describe(member="Member to update", deafen="Whether to server deafen the member", reason="Reason for the voice deafen change")
+async def voice_deafen_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    deafen: bool,
+    reason: str | None = None,
+):
+    logger.info("/voice_deafen_member invoked by %s targeting %s deafen=%s", interaction.user, member, deafen)
+    if not await ensure_interaction_command_access(interaction, "voice_deafen_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_member = interaction.guild.me
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.deafen_members:
+        await interaction.response.send_message(
+            "❌ I need the `Deafen Members` permission to manage voice deafen state.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_deafen_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    voice_state = member.voice
+    if voice_state is None or voice_state.channel is None:
+        await interaction.response.send_message("❌ That member is not currently in a voice channel.", ephemeral=True)
+        return
+    if bool(voice_state.deaf) == bool(deafen):
+        await interaction.response.send_message(
+            f"ℹ️ That member is already {'deafened' if deafen else 'undeafened'} in voice chat.",
+            ephemeral=True,
+        )
+        return
+
+    action_reason = (reason or "").strip() or f"Voice deafen updated by {interaction.user} via bot"
+    try:
+        await member.edit(deafen=deafen, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to update voice deafen for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_deafen_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Deafen Members` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't change that voice deafen state. Check `Deafen Members` and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to update voice deafen for member %s", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_deafen_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while changing voice deafen state.",
+        )
+        await interaction.response.send_message("❌ Failed to change voice deafen state. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "voice_deafen_member",
+        target=member,
+        reason=action_reason,
+        details=f"{'Deafened' if deafen else 'Undeafened'} in voice channel {voice_state.channel.mention}.",
+    )
+    await interaction.response.send_message(
+        f"✅ {'Deafened' if deafen else 'Undeafened'} {member.mention} in voice chat.",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="voice_disconnect_member",
+    description="Disconnect a member from voice chat",
+)
+@app_commands.describe(member="Member to disconnect", reason="Reason for disconnecting from voice chat")
+async def voice_disconnect_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str | None = None,
+):
+    logger.info("/voice_disconnect_member invoked by %s targeting %s", interaction.user, member)
+    if not await ensure_interaction_command_access(interaction, "voice_disconnect_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_member = interaction.guild.me
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.move_members:
+        await interaction.response.send_message(
+            "❌ I need the `Move Members` permission to disconnect members from voice chat.",
+            ephemeral=True,
+        )
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_disconnect_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    voice_state = member.voice
+    if voice_state is None or voice_state.channel is None:
+        await interaction.response.send_message("❌ That member is not currently in a voice channel.", ephemeral=True)
+        return
+
+    source_channel = voice_state.channel
+    action_reason = (reason or "").strip() or f"Disconnected from voice by {interaction.user} via bot"
+    try:
+        await member.move_to(None, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to disconnect member %s from voice", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_disconnect_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Move Members` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't disconnect that member from voice. Check `Move Members` and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to disconnect member %s from voice", member)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_disconnect_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while disconnecting member from voice.",
+        )
+        await interaction.response.send_message("❌ Failed to disconnect that member. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "voice_disconnect_member",
+        target=member,
+        reason=action_reason,
+        details=f"Disconnected from voice channel {source_channel.mention}.",
+    )
+    await interaction.response.send_message(
+        f"✅ Disconnected {member.mention} from voice chat.",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="voice_move_member",
+    description="Move a member to another voice channel",
+)
+@app_commands.describe(member="Member to move", channel="Destination voice channel", reason="Reason for moving the member")
+async def voice_move_member_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    channel: discord.VoiceChannel,
+    reason: str | None = None,
+):
+    logger.info("/voice_move_member invoked by %s targeting %s channel=%s", interaction.user, member, channel)
+    if not await ensure_interaction_command_access(interaction, "voice_move_member"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+
+    bot_member = interaction.guild.me
+    if bot_member is None:
+        await interaction.response.send_message("❌ Could not resolve bot member in this guild.", ephemeral=True)
+        return
+    if not bot_member.guild_permissions.move_members:
+        await interaction.response.send_message(
+            "❌ I need the `Move Members` permission to move members between voice channels.",
+            ephemeral=True,
+        )
+        return
+    if channel.guild.id != interaction.guild.id:
+        await interaction.response.send_message("❌ Destination voice channel must be in this server.", ephemeral=True)
+        return
+
+    can_moderate, error_message = validate_moderation_target(interaction.user, member, bot_member)
+    if not can_moderate:
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_move_member",
+            member,
+            reason,
+            outcome="blocked",
+            details=error_message,
+        )
+        await interaction.response.send_message(error_message, ephemeral=True)
+        return
+
+    voice_state = member.voice
+    if voice_state is None or voice_state.channel is None:
+        await interaction.response.send_message("❌ That member is not currently in a voice channel.", ephemeral=True)
+        return
+    if voice_state.channel.id == channel.id:
+        await interaction.response.send_message("ℹ️ That member is already in that voice channel.", ephemeral=True)
+        return
+
+    source_channel = voice_state.channel
+    action_reason = (reason or "").strip() or f"Moved in voice by {interaction.user} via bot"
+    try:
+        await member.move_to(channel, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to move member %s to voice channel %s", member, channel)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_move_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Bot missing `Move Members` permission or role hierarchy block.",
+        )
+        await interaction.response.send_message(
+            "❌ I can't move that member. Check `Move Members` and role hierarchy.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        logger.exception("Failed to move member %s to voice channel %s", member, channel)
+        await send_moderation_log(
+            interaction.guild,
+            interaction.user,
+            "voice_move_member",
+            member,
+            action_reason,
+            outcome="failed",
+            details="Discord API error while moving member between voice channels.",
+        )
+        await interaction.response.send_message("❌ Failed to move that member. Try again.", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "voice_move_member",
+        target=member,
+        reason=action_reason,
+        details=f"Moved from {source_channel.mention} to {channel.mention}.",
+    )
+    await interaction.response.send_message(
+        f"✅ Moved {member.mention} to {channel.mention}.",
+        ephemeral=True,
+    )
+
+
+@tree.command(
     name="unban_member",
     description="Unban a user by ID",
 )
@@ -10761,6 +11519,137 @@ async def happy_slash(interaction: discord.Interaction):
         await log_interaction(
             interaction,
             action="happy",
+            reason=truncate_log_text(str(exc)),
+            success=False,
+        )
+
+
+@tree.command(
+    name="coin_flip",
+    description="Flip a coin.",
+)
+async def coin_flip_slash(interaction: discord.Interaction):
+    logger.info("/coin_flip invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "coin_flip"):
+        return
+    result = "Heads" if secrets.randbelow(2) == 0 else "Tails"
+    await interaction.response.send_message(
+        f"Coin flip result: **{result}**",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(interaction, action="coin_flip", reason=result, success=True)
+
+
+@tree.command(
+    name="eight_ball",
+    description="Ask the magic 8-ball a question.",
+)
+@app_commands.describe(question="Question for the 8-ball")
+async def eight_ball_slash(interaction: discord.Interaction, question: str):
+    logger.info("/eight_ball invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "eight_ball"):
+        return
+    normalized_question = str(question or "").strip()
+    if not normalized_question:
+        await interaction.response.send_message("❌ Ask a question first.", ephemeral=True)
+        return
+    responses = (
+        "It is certain.",
+        "Without a doubt.",
+        "You may rely on it.",
+        "Yes, definitely.",
+        "Signs point to yes.",
+        "Reply hazy, try again.",
+        "Ask again later.",
+        "Cannot predict now.",
+        "Don't count on it.",
+        "My reply is no.",
+        "Very doubtful.",
+        "Outlook not so good.",
+    )
+    answer = secrets.choice(responses)
+    await interaction.response.send_message(
+        f"🎱 Question: {normalized_question}\nAnswer: **{answer}**",
+        ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+    await log_interaction(
+        interaction,
+        action="eight_ball",
+        reason=truncate_log_text(f"{normalized_question} -> {answer}"),
+        success=True,
+    )
+
+
+@tree.command(
+    name="meme",
+    description="Post a random meme.",
+)
+async def meme_slash(interaction: discord.Interaction):
+    logger.info("/meme invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "meme"):
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        payload = await asyncio.to_thread(fetch_random_meme_payload)
+        embed = discord.Embed(
+            title=payload["title"],
+            description=(f"From r/{payload['subreddit']}" if payload.get("subreddit") else "Random meme"),
+            color=discord.Color.orange(),
+            url=(payload.get("post_url") or None),
+        )
+        embed.set_image(url=payload["image_url"])
+        await interaction.followup.send(
+            embed=embed,
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="meme",
+            reason=truncate_log_text(payload["image_url"]),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(
+            f"Failed to fetch meme: {exc}",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="meme",
+            reason=truncate_log_text(str(exc)),
+            success=False,
+        )
+
+
+@tree.command(
+    name="dad_joke",
+    description="Post a dad joke.",
+)
+async def dad_joke_slash(interaction: discord.Interaction):
+    logger.info("/dad_joke invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "dad_joke"):
+        return
+    await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
+    try:
+        joke = await asyncio.to_thread(fetch_dad_joke_text)
+        await interaction.followup.send(
+            joke,
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="dad_joke",
+            reason=truncate_log_text(joke),
+            success=True,
+        )
+    except RuntimeError as exc:
+        await interaction.followup.send(
+            f"Failed to fetch dad joke: {exc}",
+            ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+        )
+        await log_interaction(
+            interaction,
+            action="dad_joke",
             reason=truncate_log_text(str(exc)),
             success=False,
         )

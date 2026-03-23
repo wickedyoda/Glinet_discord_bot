@@ -2,6 +2,43 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-23] - GL.iNet Scoped Roles and Moderation Expansion
+
+### Added
+
+- Added `Glinet-Read-Only` web role pinned to the primary GL.iNet Community Discord server with read-only access to guild-scoped pages there.
+- Added `Glinet-RW` web role pinned to the primary GL.iNet Community Discord server with guild-scoped write access there.
+- Added moderator-only voice and nickname moderation slash commands:
+  - `/set_member_nickname`
+  - `/clear_member_nickname`
+  - `/voice_mute_member`
+  - `/voice_deafen_member`
+  - `/voice_disconnect_member`
+  - `/voice_move_member`
+
+### Changed
+
+- Expanded `/restore_code` so moderators can restore a 6-digit access code with an existing Discord invite URL/code instead of always generating a fresh invite.
+- Updated the web GUI role editor, routing, and navigation to use the new scoped GL.iNet roles instead of the legacy single `Glinet` role.
+
+## [2026-03-23] - Tag Command Consolidation
+
+### Changed
+
+- Replaced one-slash-command-per-tag registration with a single `/tag` slash command that uses autocomplete to select the stored tag response.
+- Tag updates no longer require Discord slash-command resyncs for every tag add/remove.
+- Updated docs to reflect the new `/tag` selection flow while preserving prefix `!<tag>` and `!list`.
+
+## [2026-03-23] - Fun Commands
+
+### Added
+
+- Added public fun/utility slash commands:
+  - `/coin_flip`
+  - `/eight_ball`
+  - `/meme`
+  - `/dad_joke`
+
 ## [2026-03-22] - Bot Profile Form Separation
 
 ### Changed
