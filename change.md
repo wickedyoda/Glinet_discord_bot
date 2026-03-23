@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-22] - Bot Profile Form Separation
+
+### Changed
+- Split `/admin/bot-profile` identity updates into separate actions for guild nickname changes and global username changes.
+- Guild nickname updates no longer submit a global username change attempt.
+- Added tests to verify nickname-only updates do not trigger global username edits.
+
 ## [2026-03-20] - Web Settings Save Hardening
 
 ### Changed
