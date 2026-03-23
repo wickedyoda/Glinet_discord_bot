@@ -86,6 +86,53 @@ def _make_app(tmp_path: Path):
             "effective": settings,
         }
 
+    bot_profile_updates = []
+    bot_profile_state = {
+        "id": "1478110480806576259",
+        "name": "GL.iNet UnOfficial Discord Bot",
+        "display_name": "GL.iNet UnOfficial Discord Bot",
+        "global_name": "GL.iNet UnOfficial Discord Bot",
+        "guild_id": "1234567890",
+        "guild_name": "Test Guild",
+        "server_display_name": "GL.iNet UnOfficial Discord Bot",
+        "server_nickname": "",
+        "avatar_url": "",
+    }
+
+    def get_bot_profile(guild_id):
+        return {"ok": True, **bot_profile_state, "guild_id": str(guild_id), "guild_name": "Test Guild"}
+
+    def update_bot_profile(guild_id, username, server_nickname, clear_server_nickname, actor_email):
+        bot_profile_updates.append(
+            {
+                "guild_id": str(guild_id),
+                "username": username,
+                "server_nickname": server_nickname,
+                "clear_server_nickname": clear_server_nickname,
+                "actor_email": actor_email,
+            }
+        )
+        if username is not None:
+            bot_profile_state["name"] = username
+            bot_profile_state["display_name"] = username
+            bot_profile_state["global_name"] = username
+            bot_profile_state["server_display_name"] = bot_profile_state.get("server_nickname") or username
+            return {
+                "ok": True,
+                "message": "Updated username.",
+                **bot_profile_state,
+            }
+        if clear_server_nickname:
+            bot_profile_state["server_nickname"] = ""
+        elif server_nickname is not None:
+            bot_profile_state["server_nickname"] = server_nickname
+        bot_profile_state["server_display_name"] = bot_profile_state.get("server_nickname") or bot_profile_state["name"]
+        return {
+            "ok": True,
+            "message": "Updated server nickname.",
+            **bot_profile_state,
+        }
+
     app = create_web_app(
         data_dir=str(tmp_path),
         env_file_path=str(env_file),
@@ -96,6 +143,8 @@ def _make_app(tmp_path: Path):
         on_get_discord_catalog=catalog,
         on_get_guild_settings=get_guild_settings,
         on_save_guild_settings=save_guild_settings,
+        on_get_bot_profile=get_bot_profile,
+        on_update_bot_profile=update_bot_profile,
         on_get_actions=lambda guild_id: {
             "ok": True,
             "actions": [
@@ -191,6 +240,7 @@ def _make_app(tmp_path: Path):
         },
     )
     app.config["TESTING"] = True
+    app.config["BOT_PROFILE_UPDATES"] = bot_profile_updates
     return app
 
 
@@ -398,6 +448,53 @@ def test_beta_program_page_renders_form(tmp_path: Path):
     assert response.status_code == 200
     assert b"GL.iNet Beta Programs" in response.data
     assert b"Save Monitor" in response.data
+
+
+def test_bot_profile_nickname_update_does_not_attempt_global_username_change(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/bot-profile",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/bot-profile"),
+            "action": "nickname",
+            "server_nickname": "Guild Helper",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Updated server nickname." in response.data
+    assert b"Failed to update username" not in response.data
+    assert app.config["BOT_PROFILE_UPDATES"][-1]["username"] is None
+    assert app.config["BOT_PROFILE_UPDATES"][-1]["server_nickname"] == "Guild Helper"
+
+
+def test_bot_profile_global_username_requires_separate_action(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/bot-profile",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/bot-profile"),
+            "action": "username",
+            "bot_name": "Renamed Bot",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Updated username." in response.data
+    assert app.config["BOT_PROFILE_UPDATES"][-1]["username"] == "Renamed Bot"
+    assert app.config["BOT_PROFILE_UPDATES"][-1]["server_nickname"] is None
 
 
 def test_member_activity_page_renders_tables(tmp_path: Path):
