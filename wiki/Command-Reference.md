@@ -23,7 +23,7 @@ Per-command overrides are configured in:
 | Command | Type | Default Access | Parameters | Notes |
 |---|---|---|---|---|
 | `/submitrole` | Slash | Member/Public | `role` | Discord prompts for the target role, then the bot generates the invite + 6-digit access code |
-| `/restore_code` | Slash | Moderator | `role`, `code` | Restores a specific 6-digit code for a role and generates a fresh invite |
+| `/restore_code` | Slash | Moderator | `role`, `code`, optional `invite` | Restores a specific 6-digit code for a role and either reuses the supplied invite URL/code or generates a fresh invite |
 | `/enter_role` | Slash | Member/Public | none | Opens a modal to redeem a 6-digit code and assigns mapped role |
 | `/getaccess` | Slash | Member/Public | none | Assigns default access role |
 
@@ -43,7 +43,7 @@ Web variation:
 |---|---|---|---|---|
 | `!list` | Prefix | Member/Public | none | Lists configured tags |
 | `!<tag>` | Prefix | Member/Public | tag key | Sends configured tag response |
-| `/tagname` (dynamic) | Slash | Member/Public | none | Auto-generated for each stored tag |
+| `/tag` | Slash | Member/Public | `tag` | Selects a stored tag response with autocomplete and posts it |
 
 ## Search Commands
 
@@ -70,6 +70,10 @@ Web variation:
 | `/ping` | Slash | Member/Public | none | Basic bot responsiveness check |
 | `/sayhi` | Slash | Member/Public | none | Sends a short greeting and points users to `/help` |
 | `/happy` | Slash | Member/Public | none | Sends a random puppy image when enabled |
+| `/coin_flip` | Slash | Member/Public | none | Flips a coin |
+| `/eight_ball` | Slash | Member/Public | question | Returns a magic 8-ball answer |
+| `/meme` | Slash | Member/Public | none | Sends a random meme when the external API responds |
+| `/dad_joke` | Slash | Member/Public | none | Sends a dad joke when the external API responds |
 | `/shorten` | Slash | Member/Public | `url` | Creates a shortened URL using the configured shortener |
 | `/expand` | Slash | Member/Public | shortened URL or code | Expands a shortened URL |
 | `/uptime` | Slash | Member/Public | none | Reads the configured uptime/status summary when enabled |
@@ -105,6 +109,12 @@ Web variation:
 | `!timeoutmember` | Prefix | Moderator | member + duration + reason | Prefix equivalent |
 | `/untimeout_member` | Slash | Moderator | member + optional reason | Removes timeout |
 | `!untimeoutmember` | Prefix | Moderator | member + optional reason | Prefix equivalent |
+| `/set_member_nickname` | Slash | Moderator | member + nickname + optional reason | Sets another member's server nickname |
+| `/clear_member_nickname` | Slash | Moderator | member + optional reason | Clears another member's server nickname |
+| `/voice_mute_member` | Slash | Moderator | member + `mute` bool + optional reason | Server-mutes or unmutes a member in voice |
+| `/voice_deafen_member` | Slash | Moderator | member + `deafen` bool + optional reason | Server-deafens or undeafens a member in voice |
+| `/voice_disconnect_member` | Slash | Moderator | member + optional reason | Disconnects a member from voice |
+| `/voice_move_member` | Slash | Moderator | member + target voice channel + optional reason | Moves a member between voice channels |
 | `/prune_messages` | Slash | Moderator | amount (1-500) | Removes recent messages in current channel (skips pinned) |
 | `!prune` | Prefix | Moderator | amount (1-500) | Prefix channel prune |
 | `/modlog_test` | Slash | Moderator | none | Sends test log to mod log channel |
