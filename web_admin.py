@@ -37,6 +37,15 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
+
+def ensure_process_utc_timezone():
+    os.environ["TZ"] = "UTC"
+    if hasattr(time, "tzset"):
+        time.tzset()
+
+
+ensure_process_utc_timezone()
+
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
 PASSWORD_MAX_AGE_DAYS = 90
 REMEMBER_LOGIN_DAYS = 5

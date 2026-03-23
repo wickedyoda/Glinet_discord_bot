@@ -62,6 +62,14 @@ from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_imp
 from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
 from web_admin import start_web_admin_interface
 
+
+def ensure_process_utc_timezone():
+    os.environ["TZ"] = "UTC"
+    if hasattr(time, "tzset"):
+        time.tzset()
+
+
+ensure_process_utc_timezone()
 load_dotenv()
 BOOTSTRAP_WEB_ENV_FILE = str(os.getenv("WEB_ENV_FILE", ".env") or ".env").strip() or ".env"
 load_dotenv(BOOTSTRAP_WEB_ENV_FILE, override=True)
@@ -326,6 +334,7 @@ log_permission_notices = ensure_log_storage_security(
 )
 logger = logging.getLogger("invite_bot")
 logger.setLevel(to_logging_level(LOG_LEVEL))
+logging.Formatter.converter = time.gmtime
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 console_handler = logging.StreamHandler()
