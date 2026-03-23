@@ -112,6 +112,7 @@ SENSITIVE_KEYS = {
     "WEB_ADMIN_DEFAULT_PASSWORD",
     "WEB_ADMIN_SESSION_SECRET",
 }
+FALLBACK_PROTECTED_ENV_KEYS = SENSITIVE_KEYS | {"WEB_ENV_FILE"}
 
 
 def _resolve_web_gui_version_label() -> str:
@@ -1375,10 +1376,21 @@ def _env_fallback_file_path(data_dir: str) -> Path:
     return Path(data_dir) / "web-settings.env"
 
 
+def _filter_fallback_env_values(values: dict) -> tuple[dict, tuple[str, ...]]:
+    filtered = {}
+    skipped = []
+    for key, value in values.items():
+        if key in FALLBACK_PROTECTED_ENV_KEYS:
+            skipped.append(str(key))
+            continue
+        filtered[key] = value
+    return filtered, tuple(sorted(skipped))
+
+
 def _load_effective_env_values(primary_env_file: Path, fallback_env_file: Path) -> dict:
     values = _parse_env_file(primary_env_file)
     if fallback_env_file != primary_env_file and fallback_env_file.exists():
-        fallback_values = _parse_env_file(fallback_env_file)
+        fallback_values, _ = _filter_fallback_env_values(_parse_env_file(fallback_env_file))
         if fallback_values:
             values.update(fallback_values)
     return values
@@ -1388,17 +1400,18 @@ def _try_write_env_file_with_fallback(
     primary_env_file: Path,
     fallback_env_file: Path,
     values: dict,
-) -> tuple[bool, str, Path]:
+) -> tuple[bool, str, Path, tuple[str, ...]]:
     saved, save_error = _try_write_env_file(primary_env_file, values)
     if saved:
-        return True, "", primary_env_file
+        return True, "", primary_env_file, ()
     if fallback_env_file == primary_env_file:
-        return False, save_error, primary_env_file
+        return False, save_error, primary_env_file, ()
 
-    fallback_saved, fallback_error = _try_write_env_file(fallback_env_file, values)
+    fallback_values, skipped_keys = _filter_fallback_env_values(values)
+    fallback_saved, fallback_error = _try_write_env_file(fallback_env_file, fallback_values)
     if fallback_saved:
-        return True, "", fallback_env_file
-    return False, fallback_error or save_error, fallback_env_file
+        return True, "", fallback_env_file, skipped_keys
+    return False, fallback_error or save_error, fallback_env_file, ()
 
 
 def _normalize_url_env_value(value: str):
@@ -4612,7 +4625,7 @@ def create_web_app(
                 else:
                     updated_file_values = dict(file_values)
                     updated_file_values["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
-                    saved, save_error, saved_env_file = _try_write_env_file_with_fallback(
+                    saved, save_error, saved_env_file, _ = _try_write_env_file_with_fallback(
                         env_file,
                         fallback_env_file,
                         updated_file_values,
@@ -5631,7 +5644,7 @@ def create_web_app(
         file_values = _load_effective_env_values(env_file, fallback_env_file)
         normalized_file_values = _normalize_env_updates(file_values)
         if normalized_file_values != file_values:
-            saved, save_error, saved_env_file = _try_write_env_file_with_fallback(
+            saved, save_error, saved_env_file, _ = _try_write_env_file_with_fallback(
                 env_file,
                 fallback_env_file,
                 normalized_file_values,
@@ -5679,7 +5692,7 @@ def create_web_app(
                 for legacy_keys in ENV_KEY_ALIASES.values():
                     for legacy_key in legacy_keys:
                         final_values.pop(legacy_key, None)
-                saved, save_error, saved_env_file = _try_write_env_file_with_fallback(
+                saved, save_error, saved_env_file, skipped_keys = _try_write_env_file_with_fallback(
                     env_file,
                     fallback_env_file,
                     final_values,
@@ -5690,6 +5703,8 @@ def create_web_app(
                 else:
                     os.environ["WEB_ENV_FILE"] = str(saved_env_file)
                     for key, value in updated_values.items():
+                        if key in skipped_keys:
+                            continue
                         if value == "":
                             os.environ.pop(key, None)
                         else:
@@ -5709,12 +5724,19 @@ def create_web_app(
                     )
                     session_timeout_state["minutes"] = effective_timeout_minutes
                     if callable(on_env_settings_saved):
-                        on_env_settings_saved({**updated_values, "WEB_ENV_FILE": str(saved_env_file)})
+                        applied_updates = {key: value for key, value in updated_values.items() if key not in skipped_keys}
+                        on_env_settings_saved({**applied_updates, "WEB_ENV_FILE": str(saved_env_file)})
                     if saved_env_file != env_file:
                         flash(
                             f"Settings saved to fallback env file {saved_env_file} and applied where supported.",
                             "success",
                         )
+                        if skipped_keys:
+                            flash(
+                                "Sensitive settings were not written to the fallback env file: "
+                                + ", ".join(skipped_keys),
+                                "warning",
+                            )
                     else:
                         flash(f"Settings saved to {env_file} and applied where supported.", "success")
                     file_values = _load_effective_env_values(env_file, fallback_env_file)
