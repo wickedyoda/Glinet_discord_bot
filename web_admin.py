@@ -1652,6 +1652,33 @@ def _render_multi_select_input(name: str, selected_values, options: list[dict], 
     return f"<select name='{escape(name, quote=True)}' multiple size='{max(4, int(size))}'>" + "".join(rows) + "</select>"
 
 
+def _dashboard_command_access_label(command_entry: dict):
+    if not isinstance(command_entry, dict):
+        return "Unknown"
+    mode = str(command_entry.get("mode") or "default").strip().lower()
+    default_policy = str(command_entry.get("default_policy") or "").strip().lower()
+    role_ids = command_entry.get("role_ids", []) or []
+
+    if mode == "disabled":
+        return "Disabled"
+    if mode == "public":
+        return "Public"
+    if mode == "custom_roles":
+        return f"Custom Roles ({len(role_ids)})" if role_ids else "Custom Roles"
+    if default_policy == "moderator_role_ids":
+        return "Mod Only"
+    if default_policy == "allowed_role_names":
+        return "Named Roles"
+    return "Public"
+
+
+def _dashboard_command_enabled_label(command_entry: dict):
+    if not isinstance(command_entry, dict):
+        return "Unknown"
+    mode = str(command_entry.get("mode") or "default").strip().lower()
+    return "Disabled" if mode == "disabled" else "Enabled"
+
+
 def _inject_csrf_token_inputs(body_html: str, csrf_token: str) -> str:
     token = str(csrf_token or "").strip()
     if not token:
@@ -3427,6 +3454,7 @@ def create_web_app(
             return selection_redirect
         selected_guild = _selected_guild()
         selected_guild_name = str(selected_guild.get("name") or "selected server")
+        selected_guild_id = str(selected_guild.get("id") or "")
 
         cards = []
 
@@ -3594,6 +3622,48 @@ def create_web_app(
             else "<p class='muted'>This account has limited access. Contact an admin for management actions.</p>"
         )
 
+        command_status_html = ""
+        if callable(on_get_command_permissions) and selected_guild_id:
+            permissions_payload = on_get_command_permissions(selected_guild_id)
+            if isinstance(permissions_payload, dict) and permissions_payload.get("ok"):
+                command_rows = []
+                for entry in permissions_payload.get("commands", []) or []:
+                    label = str(entry.get("label") or entry.get("key") or "Unknown")
+                    description = str(entry.get("description") or "").strip()
+                    description_html = f"<div class='muted'>{escape(description)}</div>" if description else ""
+                    command_rows.append(
+                        "<tr>"
+                        f"<td><strong>{escape(label)}</strong>{description_html}</td>"
+                        f"<td>{escape(_dashboard_command_access_label(entry))}</td>"
+                        f"<td>{escape(_dashboard_command_enabled_label(entry))}</td>"
+                        "</tr>"
+                    )
+                command_status_html = f"""
+                <div class="card table-scroll" style="margin-top:16px;">
+                  <h3>Command Status</h3>
+                  <p class="muted">Effective command access for <strong>{escape(selected_guild_name)}</strong>. Use Command Permissions to change per-server behavior.</p>
+                  <table class="history-table">
+                    <thead>
+                      <tr>
+                        <th>Command</th>
+                        <th>Access</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {"".join(command_rows) if command_rows else "<tr><td colspan='3' class='muted'>No command metadata is available for this server.</td></tr>"}
+                    </tbody>
+                  </table>
+                </div>
+                """
+            elif isinstance(permissions_payload, dict):
+                command_status_html = (
+                    "<div class='card' style='margin-top:16px;'>"
+                    "<h3>Command Status</h3>"
+                    f"<p class='muted'>Could not load command status: {escape(str(permissions_payload.get('error') or 'Unknown error'))}</p>"
+                    "</div>"
+                )
+
         body = f"""
         <div class="card">
           <h2>Dashboard</h2>
@@ -3604,6 +3674,7 @@ def create_web_app(
           {"".join(cards)}
           {restart_card}
         </div>
+        {command_status_html}
         """
 
         return _render_page("Dashboard", body, user["email"], is_admin)
