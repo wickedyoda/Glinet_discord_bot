@@ -1371,6 +1371,36 @@ def _try_write_env_file(env_file: Path, values: dict) -> tuple[bool, str]:
     return True, ""
 
 
+def _env_fallback_file_path(data_dir: str) -> Path:
+    return Path(data_dir) / "web-settings.env"
+
+
+def _load_effective_env_values(primary_env_file: Path, fallback_env_file: Path) -> dict:
+    values = _parse_env_file(primary_env_file)
+    if fallback_env_file != primary_env_file and fallback_env_file.exists():
+        fallback_values = _parse_env_file(fallback_env_file)
+        if fallback_values:
+            values.update(fallback_values)
+    return values
+
+
+def _try_write_env_file_with_fallback(
+    primary_env_file: Path,
+    fallback_env_file: Path,
+    values: dict,
+) -> tuple[bool, str, Path]:
+    saved, save_error = _try_write_env_file(primary_env_file, values)
+    if saved:
+        return True, "", primary_env_file
+    if fallback_env_file == primary_env_file:
+        return False, save_error, primary_env_file
+
+    fallback_saved, fallback_error = _try_write_env_file(fallback_env_file, values)
+    if fallback_saved:
+        return True, "", fallback_env_file
+    return False, fallback_error or save_error, fallback_env_file
+
+
 def _normalize_url_env_value(value: str):
     text = str(value or "").strip()
     if not text:
@@ -2511,6 +2541,7 @@ def create_web_app(
     users_file = Path(data_dir) / "bot_data.db"
     users_file.parent.mkdir(parents=True, exist_ok=True)
     env_file = Path(env_file_path)
+    fallback_env_file = _env_fallback_file_path(data_dir)
     if harden_file_permissions:
         try:
             os.chmod(users_file.parent, 0o700)
@@ -2522,6 +2553,11 @@ def create_web_app(
         if env_file.exists():
             try:
                 os.chmod(env_file, 0o600)
+            except (PermissionError, OSError):
+                pass
+        if fallback_env_file.exists():
+            try:
+                os.chmod(fallback_env_file, 0o600)
             except (PermissionError, OSError):
                 pass
 
@@ -4576,16 +4612,32 @@ def create_web_app(
                 else:
                     updated_file_values = dict(file_values)
                     updated_file_values["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
-                    saved, save_error = _try_write_env_file(env_file, updated_file_values)
+                    saved, save_error, saved_env_file = _try_write_env_file_with_fallback(
+                        env_file,
+                        fallback_env_file,
+                        updated_file_values,
+                    )
                     if not saved:
                         flash(save_error, "error")
                     else:
                         file_values = updated_file_values
                         os.environ["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
+                        os.environ["WEB_ENV_FILE"] = str(saved_env_file)
                         if callable(on_env_settings_saved):
-                            on_env_settings_saved({"REDDIT_FEED_CHECK_SCHEDULE": selected_schedule})
+                            on_env_settings_saved(
+                                {
+                                    "REDDIT_FEED_CHECK_SCHEDULE": selected_schedule,
+                                    "WEB_ENV_FILE": str(saved_env_file),
+                                }
+                            )
                         current_schedule = selected_schedule
-                        flash("Reddit feed schedule updated.", "success")
+                        if saved_env_file != env_file:
+                            flash(
+                                f"Reddit feed schedule updated and saved to fallback env file {saved_env_file}.",
+                                "success",
+                            )
+                        else:
+                            flash("Reddit feed schedule updated.", "success")
             elif not callable(on_manage_reddit_feeds):
                 flash("Reddit feed update callback is not configured.", "error")
             else:
@@ -5576,14 +5628,19 @@ def create_web_app(
         user = _current_user()
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
-        file_values = _parse_env_file(env_file)
+        file_values = _load_effective_env_values(env_file, fallback_env_file)
         normalized_file_values = _normalize_env_updates(file_values)
         if normalized_file_values != file_values:
-            saved, save_error = _try_write_env_file(env_file, normalized_file_values)
+            saved, save_error, saved_env_file = _try_write_env_file_with_fallback(
+                env_file,
+                fallback_env_file,
+                normalized_file_values,
+            )
             if not saved:
                 flash(save_error, "warning")
             else:
                 file_values = normalized_file_values
+                os.environ["WEB_ENV_FILE"] = str(saved_env_file)
                 for key, value in file_values.items():
                     os.environ[key] = value
         discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) and selected_guild_id else None
@@ -5622,11 +5679,16 @@ def create_web_app(
                 for legacy_keys in ENV_KEY_ALIASES.values():
                     for legacy_key in legacy_keys:
                         final_values.pop(legacy_key, None)
-                saved, save_error = _try_write_env_file(env_file, final_values)
+                saved, save_error, saved_env_file = _try_write_env_file_with_fallback(
+                    env_file,
+                    fallback_env_file,
+                    final_values,
+                )
                 if not saved:
                     file_values = final_values
                     flash(save_error, "error")
                 else:
+                    os.environ["WEB_ENV_FILE"] = str(saved_env_file)
                     for key, value in updated_values.items():
                         if value == "":
                             os.environ.pop(key, None)
@@ -5647,9 +5709,15 @@ def create_web_app(
                     )
                     session_timeout_state["minutes"] = effective_timeout_minutes
                     if callable(on_env_settings_saved):
-                        on_env_settings_saved(updated_values)
-                    flash(f"Settings saved to {env_file} and applied where supported.", "success")
-                    file_values = _parse_env_file(env_file)
+                        on_env_settings_saved({**updated_values, "WEB_ENV_FILE": str(saved_env_file)})
+                    if saved_env_file != env_file:
+                        flash(
+                            f"Settings saved to fallback env file {saved_env_file} and applied where supported.",
+                            "success",
+                        )
+                    else:
+                        flash(f"Settings saved to {env_file} and applied where supported.", "success")
+                    file_values = _load_effective_env_values(env_file, fallback_env_file)
 
         rows = []
         for key, label, description in ENV_FIELDS:

@@ -670,10 +670,14 @@ def test_settings_post_handles_read_only_env_file(tmp_path: Path, monkeypatch):
     payload["WEB_HARDEN_FILE_PERMISSIONS"] = "true"
     payload["WEB_HTTPS_ENABLED"] = "true"
 
-    def _raise_read_only(*args, **kwargs):
-        raise OSError(30, "Read-only file system")
+    original_write_env_file = web_admin._write_env_file
 
-    monkeypatch.setattr(web_admin, "_write_env_file", _raise_read_only)
+    def _raise_read_only_for_primary(env_file, values):
+        if Path(env_file) == tmp_path / "env.env":
+            raise OSError(30, "Read-only file system")
+        return original_write_env_file(env_file, values)
+
+    monkeypatch.setattr(web_admin, "_write_env_file", _raise_read_only_for_primary)
 
     response = client.post(
         "/admin/settings",
@@ -683,8 +687,11 @@ def test_settings_post_handles_read_only_env_file(tmp_path: Path, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert b"Could not save settings to" in response.data
-    assert b"read-only" in response.data.lower()
+    assert b"Settings saved to fallback env file" in response.data
+    assert b"web-settings.env" in response.data
+    fallback_env = tmp_path / "web-settings.env"
+    assert fallback_env.exists()
+    assert "WEB_SESSION_TIMEOUT_MINUTES=120" in fallback_env.read_text()
 
 
 def test_reddit_schedule_handles_read_only_env_file(tmp_path: Path, monkeypatch):
@@ -699,10 +706,14 @@ def test_reddit_schedule_handles_read_only_env_file(tmp_path: Path, monkeypatch)
         "reddit_feed_schedule": "*/10 * * * *",
     }
 
-    def _raise_read_only(*args, **kwargs):
-        raise OSError(30, "Read-only file system")
+    original_write_env_file = web_admin._write_env_file
 
-    monkeypatch.setattr(web_admin, "_write_env_file", _raise_read_only)
+    def _raise_read_only_for_primary(env_file, values):
+        if Path(env_file) == tmp_path / "env.env":
+            raise OSError(30, "Read-only file system")
+        return original_write_env_file(env_file, values)
+
+    monkeypatch.setattr(web_admin, "_write_env_file", _raise_read_only_for_primary)
 
     response = client.post(
         "/admin/reddit-feeds",
@@ -712,7 +723,11 @@ def test_reddit_schedule_handles_read_only_env_file(tmp_path: Path, monkeypatch)
     )
 
     assert response.status_code == 200
-    assert b"Could not save settings to" in response.data
+    assert b"saved to fallback env file" in response.data
+    assert b"web-settings.env" in response.data
+    fallback_env = tmp_path / "web-settings.env"
+    assert fallback_env.exists()
+    assert "REDDIT_FEED_CHECK_SCHEDULE=\"*/10 * * * *\"" in fallback_env.read_text()
 
 
 def test_admin_can_edit_user_and_reset_password(tmp_path: Path):
