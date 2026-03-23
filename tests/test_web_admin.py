@@ -199,6 +199,24 @@ def _make_app(tmp_path: Path):
                     "default_policy_label": "Public",
                     "mode": "disabled",
                     "role_ids": [],
+                },
+                {
+                    "key": "ban_member",
+                    "label": "/ban_member",
+                    "description": "Ban a member from the server.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Mod Only",
+                    "mode": "default",
+                    "role_ids": [],
+                },
+                {
+                    "key": "help",
+                    "label": "/help",
+                    "description": "Show command help.",
+                    "default_policy": "public",
+                    "default_policy_label": "Public",
+                    "mode": "public",
+                    "role_ids": [],
                 }
             ],
             "allowed_role_names": ["Employee"],
@@ -216,7 +234,25 @@ def _make_app(tmp_path: Path):
                     "default_policy_label": "Public",
                     "mode": payload.get("commands", {}).get("ping", {}).get("mode", "default"),
                     "role_ids": [],
-                }
+                },
+                {
+                    "key": "ban_member",
+                    "label": "/ban_member",
+                    "description": "Ban a member from the server.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Mod Only",
+                    "mode": payload.get("commands", {}).get("ban_member", {}).get("mode", "default"),
+                    "role_ids": [],
+                },
+                {
+                    "key": "help",
+                    "label": "/help",
+                    "description": "Show command help.",
+                    "default_policy": "public",
+                    "default_policy_label": "Public",
+                    "mode": payload.get("commands", {}).get("help", {}).get("mode", "public"),
+                    "role_ids": [],
+                },
             ],
             "allowed_role_names": ["Employee"],
             "moderator_role_ids": [123],
@@ -542,6 +578,24 @@ def test_command_permissions_page_supports_disabled_mode(tmp_path: Path):
     assert b"Command Permissions" in response.data
     assert b"Disabled" in response.data
     assert b'value="disabled" selected' in response.data
+
+
+def test_dashboard_shows_command_status_for_selected_guild(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Command Status" in response.data
+    assert b"/ping" in response.data
+    assert b"/ban_member" in response.data
+    assert b"/help" in response.data
+    assert b"Disabled" in response.data
+    assert b"Mod Only" in response.data
+    assert b"Enabled" in response.data
 
 
 def test_admin_can_save_guild_settings(tmp_path: Path):
