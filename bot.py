@@ -88,7 +88,7 @@ YOUTUBE_CHANNEL_ID_META_PATTERNS = (
     re.compile(r'"browseId":"(UC[a-zA-Z0-9_-]{22})"'),
     re.compile(r'"https://www\.youtube\.com/channel/(UC[a-zA-Z0-9_-]{22})"'),
 )
-LINKEDIN_PROFILE_PATH_PATTERN = re.compile(r"^/(?:in|company|school)/[^/]+/?$")
+LINKEDIN_PROFILE_PATH_PATTERN = re.compile(r"^/(?:in|company|school|showcase)/[^/]+(?:/posts)?/?$")
 LINKEDIN_POST_URL_PATTERN = re.compile(r"^https://www\.linkedin\.com/(?:posts/[^/?#]+|feed/update/[^?#]+)$")
 REDDIT_REQUEST_USER_AGENT = "GlinetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
 DEFAULT_REDDIT_FEED_CHECK_SCHEDULE = "*/30 * * * *"
@@ -5983,8 +5983,10 @@ def normalize_linkedin_profile_url(raw_url: str):
     if host != "linkedin.com":
         raise ValueError("LinkedIn URL must use linkedin.com.")
     normalized_path = (parsed.path or "").rstrip("/") or "/"
+    if normalized_path.endswith("/posts"):
+        normalized_path = normalized_path[:-6] or "/"
     if not LINKEDIN_PROFILE_PATH_PATTERN.fullmatch(normalized_path):
-        raise ValueError("LinkedIn URL must point to a public profile path such as /in/<name>.")
+        raise ValueError("LinkedIn URL must point to a public LinkedIn page such as /in/<name>, /company/<name>, or /showcase/<name>.")
     return urllib.parse.urlunparse(("https", "www.linkedin.com", normalized_path, "", "", ""))
 
 
