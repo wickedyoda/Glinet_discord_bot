@@ -694,6 +694,69 @@ def test_settings_post_handles_read_only_env_file(tmp_path: Path, monkeypatch):
     assert "WEB_SESSION_TIMEOUT_MINUTES=120" in fallback_env.read_text()
 
 
+def test_settings_fallback_env_file_excludes_sensitive_keys(tmp_path: Path, monkeypatch):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    payload = _form_payload(client, "/admin/settings")
+    payload["DISCORD_TOKEN"] = "new-token-value"
+    payload["WEB_ADMIN_DEFAULT_PASSWORD"] = "Stronger!234"
+    payload["WEB_ADMIN_SESSION_SECRET"] = "new-session-secret"
+    payload["WEB_SESSION_TIMEOUT_MINUTES"] = "120"
+    payload["WEB_ENFORCE_CSRF"] = "false"
+    payload["WEB_ENFORCE_SAME_ORIGIN_POSTS"] = "false"
+
+    original_write_env_file = web_admin._write_env_file
+
+    def _raise_read_only_for_primary(env_file, values):
+        if Path(env_file) == tmp_path / "env.env":
+            raise OSError(30, "Read-only file system")
+        return original_write_env_file(env_file, values)
+
+    monkeypatch.setattr(web_admin, "_write_env_file", _raise_read_only_for_primary)
+
+    response = client.post(
+        "/admin/settings",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Sensitive settings were not written to the fallback env file" in response.data
+    fallback_env = tmp_path / "web-settings.env"
+    fallback_text = fallback_env.read_text()
+    assert "DISCORD_TOKEN=" not in fallback_text
+    assert "WEB_ADMIN_DEFAULT_PASSWORD=" not in fallback_text
+    assert "WEB_ADMIN_SESSION_SECRET=" not in fallback_text
+
+
+def test_load_effective_env_values_ignores_sensitive_fallback_overrides(tmp_path: Path):
+    primary_env = tmp_path / "env.env"
+    fallback_env = tmp_path / "web-settings.env"
+    primary_env.write_text(
+        "DISCORD_TOKEN=primary-token\n"
+        "WEB_ADMIN_DEFAULT_PASSWORD=primary-password\n"
+        "WEB_ADMIN_SESSION_SECRET=primary-secret\n"
+        "LOG_LEVEL=INFO\n"
+    )
+    fallback_env.write_text(
+        "DISCORD_TOKEN=fallback-token\n"
+        "WEB_ADMIN_DEFAULT_PASSWORD=fallback-password\n"
+        "WEB_ADMIN_SESSION_SECRET=fallback-secret\n"
+        "LOG_LEVEL=DEBUG\n"
+    )
+
+    effective = web_admin._load_effective_env_values(primary_env, fallback_env)
+
+    assert effective["DISCORD_TOKEN"] == "primary-token"
+    assert effective["WEB_ADMIN_DEFAULT_PASSWORD"] == "primary-password"
+    assert effective["WEB_ADMIN_SESSION_SECRET"] == "primary-secret"
+    assert effective["LOG_LEVEL"] == "DEBUG"
+
+
 def test_reddit_schedule_handles_read_only_env_file(tmp_path: Path, monkeypatch):
     app = _make_app(tmp_path)
     client = app.test_client()

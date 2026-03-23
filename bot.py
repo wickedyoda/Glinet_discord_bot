@@ -31,7 +31,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from defusedxml import ElementTree as ET
 from discord import app_commands
 from discord.ext import commands
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
 from app.beta_programs import (
     fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
@@ -71,8 +71,29 @@ load_dotenv(BOOTSTRAP_WEB_ENV_FILE, override=True)
 DATA_DIR = os.getenv("DATA_DIR", "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 BOOTSTRAP_WEB_ENV_FALLBACK_FILE = os.path.join(DATA_DIR, "web-settings.env")
+PROTECTED_FALLBACK_ENV_KEYS = {
+    "DISCORD_TOKEN",
+    "WEB_ADMIN_DEFAULT_PASSWORD",
+    "WEB_ADMIN_SESSION_SECRET",
+    "WEB_ENV_FILE",
+}
+
+
+def _load_filtered_env_file(env_file_path: str, *, override: bool, blocked_keys: set[str] | None = None):
+    blocked = blocked_keys or set()
+    for key, value in dotenv_values(env_file_path).items():
+        if not key or value is None or key in blocked:
+            continue
+        if override or key not in os.environ:
+            os.environ[key] = value
+
+
 if os.path.abspath(BOOTSTRAP_WEB_ENV_FALLBACK_FILE) != os.path.abspath(BOOTSTRAP_WEB_ENV_FILE):
-    load_dotenv(BOOTSTRAP_WEB_ENV_FALLBACK_FILE, override=True)
+    _load_filtered_env_file(
+        BOOTSTRAP_WEB_ENV_FALLBACK_FILE,
+        override=True,
+        blocked_keys=PROTECTED_FALLBACK_ENV_KEYS,
+    )
 
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
 SENSITIVE_LOG_VALUE_PATTERN = re.compile(r"(?i)\b(password|token|secret|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)")
@@ -3643,7 +3664,7 @@ def normalize_discord_invite_code(value: str | None):
         path_parts = [part for part in parsed.path.split("/") if part]
         if not path_parts:
             return None
-        if host.endswith("discord.com"):
+        if host in {"discord.com", "www.discord.com"}:
             if len(path_parts) < 2 or path_parts[0] != "invite":
                 return None
             candidate = path_parts[1]
