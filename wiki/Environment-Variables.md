@@ -21,7 +21,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|
-| `BOT_LOG_CHANNEL_ID` | `0` | Integer, `>= 0` | Global fallback bot log/activity channel ID. Selected guild settings can override it per server. |
+| `BOT_LOG_CHANNEL_ID` | `0` | Integer, `>= 0` | Global default bot log/activity channel ID. Guild settings can override it per server. |
 | `DATA_DIR` | `data` | Path string | Persistent runtime data directory |
 | `LOG_DIR` | `/logs` | Path string | Directory for `bot.log`, `bot_log.log`, `container_errors.log`, and `web_gui_audit.log` |
 | `LOG_HARDEN_FILE_PERMISSIONS` | `true` | Boolean | Best-effort log storage hardening (`LOG_DIR` -> `0700`, log files -> `0600`) |
@@ -59,6 +59,8 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `SHORTENER_ENABLED` | `false` | Boolean | Enables `/shorten` and `/expand` integration |
 | `SHORTENER_BASE_URL` | empty | URL | Base URL of the shortener service |
 | `SHORTENER_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for shortener API requests |
+| `FIRMWARE_MONITOR_ENABLED` | `true` | Boolean | Enables or disables firmware polling/posting without deleting guild channel settings |
+| `REDDIT_FEED_NOTIFY_ENABLED` | `true` | Boolean | Enables or disables Reddit feed polling/posting without deleting saved feed subscriptions |
 | `YOUTUBE_NOTIFY_ENABLED` | `false` | Boolean | Enables the YouTube subscription monitor and web page |
 | `YOUTUBE_POLL_INTERVAL_SECONDS` | `1800` | Integer, `>= 60` | Poll cadence for YouTube subscriptions |
 | `YOUTUBE_REQUEST_TIMEOUT_SECONDS` | `20` | Integer, `>= 1` | Timeout for YouTube feed/channel requests |
@@ -66,7 +68,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `LINKEDIN_POLL_INTERVAL_SECONDS` | `900` | Integer, `>= 60` | Poll cadence for LinkedIn profile checks |
 | `LINKEDIN_REQUEST_TIMEOUT_SECONDS` | `15` | Integer, `>= 5` | Timeout for LinkedIn public profile requests |
 | `BETA_PROGRAM_PAGE_URL` | `https://www.gl-inet.com/beta-testing/#register` | URL | GL.iNet beta testing page monitored for program changes |
-| `BETA_PROGRAM_NOTIFY_ENABLED` | `true` | Boolean | Enables the GL.iNet beta program monitor and web page |
+| `BETA_PROGRAM_NOTIFY_ENABLED` | `true` | Boolean | Enables or disables the GL.iNet beta program monitor while keeping the web page and saved monitors |
 | `BETA_PROGRAM_POLL_INTERVAL_SECONDS` | `900` | Integer, `>= 60` | Poll cadence for GL.iNet beta program checks |
 | `BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for GL.iNet beta page requests |
 | `UPTIME_STATUS_ENABLED` | `false` | Boolean | Enables `/uptime` command |
@@ -79,7 +81,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 |---|---|---|---|
 | `MODERATOR_ROLE_ID` | `1294957416294645771` | Integer role ID | Moderator role gate |
 | `ADMIN_ROLE_ID` | `1138302148292116551` | Integer role ID | Additional role gate |
-| `MOD_LOG_CHANNEL_ID` | `1311820410269995009` | Integer channel ID | Moderation/server log channel |
+| `MOD_LOG_CHANNEL_ID` | `1311820410269995009` | Integer channel ID | Global default moderation/server log channel. Guild settings can override it per server. |
 | `KICK_PRUNE_HOURS` | `72` | Integer, `>= 1` | Prune window for kick actions |
 
 ## CSV Role Assignment
@@ -95,7 +97,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|
-| `firmware_notification_channel` | none | Channel ID or `<#channel_id>` | Required to enable firmware notifications |
+| `firmware_notification_channel` | none | Channel ID or `<#channel_id>` | Global default firmware notification channel. Guild settings can override it per server. |
 | `FIRMWARE_FEED_URL` | `https://gl-fw.remotetohome.io/` | URL | Firmware source URL |
 | `firmware_check_schedule` | `*/30 * * * *` | Valid 5-field cron (UTC) | Primary scheduler |
 | `FIRMWARE_REQUEST_TIMEOUT_SECONDS` | `30` | Integer, `>= 5` | HTTP timeout for firmware fetch |

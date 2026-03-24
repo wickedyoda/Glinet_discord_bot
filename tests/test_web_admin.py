@@ -163,6 +163,201 @@ def _make_app(tmp_path: Path):
             **bot_profile_state,
         }
 
+    reddit_feeds_state = [
+        {
+            "id": 1,
+            "guild_id": 1234567890,
+            "subreddit": "glinet",
+            "channel_id": 9999,
+            "enabled": True,
+            "created_at": "2026-03-01T00:00:00+00:00",
+            "updated_at": "2026-03-01T00:00:00+00:00",
+            "created_by_email": "admin@example.com",
+            "updated_by_email": "admin@example.com",
+            "last_checked_at": "",
+            "last_posted_at": "",
+            "last_error": "",
+        }
+    ]
+
+    def get_reddit_feeds(guild_id):
+        return {"ok": True, "feeds": [dict(item) for item in reddit_feeds_state if int(item["guild_id"]) == int(guild_id)]}
+
+    def manage_reddit_feeds(payload, actor_email, guild_id):
+        action = str(payload.get("action") or "").strip().lower()
+        safe_guild_id = int(guild_id)
+        if action == "add":
+            reddit_feeds_state.append(
+                {
+                    "id": max((item["id"] for item in reddit_feeds_state), default=0) + 1,
+                    "guild_id": safe_guild_id,
+                    "subreddit": str(payload.get("subreddit") or "").strip().lower(),
+                    "channel_id": int(str(payload.get("channel_id") or "0")),
+                    "enabled": True,
+                    "created_at": "",
+                    "updated_at": "",
+                    "created_by_email": actor_email,
+                    "updated_by_email": actor_email,
+                    "last_checked_at": "",
+                    "last_posted_at": "",
+                    "last_error": "",
+                }
+            )
+            return get_reddit_feeds(safe_guild_id) | {"message": "Reddit feed saved."}
+        if action == "edit":
+            feed_id = int(str(payload.get("feed_id") or "0"))
+            for item in reddit_feeds_state:
+                if item["id"] == feed_id and int(item["guild_id"]) == safe_guild_id:
+                    item["subreddit"] = str(payload.get("subreddit") or "").strip().lower()
+                    item["channel_id"] = int(str(payload.get("channel_id") or "0"))
+                    item["updated_by_email"] = actor_email
+                    return get_reddit_feeds(safe_guild_id) | {"message": "Reddit feed updated."}
+            return {"ok": False, "error": "Reddit feed entry was not found."}
+        if action == "toggle":
+            feed_id = int(str(payload.get("feed_id") or "0"))
+            for item in reddit_feeds_state:
+                if item["id"] == feed_id and int(item["guild_id"]) == safe_guild_id:
+                    item["enabled"] = str(payload.get("enabled") or "").strip() in {"1", "true", "True"}
+                    return get_reddit_feeds(safe_guild_id) | {"message": "Reddit feed updated."}
+            return {"ok": False, "error": "Reddit feed entry was not found."}
+        if action == "delete":
+            feed_id = int(str(payload.get("feed_id") or "0"))
+            reddit_feeds_state[:] = [item for item in reddit_feeds_state if not (item["id"] == feed_id and int(item["guild_id"]) == safe_guild_id)]
+            return get_reddit_feeds(safe_guild_id) | {"message": "Reddit feed deleted."}
+        return {"ok": False, "error": "Invalid Reddit feed action."}
+
+    youtube_subscriptions_state = [
+        {
+            "id": 1,
+            "guild_id": 1234567890,
+            "source_url": "https://www.youtube.com/@glinet",
+            "channel_id": "UC123",
+            "channel_title": "GL.iNet",
+            "target_channel_id": 9999,
+            "target_channel_name": "#alerts",
+            "last_video_id": "vid1",
+            "last_video_title": "Latest Video",
+            "last_published_at": "2026-03-20T00:00:00+00:00",
+            "enabled": True,
+            "created_at": "",
+            "updated_at": "",
+            "created_by_email": "admin@example.com",
+            "updated_by_email": "admin@example.com",
+        }
+    ]
+
+    def get_youtube_subscriptions(guild_id):
+        return {"ok": True, "subscriptions": [dict(item) for item in youtube_subscriptions_state if int(item["guild_id"]) == int(guild_id)]}
+
+    def manage_youtube_subscriptions(payload, actor_email, guild_id):
+        action = str(payload.get("action") or "").strip().lower()
+        safe_guild_id = int(guild_id)
+        if action == "edit":
+            subscription_id = int(str(payload.get("subscription_id") or "0"))
+            for item in youtube_subscriptions_state:
+                if item["id"] == subscription_id and int(item["guild_id"]) == safe_guild_id:
+                    item["source_url"] = str(payload.get("source_url") or "").strip()
+                    item["target_channel_id"] = int(str(payload.get("channel_id") or "0"))
+                    item["target_channel_name"] = "#alerts"
+                    item["updated_by_email"] = actor_email
+                    return get_youtube_subscriptions(safe_guild_id) | {"message": "YouTube subscription updated."}
+            return {"ok": False, "error": "YouTube subscription entry was not found."}
+        if action == "delete":
+            subscription_id = int(str(payload.get("subscription_id") or "0"))
+            youtube_subscriptions_state[:] = [item for item in youtube_subscriptions_state if not (item["id"] == subscription_id and int(item["guild_id"]) == safe_guild_id)]
+            return get_youtube_subscriptions(safe_guild_id) | {"message": "YouTube subscription deleted."}
+        if action == "add":
+            youtube_subscriptions_state.append(
+                {
+                    "id": max((item["id"] for item in youtube_subscriptions_state), default=0) + 1,
+                    "guild_id": safe_guild_id,
+                    "source_url": str(payload.get("source_url") or "").strip(),
+                    "channel_id": "UCNEW",
+                    "channel_title": "New Channel",
+                    "target_channel_id": int(str(payload.get("channel_id") or "0")),
+                    "target_channel_name": "#alerts",
+                    "last_video_id": "",
+                    "last_video_title": "",
+                    "last_published_at": "",
+                    "enabled": True,
+                    "created_at": "",
+                    "updated_at": "",
+                    "created_by_email": actor_email,
+                    "updated_by_email": actor_email,
+                }
+            )
+            return get_youtube_subscriptions(safe_guild_id) | {"message": "YouTube subscription saved."}
+        return {"ok": False, "error": "Invalid YouTube subscription action."}
+
+    linkedin_subscriptions_state = [
+        {
+            "id": 1,
+            "guild_id": 1234567890,
+            "source_url": "https://www.linkedin.com/in/glinet",
+            "profile_name": "GL.iNet",
+            "target_channel_id": 9999,
+            "target_channel_name": "#alerts",
+            "last_post_id": "post1",
+            "last_post_url": "https://www.linkedin.com/posts/example",
+            "last_post_text": "Recent update text",
+            "last_published_at": "2026-03-20T00:00:00+00:00",
+            "last_checked_at": "2026-03-20T01:00:00+00:00",
+            "last_posted_at": "2026-03-20T01:00:00+00:00",
+            "last_error": "",
+            "enabled": True,
+            "created_at": "",
+            "updated_at": "",
+            "created_by_email": "admin@example.com",
+            "updated_by_email": "admin@example.com",
+        }
+    ]
+
+    def get_linkedin_subscriptions(guild_id):
+        return {"ok": True, "subscriptions": [dict(item) for item in linkedin_subscriptions_state if int(item["guild_id"]) == int(guild_id)]}
+
+    def manage_linkedin_subscriptions(payload, actor_email, guild_id):
+        action = str(payload.get("action") or "").strip().lower()
+        safe_guild_id = int(guild_id)
+        if action == "edit":
+            subscription_id = int(str(payload.get("subscription_id") or "0"))
+            for item in linkedin_subscriptions_state:
+                if item["id"] == subscription_id and int(item["guild_id"]) == safe_guild_id:
+                    item["source_url"] = str(payload.get("source_url") or "").strip()
+                    item["target_channel_id"] = int(str(payload.get("channel_id") or "0"))
+                    item["target_channel_name"] = "#alerts"
+                    item["updated_by_email"] = actor_email
+                    return get_linkedin_subscriptions(safe_guild_id) | {"message": "LinkedIn subscription updated."}
+            return {"ok": False, "error": "LinkedIn subscription entry was not found."}
+        if action == "delete":
+            subscription_id = int(str(payload.get("subscription_id") or "0"))
+            linkedin_subscriptions_state[:] = [item for item in linkedin_subscriptions_state if not (item["id"] == subscription_id and int(item["guild_id"]) == safe_guild_id)]
+            return get_linkedin_subscriptions(safe_guild_id) | {"message": "LinkedIn subscription deleted."}
+        if action == "add":
+            linkedin_subscriptions_state.append(
+                {
+                    "id": max((item["id"] for item in linkedin_subscriptions_state), default=0) + 1,
+                    "guild_id": safe_guild_id,
+                    "source_url": str(payload.get("source_url") or "").strip(),
+                    "profile_name": "New Profile",
+                    "target_channel_id": int(str(payload.get("channel_id") or "0")),
+                    "target_channel_name": "#alerts",
+                    "last_post_id": "",
+                    "last_post_url": "",
+                    "last_post_text": "",
+                    "last_published_at": "",
+                    "last_checked_at": "",
+                    "last_posted_at": "",
+                    "last_error": "",
+                    "enabled": True,
+                    "created_at": "",
+                    "updated_at": "",
+                    "created_by_email": actor_email,
+                    "updated_by_email": actor_email,
+                }
+            )
+            return get_linkedin_subscriptions(safe_guild_id) | {"message": "LinkedIn subscription saved."}
+        return {"ok": False, "error": "Invalid LinkedIn subscription action."}
+
     app = create_web_app(
         data_dir=str(tmp_path),
         env_file_path=str(env_file),
@@ -217,7 +412,8 @@ def _make_app(tmp_path: Path):
             "content_type": "application/zip",
             "data": b"PK\x05\x06" + (b"\x00" * 18),
         },
-        on_get_reddit_feeds=lambda guild_id: {"ok": True, "feeds": []},
+        on_get_reddit_feeds=get_reddit_feeds,
+        on_manage_reddit_feeds=manage_reddit_feeds,
         on_get_command_permissions=lambda guild_id: {
             "ok": True,
             "commands": [
@@ -287,14 +483,10 @@ def _make_app(tmp_path: Path):
             "allowed_role_names": ["Employee"],
             "moderator_role_ids": [123],
         },
-        on_get_youtube_subscriptions=lambda guild_id: {
-            "ok": True,
-            "subscriptions": [],
-        },
-        on_get_linkedin_subscriptions=lambda guild_id: {
-            "ok": True,
-            "subscriptions": [],
-        },
+        on_get_youtube_subscriptions=get_youtube_subscriptions,
+        on_manage_youtube_subscriptions=manage_youtube_subscriptions,
+        on_get_linkedin_subscriptions=get_linkedin_subscriptions,
+        on_manage_linkedin_subscriptions=manage_linkedin_subscriptions,
         on_get_beta_program_subscriptions=lambda guild_id: {
             "ok": True,
             "source_url": "https://www.gl-inet.com/beta-testing/#register",
@@ -488,6 +680,7 @@ def test_youtube_page_renders_form(tmp_path: Path):
     assert response.status_code == 200
     assert b"YouTube Subscriptions" in response.data
     assert b"Save Subscription" in response.data
+    assert b'value="edit"' in response.data
 
 
 def test_linkedin_page_renders_form(tmp_path: Path):
@@ -501,6 +694,92 @@ def test_linkedin_page_renders_form(tmp_path: Path):
     assert response.status_code == 200
     assert b"LinkedIn Profiles" in response.data
     assert b"Save Subscription" in response.data
+    assert b'value="edit"' in response.data
+
+
+def test_reddit_page_renders_edit_controls(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/reddit-feeds", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Configured Reddit Feeds" in response.data
+    assert b'value="edit"' in response.data
+
+
+def test_admin_can_edit_reddit_feed(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/reddit-feeds",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/reddit-feeds"),
+            "action": "edit",
+            "feed_id": "1",
+            "subreddit": "openwrt",
+            "channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Reddit feed updated." in response.data
+    assert b"r/openwrt" in response.data
+
+
+def test_admin_can_edit_youtube_subscription(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/youtube",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/youtube"),
+            "action": "edit",
+            "subscription_id": "1",
+            "source_url": "https://www.youtube.com/@glinetnew",
+            "channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"YouTube subscription updated." in response.data
+    assert b"https://www.youtube.com/@glinetnew" in response.data
+
+
+def test_admin_can_edit_linkedin_subscription(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/linkedin",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/linkedin"),
+            "action": "edit",
+            "subscription_id": "1",
+            "source_url": "https://www.linkedin.com/showcase/glinet-intelligence/posts/",
+            "channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"LinkedIn subscription updated." in response.data
+    assert b"https://www.linkedin.com/showcase/glinet-intelligence/posts/" in response.data
 
 
 def test_beta_program_page_renders_form(tmp_path: Path):
@@ -680,6 +959,11 @@ def test_admin_can_save_global_settings(tmp_path: Path):
     payload["WEB_ENFORCE_SAME_ORIGIN_POSTS"] = "false"
     payload["WEB_HARDEN_FILE_PERMISSIONS"] = "true"
     payload["WEB_HTTPS_ENABLED"] = "true"
+    payload["FIRMWARE_MONITOR_ENABLED"] = "false"
+    payload["REDDIT_FEED_NOTIFY_ENABLED"] = "false"
+    payload["YOUTUBE_NOTIFY_ENABLED"] = "false"
+    payload["LINKEDIN_NOTIFY_ENABLED"] = "false"
+    payload["BETA_PROGRAM_NOTIFY_ENABLED"] = "false"
 
     response = client.post(
         "/admin/settings",
@@ -691,6 +975,26 @@ def test_admin_can_save_global_settings(tmp_path: Path):
     assert response.status_code == 200
     assert b"Settings saved to" in response.data
     assert b"90 minutes" in response.data
+
+
+def test_admin_settings_includes_global_channel_defaults_and_monitor_toggles(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get(
+        "/admin/settings",
+        base_url="https://docker.example:8443",
+    )
+
+    assert response.status_code == 200
+    assert b"Bot Log Channel ID" in response.data
+    assert b"Mod Log Channel ID" in response.data
+    assert b"Firmware Notify Channel" in response.data
+    assert b"Firmware Monitor Enabled" in response.data
+    assert b"Reddit Feed Monitor Enabled" in response.data
+    assert b"Beta Program Monitor Enabled" in response.data
 
 
 def test_settings_post_handles_read_only_env_file(tmp_path: Path, monkeypatch):

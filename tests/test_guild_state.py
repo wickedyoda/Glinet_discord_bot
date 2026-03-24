@@ -59,10 +59,47 @@ def test_normalize_activity_timestamp_keeps_utc():
     assert normalized == datetime(2026, 3, 20, 12, 34, 56, tzinfo=UTC)
 
 
-def test_default_guild_settings_uses_configured_defaults():
+def test_default_guild_settings_uses_configured_global_fallbacks():
     manager = build_manager()
 
     settings = manager.default_guild_settings()
+
+    assert settings["bot_log_channel_id"] == 10
+    assert settings["mod_log_channel_id"] == 20
+    assert settings["firmware_notify_channel_id"] == 30
+
+
+def test_load_guild_settings_uses_global_fallbacks_for_all_guilds_without_rows():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE guild_settings (
+            guild_id INTEGER PRIMARY KEY,
+            bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
+            mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
+            firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+            access_role_id INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_id INTEGER NOT NULL DEFAULT 0,
+            welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_image_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_dm_image_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_message TEXT NOT NULL DEFAULT '',
+            welcome_dm_message TEXT NOT NULL DEFAULT '',
+            welcome_image_filename TEXT NOT NULL DEFAULT '',
+            welcome_image_media_type TEXT NOT NULL DEFAULT '',
+            welcome_image_size_bytes INTEGER NOT NULL DEFAULT 0,
+            welcome_image_width INTEGER NOT NULL DEFAULT 0,
+            welcome_image_height INTEGER NOT NULL DEFAULT 0,
+            welcome_image_base64 TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            updated_by_email TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    manager = build_manager(get_db_connection=lambda: conn, db_lock=threading.Lock())
+
+    settings = manager.load_guild_settings(999)
 
     assert settings["bot_log_channel_id"] == 10
     assert settings["mod_log_channel_id"] == 20
