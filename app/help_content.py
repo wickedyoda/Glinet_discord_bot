@@ -155,6 +155,13 @@ def build_help_wiki_links(command_key: str, *, bot_help_wiki_url: str, bot_help_
     return links
 
 
+def suppress_discord_link_embed(url: str):
+    text = str(url or "").strip()
+    if not text.startswith(("http://", "https://")):
+        return text
+    return f"<{text}>"
+
+
 def build_help_message_for_command(
     command_name: str | None,
     *,
@@ -181,11 +188,11 @@ def build_help_message_for_command(
                 "- Moderation and role management (`/ban_member`, `/kick_member`, `/timeout_member`, `/create_role`, `/random_choice`)",
                 "",
                 "Docs:",
-                f"- Command Reference: {build_wiki_page_url('Command-Reference.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url)}",
-                f"- Search and Docs: {build_wiki_page_url('Search-and-Docs.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url)}",
-                f"- Role Access and Invites: {build_wiki_page_url('Role-Access-and-Invites.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url)}",
-                f"- Moderation and Logs: {build_wiki_page_url('Moderation-and-Logs.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url)}",
-                f"- Wiki Home: {bot_help_wiki_url}",
+                f"- Command Reference: {suppress_discord_link_embed(build_wiki_page_url('Command-Reference.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url))}",
+                f"- Search and Docs: {suppress_discord_link_embed(build_wiki_page_url('Search-and-Docs.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url))}",
+                f"- Role Access and Invites: {suppress_discord_link_embed(build_wiki_page_url('Role-Access-and-Invites.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url))}",
+                f"- Moderation and Logs: {suppress_discord_link_embed(build_wiki_page_url('Moderation-and-Logs.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url))}",
+                f"- Wiki Home: {suppress_discord_link_embed(bot_help_wiki_url)}",
             ]
         )
 
@@ -194,7 +201,7 @@ def build_help_message_for_command(
         return "\n".join(
             [
                 f"❌ I do not have help details for `{command_name}`.",
-                f"Use `/help` for the overview or check the full command reference: {build_wiki_page_url('Command-Reference.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url)}",
+                f"Use `/help` for the overview or check the full command reference: {suppress_discord_link_embed(build_wiki_page_url('Command-Reference.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url))}",
             ]
         )
 
@@ -213,5 +220,5 @@ def build_help_message_for_command(
         "More info:",
     ]
     for link_label, link_url in wiki_links:
-        lines.append(f"- {link_label}: {link_url}")
+        lines.append(f"- {link_label}: {suppress_discord_link_embed(link_url)}")
     return "\n".join(lines)
