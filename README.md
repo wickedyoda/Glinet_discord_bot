@@ -85,6 +85,7 @@ docker compose build
 - GL.iNet beta program page monitor with add/remove notifications into Discord
 - Web-managed Reddit feed posting for new subreddit submissions
 - Member activity tracking with private `/stats` output, web top-20 views for rolling 90/30/7/1-day windows, and ZIP export from the web GUI
+- Guild-scoped welcome automation with optional channel post, optional DM, and optional uploaded image attachment
 - Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, LinkedIn profile subscriptions, GL.iNet beta-program monitoring, and per-guild channel/tag/invite settings
 - Optional guild allowlist mode for multi-guild deployments and public invites
 - Guild-scoped data quarantine on bot removal with 14-day restore window on same-ID rejoin before permanent purge

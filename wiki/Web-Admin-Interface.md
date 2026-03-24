@@ -117,6 +117,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 - Member activity page shows top-20 member activity windows for the selected server.
 - Member activity exports are generated for the selected server only and match the currently retained 90-day dataset.
+- Guild settings also control per-server welcome messages, optional join DMs, and optional uploaded welcome images.
 
 ## Admin Pages and Capabilities
 
@@ -146,7 +147,41 @@ UI forms include show/hide password toggles and validation feedback.
   - moderation log channel
   - firmware notify channel
   - self-assign access role
+  - welcome channel
+  - welcome channel message
+  - welcome DM enable/disable
+  - welcome DM message
+  - uploaded welcome image
+  - image attachment enable/disable for channel and DM
 - Blank values fall back to the global runtime environment settings
+
+Welcome-message placeholders:
+
+- `{member_mention}`
+- `{member_name}`
+- `{display_name}`
+- `{guild_name}`
+- `{member_count}`
+- `{account_created_at}`
+
+How to configure welcome automation:
+
+1. Open `/admin/guild-settings`
+2. Select the target guild
+3. Set `Welcome Channel` if you want a public join post
+4. Enter `Welcome Channel Message`, or leave it blank to use the default
+5. Enable `Send Welcome DM` if you want a DM on join
+6. Enter `Welcome DM Message`, or leave it blank to use the default
+7. Upload a welcome image if desired
+8. Enable image attachment for channel, DM, or both
+9. Save the guild settings
+
+Notes:
+
+- If no welcome channel is selected, the bot will not post a public welcome message
+- If the member blocks DMs, the DM send is skipped and the join flow continues normally
+- Supported image formats: `PNG`, `JPG`, `JPEG`, `WEBP`, `GIF`
+- Upload size follows the configured web avatar upload limit
 
 ### `/admin/settings`
 

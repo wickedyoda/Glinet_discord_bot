@@ -57,6 +57,15 @@ def _make_app(tmp_path: Path):
         "mod_log_channel_id": "",
         "firmware_notify_channel_id": "",
         "access_role_id": "",
+        "welcome_channel_id": "",
+        "welcome_dm_enabled": "",
+        "welcome_channel_image_enabled": "",
+        "welcome_dm_image_enabled": "",
+        "welcome_channel_message": "",
+        "welcome_dm_message": "",
+        "welcome_image_filename": "",
+        "welcome_image_media_type": "",
+        "welcome_image_configured": "",
     }
 
     def get_guild_settings(guild_id):
@@ -75,8 +84,23 @@ def _make_app(tmp_path: Path):
                 "mod_log_channel_id": str(payload.get("mod_log_channel_id") or "").strip(),
                 "firmware_notify_channel_id": str(payload.get("firmware_notify_channel_id") or "").strip(),
                 "access_role_id": str(payload.get("access_role_id") or "").strip(),
+                "welcome_channel_id": str(payload.get("welcome_channel_id") or "").strip(),
+                "welcome_dm_enabled": str(payload.get("welcome_dm_enabled") or "").strip(),
+                "welcome_channel_image_enabled": str(payload.get("welcome_channel_image_enabled") or "").strip(),
+                "welcome_dm_image_enabled": str(payload.get("welcome_dm_image_enabled") or "").strip(),
+                "welcome_channel_message": str(payload.get("welcome_channel_message") or "").strip(),
+                "welcome_dm_message": str(payload.get("welcome_dm_message") or "").strip(),
+                "welcome_image_filename": str(payload.get("welcome_image_filename") or "").strip(),
+                "welcome_image_media_type": str(payload.get("welcome_image_media_type") or "").strip(),
+                "welcome_image_configured": "1" if payload.get("welcome_image_bytes") else (
+                    "" if str(payload.get("welcome_image_remove") or "").strip() else guild_settings_state.get("welcome_image_configured", "")
+                ),
             }
         )
+        if str(payload.get("welcome_image_remove") or "").strip():
+            guild_settings_state["welcome_image_filename"] = ""
+            guild_settings_state["welcome_image_media_type"] = ""
+            guild_settings_state["welcome_image_configured"] = ""
         settings = dict(guild_settings_state)
         return {
             "ok": True,
@@ -611,6 +635,12 @@ def test_admin_can_save_guild_settings(tmp_path: Path):
             "mod_log_channel_id": "9999",
             "firmware_notify_channel_id": "9999",
             "access_role_id": "111",
+            "welcome_channel_id": "9999",
+            "welcome_dm_enabled": "1",
+            "welcome_channel_image_enabled": "1",
+            "welcome_dm_image_enabled": "1",
+            "welcome_channel_message": "Welcome to {guild_name}, {member_mention}.",
+            "welcome_dm_message": "Hi {member_name}, welcome to {guild_name}.",
         }
     )
 
@@ -624,6 +654,8 @@ def test_admin_can_save_guild_settings(tmp_path: Path):
     assert response.status_code == 200
     assert b"Guild settings updated by admin@example.com." in response.data
     assert b"Current value (not found): 9999" not in response.data
+    assert b"welcome_channel_message" in response.data
+    assert b"welcome_dm_message" in response.data
 
 
 def test_admin_can_save_global_settings(tmp_path: Path):
