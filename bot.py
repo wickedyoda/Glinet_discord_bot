@@ -644,7 +644,7 @@ SEARCH_RESPONSE_MAX_CHARS = int(os.getenv("SEARCH_RESPONSE_MAX_CHARS", "1900"))
 DISCORD_MESSAGE_SAFE_MAX_CHARS = 1900
 BOT_HELP_WIKI_URL = normalize_http_url_setting(
     os.getenv("BOT_HELP_WIKI_URL", ""),
-    "https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md",
+    "https://github.com/wickedyoda/Glinet_discord_bot/wiki/Home",
     "BOT_HELP_WIKI_URL",
 )
 BOT_HELP_WIKI_ROOT_URL = BOT_HELP_WIKI_URL.rsplit("/", 1)[0] if "/" in BOT_HELP_WIKI_URL else BOT_HELP_WIKI_URL
