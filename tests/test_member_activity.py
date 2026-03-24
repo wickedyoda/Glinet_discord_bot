@@ -1,4 +1,6 @@
+import sqlite3
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 from app.member_activity import MemberActivityManager
 
@@ -10,17 +12,65 @@ class DummyBot:
         return None
 
 
-def build_manager():
+class DummyLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class DummyRole:
+    def __init__(self, role_id=1, name="Member"):
+        self.id = role_id
+        self.name = name
+
+
+class DummyAuthor:
+    def __init__(self, user_id=10, name="tester", display_name="Tester"):
+        self.id = user_id
+        self.name = name
+        self.display_name = display_name
+        self.bot = False
+        self.roles = [DummyRole()]
+
+    def __str__(self):
+        return self.name
+
+
+class DummyGuild:
+    def __init__(self, guild_id=123):
+        self.id = guild_id
+
+
+class DummyMessage:
+    def __init__(self, message_id: int, created_at: datetime):
+        self.id = message_id
+        self.created_at = created_at
+        self.guild = DummyGuild()
+        self.author = DummyAuthor()
+
+
+def _normalize_timestamp(value=None):
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        return datetime.fromisoformat(value)
+    return datetime(2026, 3, 20, tzinfo=UTC)
+
+
+def build_manager(*, conn=None):
+    connection = conn
     return MemberActivityManager(
-        get_db_connection=None,
-        db_lock=None,
+        get_db_connection=lambda: connection,
+        db_lock=DummyLock(),
         require_managed_guild_id=lambda guild_id, context="": int(guild_id or 1),
         is_managed_guild_id=lambda guild_id: True,
-        normalize_activity_timestamp=lambda value=None: value if isinstance(value, datetime) else datetime(2026, 3, 20, tzinfo=UTC),
+        normalize_activity_timestamp=_normalize_timestamp,
         encrypt_member_activity_identity=lambda value: f"enc:{value}",
         decrypt_member_activity_identity=lambda value: value.removeprefix("enc:"),
         clip_text=lambda value, max_chars=120: str(value)[:max_chars],
-        logger=None,
+        logger=SimpleNamespace(warning=lambda *args, **kwargs: None, exception=lambda *args, **kwargs: None, debug=lambda *args, **kwargs: None),
         bot=DummyBot(),
         enable_members_intent=False,
         member_activity_window_specs=[("last_24h", "Last 24 Hours", timedelta(days=1))],
@@ -74,3 +124,57 @@ def test_normalize_optional_role_id_filters_invalid_values():
     assert manager.normalize_optional_role_id("42") == 42
     assert manager.normalize_optional_role_id("0") is None
     assert manager.normalize_optional_role_id("abc") is None
+
+
+def test_record_member_message_activity_updates_summary_and_hourly_counts():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    manager = build_manager(conn=conn)
+
+    first_dt = datetime(2026, 3, 24, 12, 0, tzinfo=UTC)
+    second_dt = datetime(2026, 3, 24, 12, 5, tzinfo=UTC)
+    assert manager.record_member_message_activity(DummyMessage(1001, first_dt)) is True
+    assert manager.record_member_message_activity(DummyMessage(1002, second_dt)) is True
+
+    summary_row = conn.execute(
+        """
+        SELECT total_messages, total_active_days, last_message_at
+        FROM member_activity_summary
+        WHERE guild_id = 123 AND user_id = 10
+        """
+    ).fetchone()
+    hourly_row = conn.execute(
+        """
+        SELECT message_count, last_message_at
+        FROM member_activity_recent_hourly
+        WHERE guild_id = 123 AND user_id = 10
+        """
+    ).fetchone()
+
+    assert int(summary_row["total_messages"]) == 2
+    assert int(summary_row["total_active_days"]) == 1
+    assert str(summary_row["last_message_at"]) == second_dt.isoformat()
+    assert int(hourly_row["message_count"]) == 2
+    assert str(hourly_row["last_message_at"]) == second_dt.isoformat()
+
+
+def test_record_member_message_activity_increments_active_days_on_new_date():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    manager = build_manager(conn=conn)
+
+    first_dt = datetime(2026, 3, 24, 23, 55, tzinfo=UTC)
+    second_dt = datetime(2026, 3, 25, 0, 5, tzinfo=UTC)
+    assert manager.record_member_message_activity(DummyMessage(1001, first_dt)) is True
+    assert manager.record_member_message_activity(DummyMessage(1002, second_dt)) is True
+
+    summary_row = conn.execute(
+        """
+        SELECT total_messages, total_active_days
+        FROM member_activity_summary
+        WHERE guild_id = 123 AND user_id = 10
+        """
+    ).fetchone()
+
+    assert int(summary_row["total_messages"]) == 2
+    assert int(summary_row["total_active_days"]) == 2
