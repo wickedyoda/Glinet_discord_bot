@@ -65,6 +65,9 @@ def _make_app(tmp_path: Path):
         "welcome_dm_message": "",
         "welcome_image_filename": "",
         "welcome_image_media_type": "",
+        "welcome_image_size_bytes": "",
+        "welcome_image_width": "",
+        "welcome_image_height": "",
         "welcome_image_configured": "",
     }
 
@@ -92,6 +95,9 @@ def _make_app(tmp_path: Path):
                 "welcome_dm_message": str(payload.get("welcome_dm_message") or "").strip(),
                 "welcome_image_filename": str(payload.get("welcome_image_filename") or "").strip(),
                 "welcome_image_media_type": str(payload.get("welcome_image_media_type") or "").strip(),
+                "welcome_image_size_bytes": str(payload.get("welcome_image_size_bytes") or "").strip(),
+                "welcome_image_width": str(payload.get("welcome_image_width") or "").strip(),
+                "welcome_image_height": str(payload.get("welcome_image_height") or "").strip(),
                 "welcome_image_configured": "1" if payload.get("welcome_image_bytes") else (
                     "" if str(payload.get("welcome_image_remove") or "").strip() else guild_settings_state.get("welcome_image_configured", "")
                 ),
@@ -656,6 +662,7 @@ def test_admin_can_save_guild_settings(tmp_path: Path):
     assert b"Current value (not found): 9999" not in response.data
     assert b"welcome_channel_message" in response.data
     assert b"welcome_dm_message" in response.data
+    assert b"Allowed dimensions: 64x64 up to 4096x4096" in response.data
 
 
 def test_admin_can_save_global_settings(tmp_path: Path):

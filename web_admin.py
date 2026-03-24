@@ -4,9 +4,10 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import ssl
-import subprocess
+import subprocess  # nosec B404
 import threading
 import time
 from collections import deque
@@ -36,6 +37,15 @@ from flask import (
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
+
+from app.image_metadata import (
+    WELCOME_IMAGE_ALLOWED_EXTENSIONS,
+    WELCOME_IMAGE_MAX_HEIGHT,
+    WELCOME_IMAGE_MAX_WIDTH,
+    WELCOME_IMAGE_MIN_HEIGHT,
+    WELCOME_IMAGE_MIN_WIDTH,
+    detect_image_metadata,
+)
 
 
 def ensure_process_utc_timezone():
@@ -131,25 +141,27 @@ def _resolve_web_gui_version_label() -> str:
 
     repo_root = Path(__file__).resolve().parent
     if (repo_root / ".git").exists():
-        try:
-            completed = subprocess.run(
-                [
-                    "git",
-                    "log",
-                    "-1",
-                    "--date=format-local:%Y%m%d.%H%M%S",
-                    "--format=%cd",
-                ],
-                cwd=repo_root,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            stamp = completed.stdout.strip()
-            if stamp:
-                return f"{WEB_GUI_VERSION_PREFIX}-{stamp}"
-        except Exception:
-            pass
+        git_executable = shutil.which("git")
+        if git_executable:
+            try:
+                completed = subprocess.run(
+                    [
+                        git_executable,
+                        "log",
+                        "-1",
+                        "--date=format-local:%Y%m%d.%H%M%S",
+                        "--format=%cd",
+                    ],
+                    cwd=repo_root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )  # nosec B603
+                stamp = completed.stdout.strip()
+                if stamp:
+                    return f"{WEB_GUI_VERSION_PREFIX}-{stamp}"
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass
 
     try:
         modified_stamp = datetime.fromtimestamp(Path(__file__).stat().st_mtime, tz=UTC).strftime("%Y%m%d.%H%M%S")
@@ -168,6 +180,13 @@ def _clip_text(value: str, max_chars: int = 120):
     if len(text) <= max_chars:
         return text
     return f"{text[: max_chars - 3]}..."
+
+
+def _format_byte_size(value: int | str | None) -> str:
+    size_bytes = max(0, int(value or 0))
+    if size_bytes < 1024:
+        return f"{size_bytes} bytes"
+    return f"{size_bytes} bytes ({size_bytes / 1024:.1f} KiB)"
 
 
 ENV_FIELDS = [
@@ -5533,6 +5552,7 @@ def create_web_app(
                 catalog_error = str(discord_catalog.get("error") or "")
         text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
         max_welcome_image_upload_bytes = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
+        allowed_welcome_extensions_label = ", ".join(ext.upper().lstrip(".") for ext in WELCOME_IMAGE_ALLOWED_EXTENSIONS)
 
         if request.method == "POST":
             if not callable(on_save_guild_settings):
@@ -5556,9 +5576,11 @@ def create_web_app(
                 if welcome_image_file is not None and welcome_image_file.filename:
                     payload_bytes = welcome_image_file.read()
                     lowered_name = welcome_image_file.filename.lower()
-                    allowed_extensions = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-                    if not lowered_name.endswith(allowed_extensions):
-                        flash("Welcome image must be a PNG, JPG, JPEG, WEBP, or GIF file.", "error")
+                    if not lowered_name.endswith(WELCOME_IMAGE_ALLOWED_EXTENSIONS):
+                        flash(
+                            f"Welcome image must be one of: {allowed_welcome_extensions_label}.",
+                            "error",
+                        )
                         upload_valid = False
                     elif len(payload_bytes) > max_welcome_image_upload_bytes:
                         flash(
@@ -5567,9 +5589,44 @@ def create_web_app(
                         )
                         upload_valid = False
                     else:
+                        metadata = detect_image_metadata(payload_bytes)
+                        if metadata is None:
+                            flash(
+                                "Welcome image content is not a valid PNG, JPEG, GIF, or WEBP file.",
+                                "error",
+                            )
+                            upload_valid = False
+                        elif (
+                            int(metadata.get("width") or 0) < WELCOME_IMAGE_MIN_WIDTH
+                            or int(metadata.get("height") or 0) < WELCOME_IMAGE_MIN_HEIGHT
+                        ):
+                            flash(
+                                "Welcome image is too small "
+                                f"({int(metadata.get('width') or 0)}x{int(metadata.get('height') or 0)}). "
+                                f"Minimum is {WELCOME_IMAGE_MIN_WIDTH}x{WELCOME_IMAGE_MIN_HEIGHT}.",
+                                "error",
+                            )
+                            upload_valid = False
+                        elif (
+                            int(metadata.get("width") or 0) > WELCOME_IMAGE_MAX_WIDTH
+                            or int(metadata.get("height") or 0) > WELCOME_IMAGE_MAX_HEIGHT
+                        ):
+                            flash(
+                                "Welcome image dimensions are too large "
+                                f"({int(metadata.get('width') or 0)}x{int(metadata.get('height') or 0)}). "
+                                f"Maximum is {WELCOME_IMAGE_MAX_WIDTH}x{WELCOME_IMAGE_MAX_HEIGHT}.",
+                                "error",
+                            )
+                            upload_valid = False
+                        else:
+                            payload["welcome_image_size_bytes"] = int(metadata.get("size_bytes") or len(payload_bytes))
+                            payload["welcome_image_width"] = int(metadata.get("width") or 0)
+                            payload["welcome_image_height"] = int(metadata.get("height") or 0)
+                            payload["welcome_image_media_type"] = str(metadata.get("media_type") or "application/octet-stream")
+                            payload["welcome_image_format"] = str(metadata.get("format") or "").strip()
+                    if upload_valid:
                         payload["welcome_image_bytes"] = payload_bytes
                         payload["welcome_image_filename"] = welcome_image_file.filename
-                        payload["welcome_image_media_type"] = str(welcome_image_file.mimetype or "application/octet-stream")
                 if not upload_valid:
                     response = None
                 else:
@@ -5647,14 +5704,31 @@ def create_web_app(
         welcome_channel_message = str(current_settings.get("welcome_channel_message") or "")
         welcome_dm_message = str(current_settings.get("welcome_dm_message") or "")
         welcome_image_filename = str(current_settings.get("welcome_image_filename") or "")
+        welcome_image_media_type = str(effective_settings.get("welcome_image_media_type") or current_settings.get("welcome_image_media_type") or "")
+        welcome_image_size_bytes = int(effective_settings.get("welcome_image_size_bytes") or current_settings.get("welcome_image_size_bytes") or 0)
+        welcome_image_width = int(effective_settings.get("welcome_image_width") or current_settings.get("welcome_image_width") or 0)
+        welcome_image_height = int(effective_settings.get("welcome_image_height") or current_settings.get("welcome_image_height") or 0)
         welcome_image_configured = bool(effective_settings.get("welcome_image_configured"))
+        welcome_image_dimensions = (
+            f"{welcome_image_width}x{welcome_image_height}" if welcome_image_width > 0 and welcome_image_height > 0 else "Unknown"
+        )
+        welcome_image_size_label = _format_byte_size(welcome_image_size_bytes) if welcome_image_configured else "n/a"
+        welcome_image_dimensions_label = welcome_image_dimensions if welcome_image_configured else "n/a"
+        welcome_image_details = (
+            f"{escape(welcome_image_filename or 'Unnamed image')} | "
+            f"{escape(welcome_image_media_type or 'Unknown type')} | "
+            f"{escape(_format_byte_size(welcome_image_size_bytes))} | "
+            f"{escape(welcome_image_dimensions)}"
+            if welcome_image_configured
+            else "No image uploaded"
+        )
 
         body = f"""
         <div class="card">
           <h2>Guild Settings</h2>
           <p class="muted">These values apply only to <strong>{escape(guild_name)}</strong>. Leave a field blank to use the global fallback.</p>
           <p class="muted">Welcome message placeholders: <span class="mono">{{member_mention}}</span>, <span class="mono">{{member_name}}</span>, <span class="mono">{{display_name}}</span>, <span class="mono">{{guild_name}}</span>, <span class="mono">{{member_count}}</span>, <span class="mono">{{account_created_at}}</span>.</p>
-          <p class="muted">Welcome image uploads accept PNG, JPG, JPEG, WEBP, or GIF up to {max_welcome_image_upload_bytes} bytes.</p>
+          <p class="muted">Welcome image uploads accept {escape(allowed_welcome_extensions_label)}. Max size: {_format_byte_size(max_welcome_image_upload_bytes)}. Allowed dimensions: {WELCOME_IMAGE_MIN_WIDTH}x{WELCOME_IMAGE_MIN_HEIGHT} up to {WELCOME_IMAGE_MAX_WIDTH}x{WELCOME_IMAGE_MAX_HEIGHT}. Recommended: landscape artwork around 1200x675 for clearer in-chat presentation.</p>
           {catalog_note}
           <form method="post" enctype="multipart/form-data">
             <table>
@@ -5704,10 +5778,15 @@ def create_web_app(
                   <td><strong>Welcome Image</strong><div class="muted mono">welcome_image_file</div></td>
                   <td>
                     <input type="file" name="welcome_image_file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" />
-                    <div class="muted" style="margin-top:8px;">Current: {escape(welcome_image_filename or 'No image uploaded')}</div>
+                    <div class="muted" style="margin-top:8px;">Current: {welcome_image_details}</div>
                     <label style="display:block; margin-top:8px;"><input type="checkbox" name="welcome_image_remove" value="1" /> Remove current image</label>
                   </td>
-                  <td class="muted">{'configured' if welcome_image_configured else 'not configured'}</td>
+                  <td class="muted">
+                    {'configured' if welcome_image_configured else 'not configured'}
+                    <div class="mono" style="margin-top:6px;">{escape(welcome_image_media_type or 'n/a')}</div>
+                    <div class="mono">{escape(welcome_image_size_label)}</div>
+                    <div class="mono">{escape(welcome_image_dimensions_label)}</div>
+                  </td>
                 </tr>
                 <tr>
                   <td><strong>Attach Image In Channel</strong><div class="muted mono">welcome_channel_image_enabled</div></td>
