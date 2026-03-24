@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-23] - GitHub Wiki Publication
+
+### Changed
+
+- Switched default bot help and web header documentation links to the live GitHub wiki:
+  - `https://github.com/wickedyoda/Glinet_discord_bot/wiki`
+- Added `scripts/export_github_wiki.sh` to export the repo `wiki/` directory into the standalone GitHub wiki repository layout.
+- Published the current wiki content to `https://github.com/wickedyoda/Glinet_discord_bot.wiki.git`.
+
 ## [2026-03-23] - Welcome Automation Enhancements
 
 ### Added
