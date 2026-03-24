@@ -181,7 +181,14 @@ Notes:
 - If no welcome channel is selected, the bot will not post a public welcome message
 - If the member blocks DMs, the DM send is skipped and the join flow continues normally
 - Supported image formats: `PNG`, `JPG`, `JPEG`, `WEBP`, `GIF`
-- Upload size follows the configured web avatar upload limit
+- Upload size follows the configured web avatar upload limit (`WEB_AVATAR_MAX_UPLOAD_BYTES`; default `2097152` bytes / `2048 KiB`)
+- Welcome images must be between `64x64` and `4096x4096`
+- The page shows current uploaded image metadata:
+  - filename
+  - media type
+  - size in bytes / KiB
+  - width x height
+- Recommended welcome image layout is landscape artwork around `1200x675` for clearer preview sizing inside Discord
 
 ### `/admin/settings`
 

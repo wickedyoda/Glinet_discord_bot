@@ -88,6 +88,9 @@ def test_save_and_load_guild_settings_persists_welcome_image():
             welcome_dm_message TEXT NOT NULL DEFAULT '',
             welcome_image_filename TEXT NOT NULL DEFAULT '',
             welcome_image_media_type TEXT NOT NULL DEFAULT '',
+            welcome_image_size_bytes INTEGER NOT NULL DEFAULT 0,
+            welcome_image_width INTEGER NOT NULL DEFAULT 0,
+            welcome_image_height INTEGER NOT NULL DEFAULT 0,
             welcome_image_base64 TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL,
             updated_by_email TEXT NOT NULL DEFAULT ''
@@ -114,6 +117,9 @@ def test_save_and_load_guild_settings_persists_welcome_image():
             "welcome_dm_message": "Hi {member_name}",
             "welcome_image_filename": "welcome.png",
             "welcome_image_media_type": "image/png",
+            "welcome_image_size_bytes": 15,
+            "welcome_image_width": 640,
+            "welcome_image_height": 360,
             "welcome_image_bytes": b"\x89PNG\r\n\x1a\nfakepng",
         },
         actor_email="admin@example.com",
@@ -127,4 +133,7 @@ def test_save_and_load_guild_settings_persists_welcome_image():
     assert settings["welcome_dm_image_enabled"] == 1
     assert settings["welcome_image_filename"] == "welcome.png"
     assert settings["welcome_image_media_type"] == "image/png"
+    assert settings["welcome_image_size_bytes"] == 15
+    assert settings["welcome_image_width"] == 640
+    assert settings["welcome_image_height"] == 360
     assert settings["welcome_image_base64"]

@@ -8,6 +8,54 @@ GUILD_ARCHIVE_KV_PREFIXES = (
     "command_permissions_updated_at:{guild_id}",
     "command_permissions_updated_by:{guild_id}",
 )
+GUILD_ARCHIVE_GUILD_ID_TABLES = {
+    "role_codes",
+    "invite_roles",
+    "tag_responses",
+    "guild_settings",
+    "actions",
+    "command_permissions",
+    "reddit_feed_subscriptions",
+    "youtube_subscriptions",
+    "linkedin_subscriptions",
+    "beta_program_subscriptions",
+    "member_activity_summary",
+    "member_activity_recent_hourly",
+    "member_activity_seen_messages",
+    "random_choice_history",
+}
+GUILD_ARCHIVE_SELECT_QUERIES = {
+    "actions": "SELECT * FROM actions WHERE guild_id = ?",
+    "beta_program_subscriptions": "SELECT * FROM beta_program_subscriptions WHERE guild_id = ?",
+    "command_permissions": "SELECT * FROM command_permissions WHERE guild_id = ?",
+    "guild_settings": "SELECT * FROM guild_settings WHERE guild_id = ?",
+    "invite_roles": "SELECT * FROM invite_roles WHERE guild_id = ?",
+    "linkedin_subscriptions": "SELECT * FROM linkedin_subscriptions WHERE guild_id = ?",
+    "member_activity_recent_hourly": "SELECT * FROM member_activity_recent_hourly WHERE guild_id = ?",
+    "member_activity_seen_messages": "SELECT * FROM member_activity_seen_messages WHERE guild_id = ?",
+    "member_activity_summary": "SELECT * FROM member_activity_summary WHERE guild_id = ?",
+    "random_choice_history": "SELECT * FROM random_choice_history WHERE guild_id = ?",
+    "reddit_feed_subscriptions": "SELECT * FROM reddit_feed_subscriptions WHERE guild_id = ?",
+    "role_codes": "SELECT * FROM role_codes WHERE guild_id = ?",
+    "tag_responses": "SELECT * FROM tag_responses WHERE guild_id = ?",
+    "youtube_subscriptions": "SELECT * FROM youtube_subscriptions WHERE guild_id = ?",
+}
+GUILD_ARCHIVE_DELETE_QUERIES = {
+    "actions": "DELETE FROM actions WHERE guild_id = ?",
+    "beta_program_subscriptions": "DELETE FROM beta_program_subscriptions WHERE guild_id = ?",
+    "command_permissions": "DELETE FROM command_permissions WHERE guild_id = ?",
+    "guild_settings": "DELETE FROM guild_settings WHERE guild_id = ?",
+    "invite_roles": "DELETE FROM invite_roles WHERE guild_id = ?",
+    "linkedin_subscriptions": "DELETE FROM linkedin_subscriptions WHERE guild_id = ?",
+    "member_activity_recent_hourly": "DELETE FROM member_activity_recent_hourly WHERE guild_id = ?",
+    "member_activity_seen_messages": "DELETE FROM member_activity_seen_messages WHERE guild_id = ?",
+    "member_activity_summary": "DELETE FROM member_activity_summary WHERE guild_id = ?",
+    "random_choice_history": "DELETE FROM random_choice_history WHERE guild_id = ?",
+    "reddit_feed_subscriptions": "DELETE FROM reddit_feed_subscriptions WHERE guild_id = ?",
+    "role_codes": "DELETE FROM role_codes WHERE guild_id = ?",
+    "tag_responses": "DELETE FROM tag_responses WHERE guild_id = ?",
+    "youtube_subscriptions": "DELETE FROM youtube_subscriptions WHERE guild_id = ?",
+}
 
 
 class GuildArchiveManager:
@@ -38,8 +86,15 @@ class GuildArchiveManager:
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
+    def _require_archive_table_name(self, table_name: str) -> str:
+        normalized = str(table_name or "").strip()
+        if normalized not in GUILD_ARCHIVE_GUILD_ID_TABLES:
+            raise ValueError(f"Unsupported guild archive table: {normalized}")
+        return normalized
+
     def _select_table_rows_locked(self, conn, table_name: str, guild_id: int):
-        rows = conn.execute(f"SELECT * FROM {table_name} WHERE guild_id = ?", (int(guild_id),)).fetchall()
+        safe_table_name = self._require_archive_table_name(table_name)
+        rows = conn.execute(GUILD_ARCHIVE_SELECT_QUERIES[safe_table_name], (int(guild_id),)).fetchall()
         return [dict(row) for row in rows]
 
     def _select_kv_rows_locked(self, conn, guild_id: int):
@@ -79,23 +134,9 @@ class GuildArchiveManager:
             """,
             (safe_guild_id,),
         )
-        for table_name in (
-            "role_codes",
-            "invite_roles",
-            "tag_responses",
-            "guild_settings",
-            "actions",
-            "command_permissions",
-            "reddit_feed_subscriptions",
-            "youtube_subscriptions",
-            "linkedin_subscriptions",
-            "beta_program_subscriptions",
-            "member_activity_summary",
-            "member_activity_recent_hourly",
-            "member_activity_seen_messages",
-            "random_choice_history",
-        ):
-            conn.execute(f"DELETE FROM {table_name} WHERE guild_id = ?", (safe_guild_id,))
+        for table_name in GUILD_ARCHIVE_GUILD_ID_TABLES:
+            safe_table_name = self._require_archive_table_name(table_name)
+            conn.execute(GUILD_ARCHIVE_DELETE_QUERIES[safe_table_name], (safe_guild_id,))
         self._delete_kv_rows_locked(conn, safe_guild_id)
 
     def _insert_table_rows_locked(self, conn, table_name: str, rows: list[dict]):
