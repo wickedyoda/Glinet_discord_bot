@@ -322,13 +322,6 @@ class MemberActivityManager:
             """,
             (cutoff_dt.isoformat(),),
         )
-        conn.execute(
-            """
-            UPDATE member_activity_summary
-            SET total_messages = 0,
-                total_active_days = 0
-            """
-        )
         self.recent_prune_marker = current_hour_bucket
 
     def record_member_message_activity_locked(
@@ -367,7 +360,7 @@ class MemberActivityManager:
         self.prune_member_activity_recent_hourly(conn, message_dt)
         summary_row = conn.execute(
             """
-            SELECT first_message_at, last_message_at
+            SELECT first_message_at, last_message_at, total_messages, total_active_days
             FROM member_activity_summary
             WHERE guild_id = ? AND user_id = ?
             """,
@@ -387,7 +380,7 @@ class MemberActivityManager:
                     total_messages,
                     total_active_days
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     safe_guild_id,
@@ -396,23 +389,33 @@ class MemberActivityManager:
                     encrypted_display_name,
                     message_iso,
                     message_iso,
+                    1,
+                    1,
                 ),
             )
         else:
+            last_message_at_raw = str(summary_row["last_message_at"] or "")
+            previous_last_message_dt = self.normalize_activity_timestamp(last_message_at_raw) if last_message_at_raw else None
+            next_total_messages = int(summary_row["total_messages"] or 0) + 1
+            next_total_active_days = int(summary_row["total_active_days"] or 0)
+            if previous_last_message_dt is None or previous_last_message_dt.date() != message_dt.date():
+                next_total_active_days += 1
             conn.execute(
                 """
                 UPDATE member_activity_summary
                 SET username = ?,
                     display_name = ?,
                     last_message_at = ?,
-                    total_messages = 0,
-                    total_active_days = 0
+                    total_messages = ?,
+                    total_active_days = ?
                 WHERE guild_id = ? AND user_id = ?
                 """,
                 (
                     encrypted_username,
                     encrypted_display_name,
                     message_iso,
+                    next_total_messages,
+                    next_total_active_days,
                     safe_guild_id,
                     user_id,
                 ),
