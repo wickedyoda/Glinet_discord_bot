@@ -26,7 +26,7 @@ Moderator tooling for members, roles, and operational incident visibility.
 - Removes recent messages in the current channel/thread.
 - Requires amount between `1` and `500`.
 - Skips pinned messages.
-- Logs the moderation action to `MOD_LOG_CHANNEL_ID`.
+- Logs the moderation action to the selected guild's configured moderation log channel.
 
 ## `/logs` Command Behavior
 
@@ -66,7 +66,8 @@ Layer 2: per-command overrides in web admin
 
 Configured target:
 
-- `MOD_LOG_CHANNEL_ID`
+- Guild Settings -> `mod_log_channel_id`
+- Fallback: global `MOD_LOG_CHANNEL_ID` from `/admin/settings` or env
 
 Event coverage includes:
 
@@ -96,7 +97,7 @@ Event coverage includes:
 - Moderator can run command in one channel but not another:
   - Check Discord channel permission overrides.
 - Mod logs missing:
-  - Validate `MOD_LOG_CHANNEL_ID` exists and bot can send messages there.
+  - Validate the selected guild has `mod_log_channel_id` configured, or that a valid global `MOD_LOG_CHANNEL_ID` fallback exists, and the bot can send messages there.
 - `/logs` empty during incident:
   - Lower `CONTAINER_LOG_LEVEL` temporarily to capture more detail.
 

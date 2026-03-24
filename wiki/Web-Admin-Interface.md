@@ -153,7 +153,9 @@ UI forms include show/hide password toggles and validation feedback.
   - welcome DM message
   - uploaded welcome image
   - image attachment enable/disable for channel and DM
-- Blank values fall back to the global runtime environment settings
+- Bot log, moderation log, and firmware notification channels can be set here per guild
+- These values override the global defaults configured in `/admin/settings`
+- If a guild-level channel is left unset, the bot falls back to the corresponding global channel setting
 
 Welcome-message placeholders:
 
@@ -195,9 +197,34 @@ Notes:
 - Global environment-backed settings editor
 - Live dropdowns for known channel and role fields load from the currently selected server
 - Managed-guild allowlist and utility integration settings
+- Global feature toggles for:
+  - firmware monitor
+  - Reddit feed monitor
+  - YouTube monitor
+  - LinkedIn monitor
+  - GL.iNet beta program monitor
+- Disabling a monitor stops polling/posting but keeps its saved subscriptions and web pages available
 - Web-session/security settings
 - Auto-logout selection (`5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, `120` minutes)
 - Writes to `WEB_ENV_FILE`, which should point to a writable path such as `${DATA_DIR}/web-settings.env`
+
+### Feed and Profile Watchers
+
+- `/admin/reddit-feeds`
+  - Add subreddit-to-channel mappings
+  - Edit existing subreddit or destination channel without deleting the row
+  - Enable/disable or delete existing mappings
+  - Editing a subreddit resets that feed's seen-post baseline so old posts are not reposted
+- `/admin/youtube`
+  - Add YouTube channel subscriptions
+  - Edit an existing source URL or destination channel in place
+  - Delete existing subscriptions
+  - Editing reseeds the subscription from the current latest upload so old uploads are not replayed
+- `/admin/linkedin`
+  - Add LinkedIn profile subscriptions
+  - Edit an existing profile URL or destination channel in place
+  - Delete existing subscriptions
+  - Editing reseeds the subscription from the current latest public post so old posts are not replayed
 
 ### `/status/everything` (Public Read-Only Status)
 
