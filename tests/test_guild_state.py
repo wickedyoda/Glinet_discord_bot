@@ -1,3 +1,5 @@
+import sqlite3
+import threading
 from datetime import UTC, datetime
 
 from app.guild_state import GuildStateManager
@@ -65,3 +67,73 @@ def test_default_guild_settings_uses_configured_defaults():
     assert settings["bot_log_channel_id"] == 10
     assert settings["mod_log_channel_id"] == 20
     assert settings["firmware_notify_channel_id"] == 30
+
+
+def test_save_and_load_guild_settings_persists_welcome_image():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE guild_settings (
+            guild_id INTEGER PRIMARY KEY,
+            bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
+            mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
+            firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+            access_role_id INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_id INTEGER NOT NULL DEFAULT 0,
+            welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_image_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_dm_image_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_message TEXT NOT NULL DEFAULT '',
+            welcome_dm_message TEXT NOT NULL DEFAULT '',
+            welcome_image_filename TEXT NOT NULL DEFAULT '',
+            welcome_image_media_type TEXT NOT NULL DEFAULT '',
+            welcome_image_size_bytes INTEGER NOT NULL DEFAULT 0,
+            welcome_image_width INTEGER NOT NULL DEFAULT 0,
+            welcome_image_height INTEGER NOT NULL DEFAULT 0,
+            welcome_image_base64 TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            updated_by_email TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    kv_state = {}
+    manager = build_manager(
+        get_db_connection=lambda: conn,
+        db_lock=threading.Lock(),
+        db_kv_get=lambda key: kv_state.get(key),
+        db_kv_set=lambda key, value: kv_state.__setitem__(key, value),
+        logger=type("Logger", (), {"exception": lambda *args, **kwargs: None})(),
+    )
+
+    manager.save_guild_settings(
+        123,
+        {
+            "welcome_channel_id": "9999",
+            "welcome_dm_enabled": "1",
+            "welcome_channel_image_enabled": "1",
+            "welcome_dm_image_enabled": "1",
+            "welcome_channel_message": "Welcome {member_mention}",
+            "welcome_dm_message": "Hi {member_name}",
+            "welcome_image_filename": "welcome.png",
+            "welcome_image_media_type": "image/png",
+            "welcome_image_size_bytes": 15,
+            "welcome_image_width": 640,
+            "welcome_image_height": 360,
+            "welcome_image_bytes": b"\x89PNG\r\n\x1a\nfakepng",
+        },
+        actor_email="admin@example.com",
+    )
+
+    settings = manager.load_guild_settings(123)
+
+    assert settings["welcome_channel_id"] == 9999
+    assert settings["welcome_dm_enabled"] == 1
+    assert settings["welcome_channel_image_enabled"] == 1
+    assert settings["welcome_dm_image_enabled"] == 1
+    assert settings["welcome_image_filename"] == "welcome.png"
+    assert settings["welcome_image_media_type"] == "image/png"
+    assert settings["welcome_image_size_bytes"] == 15
+    assert settings["welcome_image_width"] == 640
+    assert settings["welcome_image_height"] == 360
+    assert settings["welcome_image_base64"]

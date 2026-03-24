@@ -45,6 +45,9 @@ from app.beta_programs import (
 from app.guild_archive import GuildArchiveManager
 from app.guild_state import GuildStateManager
 from app.help_content import build_help_message_for_command as build_help_content_message_for_command
+from app.image_metadata import (
+    detect_image_metadata,
+)
 from app.member_activity import MemberActivityManager
 from app.member_activity_backfill import (
     compute_missing_ranges as compute_member_activity_backfill_missing_ranges,
@@ -60,6 +63,7 @@ from app.member_activity_backfill import (
 )
 from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
 from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
+from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
 from web_admin import start_web_admin_interface
 
 
@@ -1279,6 +1283,18 @@ def ensure_db_schema():
                 mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
                 access_role_id INTEGER NOT NULL DEFAULT 0,
+                welcome_channel_id INTEGER NOT NULL DEFAULT 0,
+                welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
+                welcome_channel_image_enabled INTEGER NOT NULL DEFAULT 0,
+                welcome_dm_image_enabled INTEGER NOT NULL DEFAULT 0,
+                welcome_channel_message TEXT NOT NULL DEFAULT '',
+                welcome_dm_message TEXT NOT NULL DEFAULT '',
+                welcome_image_filename TEXT NOT NULL DEFAULT '',
+                welcome_image_media_type TEXT NOT NULL DEFAULT '',
+                welcome_image_size_bytes INTEGER NOT NULL DEFAULT 0,
+                welcome_image_width INTEGER NOT NULL DEFAULT 0,
+                welcome_image_height INTEGER NOT NULL DEFAULT 0,
+                welcome_image_base64 TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL,
                 updated_by_email TEXT NOT NULL DEFAULT ''
             );
@@ -1540,6 +1556,32 @@ def ensure_db_schema():
                 CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id ON tag_responses(guild_id);
                 """
             )
+
+        guild_settings_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
+        if "welcome_channel_id" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_id INTEGER NOT NULL DEFAULT 0")
+        if "welcome_dm_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_dm_enabled INTEGER NOT NULL DEFAULT 0")
+        if "welcome_channel_image_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_image_enabled INTEGER NOT NULL DEFAULT 0")
+        if "welcome_dm_image_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_dm_image_enabled INTEGER NOT NULL DEFAULT 0")
+        if "welcome_channel_message" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_message TEXT NOT NULL DEFAULT ''")
+        if "welcome_dm_message" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_dm_message TEXT NOT NULL DEFAULT ''")
+        if "welcome_image_filename" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_filename TEXT NOT NULL DEFAULT ''")
+        if "welcome_image_media_type" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_media_type TEXT NOT NULL DEFAULT ''")
+        if "welcome_image_size_bytes" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_size_bytes INTEGER NOT NULL DEFAULT 0")
+        if "welcome_image_width" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_width INTEGER NOT NULL DEFAULT 0")
+        if "welcome_image_height" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_height INTEGER NOT NULL DEFAULT 0")
+        if "welcome_image_base64" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_base64 TEXT NOT NULL DEFAULT ''")
 
         action_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
         if "guild_id" not in action_columns:
@@ -4565,6 +4607,22 @@ def run_web_save_tag_responses(mapping: dict, actor_email: str, guild_id: int | 
 def build_guild_settings_web_payload(guild_id: int | str | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
     settings = load_guild_settings(safe_guild_id)
+    welcome_image_filename = str(settings.get("welcome_image_filename") or "")
+    welcome_image_media_type = str(settings.get("welcome_image_media_type") or "")
+    welcome_image_size_bytes = int(settings.get("welcome_image_size_bytes") or 0)
+    welcome_image_width = int(settings.get("welcome_image_width") or 0)
+    welcome_image_height = int(settings.get("welcome_image_height") or 0)
+    welcome_image_base64 = str(settings.get("welcome_image_base64") or "").strip()
+    if welcome_image_base64 and (welcome_image_size_bytes <= 0 or welcome_image_width <= 0 or welcome_image_height <= 0):
+        try:
+            derived_metadata = detect_image_metadata(base64.b64decode(welcome_image_base64))
+        except Exception:
+            derived_metadata = None
+        if derived_metadata:
+            welcome_image_media_type = welcome_image_media_type or str(derived_metadata.get("media_type") or "")
+            welcome_image_size_bytes = max(welcome_image_size_bytes, int(derived_metadata.get("size_bytes") or 0))
+            welcome_image_width = max(welcome_image_width, int(derived_metadata.get("width") or 0))
+            welcome_image_height = max(welcome_image_height, int(derived_metadata.get("height") or 0))
     return {
         "ok": True,
         "guild_id": safe_guild_id,
@@ -4573,6 +4631,18 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
             "mod_log_channel_id": int(settings.get("mod_log_channel_id") or 0),
             "firmware_notify_channel_id": int(settings.get("firmware_notify_channel_id") or 0),
             "access_role_id": int(settings.get("access_role_id") or 0),
+            "welcome_channel_id": int(settings.get("welcome_channel_id") or 0),
+            "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
+            "welcome_channel_image_enabled": 1 if int(settings.get("welcome_channel_image_enabled") or 0) > 0 else 0,
+            "welcome_dm_image_enabled": 1 if int(settings.get("welcome_dm_image_enabled") or 0) > 0 else 0,
+            "welcome_channel_message": str(settings.get("welcome_channel_message") or ""),
+            "welcome_dm_message": str(settings.get("welcome_dm_message") or ""),
+            "welcome_image_filename": welcome_image_filename,
+            "welcome_image_media_type": welcome_image_media_type,
+            "welcome_image_size_bytes": welcome_image_size_bytes,
+            "welcome_image_width": welcome_image_width,
+            "welcome_image_height": welcome_image_height,
+            "welcome_image_configured": bool(welcome_image_base64),
         },
         "effective": {
             "bot_log_channel_id": get_effective_guild_setting(safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID),
@@ -4583,6 +4653,18 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
                 FIRMWARE_NOTIFY_CHANNEL_ID,
             ),
             "access_role_id": get_effective_guild_setting(safe_guild_id, "access_role_id", 0),
+            "welcome_channel_id": get_effective_guild_setting(safe_guild_id, "welcome_channel_id", 0),
+            "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
+            "welcome_channel_image_enabled": 1 if int(settings.get("welcome_channel_image_enabled") or 0) > 0 else 0,
+            "welcome_dm_image_enabled": 1 if int(settings.get("welcome_dm_image_enabled") or 0) > 0 else 0,
+            "welcome_channel_message": str(settings.get("welcome_channel_message") or ""),
+            "welcome_dm_message": str(settings.get("welcome_dm_message") or ""),
+            "welcome_image_filename": welcome_image_filename,
+            "welcome_image_media_type": welcome_image_media_type,
+            "welcome_image_size_bytes": welcome_image_size_bytes,
+            "welcome_image_width": welcome_image_width,
+            "welcome_image_height": welcome_image_height,
+            "welcome_image_configured": bool(welcome_image_base64),
         },
         "updated_at": str(settings.get("updated_at") or ""),
         "updated_by_email": str(settings.get("updated_by_email") or ""),
@@ -8309,6 +8391,14 @@ def format_member_activity_window_summary(window: dict):
     return "\n".join(lines)
 
 
+async def send_configured_welcome_messages(member: discord.Member):
+    await send_configured_welcome_messages_impl(
+        member,
+        load_guild_settings=load_guild_settings,
+        logger=logger,
+    )
+
+
 def build_docs_site_search_message(query: str, site_key: str):
     site_info = DOCS_SITE_MAP.get(site_key)
     if not site_info:
@@ -8516,6 +8606,7 @@ async def on_member_join(member: discord.Member):
     if used_invite:
         join_details += f"**Invite:** `{used_invite.code}`\n"
     await send_server_event_log(guild, "member_join", join_details)
+    await send_configured_welcome_messages(member)
 
 
 @bot.event

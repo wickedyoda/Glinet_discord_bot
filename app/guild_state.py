@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -68,6 +69,18 @@ class GuildStateManager:
             "mod_log_channel_id": self.mod_log_channel_id if self.mod_log_channel_id > 0 else 0,
             "firmware_notify_channel_id": self.firmware_notify_channel_id if self.firmware_notify_channel_id > 0 else 0,
             "access_role_id": 0,
+            "welcome_channel_id": 0,
+            "welcome_dm_enabled": 0,
+            "welcome_channel_image_enabled": 0,
+            "welcome_dm_image_enabled": 0,
+            "welcome_channel_message": "",
+            "welcome_dm_message": "",
+            "welcome_image_filename": "",
+            "welcome_image_media_type": "",
+            "welcome_image_size_bytes": 0,
+            "welcome_image_width": 0,
+            "welcome_image_height": 0,
+            "welcome_image_base64": "",
             "updated_at": "",
             "updated_by_email": "",
         }
@@ -100,7 +113,13 @@ class GuildStateManager:
             row = conn.execute(
                 """
                 SELECT bot_log_channel_id, mod_log_channel_id, firmware_notify_channel_id,
-                       access_role_id, updated_at, updated_by_email
+                       access_role_id, welcome_channel_id, welcome_dm_enabled,
+                       welcome_channel_image_enabled, welcome_dm_image_enabled,
+                       welcome_channel_message, welcome_dm_message,
+                       welcome_image_filename, welcome_image_media_type,
+                       welcome_image_size_bytes, welcome_image_width, welcome_image_height,
+                       welcome_image_base64,
+                       updated_at, updated_by_email
                 FROM guild_settings
                 WHERE guild_id = ?
                 """,
@@ -113,6 +132,18 @@ class GuildStateManager:
                     "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
                     "firmware_notify_channel_id": int(row["firmware_notify_channel_id"] or 0),
                     "access_role_id": int(row["access_role_id"] or 0),
+                    "welcome_channel_id": int(row["welcome_channel_id"] or 0),
+                    "welcome_dm_enabled": 1 if int(row["welcome_dm_enabled"] or 0) > 0 else 0,
+                    "welcome_channel_image_enabled": 1 if int(row["welcome_channel_image_enabled"] or 0) > 0 else 0,
+                    "welcome_dm_image_enabled": 1 if int(row["welcome_dm_image_enabled"] or 0) > 0 else 0,
+                    "welcome_channel_message": str(row["welcome_channel_message"] or ""),
+                    "welcome_dm_message": str(row["welcome_dm_message"] or ""),
+                    "welcome_image_filename": str(row["welcome_image_filename"] or ""),
+                    "welcome_image_media_type": str(row["welcome_image_media_type"] or ""),
+                    "welcome_image_size_bytes": int(row["welcome_image_size_bytes"] or 0),
+                    "welcome_image_width": int(row["welcome_image_width"] or 0),
+                    "welcome_image_height": int(row["welcome_image_height"] or 0),
+                    "welcome_image_base64": str(row["welcome_image_base64"] or ""),
                     "updated_at": str(row["updated_at"] or ""),
                     "updated_by_email": str(row["updated_by_email"] or ""),
                 }
@@ -141,8 +172,46 @@ class GuildStateManager:
             "mod_log_channel_id",
             "firmware_notify_channel_id",
             "access_role_id",
+            "welcome_channel_id",
         ):
             merged[key] = self.parse_int_setting(source.get(key, current.get(key, 0)), 0, minimum=0)
+        merged["welcome_dm_enabled"] = 1 if str(source.get("welcome_dm_enabled", current.get("welcome_dm_enabled", 0))).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        } else 0
+        merged["welcome_channel_image_enabled"] = 1 if str(
+            source.get("welcome_channel_image_enabled", current.get("welcome_channel_image_enabled", 0))
+        ).strip().lower() in {"1", "true", "yes", "on"} else 0
+        merged["welcome_dm_image_enabled"] = 1 if str(
+            source.get("welcome_dm_image_enabled", current.get("welcome_dm_image_enabled", 0))
+        ).strip().lower() in {"1", "true", "yes", "on"} else 0
+        merged["welcome_channel_message"] = str(
+            source.get("welcome_channel_message", current.get("welcome_channel_message", ""))
+        ).strip()
+        merged["welcome_dm_message"] = str(source.get("welcome_dm_message", current.get("welcome_dm_message", ""))).strip()
+        if str(source.get("welcome_image_remove", "")).strip().lower() in {"1", "true", "yes", "on"}:
+            merged["welcome_image_filename"] = ""
+            merged["welcome_image_media_type"] = ""
+            merged["welcome_image_size_bytes"] = 0
+            merged["welcome_image_width"] = 0
+            merged["welcome_image_height"] = 0
+            merged["welcome_image_base64"] = ""
+        elif source.get("welcome_image_bytes") is not None:
+            image_bytes = source.get("welcome_image_bytes") or b""
+            if isinstance(image_bytes, str):
+                image_bytes = image_bytes.encode("utf-8")
+            merged["welcome_image_filename"] = str(source.get("welcome_image_filename") or "welcome-image").strip()
+            merged["welcome_image_media_type"] = str(source.get("welcome_image_media_type") or "application/octet-stream").strip()
+            merged["welcome_image_size_bytes"] = self.parse_int_setting(
+                source.get("welcome_image_size_bytes", len(image_bytes)),
+                len(image_bytes),
+                minimum=0,
+            )
+            merged["welcome_image_width"] = self.parse_int_setting(source.get("welcome_image_width", 0), 0, minimum=0)
+            merged["welcome_image_height"] = self.parse_int_setting(source.get("welcome_image_height", 0), 0, minimum=0)
+            merged["welcome_image_base64"] = base64.b64encode(bytes(image_bytes)).decode("ascii") if image_bytes else ""
 
         conn = self.get_db_connection()
         with self.db_lock:
@@ -154,15 +223,39 @@ class GuildStateManager:
                     mod_log_channel_id,
                     firmware_notify_channel_id,
                     access_role_id,
+                    welcome_channel_id,
+                    welcome_dm_enabled,
+                    welcome_channel_image_enabled,
+                    welcome_dm_image_enabled,
+                    welcome_channel_message,
+                    welcome_dm_message,
+                    welcome_image_filename,
+                    welcome_image_media_type,
+                    welcome_image_size_bytes,
+                    welcome_image_width,
+                    welcome_image_height,
+                    welcome_image_base64,
                     updated_at,
                     updated_by_email
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     bot_log_channel_id=excluded.bot_log_channel_id,
                     mod_log_channel_id=excluded.mod_log_channel_id,
                     firmware_notify_channel_id=excluded.firmware_notify_channel_id,
                     access_role_id=excluded.access_role_id,
+                    welcome_channel_id=excluded.welcome_channel_id,
+                    welcome_dm_enabled=excluded.welcome_dm_enabled,
+                    welcome_channel_image_enabled=excluded.welcome_channel_image_enabled,
+                    welcome_dm_image_enabled=excluded.welcome_dm_image_enabled,
+                    welcome_channel_message=excluded.welcome_channel_message,
+                    welcome_dm_message=excluded.welcome_dm_message,
+                    welcome_image_filename=excluded.welcome_image_filename,
+                    welcome_image_media_type=excluded.welcome_image_media_type,
+                    welcome_image_size_bytes=excluded.welcome_image_size_bytes,
+                    welcome_image_width=excluded.welcome_image_width,
+                    welcome_image_height=excluded.welcome_image_height,
+                    welcome_image_base64=excluded.welcome_image_base64,
                     updated_at=excluded.updated_at,
                     updated_by_email=excluded.updated_by_email
                 """,
@@ -172,6 +265,18 @@ class GuildStateManager:
                     merged["mod_log_channel_id"],
                     merged["firmware_notify_channel_id"],
                     merged["access_role_id"],
+                    merged["welcome_channel_id"],
+                    merged["welcome_dm_enabled"],
+                    merged["welcome_channel_image_enabled"],
+                    merged["welcome_dm_image_enabled"],
+                    merged["welcome_channel_message"],
+                    merged["welcome_dm_message"],
+                    merged["welcome_image_filename"],
+                    merged["welcome_image_media_type"],
+                    merged["welcome_image_size_bytes"],
+                    merged["welcome_image_width"],
+                    merged["welcome_image_height"],
+                    merged["welcome_image_base64"],
                     updated_at,
                     actor_email or "unknown",
                 ),
