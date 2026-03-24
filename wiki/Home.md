@@ -22,6 +22,7 @@ Core capabilities:
 - YouTube feed monitor with channel-to-Discord posting
 - LinkedIn public profile monitor with channel-to-Discord posting
 - Member activity analytics with private `/stats`, rolling 90-day retention, optional startup backfill, and ZIP export from the web GUI
+- Guild-scoped welcome automation with optional channel message, optional DM, and optional uploaded image attachment
 - Secure web admin interface with per-command permissions, action history, observability, Reddit/YouTube/LinkedIn subscriptions, member activity views, and user management
 - Dashboard command-status view showing the selected server's commands, effective access level, and enabled/disabled state
 - Multi-guild admin model with optional managed-guild allowlist filtering

@@ -1279,6 +1279,15 @@ def ensure_db_schema():
                 mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
                 access_role_id INTEGER NOT NULL DEFAULT 0,
+                welcome_channel_id INTEGER NOT NULL DEFAULT 0,
+                welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
+                welcome_channel_image_enabled INTEGER NOT NULL DEFAULT 0,
+                welcome_dm_image_enabled INTEGER NOT NULL DEFAULT 0,
+                welcome_channel_message TEXT NOT NULL DEFAULT '',
+                welcome_dm_message TEXT NOT NULL DEFAULT '',
+                welcome_image_filename TEXT NOT NULL DEFAULT '',
+                welcome_image_media_type TEXT NOT NULL DEFAULT '',
+                welcome_image_base64 TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL,
                 updated_by_email TEXT NOT NULL DEFAULT ''
             );
@@ -1540,6 +1549,26 @@ def ensure_db_schema():
                 CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id ON tag_responses(guild_id);
                 """
             )
+
+        guild_settings_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
+        if "welcome_channel_id" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_id INTEGER NOT NULL DEFAULT 0")
+        if "welcome_dm_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_dm_enabled INTEGER NOT NULL DEFAULT 0")
+        if "welcome_channel_image_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_image_enabled INTEGER NOT NULL DEFAULT 0")
+        if "welcome_dm_image_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_dm_image_enabled INTEGER NOT NULL DEFAULT 0")
+        if "welcome_channel_message" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_message TEXT NOT NULL DEFAULT ''")
+        if "welcome_dm_message" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_dm_message TEXT NOT NULL DEFAULT ''")
+        if "welcome_image_filename" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_filename TEXT NOT NULL DEFAULT ''")
+        if "welcome_image_media_type" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_media_type TEXT NOT NULL DEFAULT ''")
+        if "welcome_image_base64" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_base64 TEXT NOT NULL DEFAULT ''")
 
         action_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
         if "guild_id" not in action_columns:
@@ -4573,6 +4602,14 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
             "mod_log_channel_id": int(settings.get("mod_log_channel_id") or 0),
             "firmware_notify_channel_id": int(settings.get("firmware_notify_channel_id") or 0),
             "access_role_id": int(settings.get("access_role_id") or 0),
+            "welcome_channel_id": int(settings.get("welcome_channel_id") or 0),
+            "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
+            "welcome_channel_image_enabled": 1 if int(settings.get("welcome_channel_image_enabled") or 0) > 0 else 0,
+            "welcome_dm_image_enabled": 1 if int(settings.get("welcome_dm_image_enabled") or 0) > 0 else 0,
+            "welcome_channel_message": str(settings.get("welcome_channel_message") or ""),
+            "welcome_dm_message": str(settings.get("welcome_dm_message") or ""),
+            "welcome_image_filename": str(settings.get("welcome_image_filename") or ""),
+            "welcome_image_configured": bool(str(settings.get("welcome_image_base64") or "").strip()),
         },
         "effective": {
             "bot_log_channel_id": get_effective_guild_setting(safe_guild_id, "bot_log_channel_id", BOT_LOG_CHANNEL_ID),
@@ -4583,6 +4620,14 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
                 FIRMWARE_NOTIFY_CHANNEL_ID,
             ),
             "access_role_id": get_effective_guild_setting(safe_guild_id, "access_role_id", 0),
+            "welcome_channel_id": get_effective_guild_setting(safe_guild_id, "welcome_channel_id", 0),
+            "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
+            "welcome_channel_image_enabled": 1 if int(settings.get("welcome_channel_image_enabled") or 0) > 0 else 0,
+            "welcome_dm_image_enabled": 1 if int(settings.get("welcome_dm_image_enabled") or 0) > 0 else 0,
+            "welcome_channel_message": str(settings.get("welcome_channel_message") or ""),
+            "welcome_dm_message": str(settings.get("welcome_dm_message") or ""),
+            "welcome_image_filename": str(settings.get("welcome_image_filename") or ""),
+            "welcome_image_configured": bool(str(settings.get("welcome_image_base64") or "").strip()),
         },
         "updated_at": str(settings.get("updated_at") or ""),
         "updated_by_email": str(settings.get("updated_by_email") or ""),
@@ -8309,6 +8354,89 @@ def format_member_activity_window_summary(window: dict):
     return "\n".join(lines)
 
 
+DEFAULT_WELCOME_CHANNEL_MESSAGE = "Welcome to {guild_name}, {member_mention}."
+DEFAULT_WELCOME_DM_MESSAGE = "Welcome to {guild_name}, {member_name}. We're glad you're here."
+
+
+def build_welcome_message(template: str | None, member: discord.Member, *, default_template: str):
+    guild = member.guild
+    safe_template = str(template or "").strip() or default_template
+    mapping = {
+        "member_mention": member.mention,
+        "member_name": member.name,
+        "display_name": member.display_name,
+        "guild_name": guild.name,
+        "member_count": str(getattr(guild, "member_count", 0) or 0),
+        "account_created_at": f"<t:{int(member.created_at.timestamp())}:f>",
+    }
+    try:
+        return safe_template.format(**mapping)
+    except Exception:
+        logger.warning("Invalid welcome message template for guild %s; using default template.", guild.id)
+        return default_template.format(**mapping)
+
+
+async def send_configured_welcome_messages(member: discord.Member):
+    guild = member.guild
+    settings = load_guild_settings(guild.id)
+    image_payload = None
+    image_filename = str(settings.get("welcome_image_filename") or "").strip() or "welcome-image.png"
+    image_base64 = str(settings.get("welcome_image_base64") or "").strip()
+    if image_base64:
+        try:
+            image_payload = base64.b64decode(image_base64)
+        except (ValueError, binascii.Error):
+            logger.warning("Configured welcome image for guild %s is not valid base64; ignoring image.", guild.id)
+            image_payload = None
+
+    welcome_channel_id = int(settings.get("welcome_channel_id") or 0)
+    if welcome_channel_id > 0:
+        welcome_channel = guild.get_channel(welcome_channel_id)
+        if isinstance(welcome_channel, discord.TextChannel):
+            try:
+                channel_file = None
+                if image_payload and int(settings.get("welcome_channel_image_enabled") or 0) > 0:
+                    channel_file = discord.File(io.BytesIO(image_payload), filename=image_filename)
+                await welcome_channel.send(
+                    build_welcome_message(
+                        settings.get("welcome_channel_message"),
+                        member,
+                        default_template=DEFAULT_WELCOME_CHANNEL_MESSAGE,
+                    ),
+                    file=channel_file,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed sending welcome channel message for member %s in guild %s",
+                    member.id,
+                    guild.id,
+                )
+        else:
+            logger.warning(
+                "Configured welcome channel %s is not available as a text channel for guild %s",
+                welcome_channel_id,
+                guild.id,
+            )
+
+    if int(settings.get("welcome_dm_enabled") or 0) > 0:
+        try:
+            dm_file = None
+            if image_payload and int(settings.get("welcome_dm_image_enabled") or 0) > 0:
+                dm_file = discord.File(io.BytesIO(image_payload), filename=image_filename)
+            await member.send(
+                build_welcome_message(
+                    settings.get("welcome_dm_message"),
+                    member,
+                    default_template=DEFAULT_WELCOME_DM_MESSAGE,
+                ),
+                file=dm_file,
+            )
+        except discord.Forbidden:
+            logger.info("Could not send welcome DM to member %s in guild %s: DMs disabled or blocked", member.id, guild.id)
+        except Exception:
+            logger.exception("Failed sending welcome DM to member %s in guild %s", member.id, guild.id)
+
+
 def build_docs_site_search_message(query: str, site_key: str):
     site_info = DOCS_SITE_MAP.get(site_key)
     if not site_info:
@@ -8516,6 +8644,7 @@ async def on_member_join(member: discord.Member):
     if used_invite:
         join_details += f"**Invite:** `{used_invite.code}`\n"
     await send_server_event_log(guild, "member_join", join_details)
+    await send_configured_welcome_messages(member)
 
 
 @bot.event
