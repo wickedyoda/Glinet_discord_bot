@@ -42,7 +42,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `DOCS_MAX_RESULTS_PER_SITE` | `2` | Integer, `>= 1` | Max docs results per docs source |
 | `DOCS_INDEX_TTL_SECONDS` | `3600` | Integer, `>= 60` | Docs index cache TTL |
 | `SEARCH_RESPONSE_MAX_CHARS` | `1900` | Integer, `>= 200` | Max chars in search response |
-| `BOT_HELP_WIKI_URL` | `https://github.com/wickedyoda/Glinet_discord_bot/blob/main/wiki/Home.md` | URL with `http://` or `https://` | Link target shown in `/help` for advanced docs |
+| `BOT_HELP_WIKI_URL` | `https://github.com/wickedyoda/Glinet_discord_bot/wiki/Home` | URL with `http://` or `https://` | Link target shown in `/help` for advanced docs |
 
 ## Utility Integrations
 
@@ -120,7 +120,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `WEB_SSL_COMMON_NAME` | `localhost` | Hostname string | Subject/Common Name used when generating a self-signed fallback certificate |
 | `WEB_ENV_FILE` | `${DATA_DIR}/web-settings.env` | Path string | Writable env file path used by the web settings editor and loaded again on startup |
 | `WEB_RESTART_ENABLED` | `true` | Boolean | Enables admin restart button |
-| `WEB_GITHUB_WIKI_URL` | `http://discord.glinet.wickedyoda.com/wiki` | URL with `http://` or `https://` | Header docs link |
+| `WEB_GITHUB_WIKI_URL` | `https://github.com/wickedyoda/Glinet_discord_bot/wiki` | URL with `http://` or `https://` | Header docs link |
 | `WEB_ADMIN_DEFAULT_USERNAME` | `admin@example.com` | Valid email | First-boot admin email |
 | `WEB_ADMIN_DEFAULT_PASSWORD` | empty | Must satisfy password policy | Required on first boot when no web users exist |
 | `WEB_ADMIN_SESSION_SECRET` | generated at runtime if unset | Secret string | Session signing secret |
