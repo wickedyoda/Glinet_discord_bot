@@ -8221,12 +8221,19 @@ def trim_search_message(message: str):
     return f"{trimmed}\n...results truncated."
 
 
+def suppress_discord_link_embed(url: str):
+    text = str(url or "").strip()
+    if not text.startswith(("http://", "https://")):
+        return text
+    return f"<{text}>"
+
+
 def build_forum_search_message(query: str):
     forum_results = search_forum_links(query)
     lines = [f"🔎 Forum results for: `{query}`", "", "**Forum**"]
     forum_links = [item for item in forum_results if item.startswith("http")]
     if forum_links:
-        lines.extend([f"- {link}" for link in forum_links])
+        lines.extend([f"- {suppress_discord_link_embed(link)}" for link in forum_links])
     else:
         lines.append(f"- {forum_results[0]}")
     return trim_search_message("\n".join(lines))
@@ -8241,7 +8248,7 @@ def build_openwrt_forum_search_message(query: str):
     ]
     forum_links = [item for item in forum_results if item.startswith("http")]
     if forum_links:
-        lines.extend([f"- {link}" for link in forum_links])
+        lines.extend([f"- {suppress_discord_link_embed(link)}" for link in forum_links])
     else:
         lines.append(f"- {forum_results[0]}")
     return trim_search_message("\n".join(lines))
@@ -8260,7 +8267,7 @@ def build_reddit_search_message(query: str):
         return trim_search_message("\n".join(lines))
     if posts:
         for index, (title, link) in enumerate(posts, start=1):
-            lines.append(f"{index}. {title} - {link}")
+            lines.append(f"{index}. {title} - {suppress_discord_link_embed(link)}")
     else:
         lines.append("- No Reddit results found.")
     return trim_search_message("\n".join(lines))
@@ -8312,7 +8319,7 @@ def build_docs_site_search_message(query: str, site_key: str):
     lines = [f"🔎 {site_name} results for: `{query}`", "", f"**{site_name}**"]
     if site_results:
         for _, title, link in site_results:
-            lines.append(f"- {title} - {link}")
+            lines.append(f"- {title} - {suppress_discord_link_embed(link)}")
     else:
         lines.append("- No matching docs results found.")
     return trim_search_message("\n".join(lines))
