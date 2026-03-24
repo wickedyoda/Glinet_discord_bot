@@ -17,6 +17,7 @@ Detailed feature behavior, deployment options, environment variables, proxy vari
 - GitHub wiki page: [https://github.com/wickedyoda/Glinet_discord_bot/wiki](https://github.com/wickedyoda/Glinet_discord_bot/wiki)
 - Public repo landing redirect target: [http://discord.glinet.wickedyoda.com/](http://discord.glinet.wickedyoda.com/)
 - Public wiki redirect target: [http://discord.glinet.wickedyoda.com/wiki](http://discord.glinet.wickedyoda.com/wiki)
+- GitHub wiki export helper: [`scripts/export_github_wiki.sh`](./scripts/export_github_wiki.sh)
 
 ## Quick Start (Docker)
 
