@@ -2,6 +2,32 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-23] - Welcome Automation Enhancements
+
+### Added
+
+- Added guild-scoped welcome automation settings in `/admin/guild-settings`:
+  - welcome channel selection
+  - welcome channel message
+  - optional DM on join
+  - welcome DM message
+  - optional uploaded welcome image
+  - independent image attachment toggles for channel and DM
+  - stored image metadata display in the web GUI (filename, media type, byte size, dimensions)
+- Added welcome-message placeholder support:
+  - `{member_mention}`
+  - `{member_name}`
+  - `{display_name}`
+  - `{guild_name}`
+  - `{member_count}`
+  - `{account_created_at}`
+
+### Changed
+
+- Welcome image uploads now validate actual image content instead of only file extension.
+- Welcome image uploads now enforce dimension limits of `64x64` to `4096x4096`.
+- Guild settings UI now documents exact supported formats, byte-size cap, dimension limits, and recommended image layout guidance.
+
 ## [2026-03-23] - GL.iNet Scoped Roles and Moderation Expansion
 
 ### Added

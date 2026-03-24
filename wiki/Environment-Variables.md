@@ -133,7 +133,7 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `WEB_DISCORD_CATALOG_TTL_SECONDS` | `120` | Integer, `>= 15` | Cache TTL for Discord channels/roles catalog |
 | `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for Discord catalog fetch |
 | `WEB_BOT_PROFILE_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for bot profile web actions |
-| `WEB_AVATAR_MAX_UPLOAD_BYTES` | `2097152` | Integer, `>= 1024` | Max avatar upload size |
+| `WEB_AVATAR_MAX_UPLOAD_BYTES` | `2097152` | Integer, `>= 1024` | Max upload size for bot-profile avatars and guild welcome images |
 
 ## Compatibility Aliases
 

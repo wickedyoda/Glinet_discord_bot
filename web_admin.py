@@ -4,9 +4,10 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import ssl
-import subprocess
+import subprocess  # nosec B404
 import threading
 import time
 from collections import deque
@@ -36,6 +37,8 @@ from flask import (
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
+
+from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 
 
 def ensure_process_utc_timezone():
@@ -131,25 +134,27 @@ def _resolve_web_gui_version_label() -> str:
 
     repo_root = Path(__file__).resolve().parent
     if (repo_root / ".git").exists():
-        try:
-            completed = subprocess.run(
-                [
-                    "git",
-                    "log",
-                    "-1",
-                    "--date=format-local:%Y%m%d.%H%M%S",
-                    "--format=%cd",
-                ],
-                cwd=repo_root,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            stamp = completed.stdout.strip()
-            if stamp:
-                return f"{WEB_GUI_VERSION_PREFIX}-{stamp}"
-        except Exception:
-            pass
+        git_executable = shutil.which("git")
+        if git_executable:
+            try:
+                completed = subprocess.run(
+                    [
+                        git_executable,
+                        "log",
+                        "-1",
+                        "--date=format-local:%Y%m%d.%H%M%S",
+                        "--format=%cd",
+                    ],
+                    cwd=repo_root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )  # nosec B603
+                stamp = completed.stdout.strip()
+                if stamp:
+                    return f"{WEB_GUI_VERSION_PREFIX}-{stamp}"
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass
 
     try:
         modified_stamp = datetime.fromtimestamp(Path(__file__).stat().st_mtime, tz=UTC).strftime("%Y%m%d.%H%M%S")
@@ -5532,31 +5537,21 @@ def create_web_app(
             else:
                 catalog_error = str(discord_catalog.get("error") or "")
         text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
+        max_welcome_image_upload_bytes = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
 
         if request.method == "POST":
-            if not callable(on_save_guild_settings):
-                flash("Guild settings save callback is not configured.", "error")
-            else:
-                payload = {
-                    "bot_log_channel_id": request.form.get("bot_log_channel_id", ""),
-                    "mod_log_channel_id": request.form.get("mod_log_channel_id", ""),
-                    "firmware_notify_channel_id": request.form.get("firmware_notify_channel_id", ""),
-                    "access_role_id": request.form.get("access_role_id", ""),
-                }
-                response = on_save_guild_settings(payload, user["email"], selected_guild_id)
-                if not isinstance(response, dict):
-                    flash("Invalid response from guild settings handler.", "error")
-                elif not response.get("ok"):
-                    flash(
-                        str(response.get("error") or "Failed to update guild settings."),
-                        "error",
-                    )
-                else:
-                    settings_payload = response
-                    flash(
-                        str(response.get("message") or "Guild settings updated."),
-                        "success",
-                    )
+            response, messages = process_guild_settings_submission(
+                form=request.form,
+                files=request.files,
+                on_save_guild_settings=on_save_guild_settings,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+                max_welcome_image_upload_bytes=max_welcome_image_upload_bytes,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                settings_payload = response
 
         if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
             error_text = (
@@ -5571,77 +5566,16 @@ def create_web_app(
 
         current_settings = settings_payload.get("settings", {}) or {}
         effective_settings = settings_payload.get("effective", {}) or {}
-        catalog_note = ""
-        if text_channel_options or role_options:
-            catalog_note = (
-                f"<p class='muted'>Loaded live Discord options from <strong>{escape(guild_name)}</strong>. "
-                f"Text channels: {len(text_channel_options)}; Roles: {len(role_options)}.</p>"
-            )
-        elif catalog_error:
-            catalog_note = f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
-
-        bot_log_select = _render_select_input(
-            "bot_log_channel_id",
-            str(current_settings.get("bot_log_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
+        body = render_guild_settings_body(
+            guild_name=guild_name,
+            current_settings=current_settings,
+            effective_settings=effective_settings,
+            text_channel_options=text_channel_options,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            max_welcome_image_upload_bytes=max_welcome_image_upload_bytes,
+            render_select_input=_render_select_input,
         )
-        mod_log_select = _render_select_input(
-            "mod_log_channel_id",
-            str(current_settings.get("mod_log_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
-        )
-        firmware_select = _render_select_input(
-            "firmware_notify_channel_id",
-            str(current_settings.get("firmware_notify_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
-        )
-        access_role_select = _render_select_input(
-            "access_role_id",
-            str(current_settings.get("access_role_id") or ""),
-            role_options,
-            placeholder="No self-assign role",
-        )
-
-        body = f"""
-        <div class="card">
-          <h2>Guild Settings</h2>
-          <p class="muted">These values apply only to <strong>{escape(guild_name)}</strong>. Leave a field blank to use the global fallback.</p>
-          {catalog_note}
-          <form method="post">
-            <table>
-              <thead><tr><th>Setting</th><th>Configured Value</th><th>Effective Value</th></tr></thead>
-              <tbody>
-                <tr>
-                  <td><strong>Bot Log Channel</strong><div class="muted mono">bot_log_channel_id</div></td>
-                  <td>{bot_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("bot_log_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Moderation Log Channel</strong><div class="muted mono">mod_log_channel_id</div></td>
-                  <td>{mod_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("mod_log_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Firmware Notify Channel</strong><div class="muted mono">firmware_notify_channel_id</div></td>
-                  <td>{firmware_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("firmware_notify_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
-                  <td>{access_role_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("access_role_id") or ""))}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div style="margin-top:14px;">
-              <button class="btn" type="submit">Save Guild Settings</button>
-            </div>
-          </form>
-        </div>
-        """
         return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/settings", methods=["GET", "POST"])
