@@ -38,14 +38,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
-from app.image_metadata import (
-    WELCOME_IMAGE_ALLOWED_EXTENSIONS,
-    WELCOME_IMAGE_MAX_HEIGHT,
-    WELCOME_IMAGE_MAX_WIDTH,
-    WELCOME_IMAGE_MIN_HEIGHT,
-    WELCOME_IMAGE_MIN_WIDTH,
-    detect_image_metadata,
-)
+from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 
 
 def ensure_process_utc_timezone():
@@ -180,13 +173,6 @@ def _clip_text(value: str, max_chars: int = 120):
     if len(text) <= max_chars:
         return text
     return f"{text[: max_chars - 3]}..."
-
-
-def _format_byte_size(value: int | str | None) -> str:
-    size_bytes = max(0, int(value or 0))
-    if size_bytes < 1024:
-        return f"{size_bytes} bytes"
-    return f"{size_bytes} bytes ({size_bytes / 1024:.1f} KiB)"
 
 
 ENV_FIELDS = [
@@ -5552,99 +5538,20 @@ def create_web_app(
                 catalog_error = str(discord_catalog.get("error") or "")
         text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
         max_welcome_image_upload_bytes = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
-        allowed_welcome_extensions_label = ", ".join(ext.upper().lstrip(".") for ext in WELCOME_IMAGE_ALLOWED_EXTENSIONS)
 
         if request.method == "POST":
-            if not callable(on_save_guild_settings):
-                flash("Guild settings save callback is not configured.", "error")
-            else:
-                upload_valid = True
-                payload = {
-                    "bot_log_channel_id": request.form.get("bot_log_channel_id", ""),
-                    "mod_log_channel_id": request.form.get("mod_log_channel_id", ""),
-                    "firmware_notify_channel_id": request.form.get("firmware_notify_channel_id", ""),
-                    "access_role_id": request.form.get("access_role_id", ""),
-                    "welcome_channel_id": request.form.get("welcome_channel_id", ""),
-                    "welcome_dm_enabled": request.form.get("welcome_dm_enabled", ""),
-                    "welcome_channel_image_enabled": request.form.get("welcome_channel_image_enabled", ""),
-                    "welcome_dm_image_enabled": request.form.get("welcome_dm_image_enabled", ""),
-                    "welcome_channel_message": request.form.get("welcome_channel_message", ""),
-                    "welcome_dm_message": request.form.get("welcome_dm_message", ""),
-                    "welcome_image_remove": request.form.get("welcome_image_remove", ""),
-                }
-                welcome_image_file = request.files.get("welcome_image_file")
-                if welcome_image_file is not None and welcome_image_file.filename:
-                    payload_bytes = welcome_image_file.read()
-                    lowered_name = welcome_image_file.filename.lower()
-                    if not lowered_name.endswith(WELCOME_IMAGE_ALLOWED_EXTENSIONS):
-                        flash(
-                            f"Welcome image must be one of: {allowed_welcome_extensions_label}.",
-                            "error",
-                        )
-                        upload_valid = False
-                    elif len(payload_bytes) > max_welcome_image_upload_bytes:
-                        flash(
-                            f"Welcome image is too large ({len(payload_bytes)} bytes). Max allowed is {max_welcome_image_upload_bytes} bytes.",
-                            "error",
-                        )
-                        upload_valid = False
-                    else:
-                        metadata = detect_image_metadata(payload_bytes)
-                        if metadata is None:
-                            flash(
-                                "Welcome image content is not a valid PNG, JPEG, GIF, or WEBP file.",
-                                "error",
-                            )
-                            upload_valid = False
-                        elif (
-                            int(metadata.get("width") or 0) < WELCOME_IMAGE_MIN_WIDTH
-                            or int(metadata.get("height") or 0) < WELCOME_IMAGE_MIN_HEIGHT
-                        ):
-                            flash(
-                                "Welcome image is too small "
-                                f"({int(metadata.get('width') or 0)}x{int(metadata.get('height') or 0)}). "
-                                f"Minimum is {WELCOME_IMAGE_MIN_WIDTH}x{WELCOME_IMAGE_MIN_HEIGHT}.",
-                                "error",
-                            )
-                            upload_valid = False
-                        elif (
-                            int(metadata.get("width") or 0) > WELCOME_IMAGE_MAX_WIDTH
-                            or int(metadata.get("height") or 0) > WELCOME_IMAGE_MAX_HEIGHT
-                        ):
-                            flash(
-                                "Welcome image dimensions are too large "
-                                f"({int(metadata.get('width') or 0)}x{int(metadata.get('height') or 0)}). "
-                                f"Maximum is {WELCOME_IMAGE_MAX_WIDTH}x{WELCOME_IMAGE_MAX_HEIGHT}.",
-                                "error",
-                            )
-                            upload_valid = False
-                        else:
-                            payload["welcome_image_size_bytes"] = int(metadata.get("size_bytes") or len(payload_bytes))
-                            payload["welcome_image_width"] = int(metadata.get("width") or 0)
-                            payload["welcome_image_height"] = int(metadata.get("height") or 0)
-                            payload["welcome_image_media_type"] = str(metadata.get("media_type") or "application/octet-stream")
-                            payload["welcome_image_format"] = str(metadata.get("format") or "").strip()
-                    if upload_valid:
-                        payload["welcome_image_bytes"] = payload_bytes
-                        payload["welcome_image_filename"] = welcome_image_file.filename
-                if not upload_valid:
-                    response = None
-                else:
-                    response = on_save_guild_settings(payload, user["email"], selected_guild_id)
-                if not isinstance(response, dict):
-                    if upload_valid:
-                        flash("Invalid response from guild settings handler.", "error")
-                elif not response.get("ok"):
-                    flash(
-                        str(response.get("error") or "Failed to update guild settings."),
-                        "error",
-                    )
-                else:
-                    settings_payload = response
-                    flash(
-                        str(response.get("message") or "Guild settings updated."),
-                        "success",
-                    )
+            response, messages = process_guild_settings_submission(
+                form=request.form,
+                files=request.files,
+                on_save_guild_settings=on_save_guild_settings,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+                max_welcome_image_upload_bytes=max_welcome_image_upload_bytes,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                settings_payload = response
 
         if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
             error_text = (
@@ -5659,153 +5566,16 @@ def create_web_app(
 
         current_settings = settings_payload.get("settings", {}) or {}
         effective_settings = settings_payload.get("effective", {}) or {}
-        catalog_note = ""
-        if text_channel_options or role_options:
-            catalog_note = (
-                f"<p class='muted'>Loaded live Discord options from <strong>{escape(guild_name)}</strong>. "
-                f"Text channels: {len(text_channel_options)}; Roles: {len(role_options)}.</p>"
-            )
-        elif catalog_error:
-            catalog_note = f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
-
-        bot_log_select = _render_select_input(
-            "bot_log_channel_id",
-            str(current_settings.get("bot_log_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
+        body = render_guild_settings_body(
+            guild_name=guild_name,
+            current_settings=current_settings,
+            effective_settings=effective_settings,
+            text_channel_options=text_channel_options,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            max_welcome_image_upload_bytes=max_welcome_image_upload_bytes,
+            render_select_input=_render_select_input,
         )
-        mod_log_select = _render_select_input(
-            "mod_log_channel_id",
-            str(current_settings.get("mod_log_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
-        )
-        firmware_select = _render_select_input(
-            "firmware_notify_channel_id",
-            str(current_settings.get("firmware_notify_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
-        )
-        access_role_select = _render_select_input(
-            "access_role_id",
-            str(current_settings.get("access_role_id") or ""),
-            role_options,
-            placeholder="No self-assign role",
-        )
-        welcome_channel_select = _render_select_input(
-            "welcome_channel_id",
-            str(current_settings.get("welcome_channel_id") or ""),
-            text_channel_options,
-            placeholder="Disabled",
-        )
-        welcome_dm_enabled = 1 if int(current_settings.get("welcome_dm_enabled") or 0) > 0 else 0
-        welcome_channel_image_enabled = 1 if int(current_settings.get("welcome_channel_image_enabled") or 0) > 0 else 0
-        welcome_dm_image_enabled = 1 if int(current_settings.get("welcome_dm_image_enabled") or 0) > 0 else 0
-        welcome_channel_message = str(current_settings.get("welcome_channel_message") or "")
-        welcome_dm_message = str(current_settings.get("welcome_dm_message") or "")
-        welcome_image_filename = str(current_settings.get("welcome_image_filename") or "")
-        welcome_image_media_type = str(effective_settings.get("welcome_image_media_type") or current_settings.get("welcome_image_media_type") or "")
-        welcome_image_size_bytes = int(effective_settings.get("welcome_image_size_bytes") or current_settings.get("welcome_image_size_bytes") or 0)
-        welcome_image_width = int(effective_settings.get("welcome_image_width") or current_settings.get("welcome_image_width") or 0)
-        welcome_image_height = int(effective_settings.get("welcome_image_height") or current_settings.get("welcome_image_height") or 0)
-        welcome_image_configured = bool(effective_settings.get("welcome_image_configured"))
-        welcome_image_dimensions = (
-            f"{welcome_image_width}x{welcome_image_height}" if welcome_image_width > 0 and welcome_image_height > 0 else "Unknown"
-        )
-        welcome_image_size_label = _format_byte_size(welcome_image_size_bytes) if welcome_image_configured else "n/a"
-        welcome_image_dimensions_label = welcome_image_dimensions if welcome_image_configured else "n/a"
-        welcome_image_details = (
-            f"{escape(welcome_image_filename or 'Unnamed image')} | "
-            f"{escape(welcome_image_media_type or 'Unknown type')} | "
-            f"{escape(_format_byte_size(welcome_image_size_bytes))} | "
-            f"{escape(welcome_image_dimensions)}"
-            if welcome_image_configured
-            else "No image uploaded"
-        )
-
-        body = f"""
-        <div class="card">
-          <h2>Guild Settings</h2>
-          <p class="muted">These values apply only to <strong>{escape(guild_name)}</strong>. Leave a field blank to use the global fallback.</p>
-          <p class="muted">Welcome message placeholders: <span class="mono">{{member_mention}}</span>, <span class="mono">{{member_name}}</span>, <span class="mono">{{display_name}}</span>, <span class="mono">{{guild_name}}</span>, <span class="mono">{{member_count}}</span>, <span class="mono">{{account_created_at}}</span>.</p>
-          <p class="muted">Welcome image uploads accept {escape(allowed_welcome_extensions_label)}. Max size: {_format_byte_size(max_welcome_image_upload_bytes)}. Allowed dimensions: {WELCOME_IMAGE_MIN_WIDTH}x{WELCOME_IMAGE_MIN_HEIGHT} up to {WELCOME_IMAGE_MAX_WIDTH}x{WELCOME_IMAGE_MAX_HEIGHT}. Recommended: landscape artwork around 1200x675 for clearer in-chat presentation.</p>
-          {catalog_note}
-          <form method="post" enctype="multipart/form-data">
-            <table>
-              <thead><tr><th>Setting</th><th>Configured Value</th><th>Effective Value</th></tr></thead>
-              <tbody>
-                <tr>
-                  <td><strong>Bot Log Channel</strong><div class="muted mono">bot_log_channel_id</div></td>
-                  <td>{bot_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("bot_log_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Moderation Log Channel</strong><div class="muted mono">mod_log_channel_id</div></td>
-                  <td>{mod_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("mod_log_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Firmware Notify Channel</strong><div class="muted mono">firmware_notify_channel_id</div></td>
-                  <td>{firmware_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("firmware_notify_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
-                  <td>{access_role_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("access_role_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Welcome Channel</strong><div class="muted mono">welcome_channel_id</div></td>
-                  <td>{welcome_channel_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("welcome_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Welcome Channel Message</strong><div class="muted mono">welcome_channel_message</div></td>
-                  <td><textarea name="welcome_channel_message" rows="4" placeholder="Welcome to {{guild_name}}, {{member_mention}}.">{escape(welcome_channel_message)}</textarea></td>
-                  <td class="muted">{escape(str(effective_settings.get("welcome_channel_message") or "")) or "Default welcome channel message"}</td>
-                </tr>
-                <tr>
-                  <td><strong>Send Welcome DM</strong><div class="muted mono">welcome_dm_enabled</div></td>
-                  <td><label><input type="checkbox" name="welcome_dm_enabled" value="1"{' checked' if welcome_dm_enabled else ''} /> Enable DM on join</label></td>
-                  <td class="muted mono">{'enabled' if int(effective_settings.get("welcome_dm_enabled") or 0) > 0 else 'disabled'}</td>
-                </tr>
-                <tr>
-                  <td><strong>Welcome DM Message</strong><div class="muted mono">welcome_dm_message</div></td>
-                  <td><textarea name="welcome_dm_message" rows="4" placeholder="Welcome to {{guild_name}}, {{member_name}}. We&#39;re glad you&#39;re here.">{escape(welcome_dm_message)}</textarea></td>
-                  <td class="muted">{escape(str(effective_settings.get("welcome_dm_message") or "")) or "Default welcome DM message"}</td>
-                </tr>
-                <tr>
-                  <td><strong>Welcome Image</strong><div class="muted mono">welcome_image_file</div></td>
-                  <td>
-                    <input type="file" name="welcome_image_file" accept=".png,.jpg,.jpeg,.webp,.gif,image/*" />
-                    <div class="muted" style="margin-top:8px;">Current: {welcome_image_details}</div>
-                    <label style="display:block; margin-top:8px;"><input type="checkbox" name="welcome_image_remove" value="1" /> Remove current image</label>
-                  </td>
-                  <td class="muted">
-                    {'configured' if welcome_image_configured else 'not configured'}
-                    <div class="mono" style="margin-top:6px;">{escape(welcome_image_media_type or 'n/a')}</div>
-                    <div class="mono">{escape(welcome_image_size_label)}</div>
-                    <div class="mono">{escape(welcome_image_dimensions_label)}</div>
-                  </td>
-                </tr>
-                <tr>
-                  <td><strong>Attach Image In Channel</strong><div class="muted mono">welcome_channel_image_enabled</div></td>
-                  <td><label><input type="checkbox" name="welcome_channel_image_enabled" value="1"{' checked' if welcome_channel_image_enabled else ''} /> Attach uploaded image to channel welcome</label></td>
-                  <td class="muted mono">{'enabled' if int(effective_settings.get("welcome_channel_image_enabled") or 0) > 0 else 'disabled'}</td>
-                </tr>
-                <tr>
-                  <td><strong>Attach Image In DM</strong><div class="muted mono">welcome_dm_image_enabled</div></td>
-                  <td><label><input type="checkbox" name="welcome_dm_image_enabled" value="1"{' checked' if welcome_dm_image_enabled else ''} /> Attach uploaded image to welcome DM</label></td>
-                  <td class="muted mono">{'enabled' if int(effective_settings.get("welcome_dm_image_enabled") or 0) > 0 else 'disabled'}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div style="margin-top:14px;">
-              <button class="btn" type="submit">Save Guild Settings</button>
-            </div>
-          </form>
-        </div>
-        """
         return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/settings", methods=["GET", "POST"])
