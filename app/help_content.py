@@ -109,6 +109,8 @@ def build_wiki_page_url(page_name: str, *, bot_help_wiki_url: str, bot_help_wiki
     cleaned_page_name = str(page_name or "").strip().lstrip("/")
     if not cleaned_page_name:
         return bot_help_wiki_url
+    if "/wiki" in bot_help_wiki_root_url and "/blob/" not in bot_help_wiki_root_url:
+        cleaned_page_name = cleaned_page_name.removesuffix(".md")
     return f"{bot_help_wiki_root_url}/{cleaned_page_name}"
 
 
