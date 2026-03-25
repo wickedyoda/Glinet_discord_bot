@@ -2034,9 +2034,140 @@ def _render_layout(
       border: 0;
     }
     .dash-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-    .dash-card h3 { margin-top: 0; margin-bottom: 8px; }
-    .dash-card p { margin-top: 0; min-height: 50px; }
-    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .dashboard-shell { display: grid; gap: 18px; }
+    .dashboard-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+    .dashboard-hero-main,
+    .dashboard-hero-side,
+    .dashboard-section,
+    .dash-card {
+      position: relative;
+      overflow: hidden;
+    }
+    .dashboard-hero-main::before,
+    .dashboard-hero-side::before,
+    .dash-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--btn-bg), transparent 78%);
+      opacity: 0.75;
+      pointer-events: none;
+    }
+    .dashboard-hero-main h2,
+    .dashboard-hero-side h3,
+    .dashboard-section-head h3,
+    .dash-card h3 {
+      margin-top: 0;
+    }
+    .dashboard-hero-main p,
+    .dashboard-hero-side p,
+    .dash-card p {
+      margin-top: 0;
+    }
+    .dashboard-hero-main {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding-top: 20px;
+    }
+    .dashboard-hero-lead {
+      font-size: 1.02rem;
+      line-height: 1.55;
+      max-width: 58ch;
+    }
+    .dashboard-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .dashboard-pill {
+      display: grid;
+      gap: 2px;
+      min-width: 132px;
+      padding: 11px 13px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .dashboard-pill strong {
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .dashboard-pill span {
+      font-size: 0.96rem;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    .dashboard-hero-side {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding-top: 20px;
+    }
+    .dashboard-list {
+      display: grid;
+      gap: 10px;
+    }
+    .dashboard-list-item {
+      display: grid;
+      gap: 4px;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .dashboard-list-item strong {
+      font-size: 0.9rem;
+    }
+    .dashboard-section {
+      display: grid;
+      gap: 12px;
+      padding-top: 18px;
+    }
+    .dashboard-section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .dashboard-section-head p {
+      margin: 0;
+      max-width: 70ch;
+    }
+    .dashboard-section-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+    }
+    .dash-card {
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      min-height: 100%;
+      padding-top: 20px;
+    }
+    .dash-card h3 { margin-bottom: 2px; }
+    .dash-card p { min-height: 0; line-height: 1.5; }
+    .dash-card.primary {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 48%), var(--card);
+    }
+    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; }
+    .dash-actions .btn { min-width: 0; }
+    .dashboard-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
     .metric-card h3 { margin: 0 0 14px; }
     .metric-card .table-scroll { border-radius: 10px; }
     .metric-card .table-scroll > table {
@@ -2073,10 +2204,15 @@ def _render_layout(
       min-width: 760px;
       margin: 0;
     }
+    @media (max-width: 1180px) {
+      .dashboard-hero { grid-template-columns: 1fr; }
+    }
     @media (max-width: 1080px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 900px) {
       .grid { grid-template-columns: 1fr; }
       .dash-grid { grid-template-columns: 1fr; }
+      .dashboard-section-head { align-items: start; flex-direction: column; }
+      .dashboard-section-grid { grid-template-columns: 1fr 1fr; }
       header { padding: 10px 12px; align-items: center; }
       .wrap { margin: 14px auto; padding: 0 10px; }
       .card { padding: 14px; }
@@ -2091,6 +2227,7 @@ def _render_layout(
       .theme-btn { flex: 1; min-height: 42px; }
       .current-user-email { display: block; }
       .dash-actions .btn { width: 100%; }
+      .dashboard-pill { min-width: 0; flex: 1 1 180px; }
       th, td { padding: 8px; }
       .table-scroll > table { min-width: 680px; }
     }
@@ -2099,6 +2236,9 @@ def _render_layout(
       .table-scroll > table { min-width: 620px; }
       .header-toprow { flex-direction: column; align-items: stretch; }
       .header-tools { width: 100%; flex-direction: column; align-items: stretch; }
+      .dashboard-section-grid { grid-template-columns: 1fr; }
+      .dashboard-pill-row { display: grid; grid-template-columns: 1fr 1fr; }
+      .dashboard-pill { min-width: 0; }
       .mobile-link-grid { grid-template-columns: 1fr; }
     }
   </style>
@@ -2133,6 +2273,7 @@ def _render_layout(
                 {% if current_role in ("glinet_read_only", "glinet_rw") %}
                 <option value="{{ url_for('dashboard') }}">Dashboard</option>
                 <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
@@ -2145,6 +2286,7 @@ def _render_layout(
                 <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
                 {% else %}
                 <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
@@ -2174,11 +2316,13 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
                 {% if current_role in ("glinet_read_only", "glinet_rw") %}
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+                <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
                 <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
                 {% else %}
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+                <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
                 <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
@@ -2251,6 +2395,7 @@ def _render_layout(
             {% if current_role in ("glinet_read_only", "glinet_rw") %}
             <option value="{{ url_for('dashboard') }}">Dashboard</option>
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+            <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
@@ -2263,6 +2408,7 @@ def _render_layout(
             <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
             {% else %}
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+            <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
@@ -3000,6 +3146,7 @@ def create_web_app(
         if _is_glinet_rw_user(user):
             glinet_rw_write_endpoints = {
                 "account",
+                "command_status",
                 "guild_settings",
                 "command_permissions",
                 "reddit_feeds",
@@ -3027,6 +3174,7 @@ def create_web_app(
         flash("Read-only account: this action is not allowed.", "error")
         safe_view_endpoints = {
             "bot_profile",
+            "command_status",
             "command_permissions",
             "reddit_feeds",
             "youtube_subscriptions",
@@ -3061,6 +3209,7 @@ def create_web_app(
             "actions_page",
             "member_activity_page",
             "member_activity_export",
+            "command_status",
             "command_permissions",
             "reddit_feeds",
             "youtube_subscriptions",
@@ -3645,233 +3794,289 @@ def create_web_app(
             return selection_redirect
         selected_guild = _selected_guild()
         selected_guild_name = str(selected_guild.get("name") or "selected server")
-        selected_guild_id = str(selected_guild.get("id") or "")
 
-        cards = []
+        role_key = str(user.get("role") or "").strip().lower()
+        role_label = _user_role_label(role_key, is_admin=is_admin)
+        wiki_url = _github_wiki_url()
+        restart_enabled = _restart_enabled()
 
-        def add_dashboard_card(
+        def build_dashboard_card(
             title: str,
             description: str,
             href: str,
             button_label: str,
+            *,
             external: bool = False,
-        ):
+            primary: bool = False,
+            extra_html: str = "",
+        ) -> str:
             link_target = " target='_blank' rel='noopener noreferrer'" if external else ""
-            cards.append(
-                f"""
-                <div class="card dash-card">
+            classes = "card dash-card"
+            if primary:
+                classes += " primary"
+            return f"""
+            <div class="{classes}">
+              <h3>{escape(title)}</h3>
+              <p class="muted">{escape(description)}</p>
+              {extra_html}
+              <div class="dash-actions">
+                <a class="btn secondary" href="{escape(href, quote=True)}"{link_target}>{escape(button_label)}</a>
+              </div>
+            </div>
+            """
+
+        def render_dashboard_section(title: str, description: str, section_cards: list[str]) -> str:
+            return f"""
+            <section class="card dashboard-section">
+              <div class="dashboard-section-head">
+                <div>
                   <h3>{escape(title)}</h3>
                   <p class="muted">{escape(description)}</p>
-                  <div class="dash-actions">
-                    <a class="btn secondary" href="{escape(href, quote=True)}"{link_target}>{escape(button_label)}</a>
-                  </div>
                 </div>
-                """
-            )
+              </div>
+              <div class="dashboard-section-grid">
+                {"".join(section_cards)}
+              </div>
+            </section>
+            """
 
-        add_dashboard_card(
-            "My Account",
-            "Change your password, update your email, and manage profile display details.",
-            url_for("account"),
-            "Open My Account",
-        )
+        core_cards = [
+            build_dashboard_card(
+                "Guild Settings",
+                "Set server-specific channels, welcome behavior, and override global defaults for this guild.",
+                url_for("guild_settings"),
+                "Open Guild Settings",
+                primary=True,
+                extra_html="<p class='dashboard-note'>Use this first when a server needs channels, feeds, or feature toggles that differ from the global defaults.</p>",
+            ),
+            build_dashboard_card(
+                "Command Status",
+                "Quickly enable or disable commands for the selected Discord server.",
+                url_for("command_status"),
+                "Open Command Status",
+                primary=True,
+            ),
+            build_dashboard_card(
+                "Command Permissions",
+                "Set access mode per command and pick restricted roles from Discord role lists.",
+                url_for("command_permissions"),
+                "Open Permissions",
+            ),
+            build_dashboard_card(
+                "Bot Profile",
+                "Rename the bot, update the server nickname, and upload avatar assets.",
+                url_for("bot_profile"),
+                "Open Bot Profile",
+            ),
+        ]
 
-        add_dashboard_card(
-            "Bot Profile",
-            "Rename the bot, update server nickname, and upload avatar.",
-            url_for("bot_profile"),
-            "Open Bot Profile",
-        )
-        add_dashboard_card(
-            "Command Permissions",
-            "Set access mode per command and pick restricted roles from Discord role lists.",
-            url_for("command_permissions"),
-            "Open Permissions",
-        )
-        add_dashboard_card(
-            "Action History",
-            "Review recent guild-scoped bot actions and utility activity.",
-            url_for("actions_page"),
-            "Open Actions",
-        )
-        add_dashboard_card(
-            "Member Activity",
-            "Review top 20 member activity windows for the selected Discord server.",
-            url_for("member_activity_page"),
-            "Open Member Activity",
-        )
-        add_dashboard_card(
-            "Reddit Feeds",
-            "Map subreddit feeds to Discord channels and schedule automatic post checks.",
-            url_for("reddit_feeds"),
-            "Open Reddit Feeds",
-        )
-        add_dashboard_card(
-            "YouTube Subscriptions",
-            "Map YouTube channels to Discord channels and post new uploads automatically.",
-            url_for("youtube_subscriptions"),
-            "Open YouTube",
-        )
-        add_dashboard_card(
-            "LinkedIn Profiles",
-            "Map public LinkedIn profiles to Discord channels and post new profile activity automatically.",
-            url_for("linkedin_subscriptions"),
-            "Open LinkedIn",
-        )
-        add_dashboard_card(
-            "GL.iNet Beta Programs",
-            "Monitor the GL.iNet beta testing page and notify a Discord channel when programs are added or removed.",
-            url_for("beta_program_subscriptions"),
-            "Open Beta Programs",
-        )
-        add_dashboard_card(
-            "Role Access",
-            "Review and control invite links with their paired 6-digit access codes for the selected Discord server.",
-            url_for("role_access_page"),
-            "Open Role Access",
-        )
-        add_dashboard_card(
-            "Guild Settings",
-            "Set server-specific channels and role-based defaults for the selected Discord server.",
-            url_for("guild_settings"),
-            "Open Guild Settings",
-        )
-        add_dashboard_card(
-            "Settings",
-            "Edit global runtime environment settings shared across all Discord servers.",
-            url_for("settings"),
-            "Open Global Settings",
-        )
-        add_dashboard_card(
-            "Observability",
-            "View container runtime metrics and tail recent log entries.",
-            url_for("public_observability"),
-            "Open Observability",
-        )
-        add_dashboard_card(
-            "Logs",
-            "View recent runtime logs (latest 500 lines) with log file selection.",
-            url_for("admin_logs"),
-            "Open Logs",
-        )
-        add_dashboard_card(
-            "Tag Responses",
-            "Manage dynamic tag-response mappings and refresh runtime commands.",
-            url_for("tag_responses"),
-            "Open Tag Responses",
-        )
-        add_dashboard_card(
-            "Bulk Role CSV",
-            "Upload a CSV of names and assign a role with a detailed result report.",
-            url_for("bulk_role_csv"),
-            "Open Bulk CSV",
-        )
-        add_dashboard_card(
-            "Users",
-            "Create web users, assign Admin/Read-only roles, and reset passwords.",
-            url_for("users"),
-            "Open Users",
-        )
+        community_cards = [
+            build_dashboard_card(
+                "Member Activity",
+                "Review top 20 member activity windows for the selected Discord server.",
+                url_for("member_activity_page"),
+                "Open Member Activity",
+            ),
+            build_dashboard_card(
+                "Role Access",
+                "Review and control invite links with their paired 6-digit access codes for the selected Discord server.",
+                url_for("role_access_page"),
+                "Open Role Access",
+            ),
+            build_dashboard_card(
+                "Tag Responses",
+                "Manage dynamic tag-response mappings and keep quick answers organized.",
+                url_for("tag_responses"),
+                "Open Tag Responses",
+            ),
+            build_dashboard_card(
+                "Action History",
+                "Review recent guild-scoped bot actions and utility activity.",
+                url_for("actions_page"),
+                "Open Actions",
+            ),
+            build_dashboard_card(
+                "Bulk Role CSV",
+                "Upload a CSV of names and assign a role with a detailed result report.",
+                url_for("bulk_role_csv"),
+                "Open Bulk CSV",
+            ),
+        ]
 
-        add_dashboard_card(
-            "Documentation",
-            "Browse embedded docs for commands, deployment, and operations.",
-            url_for("documentation"),
-            "Open Docs",
-        )
+        feed_cards = [
+            build_dashboard_card(
+                "Reddit Feeds",
+                "Map subreddit feeds to Discord channels and schedule automatic post checks.",
+                url_for("reddit_feeds"),
+                "Open Reddit Feeds",
+            ),
+            build_dashboard_card(
+                "YouTube Subscriptions",
+                "Map YouTube channels to Discord channels and post new uploads automatically.",
+                url_for("youtube_subscriptions"),
+                "Open YouTube",
+            ),
+            build_dashboard_card(
+                "LinkedIn Profiles",
+                "Map public LinkedIn profiles to Discord channels and post new profile activity automatically.",
+                url_for("linkedin_subscriptions"),
+                "Open LinkedIn",
+            ),
+            build_dashboard_card(
+                "GL.iNet Beta Programs",
+                "Monitor the GL.iNet beta testing page and notify a Discord channel when programs are added or removed.",
+                url_for("beta_program_subscriptions"),
+                "Open Beta Programs",
+            ),
+        ]
 
-        wiki_url = _github_wiki_url()
+        operations_cards = [
+            build_dashboard_card(
+                "My Account",
+                "Change your password, update your email, and manage profile display details.",
+                url_for("account"),
+                "Open My Account",
+            ),
+            build_dashboard_card(
+                "Settings",
+                "Edit global runtime environment settings shared across all Discord servers.",
+                url_for("settings"),
+                "Open Global Settings",
+            ),
+            build_dashboard_card(
+                "Observability",
+                "View container runtime metrics and tail recent log entries.",
+                url_for("public_observability"),
+                "Open Observability",
+            ),
+            build_dashboard_card(
+                "Logs",
+                "View recent runtime logs with log file selection and audit context.",
+                url_for("admin_logs"),
+                "Open Logs",
+            ),
+            build_dashboard_card(
+                "Users",
+                "Create web users, scope access, and reset credentials.",
+                url_for("users"),
+                "Open Users",
+            ),
+            build_dashboard_card(
+                "Documentation",
+                "Browse embedded docs for commands, deployment, and operations.",
+                url_for("documentation"),
+                "Open Docs",
+            ),
+        ]
+
         if wiki_url:
-            add_dashboard_card(
-                "GitHub Wiki",
-                "Open the external project wiki in a new tab.",
-                wiki_url,
-                "Open GitHub Wiki",
-                external=True,
+            operations_cards.append(
+                build_dashboard_card(
+                    "GitHub Wiki",
+                    "Open the external project wiki in a new tab.",
+                    wiki_url,
+                    "Open GitHub Wiki",
+                    external=True,
+                )
             )
 
-        restart_card = ""
-        if _restart_enabled():
+        if restart_enabled:
             if is_admin:
-                restart_card = f"""
-            <div class="card dash-card">
-              <h3>Restart Container</h3>
-              <p class="muted">Apply runtime-level changes that require a process restart.</p>
-              <form method="post" action="{escape(url_for("restart_service"), quote=True)}"
-                onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
-                <input type="hidden" name="confirm" value="yes" />
-                <button class="btn danger" type="submit">Restart Container</button>
-              </form>
-            </div>
-            """
+                operations_cards.append(
+                    f"""
+                    <div class="card dash-card">
+                      <h3>Restart Container</h3>
+                      <p class="muted">Apply runtime-level changes that require a process restart.</p>
+                      <p class="dashboard-note">Use this after changes that affect startup-time settings, Discord sync, or container-bound runtime behavior.</p>
+                      <form method="post" action="{escape(url_for("restart_service"), quote=True)}"
+                        onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
+                        <input type="hidden" name="confirm" value="yes" />
+                        <button class="btn danger" type="submit">Restart Container</button>
+                      </form>
+                    </div>
+                    """
+                )
             else:
-                restart_card = """
-            <div class="card dash-card">
-              <h3>Restart Container</h3>
-              <p class="muted">Read-only accounts can view this option but cannot restart the container.</p>
-              <button class="btn danger" type="button" disabled>Restart Container</button>
-            </div>
-            """
-
-        admin_note = (
-            "<p class='muted'>Some Discord metadata changes may still require a restart after saving.</p>"
-            if is_admin
-            else "<p class='muted'>This account has limited access. Contact an admin for management actions.</p>"
-        )
-
-        command_status_html = ""
-        if callable(on_get_command_permissions) and selected_guild_id:
-            permissions_payload = on_get_command_permissions(selected_guild_id)
-            if isinstance(permissions_payload, dict) and permissions_payload.get("ok"):
-                command_rows = []
-                for entry in permissions_payload.get("commands", []) or []:
-                    label = str(entry.get("label") or entry.get("key") or "Unknown")
-                    description = str(entry.get("description") or "").strip()
-                    description_html = f"<div class='muted'>{escape(description)}</div>" if description else ""
-                    command_rows.append(
-                        "<tr>"
-                        f"<td><strong>{escape(label)}</strong>{description_html}</td>"
-                        f"<td>{escape(_dashboard_command_access_label(entry))}</td>"
-                        f"<td>{escape(_dashboard_command_enabled_label(entry))}</td>"
-                        "</tr>"
-                    )
-                command_status_html = f"""
-                <div class="card table-scroll" style="margin-top:16px;">
-                  <h3>Command Status</h3>
-                  <p class="muted">Effective command access for <strong>{escape(selected_guild_name)}</strong>. Use Command Permissions to change per-server behavior.</p>
-                  <table class="history-table">
-                    <thead>
-                      <tr>
-                        <th>Command</th>
-                        <th>Access</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {"".join(command_rows) if command_rows else "<tr><td colspan='3' class='muted'>No command metadata is available for this server.</td></tr>"}
-                    </tbody>
-                  </table>
-                </div>
-                """
-            elif isinstance(permissions_payload, dict):
-                command_status_html = (
-                    "<div class='card' style='margin-top:16px;'>"
-                    "<h3>Command Status</h3>"
-                    f"<p class='muted'>Could not load command status: {escape(str(permissions_payload.get('error') or 'Unknown error'))}</p>"
-                    "</div>"
+                operations_cards.append(
+                    """
+                    <div class="card dash-card">
+                      <h3>Restart Container</h3>
+                      <p class="muted">Read-only accounts can view this option but cannot restart the container.</p>
+                      <button class="btn danger" type="button" disabled>Restart Container</button>
+                    </div>
+                    """
                 )
 
+        role_scope_text = (
+            "Pinned to the primary GL.iNet Community Discord server."
+            if role_key in {"glinet_read_only", "glinet_rw"}
+            else "Can switch between managed Discord servers."
+        )
+        management_text = (
+            "This account can apply configuration changes directly from the dashboard links."
+            if is_admin or role_key == "glinet_rw"
+            else "This account can review configuration safely. Write actions remain restricted."
+        )
+        startup_note = (
+            "Some Discord metadata changes still require a container restart after saving."
+            if is_admin
+            else "Use the grouped sections below to reach the areas this account is allowed to manage."
+        )
+
         body = f"""
-        <div class="card">
-          <h2>Dashboard</h2>
-          <p>Quick actions for the selected server: <strong>{escape(selected_guild_name)}</strong>.</p>
-          {admin_note}
+        <div class="dashboard-shell">
+          <section class="dashboard-hero">
+            <div class="card dashboard-hero-main">
+              <div>
+                <h2>Dashboard</h2>
+                <p class="dashboard-hero-lead">Operational control for <strong>{escape(selected_guild_name)}</strong>. The sections below separate guild controls, community tools, feed automations, and runtime operations so the most-used actions are easier to reach on desktop, tablet, and mobile.</p>
+              </div>
+              <div class="dashboard-pill-row">
+                <div class="dashboard-pill">
+                  <strong>Server</strong>
+                  <span>{escape(selected_guild_name)}</span>
+                </div>
+                <div class="dashboard-pill">
+                  <strong>Access</strong>
+                  <span>{escape(role_label)}</span>
+                </div>
+                <div class="dashboard-pill">
+                  <strong>Scope</strong>
+                  <span>{escape(role_scope_text)}</span>
+                </div>
+                <div class="dashboard-pill">
+                  <strong>Restart</strong>
+                  <span>{'Enabled' if restart_enabled else 'Disabled'}</span>
+                </div>
+              </div>
+              <p class="dashboard-note">{escape(startup_note)}</p>
+            </div>
+            <div class="card dashboard-hero-side">
+              <div>
+                <h3>Quick Notes</h3>
+                <p class="muted">Use the grouped cards below instead of hunting through one long grid.</p>
+              </div>
+              <div class="dashboard-list">
+                <div class="dashboard-list-item">
+                  <strong>Configuration</strong>
+                  <span class="muted">{escape(management_text)}</span>
+                </div>
+                <div class="dashboard-list-item">
+                  <strong>Most common path</strong>
+                  <span class="muted">Guild Settings, then Command Status, then feed pages for channel routing.</span>
+                </div>
+                <div class="dashboard-list-item">
+                  <strong>Documentation</strong>
+                  <span class="muted">{'GitHub Wiki is linked here as an external reference.' if wiki_url else 'Embedded docs remain available from this dashboard.'}</span>
+                </div>
+              </div>
+            </div>
+          </section>
+          {render_dashboard_section("Core Controls", "Primary guild-level configuration and command access controls.", core_cards)}
+          {render_dashboard_section("Community Tools", "Member-facing utilities, access workflows, and guild operational history.", community_cards)}
+          {render_dashboard_section("Notification Feeds", "External monitors and feed-to-channel routing for the selected guild.", feed_cards)}
+          {render_dashboard_section("Runtime And Administration", "Account, logging, environment, and maintenance controls.", operations_cards)}
         </div>
-        <div class="dash-grid">
-          {"".join(cards)}
-          {restart_card}
-        </div>
-        {command_status_html}
         """
 
         return _render_page("Dashboard", body, user["email"], is_admin)
@@ -5536,6 +5741,115 @@ def create_web_app(
             render_fixed_select_input=_render_fixed_select_input,
         )
         return _render_page("Role Access", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/command-status", methods=["GET", "POST"])
+    @login_required
+    def command_status():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        permissions_payload = (
+            on_get_command_permissions(selected_guild_id)
+            if callable(on_get_command_permissions)
+            else {"ok": False, "error": "Not configured"}
+        )
+
+        if request.method == "POST":
+            if not callable(on_save_command_permissions):
+                flash("Command status save callback is not configured.", "error")
+            else:
+                command_updates = {}
+                for command_key in request.form.getlist("command_key"):
+                    current_mode = str(request.form.get(f"current_mode__{command_key}", "default") or "default").strip()
+                    current_role_ids = request.form.get(f"current_role_ids__{command_key}", "")
+                    enabled_value = str(request.form.get(f"enabled__{command_key}", "enabled") or "enabled").strip().lower()
+                    next_mode = "disabled" if enabled_value == "disabled" else (current_mode if current_mode != "disabled" else "default")
+                    command_updates[command_key] = {
+                        "mode": next_mode,
+                        "role_ids": current_role_ids,
+                    }
+                response = on_save_command_permissions({"commands": command_updates}, user["email"], selected_guild_id)
+                if not isinstance(response, dict):
+                    flash("Invalid response from command status save handler.", "error")
+                elif not response.get("ok"):
+                    flash(response.get("error", "Failed to save command status."), "error")
+                else:
+                    permissions_payload = response
+                    flash(response.get("message", "Command status updated."), "success")
+
+        if not isinstance(permissions_payload, dict) or not permissions_payload.get("ok"):
+            error_text = str(
+                permissions_payload.get("error") if isinstance(permissions_payload, dict) else "Unable to load command status."
+            )
+            body = (
+                "<div class='card'><h2>Command Status</h2>"
+                f"<p class='muted'>Could not load command status: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Command Status", body, user["email"], bool(user.get("is_admin")))
+
+        rows = []
+        for entry in permissions_payload.get("commands", []) or []:
+            command_key = str(entry.get("key") or "").strip()
+            if not command_key:
+                continue
+            label = str(entry.get("label") or command_key)
+            description = str(entry.get("description") or "").strip()
+            current_mode = str(entry.get("mode") or "default").strip()
+            role_ids = entry.get("role_ids", []) or []
+            enabled_value = "disabled" if current_mode == "disabled" else "enabled"
+            description_html = f"<div class='muted'>{escape(description)}</div>" if description else ""
+            rows.append(
+                f"""
+                <tr>
+                  <td>
+                    <strong>{escape(label)}</strong>
+                    {description_html}
+                    <input type="hidden" name="command_key" value="{escape(command_key, quote=True)}" />
+                    <input type="hidden" name="current_mode__{escape(command_key, quote=True)}" value="{escape(current_mode, quote=True)}" />
+                    <input type="hidden" name="current_role_ids__{escape(command_key, quote=True)}" value="{escape(','.join(str(value) for value in role_ids), quote=True)}" />
+                  </td>
+                  <td>{escape(_dashboard_command_access_label(entry))}</td>
+                  <td>
+                    {_render_fixed_select_input(
+                        f"enabled__{command_key}",
+                        enabled_value,
+                        [
+                            {"value": "enabled", "label": "Enabled"},
+                            {"value": "disabled", "label": "Disabled"},
+                        ],
+                        placeholder="Select status...",
+                    )}
+                  </td>
+                </tr>
+                """
+            )
+
+        body = f"""
+        <div class="card">
+          <h2>Command Status</h2>
+          <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+          <p class="muted">Use this page for quick on/off control. Use <a href="{escape(url_for("command_permissions"), quote=True)}">Command Permissions</a> to change access rules or custom-role gates.</p>
+          <form method="post">
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr><th>Command</th><th>Access</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  {"".join(rows) if rows else "<tr><td colspan='3' class='muted'>No command metadata is available for this server.</td></tr>"}
+                </tbody>
+              </table>
+            </div>
+            <div style="margin-top:14px;">
+              <button class="btn" type="submit">Save Command Status</button>
+            </div>
+          </form>
+        </div>
+        """
+        return _render_page("Command Status", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
     @login_required

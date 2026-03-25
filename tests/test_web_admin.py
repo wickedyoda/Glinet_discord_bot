@@ -684,6 +684,7 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         "/admin/users",
         "/admin/actions",
         "/admin/member-activity",
+        "/admin/command-status",
         "/admin/youtube",
         "/admin/linkedin",
         "/admin/beta-programs",
@@ -1026,13 +1027,13 @@ def test_command_permissions_page_supports_disabled_mode(tmp_path: Path):
     assert b"Enabled" in response.data
 
 
-def test_dashboard_shows_command_status_for_selected_guild(tmp_path: Path):
+def test_command_status_page_shows_command_status_for_selected_guild(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
     _select_guild(client)
 
-    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+    response = client.get("/admin/command-status", base_url="https://docker.example:8443")
 
     assert response.status_code == 200
     assert b"Command Status" in response.data
@@ -1042,6 +1043,38 @@ def test_dashboard_shows_command_status_for_selected_guild(tmp_path: Path):
     assert b"Disabled" in response.data
     assert b"Mod Only" in response.data
     assert b"Enabled" in response.data
+
+
+def test_admin_can_update_command_status_page(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/command-status",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/command-status"),
+            "command_key": ["ping", "ban_member", "help"],
+            "current_mode__ping": "disabled",
+            "current_role_ids__ping": "",
+            "enabled__ping": "enabled",
+            "current_mode__ban_member": "default",
+            "current_role_ids__ban_member": "",
+            "enabled__ban_member": "disabled",
+            "current_mode__help": "public",
+            "current_role_ids__help": "",
+            "enabled__help": "enabled",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Command permissions updated." in response.data
+    assert b"/ping" in response.data
+    assert b"/ban_member" in response.data
+    assert b"Disabled" in response.data
 
 
 def test_admin_can_save_guild_settings(tmp_path: Path):
