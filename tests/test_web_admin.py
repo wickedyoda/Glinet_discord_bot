@@ -1045,6 +1045,20 @@ def test_command_status_page_shows_command_status_for_selected_guild(tmp_path: P
     assert b"Enabled" in response.data
 
 
+def test_dashboard_renders_extended_theme_options(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Forest" in response.data
+    assert b"Ember" in response.data
+    assert b"Ice" in response.data
+
+
 def test_admin_can_update_command_status_page(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()

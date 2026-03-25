@@ -66,6 +66,13 @@ STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "select_guild"}
 WEB_GUI_TITLE_SUFFIX = "GL.iNet UnOfficial Discord Bot Dashboard"
 WEB_GUI_VERSION_PREFIX = "v1.0"
+THEME_OPTIONS = (
+    {"value": "light", "label": "Light"},
+    {"value": "black", "label": "Black"},
+    {"value": "forest", "label": "Forest"},
+    {"value": "ember", "label": "Ember"},
+    {"value": "ice", "label": "Ice"},
+)
 OBSERVABILITY_LOG_LINE_LIMIT = 500
 OBSERVABILITY_LOG_OPTIONS = (
     ("bot.log", "Bot Runtime Log"),
@@ -1799,6 +1806,7 @@ def _render_layout(
     github_wiki_url: str = "",
     restart_enabled: bool = False,
 ):
+    theme_values = [str(option.get("value") or "").strip() for option in THEME_OPTIONS if str(option.get("value") or "").strip()]
     return render_template_string(
         """
 <!doctype html>
@@ -1852,6 +1860,66 @@ def _render_layout(
       --flash-ok-fg: #166534;
       --input-bg: #ffffff;
       --input-fg: #1e293b;
+    }
+    body[data-theme="forest"] {
+      --bg: #0b1511;
+      --bg-grad-a: #102018;
+      --bg-grad-b: #183329;
+      --fg: #ecfdf5;
+      --muted: #9ec7b2;
+      --card: #11211a;
+      --border: #24503d;
+      --header: #09110d;
+      --link: #86efac;
+      --btn-bg: #15803d;
+      --btn-secondary: #365346;
+      --btn-danger: #b91c1c;
+      --flash-err-bg: #3f1717;
+      --flash-err-fg: #fecaca;
+      --flash-ok-bg: #103522;
+      --flash-ok-fg: #bbf7d0;
+      --input-bg: #0f1a15;
+      --input-fg: #ecfdf5;
+    }
+    body[data-theme="ember"] {
+      --bg: #1a1010;
+      --bg-grad-a: #241414;
+      --bg-grad-b: #48221a;
+      --fg: #fff4ec;
+      --muted: #e4b8a0;
+      --card: #241616;
+      --border: #5c342b;
+      --header: #140b0b;
+      --link: #fdba74;
+      --btn-bg: #ea580c;
+      --btn-secondary: #6b463f;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #491b1b;
+      --flash-err-fg: #fecaca;
+      --flash-ok-bg: #3a2411;
+      --flash-ok-fg: #fde68a;
+      --input-bg: #1d1111;
+      --input-fg: #fff4ec;
+    }
+    body[data-theme="ice"] {
+      --bg: #eef6fb;
+      --bg-grad-a: #eef6fb;
+      --bg-grad-b: #dbeafe;
+      --fg: #102132;
+      --muted: #4b6b84;
+      --card: #f9fcff;
+      --border: #bfd5e8;
+      --header: #e9f4fb;
+      --link: #0369a1;
+      --btn-bg: #0284c7;
+      --btn-secondary: #5b7a90;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #fee2e2;
+      --flash-err-fg: #991b1b;
+      --flash-ok-bg: #d1fae5;
+      --flash-ok-fg: #065f46;
+      --input-bg: #ffffff;
+      --input-fg: #102132;
     }
     body {
       font-family: "Trebuchet MS", "Lucida Sans", "Segoe UI", sans-serif;
@@ -2332,8 +2400,9 @@ def _render_layout(
             <div class="mobile-panel-section">
               <p class="mobile-panel-title">Theme</p>
               <div class="theme-switch" aria-label="Theme selector">
-                <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
-                <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+                {% for theme_option in theme_options %}
+                <button type="button" class="theme-btn" data-theme-choice="{{ theme_option.value }}">{{ theme_option.label }}</button>
+                {% endfor %}
               </div>
             </div>
             {% if restart_enabled %}
@@ -2351,8 +2420,9 @@ def _render_layout(
         </details>
         {% endif %}
         <div class="theme-switch" aria-label="Theme selector">
-          <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
-          <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+          {% for theme_option in theme_options %}
+          <button type="button" class="theme-btn" data-theme-choice="{{ theme_option.value }}">{{ theme_option.label }}</button>
+          {% endfor %}
         </div>
       </div>
     </div>
@@ -2463,7 +2533,8 @@ def _render_layout(
     (function () {
       const storageKey = "web_theme_choice";
       const fallbackTheme = "black";
-      const allowed = { light: true, black: true };
+      const allowedChoices = {{ theme_values_json | safe }};
+      const allowed = Object.fromEntries(allowedChoices.map((themeName) => [themeName, true]));
 
       function setTheme(theme) {
         const selected = allowed[theme] ? theme : fallbackTheme;
@@ -2533,6 +2604,8 @@ def _render_layout(
         github_wiki_url=github_wiki_url,
         restart_enabled=restart_enabled,
         web_gui_version=WEB_GUI_VERSION_LABEL,
+        theme_options=THEME_OPTIONS,
+        theme_values_json=json.dumps(theme_values),
     )
 
 
