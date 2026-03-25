@@ -322,6 +322,7 @@ Notes:
   - raw member activity summary CSV
   - raw hourly activity CSV
   - JSON summary manifest
+- CSV files in the archive use spreadsheet-formula escaping for cells that begin with `=`, `+`, `-`, or `@`
 
 ### `/admin/command-permissions`
 

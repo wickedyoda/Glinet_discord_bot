@@ -12,6 +12,7 @@ Core capabilities:
 
 - Role-bound invite links and 6-digit access code flows
 - Bulk CSV role assignment with rich result reporting
+- Spreadsheet-safe member-activity CSV exports and tolerant CSV input parsing
 - Tag auto-replies and dynamic slash command generation
 - Source-specific search helpers for GL.iNet forums, OpenWrt forums, Reddit, and docs
 - Utility commands for ping, uptime/status, URL shortening/expansion, and quick greeting/image helpers

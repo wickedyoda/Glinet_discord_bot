@@ -1,5 +1,7 @@
 import sqlite3
+import zipfile
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from types import SimpleNamespace
 
 from app.member_activity import MemberActivityManager
@@ -178,3 +180,53 @@ def test_record_member_message_activity_increments_active_days_on_new_date():
 
     assert int(summary_row["total_messages"]) == 2
     assert int(summary_row["total_active_days"]) == 2
+
+
+def test_export_member_activity_archive_escapes_formula_like_cells():
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    manager = build_manager(conn=conn)
+
+    manager.record_member_message_activity(
+        DummyMessage(1001, datetime(2026, 3, 24, 12, 0, tzinfo=UTC))
+    )
+    conn.execute(
+        """
+        UPDATE member_activity_summary
+        SET username = ?, display_name = ?
+        WHERE guild_id = 123 AND user_id = 10
+        """,
+        ("enc:=cmd", "enc:+display"),
+    )
+    conn.commit()
+    manager.build_member_activity_web_payload = lambda guild_id, role_id=None: {
+        "ok": True,
+        "guild_id": int(guild_id),
+        "windows": [
+            {
+                "key": "last_24h",
+                "label": "Last 24 Hours",
+                "members": [
+                    {
+                        "rank": 1,
+                        "user_id": 10,
+                        "display_name": "+display",
+                        "username": "=cmd",
+                        "message_count": 1,
+                        "active_days": 1,
+                        "last_message_at": "2026-03-24T12:00:00+00:00",
+                    }
+                ],
+            }
+        ],
+    }
+
+    payload = manager.export_member_activity_archive(123)
+
+    with zipfile.ZipFile(BytesIO(payload["data"])) as archive:
+        summary_csv = archive.read("member_activity_summary.csv").decode("utf-8")
+        window_csv = archive.read("last_24h.csv").decode("utf-8")
+
+    assert "'=cmd" in summary_csv
+    assert "'+display" in summary_csv
+    assert "'+display" in window_csv
