@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from html import escape
 
+from app.web_time import format_timestamp_display
+
 ROLE_ACCESS_STATUS_OPTIONS = (
     {"value": "active", "label": "Active"},
     {"value": "paused", "label": "Paused"},
@@ -63,8 +65,8 @@ def render_role_access_body(
         invite_url = str(mapping.get("invite_url") or "")
         role_id = str(mapping.get("role_id") or "")
         status = str(mapping.get("status") or "active").strip().lower()
-        created_at = str(mapping.get("created_at") or "")
-        updated_at = str(mapping.get("updated_at") or "")
+        created_at = format_timestamp_display(mapping.get("created_at"))
+        updated_at = format_timestamp_display(mapping.get("updated_at"))
         role_label = role_labels.get(role_id, role_id or "n/a")
         rows.append(
             f"""
@@ -75,8 +77,8 @@ def render_role_access_body(
               <td>{escape(role_label)}<div class="muted mono">{escape(role_id or 'n/a')}</div></td>
               <td>{escape(status.title())}</td>
               <td class="muted">
-                <div class="mono">{escape(created_at or 'n/a')}</div>
-                <div>{escape(updated_at or 'n/a')}</div>
+                <div class="mono">{escape(created_at)}</div>
+                <div>{escape(updated_at)}</div>
               </td>
               <td>
                 <form method="post">

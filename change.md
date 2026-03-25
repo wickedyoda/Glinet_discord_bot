@@ -2,6 +2,19 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-03-25] - Web GUI Readability and Log Export
+
+### Added
+
+- Added `/admin/logs/export` so the web GUI can download the available runtime logs as one ZIP archive.
+- Added dashboard quick-note links for recently visited admin pages in the current web session.
+- Added a shared web timestamp formatter used across GUI pages.
+
+### Changed
+
+- Web GUI timestamps now render in readable UTC format instead of raw ISO strings.
+- Dashboard quick notes now link directly to `Guild Settings` and `Command Status`.
+
 ## [2026-03-23] - GitHub Wiki Publication
 
 ### Changed

@@ -1,4 +1,6 @@
 import re
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 from bs4 import BeautifulSoup
@@ -721,6 +723,8 @@ def test_actions_page_renders_history(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"test_action" in response.data
+    assert b"2026-03-15 00:00:00 UTC" in response.data
+    assert b"2026-03-15T00:00:00+00:00" not in response.data
 
 
 def test_admin_can_remove_bot_from_guild(tmp_path: Path):
@@ -783,6 +787,8 @@ def test_role_access_page_renders_mappings(tmp_path: Path):
     assert b"Role Access Mappings" in response.data
     assert b"531580" in response.data
     assert b"Xjkd246SYq" in response.data
+    assert b"2026-03-20 00:00:00 UTC" in response.data
+    assert b"2026-03-20T00:00:00+00:00" not in response.data
 
 
 def test_admin_can_pause_role_access_mapping(tmp_path: Path):
@@ -997,6 +1003,27 @@ def test_member_activity_page_renders_tables(tmp_path: Path):
     assert b"All eligible members" in response.data
     assert b"@Member" in response.data
     assert b"@Employee" not in response.data
+    assert b"2026-03-15 00:00:00 UTC" in response.data
+    assert b"2026-03-15T00:00:00+00:00" not in response.data
+
+
+def test_feed_pages_render_readable_timestamps(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    youtube_response = client.get("/admin/youtube", base_url="https://docker.example:8443")
+    linkedin_response = client.get("/admin/linkedin", base_url="https://docker.example:8443")
+
+    assert youtube_response.status_code == 200
+    assert b"2026-03-20 00:00:00 UTC" in youtube_response.data
+    assert b"2026-03-20T00:00:00+00:00" not in youtube_response.data
+
+    assert linkedin_response.status_code == 200
+    assert b"2026-03-20 00:00:00 UTC" in linkedin_response.data
+    assert b"2026-03-20 01:00:00 UTC" in linkedin_response.data
+    assert b"2026-03-20T01:00:00+00:00" not in linkedin_response.data
 
 
 def test_member_activity_export_downloads_zip(tmp_path: Path):
@@ -1057,6 +1084,25 @@ def test_dashboard_renders_extended_theme_options(tmp_path: Path):
     assert b"Forest" in response.data
     assert b"Ember" in response.data
     assert b"Ice" in response.data
+
+
+def test_dashboard_quick_notes_include_recent_page_links(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    client.get("/admin/youtube", base_url="https://docker.example:8443")
+    client.get("/admin/actions", base_url="https://docker.example:8443")
+
+    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Recent pages" in response.data
+    assert b'href="/admin/youtube"' in response.data
+    assert b">YouTube<" in response.data
+    assert b'href="/admin/actions"' in response.data
+    assert b">Action History<" in response.data
 
 
 def test_admin_can_update_command_status_page(tmp_path: Path):
@@ -1511,3 +1557,49 @@ def test_glinet_rw_role_can_edit_only_primary_guild_scoped_settings(tmp_path: Pa
     assert global_settings_response.status_code == 200
     assert b"GL.iNet-scoped access is limited to the primary GL.iNet Community Discord server." in global_settings_response.data
     assert b"Dashboard" in global_settings_response.data
+
+
+def test_admin_logs_page_offers_export_link(tmp_path: Path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "container_errors.log").write_text("error line\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    response = client.get("/admin/logs", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Export All Logs" in response.data
+    assert b"/admin/logs/export" in response.data
+
+
+def test_admin_logs_export_downloads_zip(tmp_path: Path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    (log_dir / "bot.log").write_text("bot runtime\n", encoding="utf-8")
+    (log_dir / "bot_log.log").write_text("bot channel\n", encoding="utf-8")
+    (log_dir / "container_errors.log").write_text("container error\n", encoding="utf-8")
+    (log_dir / "web_gui_audit.log").write_text("audit entry\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    response = client.get("/admin/logs/export", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert response.headers.get("Content-Type", "").startswith("application/zip")
+    assert "attachment;" in str(response.headers.get("Content-Disposition", ""))
+
+    with zipfile.ZipFile(BytesIO(response.data)) as archive:
+        names = set(archive.namelist())
+        assert "bot.log" in names
+        assert "bot_log.log" in names
+        assert "container_errors.log" in names
+        assert "web_gui_audit.log" in names
+        assert "manifest.txt" in names
+        assert archive.read("bot.log").decode("utf-8") == "bot runtime\n"
