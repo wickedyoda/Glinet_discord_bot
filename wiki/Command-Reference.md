@@ -62,6 +62,8 @@ Web variation:
 | `!searchiot` | Prefix | Member/Public | query text | Prefix IoT docs search |
 | `/search_router` | Slash | Member/Public | query text | Router docs v4 source |
 | `!searchrouter` | Prefix | Member/Public | query text | Prefix router docs search |
+| `/search_astrowarp` | Slash | Member/Public | query text | AstroWarp docs source (`docs.astrowarp.net`) |
+| `!searchastrowarp` | Prefix | Member/Public | query text | Prefix AstroWarp docs search |
 
 ## Utility Commands
 

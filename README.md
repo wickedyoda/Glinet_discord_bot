@@ -75,7 +75,7 @@ docker compose build
 - Role access via invite links and 6-digit access codes
 - Bulk CSV role assignment
 - Guild-scoped tag responses (`!tag` + `/tag` selector)
-- Source-specific search commands for GL.iNet forums, OpenWrt forums, Reddit, and docs
+- Source-specific search commands for GL.iNet forums, OpenWrt forums, Reddit, GL.iNet docs, and AstroWarp docs
 - Utility commands for `ping`, uptime/status, URL shortening/expansion, quick image/greeting helpers, and fun commands like coin flip, 8-ball, meme, and dad joke
 - Country nickname suffix commands
 - Extended moderation commands and event logging

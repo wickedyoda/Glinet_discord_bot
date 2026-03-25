@@ -823,6 +823,7 @@ DOCS_SITE_MAP = {
     "kvm": ("KVM Docs", "https://docs.gl-inet.com/kvm/en"),
     "iot": ("IoT Docs", "https://docs.gl-inet.com/iot/en"),
     "router": ("Router Docs v4", "https://docs.gl-inet.com/router/en/4"),
+    "astrowarp": ("AstroWarp Docs", "https://docs.astrowarp.net/en"),
 }
 SHORTENER_BASE_URL = normalize_http_url_setting(
     os.getenv("SHORTENER_BASE_URL", ""),
@@ -940,6 +941,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "search_kvm": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "search_astrowarp": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
 }
 for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
     COMMAND_PERMISSION_DEFAULTS[_command_key] = COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
@@ -1131,6 +1133,10 @@ COMMAND_PERMISSION_METADATA = {
     "search_router": {
         "label": "/search_router, !searchrouter",
         "description": "Search Router docs only.",
+    },
+    "search_astrowarp": {
+        "label": "/search_astrowarp, !searchastrowarp",
+        "description": "Search AstroWarp docs only.",
     },
 }
 COMMAND_PERMISSION_POLICY_LABELS = {
@@ -12519,6 +12525,38 @@ async def search_router_prefix(ctx: commands.Context, *, query: str):
         return
     await ctx.send("🔍 Searching Router v4 docs...")
     message = await asyncio.to_thread(build_docs_site_search_message, query, "router")
+    await ctx.send(message)
+
+
+@tree.command(
+    name="search_astrowarp",
+    description="Search AstroWarp docs only",
+)
+@app_commands.describe(query="Enter search keywords")
+async def search_astrowarp_slash(interaction: discord.Interaction, query: str):
+    logger.info("/search_astrowarp invoked by %s with query %s", interaction.user, query)
+    if not await ensure_interaction_command_access(interaction, "search_astrowarp"):
+        return
+    query = query.strip()
+    if not query:
+        await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
+        return
+    await interaction.response.defer(thinking=True)
+    message = await asyncio.to_thread(build_docs_site_search_message, query, "astrowarp")
+    await interaction.followup.send(message)
+
+
+@bot.command(name="searchastrowarp")
+async def search_astrowarp_prefix(ctx: commands.Context, *, query: str):
+    logger.info("!searchastrowarp invoked by %s with query %s", ctx.author, query)
+    if not await ensure_prefix_command_access(ctx, "search_astrowarp"):
+        return
+    query = query.strip()
+    if not query:
+        await ctx.send("❌ Please provide a search query.")
+        return
+    await ctx.send("🔍 Searching AstroWarp docs...")
+    message = await asyncio.to_thread(build_docs_site_search_message, query, "astrowarp")
     await ctx.send(message)
 
 

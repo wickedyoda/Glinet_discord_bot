@@ -12,6 +12,7 @@ Search GL.iNet forum and documentation sources directly from Discord.
 | KVM docs | `/search_kvm` | `!searchkvm` | KVM-specific docs index |
 | IoT docs | `/search_iot` | `!searchiot` | IoT-specific docs index |
 | Router docs v4 | `/search_router` | `!searchrouter` | Router docs source |
+| AstroWarp docs | `/search_astrowarp` | `!searchastrowarp` | AstroWarp how-to docs from `docs.astrowarp.net` |
 
 ## Query Behavior
 
@@ -25,6 +26,7 @@ Search GL.iNet forum and documentation sources directly from Discord.
 - Source-specific commands reduce noise for focused technical searches.
 - GL.iNet forum search uses the configurable forum base URL.
 - OpenWrt forum search is fixed to [forum.openwrt.org](https://forum.openwrt.org/).
+- AstroWarp docs search is backed by the public search index exposed by [docs.astrowarp.net](https://docs.astrowarp.net/en/).
 
 ## Caching and Performance
 
@@ -50,6 +52,7 @@ Search GL.iNet forum and documentation sources directly from Discord.
 - `/search_openwrt_forum mwan3 policy routing`
 - `!searchrouter dns over tls`
 - `!searchkvm vlan trunk`
+- `/search_astrowarp remote desktop`
 
 ## Troubleshooting
 
