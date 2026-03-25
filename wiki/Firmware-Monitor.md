@@ -67,6 +67,9 @@ Example cron values (UTC):
 - Warning: notify channel not found:
   - Verify the selected guild has `firmware_notify_channel_id` configured or a valid global `firmware_notification_channel`.
   - Verify bot has access to target channel.
+- Firmware updates expected for one guild but not another:
+  - Check `/admin/guild-settings` for the selected guild.
+  - If `Override global setting` is enabled and `Enabled for this guild` is unchecked, firmware notifications are intentionally disabled for that guild even if the global monitor is enabled.
 - First run produced no alerts:
   - Expected. Baseline snapshot is created first, then only future deltas are notified.
 - No notifications:

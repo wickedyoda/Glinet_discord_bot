@@ -42,6 +42,7 @@ from app.beta_programs import (
 from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
+from app.feed_web_callbacks import FeedWebCallbacks
 from app.guild_archive import GuildArchiveManager
 from app.guild_state import GuildStateManager
 from app.help_content import build_help_message_for_command as build_help_content_message_for_command
@@ -61,6 +62,7 @@ from app.member_activity_backfill import (
 from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
 )
+from app.role_access_web_callbacks import RoleAccessWebCallbacks
 from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
 from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
@@ -1162,6 +1164,8 @@ youtube_monitor_task = None
 linkedin_monitor_task = None
 beta_program_monitor_task = None
 member_activity_backfill_task = None
+feed_web_callbacks = None
+role_access_web_callbacks = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
 web_admin_restart_events = deque()
@@ -1272,6 +1276,9 @@ def ensure_db_schema():
                 code TEXT NOT NULL,
                 role_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                invite_code TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
                 PRIMARY KEY (guild_id, code)
             );
 
@@ -1280,6 +1287,9 @@ def ensure_db_schema():
                 invite_code TEXT NOT NULL,
                 role_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                code TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
                 PRIMARY KEY (guild_id, invite_code)
             );
 
@@ -1296,6 +1306,11 @@ def ensure_db_schema():
                 bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+                firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1,
+                reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 access_role_id INTEGER NOT NULL DEFAULT 0,
                 welcome_channel_id INTEGER NOT NULL DEFAULT 0,
                 welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1481,6 +1496,8 @@ def ensure_db_schema():
 
             CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
             CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
+            CREATE INDEX IF NOT EXISTS idx_role_codes_status ON role_codes(status);
+            CREATE INDEX IF NOT EXISTS idx_invite_roles_status ON invite_roles(status);
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
                 ON reddit_feed_subscriptions(subreddit);
@@ -1518,17 +1535,33 @@ def ensure_db_schema():
                     code TEXT NOT NULL,
                     role_id INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    invite_code TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
                     PRIMARY KEY (guild_id, code)
                 );
-                INSERT INTO role_codes_new (guild_id, code, role_id, created_at)
-                SELECT 0, code, role_id, created_at
+                INSERT INTO role_codes_new (guild_id, code, role_id, created_at, updated_at, invite_code, status)
+                SELECT 0, code, role_id, created_at, created_at, '', 'active'
                 FROM role_codes;
                 DROP TABLE role_codes;
                 ALTER TABLE role_codes_new RENAME TO role_codes;
                 CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
                 CREATE INDEX IF NOT EXISTS idx_role_codes_guild_id ON role_codes(guild_id);
+                CREATE INDEX IF NOT EXISTS idx_role_codes_status ON role_codes(status);
                 """
             )
+        if "updated_at" not in role_code_columns:
+            conn.execute("ALTER TABLE role_codes ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+        if "invite_code" not in role_code_columns:
+            conn.execute("ALTER TABLE role_codes ADD COLUMN invite_code TEXT NOT NULL DEFAULT ''")
+        if "status" not in role_code_columns:
+            conn.execute("ALTER TABLE role_codes ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        conn.execute(
+            "UPDATE role_codes SET updated_at = created_at WHERE TRIM(COALESCE(updated_at, '')) = ''"
+        )
+        conn.execute(
+            "UPDATE role_codes SET status = 'active' WHERE TRIM(COALESCE(status, '')) = ''"
+        )
 
         invite_role_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(invite_roles)").fetchall()}
         if "guild_id" not in invite_role_columns:
@@ -1539,17 +1572,33 @@ def ensure_db_schema():
                     invite_code TEXT NOT NULL,
                     role_id INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    code TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
                     PRIMARY KEY (guild_id, invite_code)
                 );
-                INSERT INTO invite_roles_new (guild_id, invite_code, role_id, created_at)
-                SELECT 0, invite_code, role_id, created_at
+                INSERT INTO invite_roles_new (guild_id, invite_code, role_id, created_at, updated_at, code, status)
+                SELECT 0, invite_code, role_id, created_at, created_at, '', 'active'
                 FROM invite_roles;
                 DROP TABLE invite_roles;
                 ALTER TABLE invite_roles_new RENAME TO invite_roles;
                 CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
                 CREATE INDEX IF NOT EXISTS idx_invite_roles_guild_id ON invite_roles(guild_id);
+                CREATE INDEX IF NOT EXISTS idx_invite_roles_status ON invite_roles(status);
                 """
             )
+        if "updated_at" not in invite_role_columns:
+            conn.execute("ALTER TABLE invite_roles ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+        if "code" not in invite_role_columns:
+            conn.execute("ALTER TABLE invite_roles ADD COLUMN code TEXT NOT NULL DEFAULT ''")
+        if "status" not in invite_role_columns:
+            conn.execute("ALTER TABLE invite_roles ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        conn.execute(
+            "UPDATE invite_roles SET updated_at = created_at WHERE TRIM(COALESCE(updated_at, '')) = ''"
+        )
+        conn.execute(
+            "UPDATE invite_roles SET status = 'active' WHERE TRIM(COALESCE(status, '')) = ''"
+        )
 
         tag_response_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tag_responses)").fetchall()}
         if "guild_id" not in tag_response_columns:
@@ -1572,6 +1621,16 @@ def ensure_db_schema():
             )
 
         guild_settings_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
+        if "firmware_monitor_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1")
+        if "reddit_feed_notify_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1")
+        if "youtube_notify_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN youtube_notify_enabled INTEGER NOT NULL DEFAULT -1")
+        if "linkedin_notify_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1")
+        if "beta_program_notify_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1")
         if "welcome_channel_id" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_id INTEGER NOT NULL DEFAULT 0")
         if "welcome_dm_enabled" not in guild_settings_columns:
@@ -2038,6 +2097,10 @@ def save_guild_settings(
 
 def get_effective_guild_setting(guild_id: int | None, key: str, fallback_value: int = 0):
     return guild_state_manager.get_effective_guild_setting(guild_id, key, fallback_value)
+
+
+def get_effective_guild_feature_enabled(guild_id: int | None, key: str, fallback_value: bool = False):
+    return guild_state_manager.get_effective_guild_feature_enabled(guild_id, key, fallback_value)
 
 
 def get_effective_logging_channel_id(guild_id: int | None):
@@ -3828,19 +3891,116 @@ def generate_code():
             return code
 
 
-def save_role_code(code, role_id, guild_id: int | None = None):
+def normalize_role_access_status(value: str | None, default: str = "active"):
+    normalized = str(value or "").strip().lower()
+    if normalized in {"active", "paused", "disabled"}:
+        return normalized
+    return default
+
+
+def _refresh_invite_role_cache_for_guild(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    invite_roles_by_guild[safe_guild_id] = load_invite_roles(guild_id=safe_guild_id).get(safe_guild_id, {})
+
+
+def save_role_access_mapping(
+    code,
+    invite_code,
+    role_id,
+    *,
+    guild_id: int | None = None,
+    status: str = "active",
+    created_at: str | None = None,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    normalized_code = str(code).strip()
+    normalized_invite_code = str(invite_code).strip()
+    normalized_status = normalize_role_access_status(status)
+    now_iso = datetime.now(UTC).isoformat()
+    created_iso = str(created_at or now_iso)
+    conn = get_db_connection()
+    with db_lock:
+        existing_role_row = conn.execute(
+            "SELECT created_at FROM role_codes WHERE guild_id = ? AND code = ?",
+            (safe_guild_id, normalized_code),
+        ).fetchone()
+        existing_invite_row = conn.execute(
+            "SELECT created_at FROM invite_roles WHERE guild_id = ? AND invite_code = ?",
+            (safe_guild_id, normalized_invite_code),
+        ).fetchone()
+        role_created_at = str(existing_role_row["created_at"]) if existing_role_row else created_iso
+        invite_created_at = str(existing_invite_row["created_at"]) if existing_invite_row else created_iso
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO role_codes (guild_id, code, role_id, created_at, updated_at, invite_code, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                normalized_code,
+                int(role_id),
+                role_created_at,
+                now_iso,
+                normalized_invite_code,
+                normalized_status,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO invite_roles (guild_id, invite_code, role_id, created_at, updated_at, code, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                normalized_invite_code,
+                int(role_id),
+                invite_created_at,
+                now_iso,
+                normalized_code,
+                normalized_status,
+            ),
+        )
+        conn.commit()
+    _refresh_invite_role_cache_for_guild(safe_guild_id)
+    logger.info(
+        "Saved role access mapping code=%s invite=%s role=%s guild=%s status=%s",
+        normalized_code,
+        normalized_invite_code,
+        role_id,
+        safe_guild_id,
+        normalized_status,
+    )
+
+
+def save_role_code(code, role_id, guild_id: int | None = None, *, invite_code: str = "", status: str = "active"):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
+        existing = conn.execute(
+            "SELECT created_at, invite_code FROM role_codes WHERE guild_id = ? AND code = ?",
+            (safe_guild_id, str(code)),
+        ).fetchone()
+        preserved_invite = str(existing["invite_code"]) if existing and str(existing["invite_code"] or "").strip() else str(invite_code or "").strip()
+        created_at = str(existing["created_at"]) if existing else now_iso
         conn.execute(
             """
-            INSERT OR REPLACE INTO role_codes (guild_id, code, role_id, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT OR REPLACE INTO role_codes (guild_id, code, role_id, created_at, updated_at, invite_code, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (safe_guild_id, str(code), int(role_id), now_iso),
+            (
+                safe_guild_id,
+                str(code),
+                int(role_id),
+                created_at,
+                now_iso,
+                preserved_invite,
+                normalize_role_access_status(status),
+            ),
         )
         conn.commit()
+    if preserved_invite:
+        _refresh_invite_role_cache_for_guild(safe_guild_id)
     logger.info("Saved code %s for role %s in guild %s", code, role_id, safe_guild_id)
 
 
@@ -3849,7 +4009,11 @@ def get_role_id_by_code(code, guild_id: int | None = None):
     conn = get_db_connection()
     with db_lock:
         row = conn.execute(
-            "SELECT role_id FROM role_codes WHERE guild_id = ? AND code = ?",
+            """
+            SELECT role_id
+            FROM role_codes
+            WHERE guild_id = ? AND code = ? AND LOWER(COALESCE(status, 'active')) = 'active'
+            """,
             (safe_guild_id, str(code)),
         ).fetchone()
     if row is None:
@@ -3859,10 +4023,27 @@ def get_role_id_by_code(code, guild_id: int | None = None):
     return role_id
 
 
-def load_invite_roles():
+def load_invite_roles(guild_id: int | None = None):
     conn = get_db_connection()
     with db_lock:
-        rows = conn.execute("SELECT guild_id, invite_code, role_id FROM invite_roles").fetchall()
+        if guild_id is None:
+            rows = conn.execute(
+                """
+                SELECT guild_id, invite_code, role_id
+                FROM invite_roles
+                WHERE LOWER(COALESCE(status, 'active')) = 'active'
+                """
+            ).fetchall()
+        else:
+            safe_guild_id = normalize_target_guild_id(guild_id)
+            rows = conn.execute(
+                """
+                SELECT guild_id, invite_code, role_id
+                FROM invite_roles
+                WHERE guild_id = ? AND LOWER(COALESCE(status, 'active')) = 'active'
+                """,
+                (safe_guild_id,),
+            ).fetchall()
     mapping = {}
     for row in rows:
         guild_id = int(row["guild_id"] or 0)
@@ -3870,26 +4051,185 @@ def load_invite_roles():
     return mapping
 
 
-def save_invite_role(invite_code, role_id, guild_id: int | None = None):
+def save_invite_role(invite_code, role_id, guild_id: int | None = None, *, code: str = "", status: str = "active"):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
+        existing = conn.execute(
+            "SELECT created_at, code FROM invite_roles WHERE guild_id = ? AND invite_code = ?",
+            (safe_guild_id, str(invite_code)),
+        ).fetchone()
+        preserved_code = str(existing["code"]) if existing and str(existing["code"] or "").strip() else str(code or "").strip()
+        created_at = str(existing["created_at"]) if existing else now_iso
         conn.execute(
             """
-            INSERT OR REPLACE INTO invite_roles (guild_id, invite_code, role_id, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT OR REPLACE INTO invite_roles (guild_id, invite_code, role_id, created_at, updated_at, code, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (safe_guild_id, str(invite_code), int(role_id), now_iso),
+            (
+                safe_guild_id,
+                str(invite_code),
+                int(role_id),
+                created_at,
+                now_iso,
+                preserved_code,
+                normalize_role_access_status(status),
+            ),
         )
         conn.commit()
-    invite_roles_by_guild.setdefault(safe_guild_id, {})[str(invite_code)] = int(role_id)
+    _refresh_invite_role_cache_for_guild(safe_guild_id)
     logger.info(
         "Saved invite %s for role %s in guild %s",
         invite_code,
         role_id,
         safe_guild_id,
     )
+
+
+def list_role_access_mappings(guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        role_rows = conn.execute(
+            """
+            SELECT guild_id, code, role_id, created_at, updated_at, invite_code, status
+            FROM role_codes
+            WHERE guild_id = ?
+            ORDER BY created_at DESC, code ASC
+            """,
+            (safe_guild_id,),
+        ).fetchall()
+        invite_rows = conn.execute(
+            """
+            SELECT guild_id, invite_code, role_id, created_at, updated_at, code, status
+            FROM invite_roles
+            WHERE guild_id = ?
+            ORDER BY created_at DESC, invite_code ASC
+            """,
+            (safe_guild_id,),
+        ).fetchall()
+
+    invite_by_code = {}
+    invite_unpaired_by_role = {}
+    for row in invite_rows:
+        invite_code = str(row["invite_code"] or "").strip()
+        linked_code = str(row["code"] or "").strip()
+        entry = {
+            "invite_code": invite_code,
+            "invite_url": f"https://discord.gg/{invite_code}",
+            "role_id": int(row["role_id"] or 0),
+            "created_at": str(row["created_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+            "status": normalize_role_access_status(row["status"]),
+            "code": linked_code,
+        }
+        if linked_code:
+            invite_by_code[linked_code] = entry
+        invite_unpaired_by_role.setdefault(int(row["role_id"] or 0), []).append(entry)
+
+    mappings = []
+    consumed_invites = set()
+    for row in role_rows:
+        code = str(row["code"] or "").strip()
+        role_id = int(row["role_id"] or 0)
+        linked_invite_code = str(row["invite_code"] or "").strip()
+        invite_entry = invite_by_code.get(code)
+        if invite_entry is None and linked_invite_code:
+            for candidate in invite_unpaired_by_role.get(role_id, []):
+                if candidate["invite_code"] == linked_invite_code:
+                    invite_entry = candidate
+                    break
+        if invite_entry is None:
+            for candidate in invite_unpaired_by_role.get(role_id, []):
+                if candidate["invite_code"] in consumed_invites:
+                    continue
+                invite_entry = candidate
+                break
+        if invite_entry is not None:
+            consumed_invites.add(invite_entry["invite_code"])
+        mappings.append(
+            {
+                "guild_id": safe_guild_id,
+                "code": code,
+                "invite_code": invite_entry["invite_code"] if invite_entry else linked_invite_code,
+                "invite_url": (
+                    invite_entry["invite_url"]
+                    if invite_entry
+                    else (f"https://discord.gg/{linked_invite_code}" if linked_invite_code else "")
+                ),
+                "role_id": role_id,
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or row["created_at"] or ""),
+                "status": normalize_role_access_status(row["status"]),
+            }
+        )
+
+    seen_codes = {entry["code"] for entry in mappings}
+    for row in invite_rows:
+        code = str(row["code"] or "").strip()
+        if code and code in seen_codes:
+            continue
+        invite_code = str(row["invite_code"] or "").strip()
+        if invite_code in consumed_invites:
+            continue
+        mappings.append(
+            {
+                "guild_id": safe_guild_id,
+                "code": code,
+                "invite_code": invite_code,
+                "invite_url": f"https://discord.gg/{invite_code}",
+                "role_id": int(row["role_id"] or 0),
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or row["created_at"] or ""),
+                "status": normalize_role_access_status(row["status"]),
+            }
+        )
+
+    mappings.sort(
+        key=lambda item: (
+            str(item.get("created_at") or ""),
+            str(item.get("code") or ""),
+            str(item.get("invite_code") or ""),
+        ),
+        reverse=True,
+    )
+    return mappings
+
+
+def set_role_access_mapping_status(
+    guild_id: int | None,
+    *,
+    code: str,
+    invite_code: str,
+    status: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    normalized_status = normalize_role_access_status(status)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        role_result = conn.execute(
+            """
+            UPDATE role_codes
+            SET status = ?, updated_at = ?, invite_code = CASE WHEN TRIM(COALESCE(invite_code, '')) = '' THEN ? ELSE invite_code END
+            WHERE guild_id = ? AND code = ?
+            """,
+            (normalized_status, now_iso, str(invite_code), safe_guild_id, str(code)),
+        )
+        invite_result = conn.execute(
+            """
+            UPDATE invite_roles
+            SET status = ?, updated_at = ?, code = CASE WHEN TRIM(COALESCE(code, '')) = '' THEN ? ELSE code END
+            WHERE guild_id = ? AND invite_code = ?
+            """,
+            (normalized_status, now_iso, str(code), safe_guild_id, str(invite_code)),
+        )
+        conn.commit()
+    found = bool(role_result.rowcount or invite_result.rowcount)
+    if found:
+        _refresh_invite_role_cache_for_guild(safe_guild_id)
+    return found
 
 
 def normalize_role_access_code(value: str):
@@ -3952,9 +4292,7 @@ async def create_role_access_mapping(
     ) or interaction.channel
     invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
     guild_id = interaction.guild.id
-    save_role_code(normalized_code, role.id, guild_id=guild_id)
-    save_invite_role(invite.code, role.id, guild_id=guild_id)
-    invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
+    save_role_access_mapping(normalized_code, invite.code, role.id, guild_id=guild_id, status="active")
     invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
     return normalized_code, invite, channel
 
@@ -3995,9 +4333,7 @@ async def restore_role_access_mapping(
         raise ValueError("That invite does not belong to this Discord server.")
 
     guild_id = interaction.guild.id
-    save_role_code(normalized_code, role.id, guild_id=guild_id)
-    save_invite_role(invite.code, role.id, guild_id=guild_id)
-    invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
+    save_role_access_mapping(normalized_code, invite.code, role.id, guild_id=guild_id, status="active")
     invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
     return normalized_code, invite, getattr(invite, "channel", None)
 
@@ -4432,79 +4768,15 @@ def run_web_update_command_permissions(payload: dict, actor_email: str, guild_id
 
 
 def build_reddit_feeds_web_payload(guild_id: int):
-    return {
-        "ok": True,
-        "feeds": list_reddit_feed_subscriptions(enabled_only=False, guild_id=normalize_target_guild_id(guild_id)),
-    }
+    return get_feed_web_callbacks().build_reddit_feeds_web_payload(guild_id)
 
 
 def run_web_get_reddit_feeds(guild_id: int):
-    try:
-        return build_reddit_feeds_web_payload(guild_id)
-    except Exception:
-        logger.exception("Failed to build Reddit feeds payload for web admin")
-        return {
-            "ok": False,
-            "error": "Unexpected error while loading Reddit feeds.",
-        }
+    return get_feed_web_callbacks().run_web_get_reddit_feeds(guild_id)
 
 
 def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
-    if not isinstance(payload, dict):
-        return {"ok": False, "error": "Invalid Reddit feed payload."}
-
-    action = str(payload.get("action") or "").strip().lower()
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    try:
-        if action == "add":
-            subreddit = str(payload.get("subreddit") or "")
-            channel_id = int(str(payload.get("channel_id") or "0").strip())
-            create_reddit_feed_subscription(safe_guild_id, subreddit, channel_id, actor_email)
-            message = f"Reddit feed added for r/{normalize_reddit_subreddit_name(subreddit)}."
-        elif action == "edit":
-            feed_id = int(str(payload.get("feed_id") or "0").strip())
-            feed = get_reddit_feed_subscription(feed_id)
-            if feed is None or int(feed.get("guild_id") or 0) != safe_guild_id:
-                return {"ok": False, "error": "Reddit feed entry was not found."}
-            subreddit = str(payload.get("subreddit") or "")
-            channel_id = int(str(payload.get("channel_id") or "0").strip())
-            if not update_reddit_feed_subscription(feed_id, safe_guild_id, subreddit, channel_id, actor_email):
-                return {"ok": False, "error": "Reddit feed entry was not found."}
-            message = f"Reddit feed updated for r/{normalize_reddit_subreddit_name(subreddit)}."
-        elif action == "toggle":
-            feed_id = int(str(payload.get("feed_id") or "0").strip())
-            feed = get_reddit_feed_subscription(feed_id)
-            if feed is None or int(feed.get("guild_id") or 0) != safe_guild_id:
-                return {"ok": False, "error": "Reddit feed entry was not found."}
-            enabled = str(payload.get("enabled") or "").strip().lower() in TRUTHY_ENV_VALUES
-            if not set_reddit_feed_subscription_enabled(feed_id, enabled, actor_email):
-                return {"ok": False, "error": "Reddit feed entry was not found."}
-            message = "Reddit feed enabled." if enabled else "Reddit feed disabled."
-        elif action == "delete":
-            feed_id = int(str(payload.get("feed_id") or "0").strip())
-            feed = get_reddit_feed_subscription(feed_id)
-            if feed is None or int(feed.get("guild_id") or 0) != safe_guild_id:
-                return {"ok": False, "error": "Reddit feed entry was not found."}
-            if not delete_reddit_feed_subscription(feed_id):
-                return {"ok": False, "error": "Reddit feed entry was not found."}
-            message = "Reddit feed deleted."
-        else:
-            return {"ok": False, "error": "Invalid Reddit feed action."}
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    except sqlite3.IntegrityError:
-        return {
-            "ok": False,
-            "error": "That subreddit/channel feed already exists.",
-        }
-    except Exception:
-        logger.exception("Failed to manage Reddit feeds from web admin")
-        return {"ok": False, "error": "Failed to update Reddit feeds."}
-
-    logger.info("Reddit feeds updated via web admin action=%s", action)
-    response = build_reddit_feeds_web_payload(safe_guild_id)
-    response["message"] = message
-    return response
+    return get_feed_web_callbacks().run_web_manage_reddit_feeds(payload, actor_email, guild_id)
 
 
 def build_actions_web_payload(guild_id: int):
@@ -4523,331 +4795,47 @@ def run_web_get_actions(guild_id: int):
 
 
 def build_youtube_subscriptions_web_payload(guild_id: int):
-    return {
-        "ok": True,
-        "subscriptions": list_youtube_subscriptions(
-            guild_id=normalize_target_guild_id(guild_id),
-            enabled_only=False,
-        ),
-    }
+    return get_feed_web_callbacks().build_youtube_subscriptions_web_payload(guild_id)
 
 
 def run_web_get_youtube_subscriptions(guild_id: int):
-    try:
-        return build_youtube_subscriptions_web_payload(guild_id)
-    except Exception:
-        logger.exception("Failed to build YouTube subscriptions payload for web admin")
-        return {
-            "ok": False,
-            "error": "Unexpected error while loading YouTube subscriptions.",
-        }
+    return get_feed_web_callbacks().run_web_get_youtube_subscriptions(guild_id)
 
 
 def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_id: int):
-    if not isinstance(payload, dict):
-        return {"ok": False, "error": "Invalid YouTube subscription payload."}
-    action = str(payload.get("action") or "").strip().lower()
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    audit_actor = build_web_actor_audit_label(actor_email)
-    try:
-        if action == "add":
-            source_url = str(payload.get("source_url") or "").strip()
-            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
-            if target_channel_id <= 0:
-                return {"ok": False, "error": "Choose a valid Discord channel."}
-            resolved = resolve_youtube_subscription_seed(source_url)
-            guild = bot.get_guild(safe_guild_id)
-            target_channel = guild.get_channel(target_channel_id) if guild else None
-            target_channel_name = f"#{target_channel.name}" if isinstance(target_channel, discord.TextChannel) else str(target_channel_id)
-            create_or_update_youtube_subscription(
-                safe_guild_id,
-                source_url=resolved["source_url"],
-                channel_id=resolved["channel_id"],
-                channel_title=resolved["channel_title"],
-                target_channel_id=target_channel_id,
-                target_channel_name=target_channel_name,
-                last_video_id=resolved["last_video_id"],
-                last_video_title=resolved["last_video_title"],
-                last_published_at=resolved["last_published_at"],
-                actor_email=actor_email,
-            )
-            record_action_safe(
-                action="youtube_subscription_add",
-                status="success",
-                moderator=audit_actor,
-                target=resolved["channel_title"],
-                reason=truncate_log_text(resolved["source_url"]),
-                guild_id=safe_guild_id,
-            )
-            message = "YouTube subscription saved."
-        elif action == "edit":
-            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
-            if get_youtube_subscription(subscription_id, guild_id=safe_guild_id) is None:
-                return {"ok": False, "error": "YouTube subscription entry was not found."}
-            source_url = str(payload.get("source_url") or "").strip()
-            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
-            if target_channel_id <= 0:
-                return {"ok": False, "error": "Choose a valid Discord channel."}
-            resolved = resolve_youtube_subscription_seed(source_url)
-            guild = bot.get_guild(safe_guild_id)
-            target_channel = guild.get_channel(target_channel_id) if guild else None
-            target_channel_name = f"#{target_channel.name}" if isinstance(target_channel, discord.TextChannel) else str(target_channel_id)
-            if not update_youtube_subscription(
-                subscription_id,
-                safe_guild_id,
-                source_url=resolved["source_url"],
-                channel_id=resolved["channel_id"],
-                channel_title=resolved["channel_title"],
-                target_channel_id=target_channel_id,
-                target_channel_name=target_channel_name,
-                last_video_id=resolved["last_video_id"],
-                last_video_title=resolved["last_video_title"],
-                last_published_at=resolved["last_published_at"],
-                actor_email=actor_email,
-            ):
-                return {"ok": False, "error": "YouTube subscription entry was not found."}
-            record_action_safe(
-                action="youtube_subscription_edit",
-                status="success",
-                moderator=audit_actor,
-                target=resolved["channel_title"],
-                reason=truncate_log_text(resolved["source_url"]),
-                guild_id=safe_guild_id,
-            )
-            message = "YouTube subscription updated."
-        elif action == "delete":
-            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
-            if not delete_youtube_subscription(subscription_id, guild_id=safe_guild_id):
-                return {"ok": False, "error": "YouTube subscription entry was not found."}
-            record_action_safe(
-                action="youtube_subscription_delete",
-                status="success",
-                moderator=audit_actor,
-                target=str(subscription_id),
-                reason="Deleted via web admin",
-                guild_id=safe_guild_id,
-            )
-            message = "YouTube subscription deleted."
-        else:
-            return {"ok": False, "error": "Invalid YouTube subscription action."}
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    except Exception:
-        logger.exception("Failed to manage YouTube subscriptions from web admin")
-        return {"ok": False, "error": "Failed to manage YouTube subscriptions."}
-
-    response = build_youtube_subscriptions_web_payload(safe_guild_id)
-    response["message"] = message
-    return response
+    return get_feed_web_callbacks().run_web_manage_youtube_subscriptions(payload, actor_email, guild_id)
 
 
 def build_linkedin_subscriptions_web_payload(guild_id: int):
-    return {
-        "ok": True,
-        "subscriptions": list_linkedin_subscriptions(
-            guild_id=normalize_target_guild_id(guild_id),
-            enabled_only=False,
-        ),
-    }
+    return get_feed_web_callbacks().build_linkedin_subscriptions_web_payload(guild_id)
 
 
 def run_web_get_linkedin_subscriptions(guild_id: int):
-    try:
-        return build_linkedin_subscriptions_web_payload(guild_id)
-    except Exception:
-        logger.exception("Failed to build LinkedIn subscriptions payload for web admin")
-        return {
-            "ok": False,
-            "error": "Unexpected error while loading LinkedIn subscriptions.",
-        }
+    return get_feed_web_callbacks().run_web_get_linkedin_subscriptions(guild_id)
 
 
 def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild_id: int):
-    if not isinstance(payload, dict):
-        return {"ok": False, "error": "Invalid LinkedIn subscription payload."}
-    action = str(payload.get("action") or "").strip().lower()
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    audit_actor = build_web_actor_audit_label(actor_email)
-    try:
-        if action == "add":
-            source_url = str(payload.get("source_url") or "").strip()
-            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
-            if target_channel_id <= 0:
-                return {"ok": False, "error": "Choose a valid Discord channel."}
-            resolved = resolve_linkedin_subscription_seed(source_url)
-            guild = bot.get_guild(safe_guild_id)
-            target_channel = guild.get_channel(target_channel_id) if guild else None
-            if not isinstance(target_channel, discord.TextChannel):
-                return {"ok": False, "error": "Choose a valid Discord text channel."}
-            target_channel_name = f"#{target_channel.name}"
-            create_or_update_linkedin_subscription(
-                safe_guild_id,
-                source_url=resolved["source_url"],
-                profile_name=resolved["profile_name"],
-                target_channel_id=target_channel_id,
-                target_channel_name=target_channel_name,
-                last_post_id=resolved["last_post_id"],
-                last_post_url=resolved["last_post_url"],
-                last_post_text=resolved["last_post_text"],
-                last_published_at=resolved["last_published_at"],
-                actor_email=actor_email,
-            )
-            record_action_safe(
-                action="linkedin_subscription_add",
-                status="success",
-                moderator=audit_actor,
-                target=resolved["profile_name"],
-                reason=truncate_log_text(resolved["source_url"]),
-                guild_id=safe_guild_id,
-            )
-            message = "LinkedIn subscription saved."
-        elif action == "edit":
-            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
-            if get_linkedin_subscription(subscription_id, guild_id=safe_guild_id) is None:
-                return {"ok": False, "error": "LinkedIn subscription entry was not found."}
-            source_url = str(payload.get("source_url") or "").strip()
-            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
-            if target_channel_id <= 0:
-                return {"ok": False, "error": "Choose a valid Discord channel."}
-            resolved = resolve_linkedin_subscription_seed(source_url)
-            guild = bot.get_guild(safe_guild_id)
-            target_channel = guild.get_channel(target_channel_id) if guild else None
-            if not isinstance(target_channel, discord.TextChannel):
-                return {"ok": False, "error": "Choose a valid Discord text channel."}
-            target_channel_name = f"#{target_channel.name}"
-            if not update_linkedin_subscription(
-                subscription_id,
-                safe_guild_id,
-                source_url=resolved["source_url"],
-                profile_name=resolved["profile_name"],
-                target_channel_id=target_channel_id,
-                target_channel_name=target_channel_name,
-                last_post_id=resolved["last_post_id"],
-                last_post_url=resolved["last_post_url"],
-                last_post_text=resolved["last_post_text"],
-                last_published_at=resolved["last_published_at"],
-                actor_email=actor_email,
-            ):
-                return {"ok": False, "error": "LinkedIn subscription entry was not found."}
-            record_action_safe(
-                action="linkedin_subscription_edit",
-                status="success",
-                moderator=audit_actor,
-                target=resolved["profile_name"],
-                reason=truncate_log_text(resolved["source_url"]),
-                guild_id=safe_guild_id,
-            )
-            message = "LinkedIn subscription updated."
-        elif action == "delete":
-            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
-            if not delete_linkedin_subscription(subscription_id, guild_id=safe_guild_id):
-                return {"ok": False, "error": "LinkedIn subscription entry was not found."}
-            record_action_safe(
-                action="linkedin_subscription_delete",
-                status="success",
-                moderator=audit_actor,
-                target=str(subscription_id),
-                reason="Deleted via web admin",
-                guild_id=safe_guild_id,
-            )
-            message = "LinkedIn subscription deleted."
-        else:
-            return {"ok": False, "error": "Invalid LinkedIn subscription action."}
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    except Exception:
-        logger.exception("Failed to manage LinkedIn subscriptions from web admin")
-        return {"ok": False, "error": "Failed to manage LinkedIn subscriptions."}
-
-    response = build_linkedin_subscriptions_web_payload(safe_guild_id)
-    response["message"] = message
-    return response
+    return get_feed_web_callbacks().run_web_manage_linkedin_subscriptions(payload, actor_email, guild_id)
 
 
 def build_beta_program_subscriptions_web_payload(guild_id: int):
-    subscriptions = list_beta_program_subscriptions(
-        guild_id=normalize_target_guild_id(guild_id),
-        enabled_only=False,
-    )
-    for subscription in subscriptions:
-        subscription["program_count"] = len(subscription.get("programs") or [])
-    return {
-        "ok": True,
-        "source_url": BETA_PROGRAM_PAGE_URL,
-        "subscriptions": subscriptions,
-    }
+    return get_feed_web_callbacks().build_beta_program_subscriptions_web_payload(guild_id)
 
 
 def run_web_get_beta_program_subscriptions(guild_id: int):
-    try:
-        return build_beta_program_subscriptions_web_payload(guild_id)
-    except Exception:
-        logger.exception("Failed to build GL.iNet beta program subscriptions payload for web admin")
-        return {
-            "ok": False,
-            "error": "Unexpected error while loading GL.iNet beta program subscriptions.",
-        }
+    return get_feed_web_callbacks().run_web_get_beta_program_subscriptions(guild_id)
 
 
 def run_web_manage_beta_program_subscriptions(payload: dict, actor_email: str, guild_id: int):
-    if not isinstance(payload, dict):
-        return {"ok": False, "error": "Invalid GL.iNet beta program payload."}
-    action = str(payload.get("action") or "").strip().lower()
-    safe_guild_id = normalize_target_guild_id(guild_id)
-    audit_actor = build_web_actor_audit_label(actor_email)
-    try:
-        if action == "add":
-            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
-            if target_channel_id <= 0:
-                return {"ok": False, "error": "Choose a valid Discord channel."}
-            resolved = resolve_beta_program_subscription_seed(BETA_PROGRAM_PAGE_URL)
-            guild = bot.get_guild(safe_guild_id)
-            target_channel = guild.get_channel(target_channel_id) if guild else None
-            if not isinstance(target_channel, discord.TextChannel):
-                return {"ok": False, "error": "Choose a valid Discord text channel."}
-            target_channel_name = f"#{target_channel.name}"
-            create_or_update_beta_program_subscription(
-                safe_guild_id,
-                source_url=resolved["source_url"],
-                source_name=resolved["source_name"],
-                target_channel_id=target_channel_id,
-                target_channel_name=target_channel_name,
-                last_snapshot_json=resolved["last_snapshot_json"],
-                actor_email=actor_email,
-            )
-            record_action_safe(
-                action="beta_program_subscription_add",
-                status="success",
-                moderator=audit_actor,
-                target=target_channel_name,
-                reason=truncate_log_text(resolved["source_url"]),
-                guild_id=safe_guild_id,
-            )
-            message = "GL.iNet beta program monitor saved."
-        elif action == "delete":
-            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
-            if not delete_beta_program_subscription(subscription_id, guild_id=safe_guild_id):
-                return {"ok": False, "error": "GL.iNet beta program entry was not found."}
-            record_action_safe(
-                action="beta_program_subscription_delete",
-                status="success",
-                moderator=audit_actor,
-                target=str(subscription_id),
-                reason="Deleted via web admin",
-                guild_id=safe_guild_id,
-            )
-            message = "GL.iNet beta program monitor deleted."
-        else:
-            return {"ok": False, "error": "Invalid GL.iNet beta program action."}
-    except ValueError as exc:
-        return {"ok": False, "error": str(exc)}
-    except Exception:
-        logger.exception("Failed to manage GL.iNet beta program subscriptions from web admin")
-        return {"ok": False, "error": "Failed to manage GL.iNet beta program subscriptions."}
+    return get_feed_web_callbacks().run_web_manage_beta_program_subscriptions(payload, actor_email, guild_id)
 
-    response = build_beta_program_subscriptions_web_payload(safe_guild_id)
-    response["message"] = message
-    return response
+
+def run_web_get_role_access_mappings(guild_id: int):
+    return get_role_access_web_callbacks().run_web_get_role_access_mappings(guild_id)
+
+
+def run_web_manage_role_access_mappings(payload: dict, actor_email: str, guild_id: int):
+    return get_role_access_web_callbacks().run_web_manage_role_access_mappings(payload, actor_email, guild_id)
 
 
 def run_web_get_tag_responses(guild_id: int | str | None = None):
@@ -4913,6 +4901,11 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
             "bot_log_channel_id": int(settings.get("bot_log_channel_id") or 0),
             "mod_log_channel_id": int(settings.get("mod_log_channel_id") or 0),
             "firmware_notify_channel_id": int(settings.get("firmware_notify_channel_id") or 0),
+            "firmware_monitor_enabled": int(settings.get("firmware_monitor_enabled", -1)),
+            "reddit_feed_notify_enabled": int(settings.get("reddit_feed_notify_enabled", -1)),
+            "youtube_notify_enabled": int(settings.get("youtube_notify_enabled", -1)),
+            "linkedin_notify_enabled": int(settings.get("linkedin_notify_enabled", -1)),
+            "beta_program_notify_enabled": int(settings.get("beta_program_notify_enabled", -1)),
             "access_role_id": int(settings.get("access_role_id") or 0),
             "welcome_channel_id": int(settings.get("welcome_channel_id") or 0),
             "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
@@ -4935,6 +4928,31 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
                 "firmware_notify_channel_id",
                 FIRMWARE_NOTIFY_CHANNEL_ID,
             ),
+            "firmware_monitor_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "firmware_monitor_enabled",
+                FIRMWARE_MONITOR_ENABLED,
+            ) else 0,
+            "reddit_feed_notify_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "reddit_feed_notify_enabled",
+                REDDIT_FEED_NOTIFY_ENABLED,
+            ) else 0,
+            "youtube_notify_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "youtube_notify_enabled",
+                YOUTUBE_NOTIFY_ENABLED,
+            ) else 0,
+            "linkedin_notify_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "linkedin_notify_enabled",
+                LINKEDIN_NOTIFY_ENABLED,
+            ) else 0,
+            "beta_program_notify_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "beta_program_notify_enabled",
+                BETA_PROGRAM_NOTIFY_ENABLED,
+            ) else 0,
             "access_role_id": get_effective_guild_setting(safe_guild_id, "access_role_id", 0),
             "welcome_channel_id": get_effective_guild_setting(safe_guild_id, "welcome_channel_id", 0),
             "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
@@ -6544,6 +6562,108 @@ def resolve_beta_program_subscription_seed(source_url: str = ""):
     }
 
 
+async def validate_discord_invite_for_guild_async(guild_id: int, invite_input: str):
+    normalized_invite_code = normalize_discord_invite_code(invite_input)
+    if normalized_invite_code is None:
+        return {"ok": False, "error": "Invite must be a valid Discord invite URL or code."}
+
+    try:
+        invite = await bot.fetch_invite(normalized_invite_code)
+    except discord.NotFound:
+        return {"ok": False, "error": "That Discord invite does not exist or is no longer valid."}
+    except discord.HTTPException:
+        logger.exception("Discord invite validation failed for guild %s", guild_id)
+        return {"ok": False, "error": "Discord could not validate that invite right now. Try again."}
+
+    invite_guild = getattr(invite, "guild", None)
+    if invite_guild is None or int(invite_guild.id) != int(guild_id):
+        return {"ok": False, "error": "That invite does not belong to this Discord server."}
+
+    return {
+        "ok": True,
+        "invite_code": str(invite.code),
+        "invite_url": str(invite.url),
+    }
+
+
+def validate_discord_invite_for_guild(guild_id: int, invite_input: str):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = asyncio.run_coroutine_threadsafe(
+        validate_discord_invite_for_guild_async(normalize_target_guild_id(guild_id), invite_input),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while validating the Discord invite."}
+    except Exception:
+        logger.exception("Unexpected failure while validating Discord invite for guild %s", guild_id)
+        return {"ok": False, "error": "Unexpected error while validating that invite."}
+
+
+def get_feed_web_callbacks():
+    global feed_web_callbacks
+    if feed_web_callbacks is None:
+        feed_web_callbacks = FeedWebCallbacks(
+            normalize_target_guild_id=normalize_target_guild_id,
+            normalize_reddit_subreddit_name=normalize_reddit_subreddit_name,
+            list_reddit_feed_subscriptions=list_reddit_feed_subscriptions,
+            get_reddit_feed_subscription=get_reddit_feed_subscription,
+            create_reddit_feed_subscription=create_reddit_feed_subscription,
+            update_reddit_feed_subscription=update_reddit_feed_subscription,
+            set_reddit_feed_subscription_enabled=set_reddit_feed_subscription_enabled,
+            delete_reddit_feed_subscription=delete_reddit_feed_subscription,
+            list_youtube_subscriptions=list_youtube_subscriptions,
+            get_youtube_subscription=get_youtube_subscription,
+            create_or_update_youtube_subscription=create_or_update_youtube_subscription,
+            update_youtube_subscription=update_youtube_subscription,
+            delete_youtube_subscription=delete_youtube_subscription,
+            list_linkedin_subscriptions=list_linkedin_subscriptions,
+            get_linkedin_subscription=get_linkedin_subscription,
+            create_or_update_linkedin_subscription=create_or_update_linkedin_subscription,
+            update_linkedin_subscription=update_linkedin_subscription,
+            delete_linkedin_subscription=delete_linkedin_subscription,
+            list_beta_program_subscriptions=list_beta_program_subscriptions,
+            create_or_update_beta_program_subscription=create_or_update_beta_program_subscription,
+            delete_beta_program_subscription=delete_beta_program_subscription,
+            resolve_youtube_subscription_seed=resolve_youtube_subscription_seed,
+            resolve_linkedin_subscription_seed=resolve_linkedin_subscription_seed,
+            resolve_beta_program_subscription_seed=resolve_beta_program_subscription_seed,
+            record_action_safe=record_action_safe,
+            build_web_actor_audit_label=build_web_actor_audit_label,
+            truncate_log_text=truncate_log_text,
+            logger=logger,
+            bot=bot,
+            discord=discord,
+            beta_program_page_url=BETA_PROGRAM_PAGE_URL,
+            truthy_env_values=TRUTHY_ENV_VALUES,
+        )
+    return feed_web_callbacks
+
+
+def get_role_access_web_callbacks():
+    global role_access_web_callbacks
+    if role_access_web_callbacks is None:
+        role_access_web_callbacks = RoleAccessWebCallbacks(
+            normalize_target_guild_id=normalize_target_guild_id,
+            normalize_role_access_code=normalize_role_access_code,
+            normalize_discord_invite_code=normalize_discord_invite_code,
+            list_role_access_mappings=list_role_access_mappings,
+            upsert_role_access_mapping=save_role_access_mapping,
+            set_role_access_mapping_status=set_role_access_mapping_status,
+            build_web_actor_audit_label=build_web_actor_audit_label,
+            record_action_safe=record_action_safe,
+            truncate_log_text=truncate_log_text,
+            logger=logger,
+            validate_invite_for_guild=validate_discord_invite_for_guild,
+        )
+    return role_access_web_callbacks
+
+
 def uptime_request_json(url: str):
     status, _, body_text = fetch_text_url(
         url,
@@ -6836,6 +6956,8 @@ async def resolve_firmware_notify_channels():
     targets = []
     seen_channel_ids = set()
     for guild in bot.guilds:
+        if not get_effective_guild_feature_enabled(guild.id, "firmware_monitor_enabled", FIRMWARE_MONITOR_ENABLED):
+            continue
         channel_id = get_effective_guild_setting(
             guild.id,
             "firmware_notify_channel_id",
@@ -6910,6 +7032,11 @@ def log_firmware_channel_unavailable(reason_key: str, pending_count: int):
 
 
 async def check_firmware_updates_once():
+    if not any(
+        get_effective_guild_feature_enabled(guild.id, "firmware_monitor_enabled", FIRMWARE_MONITOR_ENABLED)
+        for guild in bot.guilds
+    ):
+        return
     try:
         entries, sync_label = await asyncio.to_thread(fetch_firmware_entries)
     except requests.RequestException:
@@ -7002,10 +7129,9 @@ async def check_firmware_updates_once():
 
 
 async def firmware_monitor_loop():
-    if not FIRMWARE_MONITOR_ENABLED:
-        logger.info("Firmware monitor disabled: set FIRMWARE_MONITOR_ENABLED=true to enable it.")
-        return
     configured_channels = any(
+        get_effective_guild_feature_enabled(guild.id, "firmware_monitor_enabled", FIRMWARE_MONITOR_ENABLED)
+        and
         get_effective_guild_setting(
             guild.id,
             "firmware_notify_channel_id",
@@ -7015,7 +7141,7 @@ async def firmware_monitor_loop():
         for guild in bot.guilds
     )
     if not configured_channels and FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
-        logger.info("Firmware monitor disabled: set a guild firmware notification channel or firmware_notification_channel to enable it.")
+        logger.info("Firmware monitor disabled: no enabled guild has a configured firmware notification channel.")
         return
 
     if not croniter.is_valid(FIRMWARE_CHECK_SCHEDULE):
@@ -7045,9 +7171,6 @@ def restart_firmware_monitor_task():
     global firmware_monitor_task
     if firmware_monitor_task is not None and not firmware_monitor_task.done():
         firmware_monitor_task.cancel()
-    if not FIRMWARE_MONITOR_ENABLED:
-        firmware_monitor_task = None
-        return
     firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
 
 
@@ -7081,9 +7204,12 @@ async def resolve_reddit_feed_channel(channel_id: int):
 
 async def process_reddit_feed_subscription(feed: dict):
     feed_id = int(feed.get("id") or 0)
+    guild_id = int(feed.get("guild_id") or 0)
     subreddit = str(feed.get("subreddit") or "").strip()
     channel_id = int(feed.get("channel_id") or 0)
     checked_at = datetime.now(UTC).isoformat()
+    if guild_id <= 0 or not get_effective_guild_feature_enabled(guild_id, "reddit_feed_notify_enabled", REDDIT_FEED_NOTIFY_ENABLED):
+        return
 
     try:
         normalized_subreddit, posts = await asyncio.to_thread(fetch_reddit_subreddit_new_posts, subreddit)
@@ -7245,8 +7371,6 @@ async def process_reddit_feed_subscription(feed: dict):
 
 
 async def check_reddit_feed_updates_once():
-    if not REDDIT_FEED_NOTIFY_ENABLED:
-        return
     feeds = list_reddit_feed_subscriptions(enabled_only=True)
     if not feeds:
         return
@@ -7255,9 +7379,6 @@ async def check_reddit_feed_updates_once():
 
 
 async def reddit_feed_monitor_loop():
-    if not REDDIT_FEED_NOTIFY_ENABLED:
-        logger.info("Reddit feed monitor disabled: set REDDIT_FEED_NOTIFY_ENABLED=true to enable it.")
-        return
     if not croniter.is_valid(REDDIT_FEED_CHECK_SCHEDULE):
         logger.error(
             "Reddit feed monitor disabled: invalid REDDIT_FEED_CHECK_SCHEDULE '%s'",
@@ -7284,9 +7405,6 @@ def restart_reddit_feed_monitor_task():
     global reddit_feed_monitor_task
     if reddit_feed_monitor_task is not None and not reddit_feed_monitor_task.done():
         reddit_feed_monitor_task.cancel()
-    if not REDDIT_FEED_NOTIFY_ENABLED:
-        reddit_feed_monitor_task = None
-        return
     reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
 
 
@@ -7306,6 +7424,8 @@ async def process_youtube_subscription(subscription: dict):
     if subscription_id <= 0 or guild_id <= 0 or not channel_id or target_channel_id <= 0:
         return
     if not is_managed_guild_id(guild_id):
+        return
+    if not get_effective_guild_feature_enabled(guild_id, "youtube_notify_enabled", YOUTUBE_NOTIFY_ENABLED):
         return
 
     latest = await asyncio.to_thread(fetch_latest_youtube_video, channel_id)
@@ -7379,9 +7499,6 @@ def restart_youtube_monitor_task():
     global youtube_monitor_task
     if youtube_monitor_task is not None and not youtube_monitor_task.done():
         youtube_monitor_task.cancel()
-    if not YOUTUBE_NOTIFY_ENABLED:
-        youtube_monitor_task = None
-        return
     youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
 
 
@@ -7401,6 +7518,8 @@ async def process_linkedin_subscription(subscription: dict):
     if subscription_id <= 0 or guild_id <= 0 or not source_url or target_channel_id <= 0:
         return
     if not is_managed_guild_id(guild_id):
+        return
+    if not get_effective_guild_feature_enabled(guild_id, "linkedin_notify_enabled", LINKEDIN_NOTIFY_ENABLED):
         return
 
     checked_at = datetime.now(UTC).isoformat()
@@ -7539,9 +7658,6 @@ def restart_linkedin_monitor_task():
     global linkedin_monitor_task
     if linkedin_monitor_task is not None and not linkedin_monitor_task.done():
         linkedin_monitor_task.cancel()
-    if not LINKEDIN_NOTIFY_ENABLED:
-        linkedin_monitor_task = None
-        return
     linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
 
 
@@ -7560,6 +7676,8 @@ async def process_beta_program_subscription(subscription: dict):
     if subscription_id <= 0 or guild_id <= 0 or not source_url or target_channel_id <= 0:
         return
     if not is_managed_guild_id(guild_id):
+        return
+    if not get_effective_guild_feature_enabled(guild_id, "beta_program_notify_enabled", BETA_PROGRAM_NOTIFY_ENABLED):
         return
 
     checked_at = datetime.now(UTC).isoformat()
@@ -7715,9 +7833,6 @@ def restart_beta_program_monitor_task():
     global beta_program_monitor_task
     if beta_program_monitor_task is not None and not beta_program_monitor_task.done():
         beta_program_monitor_task.cancel()
-    if not BETA_PROGRAM_NOTIFY_ENABLED:
-        beta_program_monitor_task = None
-        return
     beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
 
 
@@ -8224,6 +8339,8 @@ def start_web_admin_server():
                     on_manage_linkedin_subscriptions=run_web_manage_linkedin_subscriptions,
                     on_get_beta_program_subscriptions=run_web_get_beta_program_subscriptions,
                     on_manage_beta_program_subscriptions=run_web_manage_beta_program_subscriptions,
+                    on_get_role_access_mappings=run_web_get_role_access_mappings,
+                    on_manage_role_access_mappings=run_web_manage_role_access_mappings,
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
@@ -8791,15 +8908,15 @@ async def on_ready():
     else:
         logger.warning("Tag slash commands not registered: register_tag_commands_for_guild missing")
 
-    if FIRMWARE_MONITOR_ENABLED and (firmware_monitor_task is None or firmware_monitor_task.done()):
+    if firmware_monitor_task is None or firmware_monitor_task.done():
         firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
-    if REDDIT_FEED_NOTIFY_ENABLED and (reddit_feed_monitor_task is None or reddit_feed_monitor_task.done()):
+    if reddit_feed_monitor_task is None or reddit_feed_monitor_task.done():
         reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
-    if YOUTUBE_NOTIFY_ENABLED and (youtube_monitor_task is None or youtube_monitor_task.done()):
+    if youtube_monitor_task is None or youtube_monitor_task.done():
         youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
-    if LINKEDIN_NOTIFY_ENABLED and (linkedin_monitor_task is None or linkedin_monitor_task.done()):
+    if linkedin_monitor_task is None or linkedin_monitor_task.done():
         linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
-    if BETA_PROGRAM_NOTIFY_ENABLED and (beta_program_monitor_task is None or beta_program_monitor_task.done()):
+    if beta_program_monitor_task is None or beta_program_monitor_task.done():
         beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
     if MEMBER_ACTIVITY_BACKFILL_ENABLED and (member_activity_backfill_task is None or member_activity_backfill_task.done()):
         member_activity_backfill_task = asyncio.create_task(

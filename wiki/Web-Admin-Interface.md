@@ -105,15 +105,18 @@ UI forms include show/hide password toggles and validation feedback.
 ## Command Permissions
 
 - `/admin/command-permissions` manages command access per selected guild.
-- Available modes:
+- Each command has an `Enabled` checkbox.
+  - unchecked: command is disabled for that guild
+  - checked: command is enabled and follows the selected access mode
+- Available modes for enabled commands:
   - `Default rule`: follow the bot's built-in default access policy for that command
   - `Public`: allow any guild member
-  - `Disabled`: turn the command off for that guild
   - `Custom roles`: restrict the command to one or more selected roles
 - Custom-role mode requires at least one role ID or selected role.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
 - LinkedIn profile management page lets admins map public LinkedIn profiles to Discord text channels for new-post notifications.
 - GL.iNet beta program page lets admins map the public GL.iNet beta-testing page to Discord text channels for added/removed program notifications.
+- Role access page lets admins review invite/code/role mappings, pause or disable them individually, and manually restore a mapping with an existing Discord invite.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 - Member activity page shows top-20 member activity windows for the selected server.
 - Member activity exports are generated for the selected server only and match the currently retained 90-day dataset.
@@ -146,16 +149,45 @@ UI forms include show/hide password toggles and validation feedback.
   - bot log channel
   - moderation log channel
   - firmware notify channel
+  - firmware monitor enabled/disabled
+  - Reddit feed monitor enabled/disabled
+  - YouTube notifications enabled/disabled
+  - LinkedIn notifications enabled/disabled
+  - beta program notifications enabled/disabled
   - self-assign access role
   - welcome channel
   - welcome channel message
   - welcome DM enable/disable
   - welcome DM message
+
+### `/admin/role-access`
+
+- Scoped to the selected server
+- Shows each stored role-access mapping with:
+  - 6-digit code
+  - invite link
+  - invite code
+  - target role
+  - current status
+- Quick actions:
+  - `Activate`
+  - `Pause`
+  - `Disable`
+- Manual restore/add form lets admins enter:
+  - 6-digit code
+  - existing Discord invite URL or invite code
+  - target role
+  - initial status
+- Paused and disabled entries stop working for both:
+  - join-by-invite role assignment
+  - `/enter_role`
   - uploaded welcome image
   - image attachment enable/disable for channel and DM
 - Bot log, moderation log, and firmware notification channels can be set here per guild
+- Monitor feature flags can also be overridden here per guild
 - These values override the global defaults configured in `/admin/settings`
 - If a guild-level channel is left unset, the bot falls back to the corresponding global channel setting
+- If a per-guild feature override is left unset, the bot falls back to the corresponding global feature toggle
 
 Welcome-message placeholders:
 
@@ -185,6 +217,10 @@ Notes:
 - Supported image formats: `PNG`, `JPG`, `JPEG`, `WEBP`, `GIF`
 - Upload size follows the configured web avatar upload limit (`WEB_AVATAR_MAX_UPLOAD_BYTES`; default `2097152` bytes / `2048 KiB`)
 - Welcome images must be between `64x64` and `4096x4096`
+- Per-guild monitor overrides use two controls:
+  - `Override global setting`
+  - `Enabled for this guild`
+- If `Override global setting` is unchecked, the selected server follows the global setting from `/admin/settings`
 - The page shows current uploaded image metadata:
   - filename
   - media type

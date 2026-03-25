@@ -56,6 +56,11 @@ def _make_app(tmp_path: Path):
         "bot_log_channel_id": "",
         "mod_log_channel_id": "",
         "firmware_notify_channel_id": "",
+        "firmware_monitor_enabled": "-1",
+        "reddit_feed_notify_enabled": "-1",
+        "youtube_notify_enabled": "-1",
+        "linkedin_notify_enabled": "-1",
+        "beta_program_notify_enabled": "-1",
         "access_role_id": "",
         "welcome_channel_id": "",
         "welcome_dm_enabled": "",
@@ -86,6 +91,11 @@ def _make_app(tmp_path: Path):
                 "bot_log_channel_id": str(payload.get("bot_log_channel_id") or "").strip(),
                 "mod_log_channel_id": str(payload.get("mod_log_channel_id") or "").strip(),
                 "firmware_notify_channel_id": str(payload.get("firmware_notify_channel_id") or "").strip(),
+                "firmware_monitor_enabled": str(payload.get("firmware_monitor_enabled", guild_settings_state.get("firmware_monitor_enabled", "-1"))),
+                "reddit_feed_notify_enabled": str(payload.get("reddit_feed_notify_enabled", guild_settings_state.get("reddit_feed_notify_enabled", "-1"))),
+                "youtube_notify_enabled": str(payload.get("youtube_notify_enabled", guild_settings_state.get("youtube_notify_enabled", "-1"))),
+                "linkedin_notify_enabled": str(payload.get("linkedin_notify_enabled", guild_settings_state.get("linkedin_notify_enabled", "-1"))),
+                "beta_program_notify_enabled": str(payload.get("beta_program_notify_enabled", guild_settings_state.get("beta_program_notify_enabled", "-1"))),
                 "access_role_id": str(payload.get("access_role_id") or "").strip(),
                 "welcome_channel_id": str(payload.get("welcome_channel_id") or "").strip(),
                 "welcome_dm_enabled": str(payload.get("welcome_dm_enabled") or "").strip(),
@@ -358,6 +368,66 @@ def _make_app(tmp_path: Path):
             return get_linkedin_subscriptions(safe_guild_id) | {"message": "LinkedIn subscription saved."}
         return {"ok": False, "error": "Invalid LinkedIn subscription action."}
 
+    role_access_state = [
+        {
+            "guild_id": 1234567890,
+            "code": "531580",
+            "invite_code": "Xjkd246SYq",
+            "invite_url": "https://discord.gg/Xjkd246SYq",
+            "role_id": 111,
+            "created_at": "2026-03-20T00:00:00+00:00",
+            "updated_at": "2026-03-20T00:00:00+00:00",
+            "status": "active",
+        }
+    ]
+
+    def get_role_access_mappings(guild_id):
+        safe_guild_id = int(guild_id)
+        return {"ok": True, "mappings": [dict(item) for item in role_access_state if int(item["guild_id"]) == safe_guild_id]}
+
+    def manage_role_access_mappings(payload, actor_email, guild_id):
+        safe_guild_id = int(guild_id)
+        action = str(payload.get("action") or "").strip().lower()
+        if action == "set_status":
+            code = str(payload.get("code") or "").strip()
+            invite_code = str(payload.get("invite") or "").strip()
+            status = str(payload.get("status") or "").strip().lower()
+            for item in role_access_state:
+                if int(item["guild_id"]) == safe_guild_id and item["code"] == code and item["invite_code"] == invite_code:
+                    item["status"] = status
+                    return get_role_access_mappings(safe_guild_id) | {"message": f"Role access mapping marked {status}."}
+            return {"ok": False, "error": "Role access mapping was not found."}
+        if action == "save":
+            code = str(payload.get("code") or "").strip()
+            invite_code = str(payload.get("invite") or "").strip()
+            role_id = int(str(payload.get("role_id") or "0"))
+            status = str(payload.get("status") or "active").strip().lower() or "active"
+            for item in role_access_state:
+                if int(item["guild_id"]) == safe_guild_id and item["code"] == code:
+                    item.update(
+                        {
+                            "invite_code": invite_code,
+                            "invite_url": f"https://discord.gg/{invite_code}",
+                            "role_id": role_id,
+                            "status": status,
+                        }
+                    )
+                    return get_role_access_mappings(safe_guild_id) | {"message": "Role access mapping saved."}
+            role_access_state.append(
+                {
+                    "guild_id": safe_guild_id,
+                    "code": code,
+                    "invite_code": invite_code,
+                    "invite_url": f"https://discord.gg/{invite_code}",
+                    "role_id": role_id,
+                    "created_at": "",
+                    "updated_at": "",
+                    "status": status,
+                }
+            )
+            return get_role_access_mappings(safe_guild_id) | {"message": "Role access mapping saved."}
+        return {"ok": False, "error": "Invalid role access action."}
+
     app = create_web_app(
         data_dir=str(tmp_path),
         env_file_path=str(env_file),
@@ -492,6 +562,8 @@ def _make_app(tmp_path: Path):
             "source_url": "https://www.gl-inet.com/beta-testing/#register",
             "subscriptions": [],
         },
+        on_get_role_access_mappings=get_role_access_mappings,
+        on_manage_role_access_mappings=manage_role_access_mappings,
         on_leave_guild=lambda guild_id, actor_email: {
             "ok": True,
             "message": f"Bot left guild {guild_id} by {actor_email}.",
@@ -612,9 +684,11 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         "/admin/users",
         "/admin/actions",
         "/admin/member-activity",
+        "/admin/command-status",
         "/admin/youtube",
         "/admin/linkedin",
         "/admin/beta-programs",
+        "/admin/role-access",
         "/admin/documentation",
         "/admin/wiki",
         "/status",
@@ -695,6 +769,70 @@ def test_linkedin_page_renders_form(tmp_path: Path):
     assert b"LinkedIn Profiles" in response.data
     assert b"Save Subscription" in response.data
     assert b'value="edit"' in response.data
+
+
+def test_role_access_page_renders_mappings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/role-access", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Role Access Mappings" in response.data
+    assert b"531580" in response.data
+    assert b"Xjkd246SYq" in response.data
+
+
+def test_admin_can_pause_role_access_mapping(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/role-access",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/role-access"),
+            "action": "set_status",
+            "code": "531580",
+            "invite": "Xjkd246SYq",
+            "status": "paused",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Role access mapping marked paused." in response.data
+    assert b"Paused" in response.data
+
+
+def test_admin_can_add_role_access_mapping(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/role-access",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/role-access"),
+            "action": "save",
+            "code": "654321",
+            "invite": "newInvite123",
+            "role_id": "111",
+            "status": "active",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Role access mapping saved." in response.data
+    assert b"654321" in response.data
+    assert b"newInvite123" in response.data
 
 
 def test_reddit_page_renders_edit_controls(tmp_path: Path):
@@ -885,17 +1023,17 @@ def test_command_permissions_page_supports_disabled_mode(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"Command Permissions" in response.data
-    assert b"Disabled" in response.data
-    assert b'value="disabled" selected' in response.data
+    assert b'name="enabled__ping"' in response.data
+    assert b"Enabled" in response.data
 
 
-def test_dashboard_shows_command_status_for_selected_guild(tmp_path: Path):
+def test_command_status_page_shows_command_status_for_selected_guild(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
     _select_guild(client)
 
-    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+    response = client.get("/admin/command-status", base_url="https://docker.example:8443")
 
     assert response.status_code == 200
     assert b"Command Status" in response.data
@@ -905,6 +1043,52 @@ def test_dashboard_shows_command_status_for_selected_guild(tmp_path: Path):
     assert b"Disabled" in response.data
     assert b"Mod Only" in response.data
     assert b"Enabled" in response.data
+
+
+def test_dashboard_renders_extended_theme_options(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Forest" in response.data
+    assert b"Ember" in response.data
+    assert b"Ice" in response.data
+
+
+def test_admin_can_update_command_status_page(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/command-status",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/command-status"),
+            "command_key": ["ping", "ban_member", "help"],
+            "current_mode__ping": "disabled",
+            "current_role_ids__ping": "",
+            "enabled__ping": "enabled",
+            "current_mode__ban_member": "default",
+            "current_role_ids__ban_member": "",
+            "enabled__ban_member": "disabled",
+            "current_mode__help": "public",
+            "current_role_ids__help": "",
+            "enabled__help": "enabled",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Command permissions updated." in response.data
+    assert b"/ping" in response.data
+    assert b"/ban_member" in response.data
+    assert b"Disabled" in response.data
 
 
 def test_admin_can_save_guild_settings(tmp_path: Path):
@@ -919,6 +1103,15 @@ def test_admin_can_save_guild_settings(tmp_path: Path):
             "bot_log_channel_id": "9999",
             "mod_log_channel_id": "9999",
             "firmware_notify_channel_id": "9999",
+            "firmware_monitor_enabled__override": "1",
+            "firmware_monitor_enabled": "1",
+            "reddit_feed_notify_enabled__override": "1",
+            "reddit_feed_notify_enabled": "1",
+            "youtube_notify_enabled__override": "1",
+            "youtube_notify_enabled": "1",
+            "linkedin_notify_enabled__override": "1",
+            "linkedin_notify_enabled": "1",
+            "beta_program_notify_enabled__override": "1",
             "access_role_id": "111",
             "welcome_channel_id": "9999",
             "welcome_dm_enabled": "1",
@@ -941,6 +1134,11 @@ def test_admin_can_save_guild_settings(tmp_path: Path):
     assert b"Current value (not found): 9999" not in response.data
     assert b"welcome_channel_message" in response.data
     assert b"welcome_dm_message" in response.data
+    assert b"Firmware Monitor" in response.data
+    assert b"Reddit Feed Monitor" in response.data
+    assert b"YouTube Notifications" in response.data
+    assert b"LinkedIn Notifications" in response.data
+    assert b"Beta Program Notifications" in response.data
     assert b"Allowed dimensions: 64x64 up to 4096x4096" in response.data
 
 

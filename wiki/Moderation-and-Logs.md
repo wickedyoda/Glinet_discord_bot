@@ -60,7 +60,8 @@ Layer 1: baseline role gates
 Layer 2: per-command overrides in web admin
 
 - `/admin/command-permissions`
-- Modes: `default`, `public`, `custom_roles`
+- Enabled checkbox per command
+- Modes for enabled commands: `default`, `public`, `custom_roles`
 
 ## Logged Events (Mod Log Channel)
 
