@@ -186,7 +186,7 @@ ENV_FIELDS = [
     (
         "BOT_LOG_CHANNEL_ID",
         "Bot Log Channel ID",
-        "Primary bot log/activity channel (legacy alias: GENERAL_CHANNEL_ID).",
+        "Global default bot log/activity channel. Guild settings override this per server.",
     ),
     ("LOG_LEVEL", "Log Level", "Bot log level (DEBUG, INFO, WARNING, ERROR)."),
     (
@@ -245,19 +245,19 @@ ENV_FIELDS = [
     ),
     ("ADMIN_ROLE_ID", "Admin Role ID", "Additional role ID allowed to moderate."),
     (
-        "MOD_LOG_CHANNEL_ID",
-        "Mod Log Channel ID",
-        "Channel ID for moderation/server logs.",
-    ),
-    (
         "CSV_ROLE_ASSIGN_MAX_NAMES",
         "CSV Role Max Names",
         "Max unique names accepted per CSV bulk-assign.",
     ),
     (
+        "MOD_LOG_CHANNEL_ID",
+        "Mod Log Channel ID",
+        "Global default moderation/server log channel. Guild settings override this per server.",
+    ),
+    (
         "firmware_notification_channel",
         "Firmware Notify Channel",
-        "Channel ID or <#channel> mention for firmware alerts.",
+        "Global default firmware notify channel. Guild settings override this per server.",
     ),
     (
         "FIRMWARE_FEED_URL",
@@ -320,6 +320,16 @@ ENV_FIELDS = [
         "Timeout in seconds for shortener requests.",
     ),
     (
+        "FIRMWARE_MONITOR_ENABLED",
+        "Firmware Monitor Enabled",
+        "Enable or disable firmware polling and posting without removing saved guild channel settings.",
+    ),
+    (
+        "REDDIT_FEED_NOTIFY_ENABLED",
+        "Reddit Feed Monitor Enabled",
+        "Enable or disable Reddit feed polling and posting without removing saved feed subscriptions.",
+    ),
+    (
         "YOUTUBE_NOTIFY_ENABLED",
         "YouTube Notify Enabled",
         "Enable YouTube upload polling and posting.",
@@ -348,6 +358,21 @@ ENV_FIELDS = [
         "LINKEDIN_REQUEST_TIMEOUT_SECONDS",
         "LinkedIn Request Timeout",
         "Timeout in seconds for LinkedIn public-profile requests.",
+    ),
+    (
+        "BETA_PROGRAM_NOTIFY_ENABLED",
+        "Beta Program Monitor Enabled",
+        "Enable or disable GL.iNet beta program polling and posting without removing saved monitors.",
+    ),
+    (
+        "BETA_PROGRAM_POLL_INTERVAL_SECONDS",
+        "Beta Program Poll Interval",
+        "Seconds between GL.iNet beta program checks.",
+    ),
+    (
+        "BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS",
+        "Beta Program Request Timeout",
+        "Timeout in seconds for GL.iNet beta program requests.",
     ),
     (
         "UPTIME_STATUS_ENABLED",
@@ -4680,6 +4705,18 @@ def create_web_app(
                     else:
                         callback_payload["subreddit"] = request.form.get("subreddit", "")
                         callback_payload["channel_id"] = selected_channel_id
+                elif action == "edit":
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["feed_id"] = request.form.get("feed_id", "")
+                        callback_payload["subreddit"] = request.form.get("subreddit", "")
+                        callback_payload["channel_id"] = selected_channel_id
                 elif action == "toggle":
                     callback_payload["feed_id"] = request.form.get("feed_id", "")
                     callback_payload["enabled"] = request.form.get("enabled", "")
@@ -4742,8 +4779,21 @@ def create_web_app(
             if is_admin:
                 toggle_label = "Disable" if enabled else "Enable"
                 toggle_value = "0" if enabled else "1"
+                edit_channel_select_html = _render_select_input(
+                    "channel_id",
+                    channel_id,
+                    text_channel_options,
+                    placeholder="Select a Discord text channel...",
+                )
                 action_html = f"""
                 <div class="dash-actions">
+                  <form method="post" style="display:inline-block;min-width:260px;">
+                    <input type="hidden" name="action" value="edit" />
+                    <input type="hidden" name="feed_id" value="{escape(feed_id, quote=True)}" />
+                    <input type="text" name="subreddit" value="{escape(subreddit, quote=True)}" placeholder="Subreddit" required style="margin-bottom:8px;" />
+                    {edit_channel_select_html}
+                    <button class="btn" type="submit" style="margin-top:8px;">Save</button>
+                  </form>
                   <form method="post" style="display:inline;">
                     <input type="hidden" name="action" value="toggle" />
                     <input type="hidden" name="feed_id" value="{escape(feed_id, quote=True)}" />
@@ -4760,6 +4810,7 @@ def create_web_app(
             else:
                 action_html = (
                     "<div class='dash-actions'>"
+                    "<button class='btn' type='button' disabled>Edit</button>"
                     "<button class='btn secondary' type='button' disabled>Enable/Disable</button>"
                     "<button class='btn danger' type='button' disabled>Delete</button>"
                     "</div>"
@@ -4893,8 +4944,27 @@ def create_web_app(
                 callback_payload = {"action": action}
                 if action == "add":
                     selected_channel_id = str(request.form.get("channel_id", "")).strip()
-                    callback_payload["source_url"] = request.form.get("source_url", "")
-                    callback_payload["channel_id"] = selected_channel_id
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["source_url"] = request.form.get("source_url", "")
+                        callback_payload["channel_id"] = selected_channel_id
+                elif action == "edit":
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                        callback_payload["source_url"] = request.form.get("source_url", "")
+                        callback_payload["channel_id"] = selected_channel_id
                 elif action == "delete":
                     callback_payload["subscription_id"] = request.form.get("subscription_id", "")
                 else:
@@ -4936,8 +5006,21 @@ def create_web_app(
             subscription_id = str(subscription.get("id") or "")
             channel_id = str(subscription.get("target_channel_id") or "").strip()
             channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
+            edit_channel_select_html = _render_select_input(
+                "channel_id",
+                channel_id,
+                text_channel_options,
+                placeholder="Select a Discord text channel...",
+            )
             actions_html = (
                 f"""
+                <form method="post" style="display:inline-block;min-width:260px;">
+                  <input type="hidden" name="action" value="edit" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <input type="text" name="source_url" value="{escape(str(subscription.get("source_url") or ""), quote=True)}" placeholder="https://www.youtube.com/@example" required style="margin-bottom:8px;" />
+                  {edit_channel_select_html}
+                  <button class="btn" type="submit" style="margin-top:8px;">Save</button>
+                </form>
                 <form method="post" style="display:inline;" onsubmit="return confirm('Delete this YouTube subscription?');">
                   <input type="hidden" name="action" value="delete" />
                   <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
@@ -4945,7 +5028,7 @@ def create_web_app(
                 </form>
                 """
                 if is_admin
-                else "<button class='btn danger' type='button' disabled>Delete</button>"
+                else "<div class='dash-actions'><button class='btn' type='button' disabled>Edit</button><button class='btn danger' type='button' disabled>Delete</button></div>"
             )
             rows.append(
                 f"""
@@ -5056,8 +5139,28 @@ def create_web_app(
             else:
                 callback_payload = {"action": action}
                 if action == "add":
-                    callback_payload["source_url"] = request.form.get("source_url", "")
-                    callback_payload["channel_id"] = str(request.form.get("channel_id", "")).strip()
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["source_url"] = request.form.get("source_url", "")
+                        callback_payload["channel_id"] = selected_channel_id
+                elif action == "edit":
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                        callback_payload["source_url"] = request.form.get("source_url", "")
+                        callback_payload["channel_id"] = selected_channel_id
                 elif action == "delete":
                     callback_payload["subscription_id"] = request.form.get("subscription_id", "")
                 else:
@@ -5099,8 +5202,21 @@ def create_web_app(
             subscription_id = str(subscription.get("id") or "")
             channel_id = str(subscription.get("target_channel_id") or "").strip()
             channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
+            edit_channel_select_html = _render_select_input(
+                "channel_id",
+                channel_id,
+                text_channel_options,
+                placeholder="Select a Discord text channel...",
+            )
             actions_html = (
                 f"""
+                <form method="post" style="display:inline-block;min-width:260px;">
+                  <input type="hidden" name="action" value="edit" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <input type="text" name="source_url" value="{escape(str(subscription.get("source_url") or ""), quote=True)}" placeholder="https://www.linkedin.com/in/example" required style="margin-bottom:8px;" />
+                  {edit_channel_select_html}
+                  <button class="btn" type="submit" style="margin-top:8px;">Save</button>
+                </form>
                 <form method="post" style="display:inline;" onsubmit="return confirm('Delete this LinkedIn subscription?');">
                   <input type="hidden" name="action" value="delete" />
                   <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
@@ -5108,7 +5224,7 @@ def create_web_app(
                 </form>
                 """
                 if is_admin
-                else "<button class='btn danger' type='button' disabled>Delete</button>"
+                else "<div class='dash-actions'><button class='btn' type='button' disabled>Edit</button><button class='btn danger' type='button' disabled>Delete</button></div>"
             )
             rows.append(
                 f"""
@@ -5711,8 +5827,11 @@ def create_web_app(
                 "ENABLE_MEMBERS_INTENT",
                 "COMMAND_RESPONSES_EPHEMERAL",
                 "SHORTENER_ENABLED",
+                "FIRMWARE_MONITOR_ENABLED",
+                "REDDIT_FEED_NOTIFY_ENABLED",
                 "YOUTUBE_NOTIFY_ENABLED",
                 "LINKEDIN_NOTIFY_ENABLED",
+                "BETA_PROGRAM_NOTIFY_ENABLED",
                 "UPTIME_STATUS_ENABLED",
             }:
                 safe_value = "true" if _is_truthy_env_value(safe_value) else "false"
