@@ -31,6 +31,15 @@ def format_override_state(value: int | str | None) -> str:
     return "use global"
 
 
+def normalize_override_value(value: int | str | None) -> int:
+    state = format_override_state(value)
+    if state == "enabled":
+        return 1
+    if state == "disabled":
+        return 0
+    return -1
+
+
 def process_guild_settings_submission(
     *,
     form,
@@ -186,11 +195,11 @@ def render_guild_settings_body(
         placeholder="Disabled",
     )
     welcome_dm_enabled = 1 if int(current_settings.get("welcome_dm_enabled") or 0) > 0 else 0
-    firmware_monitor_override = 1 if format_override_state(current_settings.get("firmware_monitor_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("firmware_monitor_enabled")) == "disabled" else -1
-    reddit_feed_override = 1 if format_override_state(current_settings.get("reddit_feed_notify_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("reddit_feed_notify_enabled")) == "disabled" else -1
-    youtube_notify_override = 1 if format_override_state(current_settings.get("youtube_notify_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("youtube_notify_enabled")) == "disabled" else -1
-    linkedin_notify_override = 1 if format_override_state(current_settings.get("linkedin_notify_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("linkedin_notify_enabled")) == "disabled" else -1
-    beta_program_notify_override = 1 if format_override_state(current_settings.get("beta_program_notify_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("beta_program_notify_enabled")) == "disabled" else -1
+    firmware_monitor_override = normalize_override_value(current_settings.get("firmware_monitor_enabled"))
+    reddit_feed_override = normalize_override_value(current_settings.get("reddit_feed_notify_enabled"))
+    youtube_notify_override = normalize_override_value(current_settings.get("youtube_notify_enabled"))
+    linkedin_notify_override = normalize_override_value(current_settings.get("linkedin_notify_enabled"))
+    beta_program_notify_override = normalize_override_value(current_settings.get("beta_program_notify_enabled"))
     welcome_channel_image_enabled = 1 if int(current_settings.get("welcome_channel_image_enabled") or 0) > 0 else 0
     welcome_dm_image_enabled = 1 if int(current_settings.get("welcome_dm_image_enabled") or 0) > 0 else 0
     welcome_channel_message = str(current_settings.get("welcome_channel_message") or "")
