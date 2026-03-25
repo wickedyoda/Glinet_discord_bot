@@ -9,11 +9,14 @@ All notable changes to this project are documented in this file.
 - Added `/admin/logs/export` so the web GUI can download the available runtime logs as one ZIP archive.
 - Added dashboard quick-note links for recently visited admin pages in the current web session.
 - Added a shared web timestamp formatter used across GUI pages.
+- Added shared CSV helpers for upload parsing and export generation.
 
 ### Changed
 
 - Web GUI timestamps now render in readable UTC format instead of raw ISO strings.
 - Dashboard quick notes now link directly to `Guild Settings` and `Command Status`.
+- Member-activity CSV exports now escape spreadsheet-formula prefixes (`=`, `+`, `-`, `@`) for safer spreadsheet import.
+- Bulk CSV parsing now uses one shared path with consistent UTF-8 BOM and Latin-1 fallback handling.
 
 ## [2026-03-23] - GitHub Wiki Publication
 

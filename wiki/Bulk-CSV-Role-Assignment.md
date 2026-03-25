@@ -16,6 +16,7 @@ Accepted input variations:
 - Comma-separated names in one or more rows
 - One name per line
 - Mixed whitespace and separators
+- UTF-8, UTF-8 with BOM, and Latin-1 uploads are accepted
 
 Normalized matching attempts:
 
@@ -62,6 +63,15 @@ For ~4000-member guilds:
 - Missing permission: `Manage Roles` required.
 - Member not found: unresolved name appears in `unmatched`.
 - Duplicate or ambiguous names: entries reported under `ambiguous`.
+
+## CSV Safety
+
+- Member-activity CSV exports are written with spreadsheet-formula escaping for cells that begin with:
+  - `=`
+  - `+`
+  - `-`
+  - `@`
+- This prevents exported Discord names from being interpreted as formulas by spreadsheet tools.
 
 ## Related Pages
 
