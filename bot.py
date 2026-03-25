@@ -62,6 +62,7 @@ from app.member_activity_backfill import (
 from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
 )
+from app.role_access_web_callbacks import RoleAccessWebCallbacks
 from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
 from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
@@ -1164,6 +1165,7 @@ linkedin_monitor_task = None
 beta_program_monitor_task = None
 member_activity_backfill_task = None
 feed_web_callbacks = None
+role_access_web_callbacks = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
 web_admin_restart_events = deque()
@@ -1274,6 +1276,9 @@ def ensure_db_schema():
                 code TEXT NOT NULL,
                 role_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                invite_code TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
                 PRIMARY KEY (guild_id, code)
             );
 
@@ -1282,6 +1287,9 @@ def ensure_db_schema():
                 invite_code TEXT NOT NULL,
                 role_id INTEGER NOT NULL,
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                code TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'active',
                 PRIMARY KEY (guild_id, invite_code)
             );
 
@@ -1488,6 +1496,8 @@ def ensure_db_schema():
 
             CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
             CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
+            CREATE INDEX IF NOT EXISTS idx_role_codes_status ON role_codes(status);
+            CREATE INDEX IF NOT EXISTS idx_invite_roles_status ON invite_roles(status);
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
                 ON reddit_feed_subscriptions(subreddit);
@@ -1525,17 +1535,33 @@ def ensure_db_schema():
                     code TEXT NOT NULL,
                     role_id INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    invite_code TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
                     PRIMARY KEY (guild_id, code)
                 );
-                INSERT INTO role_codes_new (guild_id, code, role_id, created_at)
-                SELECT 0, code, role_id, created_at
+                INSERT INTO role_codes_new (guild_id, code, role_id, created_at, updated_at, invite_code, status)
+                SELECT 0, code, role_id, created_at, created_at, '', 'active'
                 FROM role_codes;
                 DROP TABLE role_codes;
                 ALTER TABLE role_codes_new RENAME TO role_codes;
                 CREATE INDEX IF NOT EXISTS idx_role_codes_role_id ON role_codes(role_id);
                 CREATE INDEX IF NOT EXISTS idx_role_codes_guild_id ON role_codes(guild_id);
+                CREATE INDEX IF NOT EXISTS idx_role_codes_status ON role_codes(status);
                 """
             )
+        if "updated_at" not in role_code_columns:
+            conn.execute("ALTER TABLE role_codes ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+        if "invite_code" not in role_code_columns:
+            conn.execute("ALTER TABLE role_codes ADD COLUMN invite_code TEXT NOT NULL DEFAULT ''")
+        if "status" not in role_code_columns:
+            conn.execute("ALTER TABLE role_codes ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        conn.execute(
+            "UPDATE role_codes SET updated_at = created_at WHERE TRIM(COALESCE(updated_at, '')) = ''"
+        )
+        conn.execute(
+            "UPDATE role_codes SET status = 'active' WHERE TRIM(COALESCE(status, '')) = ''"
+        )
 
         invite_role_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(invite_roles)").fetchall()}
         if "guild_id" not in invite_role_columns:
@@ -1546,17 +1572,33 @@ def ensure_db_schema():
                     invite_code TEXT NOT NULL,
                     role_id INTEGER NOT NULL,
                     created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT '',
+                    code TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
                     PRIMARY KEY (guild_id, invite_code)
                 );
-                INSERT INTO invite_roles_new (guild_id, invite_code, role_id, created_at)
-                SELECT 0, invite_code, role_id, created_at
+                INSERT INTO invite_roles_new (guild_id, invite_code, role_id, created_at, updated_at, code, status)
+                SELECT 0, invite_code, role_id, created_at, created_at, '', 'active'
                 FROM invite_roles;
                 DROP TABLE invite_roles;
                 ALTER TABLE invite_roles_new RENAME TO invite_roles;
                 CREATE INDEX IF NOT EXISTS idx_invite_roles_role_id ON invite_roles(role_id);
                 CREATE INDEX IF NOT EXISTS idx_invite_roles_guild_id ON invite_roles(guild_id);
+                CREATE INDEX IF NOT EXISTS idx_invite_roles_status ON invite_roles(status);
                 """
             )
+        if "updated_at" not in invite_role_columns:
+            conn.execute("ALTER TABLE invite_roles ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
+        if "code" not in invite_role_columns:
+            conn.execute("ALTER TABLE invite_roles ADD COLUMN code TEXT NOT NULL DEFAULT ''")
+        if "status" not in invite_role_columns:
+            conn.execute("ALTER TABLE invite_roles ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+        conn.execute(
+            "UPDATE invite_roles SET updated_at = created_at WHERE TRIM(COALESCE(updated_at, '')) = ''"
+        )
+        conn.execute(
+            "UPDATE invite_roles SET status = 'active' WHERE TRIM(COALESCE(status, '')) = ''"
+        )
 
         tag_response_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tag_responses)").fetchall()}
         if "guild_id" not in tag_response_columns:
@@ -3849,19 +3891,116 @@ def generate_code():
             return code
 
 
-def save_role_code(code, role_id, guild_id: int | None = None):
+def normalize_role_access_status(value: str | None, default: str = "active"):
+    normalized = str(value or "").strip().lower()
+    if normalized in {"active", "paused", "disabled"}:
+        return normalized
+    return default
+
+
+def _refresh_invite_role_cache_for_guild(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    invite_roles_by_guild[safe_guild_id] = load_invite_roles(guild_id=safe_guild_id).get(safe_guild_id, {})
+
+
+def save_role_access_mapping(
+    code,
+    invite_code,
+    role_id,
+    *,
+    guild_id: int | None = None,
+    status: str = "active",
+    created_at: str | None = None,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    normalized_code = str(code).strip()
+    normalized_invite_code = str(invite_code).strip()
+    normalized_status = normalize_role_access_status(status)
+    now_iso = datetime.now(UTC).isoformat()
+    created_iso = str(created_at or now_iso)
+    conn = get_db_connection()
+    with db_lock:
+        existing_role_row = conn.execute(
+            "SELECT created_at FROM role_codes WHERE guild_id = ? AND code = ?",
+            (safe_guild_id, normalized_code),
+        ).fetchone()
+        existing_invite_row = conn.execute(
+            "SELECT created_at FROM invite_roles WHERE guild_id = ? AND invite_code = ?",
+            (safe_guild_id, normalized_invite_code),
+        ).fetchone()
+        role_created_at = str(existing_role_row["created_at"]) if existing_role_row else created_iso
+        invite_created_at = str(existing_invite_row["created_at"]) if existing_invite_row else created_iso
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO role_codes (guild_id, code, role_id, created_at, updated_at, invite_code, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                normalized_code,
+                int(role_id),
+                role_created_at,
+                now_iso,
+                normalized_invite_code,
+                normalized_status,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO invite_roles (guild_id, invite_code, role_id, created_at, updated_at, code, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                normalized_invite_code,
+                int(role_id),
+                invite_created_at,
+                now_iso,
+                normalized_code,
+                normalized_status,
+            ),
+        )
+        conn.commit()
+    _refresh_invite_role_cache_for_guild(safe_guild_id)
+    logger.info(
+        "Saved role access mapping code=%s invite=%s role=%s guild=%s status=%s",
+        normalized_code,
+        normalized_invite_code,
+        role_id,
+        safe_guild_id,
+        normalized_status,
+    )
+
+
+def save_role_code(code, role_id, guild_id: int | None = None, *, invite_code: str = "", status: str = "active"):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
+        existing = conn.execute(
+            "SELECT created_at, invite_code FROM role_codes WHERE guild_id = ? AND code = ?",
+            (safe_guild_id, str(code)),
+        ).fetchone()
+        preserved_invite = str(existing["invite_code"]) if existing and str(existing["invite_code"] or "").strip() else str(invite_code or "").strip()
+        created_at = str(existing["created_at"]) if existing else now_iso
         conn.execute(
             """
-            INSERT OR REPLACE INTO role_codes (guild_id, code, role_id, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT OR REPLACE INTO role_codes (guild_id, code, role_id, created_at, updated_at, invite_code, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (safe_guild_id, str(code), int(role_id), now_iso),
+            (
+                safe_guild_id,
+                str(code),
+                int(role_id),
+                created_at,
+                now_iso,
+                preserved_invite,
+                normalize_role_access_status(status),
+            ),
         )
         conn.commit()
+    if preserved_invite:
+        _refresh_invite_role_cache_for_guild(safe_guild_id)
     logger.info("Saved code %s for role %s in guild %s", code, role_id, safe_guild_id)
 
 
@@ -3870,7 +4009,11 @@ def get_role_id_by_code(code, guild_id: int | None = None):
     conn = get_db_connection()
     with db_lock:
         row = conn.execute(
-            "SELECT role_id FROM role_codes WHERE guild_id = ? AND code = ?",
+            """
+            SELECT role_id
+            FROM role_codes
+            WHERE guild_id = ? AND code = ? AND LOWER(COALESCE(status, 'active')) = 'active'
+            """,
             (safe_guild_id, str(code)),
         ).fetchone()
     if row is None:
@@ -3880,10 +4023,27 @@ def get_role_id_by_code(code, guild_id: int | None = None):
     return role_id
 
 
-def load_invite_roles():
+def load_invite_roles(guild_id: int | None = None):
     conn = get_db_connection()
     with db_lock:
-        rows = conn.execute("SELECT guild_id, invite_code, role_id FROM invite_roles").fetchall()
+        if guild_id is None:
+            rows = conn.execute(
+                """
+                SELECT guild_id, invite_code, role_id
+                FROM invite_roles
+                WHERE LOWER(COALESCE(status, 'active')) = 'active'
+                """
+            ).fetchall()
+        else:
+            safe_guild_id = normalize_target_guild_id(guild_id)
+            rows = conn.execute(
+                """
+                SELECT guild_id, invite_code, role_id
+                FROM invite_roles
+                WHERE guild_id = ? AND LOWER(COALESCE(status, 'active')) = 'active'
+                """,
+                (safe_guild_id,),
+            ).fetchall()
     mapping = {}
     for row in rows:
         guild_id = int(row["guild_id"] or 0)
@@ -3891,26 +4051,185 @@ def load_invite_roles():
     return mapping
 
 
-def save_invite_role(invite_code, role_id, guild_id: int | None = None):
+def save_invite_role(invite_code, role_id, guild_id: int | None = None, *, code: str = "", status: str = "active"):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
     conn = get_db_connection()
     with db_lock:
+        existing = conn.execute(
+            "SELECT created_at, code FROM invite_roles WHERE guild_id = ? AND invite_code = ?",
+            (safe_guild_id, str(invite_code)),
+        ).fetchone()
+        preserved_code = str(existing["code"]) if existing and str(existing["code"] or "").strip() else str(code or "").strip()
+        created_at = str(existing["created_at"]) if existing else now_iso
         conn.execute(
             """
-            INSERT OR REPLACE INTO invite_roles (guild_id, invite_code, role_id, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT OR REPLACE INTO invite_roles (guild_id, invite_code, role_id, created_at, updated_at, code, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (safe_guild_id, str(invite_code), int(role_id), now_iso),
+            (
+                safe_guild_id,
+                str(invite_code),
+                int(role_id),
+                created_at,
+                now_iso,
+                preserved_code,
+                normalize_role_access_status(status),
+            ),
         )
         conn.commit()
-    invite_roles_by_guild.setdefault(safe_guild_id, {})[str(invite_code)] = int(role_id)
+    _refresh_invite_role_cache_for_guild(safe_guild_id)
     logger.info(
         "Saved invite %s for role %s in guild %s",
         invite_code,
         role_id,
         safe_guild_id,
     )
+
+
+def list_role_access_mappings(guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        role_rows = conn.execute(
+            """
+            SELECT guild_id, code, role_id, created_at, updated_at, invite_code, status
+            FROM role_codes
+            WHERE guild_id = ?
+            ORDER BY created_at DESC, code ASC
+            """,
+            (safe_guild_id,),
+        ).fetchall()
+        invite_rows = conn.execute(
+            """
+            SELECT guild_id, invite_code, role_id, created_at, updated_at, code, status
+            FROM invite_roles
+            WHERE guild_id = ?
+            ORDER BY created_at DESC, invite_code ASC
+            """,
+            (safe_guild_id,),
+        ).fetchall()
+
+    invite_by_code = {}
+    invite_unpaired_by_role = {}
+    for row in invite_rows:
+        invite_code = str(row["invite_code"] or "").strip()
+        linked_code = str(row["code"] or "").strip()
+        entry = {
+            "invite_code": invite_code,
+            "invite_url": f"https://discord.gg/{invite_code}",
+            "role_id": int(row["role_id"] or 0),
+            "created_at": str(row["created_at"] or ""),
+            "updated_at": str(row["updated_at"] or ""),
+            "status": normalize_role_access_status(row["status"]),
+            "code": linked_code,
+        }
+        if linked_code:
+            invite_by_code[linked_code] = entry
+        invite_unpaired_by_role.setdefault(int(row["role_id"] or 0), []).append(entry)
+
+    mappings = []
+    consumed_invites = set()
+    for row in role_rows:
+        code = str(row["code"] or "").strip()
+        role_id = int(row["role_id"] or 0)
+        linked_invite_code = str(row["invite_code"] or "").strip()
+        invite_entry = invite_by_code.get(code)
+        if invite_entry is None and linked_invite_code:
+            for candidate in invite_unpaired_by_role.get(role_id, []):
+                if candidate["invite_code"] == linked_invite_code:
+                    invite_entry = candidate
+                    break
+        if invite_entry is None:
+            for candidate in invite_unpaired_by_role.get(role_id, []):
+                if candidate["invite_code"] in consumed_invites:
+                    continue
+                invite_entry = candidate
+                break
+        if invite_entry is not None:
+            consumed_invites.add(invite_entry["invite_code"])
+        mappings.append(
+            {
+                "guild_id": safe_guild_id,
+                "code": code,
+                "invite_code": invite_entry["invite_code"] if invite_entry else linked_invite_code,
+                "invite_url": (
+                    invite_entry["invite_url"]
+                    if invite_entry
+                    else (f"https://discord.gg/{linked_invite_code}" if linked_invite_code else "")
+                ),
+                "role_id": role_id,
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or row["created_at"] or ""),
+                "status": normalize_role_access_status(row["status"]),
+            }
+        )
+
+    seen_codes = {entry["code"] for entry in mappings}
+    for row in invite_rows:
+        code = str(row["code"] or "").strip()
+        if code and code in seen_codes:
+            continue
+        invite_code = str(row["invite_code"] or "").strip()
+        if invite_code in consumed_invites:
+            continue
+        mappings.append(
+            {
+                "guild_id": safe_guild_id,
+                "code": code,
+                "invite_code": invite_code,
+                "invite_url": f"https://discord.gg/{invite_code}",
+                "role_id": int(row["role_id"] or 0),
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or row["created_at"] or ""),
+                "status": normalize_role_access_status(row["status"]),
+            }
+        )
+
+    mappings.sort(
+        key=lambda item: (
+            str(item.get("created_at") or ""),
+            str(item.get("code") or ""),
+            str(item.get("invite_code") or ""),
+        ),
+        reverse=True,
+    )
+    return mappings
+
+
+def set_role_access_mapping_status(
+    guild_id: int | None,
+    *,
+    code: str,
+    invite_code: str,
+    status: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    normalized_status = normalize_role_access_status(status)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        role_result = conn.execute(
+            """
+            UPDATE role_codes
+            SET status = ?, updated_at = ?, invite_code = CASE WHEN TRIM(COALESCE(invite_code, '')) = '' THEN ? ELSE invite_code END
+            WHERE guild_id = ? AND code = ?
+            """,
+            (normalized_status, now_iso, str(invite_code), safe_guild_id, str(code)),
+        )
+        invite_result = conn.execute(
+            """
+            UPDATE invite_roles
+            SET status = ?, updated_at = ?, code = CASE WHEN TRIM(COALESCE(code, '')) = '' THEN ? ELSE code END
+            WHERE guild_id = ? AND invite_code = ?
+            """,
+            (normalized_status, now_iso, str(code), safe_guild_id, str(invite_code)),
+        )
+        conn.commit()
+    found = bool(role_result.rowcount or invite_result.rowcount)
+    if found:
+        _refresh_invite_role_cache_for_guild(safe_guild_id)
+    return found
 
 
 def normalize_role_access_code(value: str):
@@ -3973,9 +4292,7 @@ async def create_role_access_mapping(
     ) or interaction.channel
     invite = await channel.create_invite(max_age=0, max_uses=0, unique=True)
     guild_id = interaction.guild.id
-    save_role_code(normalized_code, role.id, guild_id=guild_id)
-    save_invite_role(invite.code, role.id, guild_id=guild_id)
-    invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
+    save_role_access_mapping(normalized_code, invite.code, role.id, guild_id=guild_id, status="active")
     invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
     return normalized_code, invite, channel
 
@@ -4016,9 +4333,7 @@ async def restore_role_access_mapping(
         raise ValueError("That invite does not belong to this Discord server.")
 
     guild_id = interaction.guild.id
-    save_role_code(normalized_code, role.id, guild_id=guild_id)
-    save_invite_role(invite.code, role.id, guild_id=guild_id)
-    invite_roles_by_guild.setdefault(guild_id, {})[invite.code] = role.id
+    save_role_access_mapping(normalized_code, invite.code, role.id, guild_id=guild_id, status="active")
     invite_uses_by_guild.setdefault(guild_id, {})[invite.code] = invite.uses
     return normalized_code, invite, getattr(invite, "channel", None)
 
@@ -4513,6 +4828,14 @@ def run_web_get_beta_program_subscriptions(guild_id: int):
 
 def run_web_manage_beta_program_subscriptions(payload: dict, actor_email: str, guild_id: int):
     return get_feed_web_callbacks().run_web_manage_beta_program_subscriptions(payload, actor_email, guild_id)
+
+
+def run_web_get_role_access_mappings(guild_id: int):
+    return get_role_access_web_callbacks().run_web_get_role_access_mappings(guild_id)
+
+
+def run_web_manage_role_access_mappings(payload: dict, actor_email: str, guild_id: int):
+    return get_role_access_web_callbacks().run_web_manage_role_access_mappings(payload, actor_email, guild_id)
 
 
 def run_web_get_tag_responses(guild_id: int | str | None = None):
@@ -6239,6 +6562,49 @@ def resolve_beta_program_subscription_seed(source_url: str = ""):
     }
 
 
+async def validate_discord_invite_for_guild_async(guild_id: int, invite_input: str):
+    normalized_invite_code = normalize_discord_invite_code(invite_input)
+    if normalized_invite_code is None:
+        return {"ok": False, "error": "Invite must be a valid Discord invite URL or code."}
+
+    try:
+        invite = await bot.fetch_invite(normalized_invite_code)
+    except discord.NotFound:
+        return {"ok": False, "error": "That Discord invite does not exist or is no longer valid."}
+    except discord.HTTPException:
+        logger.exception("Discord invite validation failed for guild %s", guild_id)
+        return {"ok": False, "error": "Discord could not validate that invite right now. Try again."}
+
+    invite_guild = getattr(invite, "guild", None)
+    if invite_guild is None or int(invite_guild.id) != int(guild_id):
+        return {"ok": False, "error": "That invite does not belong to this Discord server."}
+
+    return {
+        "ok": True,
+        "invite_code": str(invite.code),
+        "invite_url": str(invite.url),
+    }
+
+
+def validate_discord_invite_for_guild(guild_id: int, invite_input: str):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = asyncio.run_coroutine_threadsafe(
+        validate_discord_invite_for_guild_async(normalize_target_guild_id(guild_id), invite_input),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while validating the Discord invite."}
+    except Exception:
+        logger.exception("Unexpected failure while validating Discord invite for guild %s", guild_id)
+        return {"ok": False, "error": "Unexpected error while validating that invite."}
+
+
 def get_feed_web_callbacks():
     global feed_web_callbacks
     if feed_web_callbacks is None:
@@ -6277,6 +6643,25 @@ def get_feed_web_callbacks():
             truthy_env_values=TRUTHY_ENV_VALUES,
         )
     return feed_web_callbacks
+
+
+def get_role_access_web_callbacks():
+    global role_access_web_callbacks
+    if role_access_web_callbacks is None:
+        role_access_web_callbacks = RoleAccessWebCallbacks(
+            normalize_target_guild_id=normalize_target_guild_id,
+            normalize_role_access_code=normalize_role_access_code,
+            normalize_discord_invite_code=normalize_discord_invite_code,
+            list_role_access_mappings=list_role_access_mappings,
+            upsert_role_access_mapping=save_role_access_mapping,
+            set_role_access_mapping_status=set_role_access_mapping_status,
+            build_web_actor_audit_label=build_web_actor_audit_label,
+            record_action_safe=record_action_safe,
+            truncate_log_text=truncate_log_text,
+            logger=logger,
+            validate_invite_for_guild=validate_discord_invite_for_guild,
+        )
+    return role_access_web_callbacks
 
 
 def uptime_request_json(url: str):
@@ -7954,6 +8339,8 @@ def start_web_admin_server():
                     on_manage_linkedin_subscriptions=run_web_manage_linkedin_subscriptions,
                     on_get_beta_program_subscriptions=run_web_get_beta_program_subscriptions,
                     on_manage_beta_program_subscriptions=run_web_manage_beta_program_subscriptions,
+                    on_get_role_access_mappings=run_web_get_role_access_mappings,
+                    on_manage_role_access_mappings=run_web_manage_role_access_mappings,
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,

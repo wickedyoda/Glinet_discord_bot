@@ -39,6 +39,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
+from app.web_role_access import process_role_access_submission, render_role_access_body
 
 
 def ensure_process_utc_timezone():
@@ -2138,6 +2139,7 @@ def _render_layout(
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+                <option value="{{ url_for('role_access_page') }}">Role Access</option>
                 <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
                 <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
                 <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
@@ -2149,6 +2151,7 @@ def _render_layout(
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+                <option value="{{ url_for('role_access_page') }}">Role Access</option>
                 <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
                 <option value="{{ url_for('settings') }}">Global Settings</option>
                 <option value="{{ url_for('public_observability') }}">Observability</option>
@@ -2172,10 +2175,12 @@ def _render_layout(
                 {% if current_role in ("glinet_read_only", "glinet_rw") %}
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
                 <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
                 {% else %}
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
                 <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
                 {% endif %}
               </div>
@@ -2252,6 +2257,7 @@ def _render_layout(
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
             <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+            <option value="{{ url_for('role_access_page') }}">Role Access</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
             <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
             <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
@@ -2263,6 +2269,7 @@ def _render_layout(
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
             <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+            <option value="{{ url_for('role_access_page') }}">Role Access</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
             <option value="{{ url_for('settings') }}">Global Settings</option>
             <option value="{{ url_for('public_observability') }}">Observability</option>
@@ -2411,6 +2418,8 @@ def create_web_app(
     on_manage_linkedin_subscriptions=None,
     on_get_beta_program_subscriptions=None,
     on_manage_beta_program_subscriptions=None,
+    on_get_role_access_mappings=None,
+    on_manage_role_access_mappings=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -2997,6 +3006,7 @@ def create_web_app(
                 "youtube_subscriptions",
                 "linkedin_subscriptions",
                 "beta_program_subscriptions",
+                "role_access_page",
                 "tag_responses",
                 "bot_profile",
             }
@@ -3022,6 +3032,7 @@ def create_web_app(
             "youtube_subscriptions",
             "linkedin_subscriptions",
             "beta_program_subscriptions",
+            "role_access_page",
             "settings",
             "tag_responses",
             "bulk_role_csv",
@@ -3055,6 +3066,7 @@ def create_web_app(
             "youtube_subscriptions",
             "linkedin_subscriptions",
             "beta_program_subscriptions",
+            "role_access_page",
             "tag_responses",
             "bulk_role_csv",
             "bot_profile",
@@ -3711,6 +3723,12 @@ def create_web_app(
             "Monitor the GL.iNet beta testing page and notify a Discord channel when programs are added or removed.",
             url_for("beta_program_subscriptions"),
             "Open Beta Programs",
+        )
+        add_dashboard_card(
+            "Role Access",
+            "Review and control invite links with their paired 6-digit access codes for the selected Discord server.",
+            url_for("role_access_page"),
+            "Open Role Access",
         )
         add_dashboard_card(
             "Guild Settings",
@@ -5468,6 +5486,57 @@ def create_web_app(
             str(user.get("display_name") or ""),
         )
 
+    @app.route("/admin/role-access", methods=["GET", "POST"])
+    @login_required
+    def role_access_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        _channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+
+        payload = (
+            on_get_role_access_mappings(selected_guild_id)
+            if callable(on_get_role_access_mappings)
+            else {"ok": False, "error": "Role access callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            response, messages = process_role_access_submission(
+                form=request.form,
+                on_manage_role_access_mappings=on_manage_role_access_mappings,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                payload = response
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = (
+                str(payload.get("error") or "Unable to load role access mappings.")
+                if isinstance(payload, dict)
+                else "Unable to load role access mappings."
+            )
+            body = (
+                f"<div class='card'><h2>Role Access</h2><p class='muted'>Could not load role access mappings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Role Access", body, user["email"], bool(user.get("is_admin")))
+
+        body = render_role_access_body(
+            guild_name=guild_name,
+            mappings=payload.get("mappings", []) or [],
+            role_options=role_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Role Access", body, user["email"], bool(user.get("is_admin")))
+
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
     @login_required
     def command_permissions():
@@ -6464,6 +6533,8 @@ def start_web_admin_interface(
     on_manage_linkedin_subscriptions=None,
     on_get_beta_program_subscriptions=None,
     on_manage_beta_program_subscriptions=None,
+    on_get_role_access_mappings=None,
+    on_manage_role_access_mappings=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -6499,6 +6570,8 @@ def start_web_admin_interface(
         on_manage_linkedin_subscriptions=on_manage_linkedin_subscriptions,
         on_get_beta_program_subscriptions=on_get_beta_program_subscriptions,
         on_manage_beta_program_subscriptions=on_manage_beta_program_subscriptions,
+        on_get_role_access_mappings=on_get_role_access_mappings,
+        on_manage_role_access_mappings=on_manage_role_access_mappings,
         on_get_bot_profile=on_get_bot_profile,
         on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,
