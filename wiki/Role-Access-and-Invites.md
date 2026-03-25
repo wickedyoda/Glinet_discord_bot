@@ -10,6 +10,28 @@ This feature set handles role assignment through invite tracking, access codes, 
 | `/enter_role` | Member/Public (unless overridden) | Redeem code and receive mapped role |
 | `/getaccess` | Member/Public (unless overridden) | Receive default access role |
 
+## Web GUI Management
+
+- Open `/admin/role-access` for the selected guild.
+- The page shows each mapping with:
+  - 6-digit code
+  - invite link
+  - invite code
+  - target role
+  - current status
+- Available status actions:
+  - `Activate`
+  - `Pause`
+  - `Disable`
+- Use the manual restore/add form when a mapping row was deleted from storage and needs to be recreated with an existing Discord invite.
+- The supplied invite must belong to the selected Discord server.
+
+Status behavior:
+
+- `Active`: join-by-invite and `/enter_role` both work
+- `Paused`: mapping is temporarily blocked
+- `Disabled`: mapping is fully blocked until reactivated
+
 ## Workflow Variations
 
 ### Variation 1: Invite + Code Pair
