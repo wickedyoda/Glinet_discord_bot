@@ -1188,6 +1188,28 @@ def test_admin_can_save_guild_settings(tmp_path: Path):
     assert b"Allowed dimensions: 64x64 up to 4096x4096" in response.data
 
 
+def test_guild_settings_page_clarifies_scope_and_sections(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get(
+        "/admin/guild-settings",
+        base_url="https://docker.example:8443",
+    )
+
+    assert response.status_code == 200
+    assert b"These values apply only to" in response.data
+    assert b"Configured Value" in response.data
+    assert b"Effective Value" in response.data
+    assert b"Channel Routing And Access" in response.data
+    assert b"Monitor Overrides" in response.data
+    assert b"Welcome Messages" in response.data
+    assert b"Welcome Images" in response.data
+    assert b"Save Guild Settings" in response.data
+
+
 def test_admin_can_save_global_settings(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
@@ -1219,6 +1241,28 @@ def test_admin_can_save_global_settings(tmp_path: Path):
     assert response.status_code == 200
     assert b"Settings saved to" in response.data
     assert b"90 minutes" in response.data
+
+
+def test_admin_settings_page_groups_global_settings_into_sections(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get(
+        "/admin/settings",
+        base_url="https://docker.example:8443",
+    )
+
+    assert response.status_code == 200
+    assert b"Global Environment Settings" in response.data
+    assert b"These settings are shared across all Discord servers managed by this bot." in response.data
+    assert b"Bot Identity And Scope" in response.data
+    assert b"Logging And Storage" in response.data
+    assert b"Search, Moderation, And Utilities" in response.data
+    assert b"Feed And Status Monitors" in response.data
+    assert b"Web UI Runtime And Security" in response.data
+    assert b"Save Global Settings" in response.data
 
 
 def test_admin_settings_includes_global_channel_defaults_and_monitor_toggles(tmp_path: Path):
