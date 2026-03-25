@@ -6339,12 +6339,14 @@ def fetch_latest_youtube_video(channel_id: str):
         raise RuntimeError("YouTube feed entry is missing video ID.")
     if not video_url:
         raise RuntimeError("YouTube feed entry is missing video URL.")
+    thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
     return {
         "channel_id": channel_id,
         "channel_title": channel_title,
         "video_id": video_id,
         "video_title": video_title,
         "video_url": video_url,
+        "thumbnail_url": thumbnail_url,
         "published_at": published_at,
     }
 
@@ -7324,6 +7326,7 @@ async def process_youtube_subscription(subscription: dict):
         description=f"[{latest['video_title']}]({latest['video_url']})",
         color=discord.Color.red(),
     )
+    embed.set_image(url=latest["thumbnail_url"])
     embed.set_footer(text="YouTube Notification")
     await notify_channel.send(embed=embed)
 
