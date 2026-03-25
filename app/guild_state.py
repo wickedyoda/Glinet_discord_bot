@@ -68,6 +68,11 @@ class GuildStateManager:
             "bot_log_channel_id": self.bot_log_channel_id if self.bot_log_channel_id > 0 else 0,
             "mod_log_channel_id": self.mod_log_channel_id if self.mod_log_channel_id > 0 else 0,
             "firmware_notify_channel_id": self.firmware_notify_channel_id if self.firmware_notify_channel_id > 0 else 0,
+            "firmware_monitor_enabled": -1,
+            "reddit_feed_notify_enabled": -1,
+            "youtube_notify_enabled": -1,
+            "linkedin_notify_enabled": -1,
+            "beta_program_notify_enabled": -1,
             "access_role_id": 0,
             "welcome_channel_id": 0,
             "welcome_dm_enabled": 0,
@@ -113,6 +118,8 @@ class GuildStateManager:
             row = conn.execute(
                 """
                 SELECT bot_log_channel_id, mod_log_channel_id, firmware_notify_channel_id,
+                       firmware_monitor_enabled, reddit_feed_notify_enabled,
+                       youtube_notify_enabled, linkedin_notify_enabled, beta_program_notify_enabled,
                        access_role_id, welcome_channel_id, welcome_dm_enabled,
                        welcome_channel_image_enabled, welcome_dm_image_enabled,
                        welcome_channel_message, welcome_dm_message,
@@ -131,6 +138,11 @@ class GuildStateManager:
                     "bot_log_channel_id": int(row["bot_log_channel_id"] or 0),
                     "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
                     "firmware_notify_channel_id": int(row["firmware_notify_channel_id"] or 0),
+                    "firmware_monitor_enabled": self._normalize_feature_override(row["firmware_monitor_enabled"]),
+                    "reddit_feed_notify_enabled": self._normalize_feature_override(row["reddit_feed_notify_enabled"]),
+                    "youtube_notify_enabled": self._normalize_feature_override(row["youtube_notify_enabled"]),
+                    "linkedin_notify_enabled": self._normalize_feature_override(row["linkedin_notify_enabled"]),
+                    "beta_program_notify_enabled": self._normalize_feature_override(row["beta_program_notify_enabled"]),
                     "access_role_id": int(row["access_role_id"] or 0),
                     "welcome_channel_id": int(row["welcome_channel_id"] or 0),
                     "welcome_dm_enabled": 1 if int(row["welcome_dm_enabled"] or 0) > 0 else 0,
@@ -175,6 +187,14 @@ class GuildStateManager:
             "welcome_channel_id",
         ):
             merged[key] = self.parse_int_setting(source.get(key, current.get(key, 0)), 0, minimum=0)
+        for key in (
+            "firmware_monitor_enabled",
+            "reddit_feed_notify_enabled",
+            "youtube_notify_enabled",
+            "linkedin_notify_enabled",
+            "beta_program_notify_enabled",
+        ):
+            merged[key] = self._normalize_feature_override(source.get(key, current.get(key, -1)))
         merged["welcome_dm_enabled"] = 1 if str(source.get("welcome_dm_enabled", current.get("welcome_dm_enabled", 0))).strip().lower() in {
             "1",
             "true",
@@ -222,6 +242,11 @@ class GuildStateManager:
                     bot_log_channel_id,
                     mod_log_channel_id,
                     firmware_notify_channel_id,
+                    firmware_monitor_enabled,
+                    reddit_feed_notify_enabled,
+                    youtube_notify_enabled,
+                    linkedin_notify_enabled,
+                    beta_program_notify_enabled,
                     access_role_id,
                     welcome_channel_id,
                     welcome_dm_enabled,
@@ -238,11 +263,16 @@ class GuildStateManager:
                     updated_at,
                     updated_by_email
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     bot_log_channel_id=excluded.bot_log_channel_id,
                     mod_log_channel_id=excluded.mod_log_channel_id,
                     firmware_notify_channel_id=excluded.firmware_notify_channel_id,
+                    firmware_monitor_enabled=excluded.firmware_monitor_enabled,
+                    reddit_feed_notify_enabled=excluded.reddit_feed_notify_enabled,
+                    youtube_notify_enabled=excluded.youtube_notify_enabled,
+                    linkedin_notify_enabled=excluded.linkedin_notify_enabled,
+                    beta_program_notify_enabled=excluded.beta_program_notify_enabled,
                     access_role_id=excluded.access_role_id,
                     welcome_channel_id=excluded.welcome_channel_id,
                     welcome_dm_enabled=excluded.welcome_dm_enabled,
@@ -264,6 +294,11 @@ class GuildStateManager:
                     merged["bot_log_channel_id"],
                     merged["mod_log_channel_id"],
                     merged["firmware_notify_channel_id"],
+                    merged["firmware_monitor_enabled"],
+                    merged["reddit_feed_notify_enabled"],
+                    merged["youtube_notify_enabled"],
+                    merged["linkedin_notify_enabled"],
+                    merged["beta_program_notify_enabled"],
                     merged["access_role_id"],
                     merged["welcome_channel_id"],
                     merged["welcome_dm_enabled"],
@@ -300,6 +335,26 @@ class GuildStateManager:
         if value > 0:
             return value
         return self.parse_int_setting(fallback_value, 0, minimum=0)
+
+    def _normalize_feature_override(self, raw_value):
+        try:
+            value = int(str(raw_value).strip())
+        except (TypeError, ValueError):
+            return -1
+        if value > 0:
+            return 1
+        if value == 0:
+            return 0
+        return -1
+
+    def get_effective_guild_feature_enabled(self, guild_id: int | None, key: str, fallback_value: bool = False):
+        settings = self.load_guild_settings(guild_id)
+        override = self._normalize_feature_override(settings.get(key, -1))
+        if override == 1:
+            return True
+        if override == 0:
+            return False
+        return bool(fallback_value)
 
     def get_effective_logging_channel_id(self, guild_id: int | None):
         safe_guild_id = self.normalize_target_guild_id(guild_id)

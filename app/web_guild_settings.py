@@ -19,6 +19,18 @@ def format_byte_size(value: int | str | None) -> str:
     return f"{size_bytes} bytes ({size_bytes / 1024:.1f} KiB)"
 
 
+def format_override_state(value: int | str | None) -> str:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = -1
+    if parsed > 0:
+        return "enabled"
+    if parsed == 0:
+        return "disabled"
+    return "use global"
+
+
 def process_guild_settings_submission(
     *,
     form,
@@ -38,6 +50,11 @@ def process_guild_settings_submission(
         "bot_log_channel_id": form.get("bot_log_channel_id", ""),
         "mod_log_channel_id": form.get("mod_log_channel_id", ""),
         "firmware_notify_channel_id": form.get("firmware_notify_channel_id", ""),
+        "firmware_monitor_enabled": -1 if not form.get("firmware_monitor_enabled__override") else (1 if form.get("firmware_monitor_enabled") else 0),
+        "reddit_feed_notify_enabled": -1 if not form.get("reddit_feed_notify_enabled__override") else (1 if form.get("reddit_feed_notify_enabled") else 0),
+        "youtube_notify_enabled": -1 if not form.get("youtube_notify_enabled__override") else (1 if form.get("youtube_notify_enabled") else 0),
+        "linkedin_notify_enabled": -1 if not form.get("linkedin_notify_enabled__override") else (1 if form.get("linkedin_notify_enabled") else 0),
+        "beta_program_notify_enabled": -1 if not form.get("beta_program_notify_enabled__override") else (1 if form.get("beta_program_notify_enabled") else 0),
         "access_role_id": form.get("access_role_id", ""),
         "welcome_channel_id": form.get("welcome_channel_id", ""),
         "welcome_dm_enabled": form.get("welcome_dm_enabled", ""),
@@ -169,6 +186,11 @@ def render_guild_settings_body(
         placeholder="Disabled",
     )
     welcome_dm_enabled = 1 if int(current_settings.get("welcome_dm_enabled") or 0) > 0 else 0
+    firmware_monitor_override = 1 if format_override_state(current_settings.get("firmware_monitor_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("firmware_monitor_enabled")) == "disabled" else -1
+    reddit_feed_override = 1 if format_override_state(current_settings.get("reddit_feed_notify_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("reddit_feed_notify_enabled")) == "disabled" else -1
+    youtube_notify_override = 1 if format_override_state(current_settings.get("youtube_notify_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("youtube_notify_enabled")) == "disabled" else -1
+    linkedin_notify_override = 1 if format_override_state(current_settings.get("linkedin_notify_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("linkedin_notify_enabled")) == "disabled" else -1
+    beta_program_notify_override = 1 if format_override_state(current_settings.get("beta_program_notify_enabled")) == "enabled" else 0 if format_override_state(current_settings.get("beta_program_notify_enabled")) == "disabled" else -1
     welcome_channel_image_enabled = 1 if int(current_settings.get("welcome_channel_image_enabled") or 0) > 0 else 0
     welcome_dm_image_enabled = 1 if int(current_settings.get("welcome_dm_image_enabled") or 0) > 0 else 0
     welcome_channel_message = str(current_settings.get("welcome_channel_message") or "")
@@ -219,6 +241,46 @@ def render_guild_settings_body(
                   <td><strong>Firmware Notify Channel</strong><div class="muted mono">firmware_notify_channel_id</div></td>
                   <td>{firmware_select}</td>
                   <td class="muted mono">{escape(str(effective_settings.get("firmware_notify_channel_id") or ""))}</td>
+                </tr>
+                <tr>
+                  <td><strong>Firmware Monitor</strong><div class="muted mono">firmware_monitor_enabled</div></td>
+                  <td>
+                    <label><input type="checkbox" name="firmware_monitor_enabled__override" value="1"{' checked' if firmware_monitor_override >= 0 else ''} /> Override global setting</label>
+                    <label style="display:block; margin-top:8px;"><input type="checkbox" name="firmware_monitor_enabled" value="1"{' checked' if firmware_monitor_override > 0 else ''} /> Enabled for this guild</label>
+                  </td>
+                  <td class="muted mono">{'enabled' if int(effective_settings.get("firmware_monitor_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(firmware_monitor_override))}</div></td>
+                </tr>
+                <tr>
+                  <td><strong>Reddit Feed Monitor</strong><div class="muted mono">reddit_feed_notify_enabled</div></td>
+                  <td>
+                    <label><input type="checkbox" name="reddit_feed_notify_enabled__override" value="1"{' checked' if reddit_feed_override >= 0 else ''} /> Override global setting</label>
+                    <label style="display:block; margin-top:8px;"><input type="checkbox" name="reddit_feed_notify_enabled" value="1"{' checked' if reddit_feed_override > 0 else ''} /> Enabled for this guild</label>
+                  </td>
+                  <td class="muted mono">{'enabled' if int(effective_settings.get("reddit_feed_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(reddit_feed_override))}</div></td>
+                </tr>
+                <tr>
+                  <td><strong>YouTube Notifications</strong><div class="muted mono">youtube_notify_enabled</div></td>
+                  <td>
+                    <label><input type="checkbox" name="youtube_notify_enabled__override" value="1"{' checked' if youtube_notify_override >= 0 else ''} /> Override global setting</label>
+                    <label style="display:block; margin-top:8px;"><input type="checkbox" name="youtube_notify_enabled" value="1"{' checked' if youtube_notify_override > 0 else ''} /> Enabled for this guild</label>
+                  </td>
+                  <td class="muted mono">{'enabled' if int(effective_settings.get("youtube_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(youtube_notify_override))}</div></td>
+                </tr>
+                <tr>
+                  <td><strong>LinkedIn Notifications</strong><div class="muted mono">linkedin_notify_enabled</div></td>
+                  <td>
+                    <label><input type="checkbox" name="linkedin_notify_enabled__override" value="1"{' checked' if linkedin_notify_override >= 0 else ''} /> Override global setting</label>
+                    <label style="display:block; margin-top:8px;"><input type="checkbox" name="linkedin_notify_enabled" value="1"{' checked' if linkedin_notify_override > 0 else ''} /> Enabled for this guild</label>
+                  </td>
+                  <td class="muted mono">{'enabled' if int(effective_settings.get("linkedin_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(linkedin_notify_override))}</div></td>
+                </tr>
+                <tr>
+                  <td><strong>Beta Program Notifications</strong><div class="muted mono">beta_program_notify_enabled</div></td>
+                  <td>
+                    <label><input type="checkbox" name="beta_program_notify_enabled__override" value="1"{' checked' if beta_program_notify_override >= 0 else ''} /> Override global setting</label>
+                    <label style="display:block; margin-top:8px;"><input type="checkbox" name="beta_program_notify_enabled" value="1"{' checked' if beta_program_notify_override > 0 else ''} /> Enabled for this guild</label>
+                  </td>
+                  <td class="muted mono">{'enabled' if int(effective_settings.get("beta_program_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(beta_program_notify_override))}</div></td>
                 </tr>
                 <tr>
                   <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
