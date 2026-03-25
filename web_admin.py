@@ -10,6 +10,7 @@ import ssl
 import subprocess  # nosec B404
 import threading
 import time
+import zipfile
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from functools import wraps
@@ -40,6 +41,7 @@ from werkzeug.serving import make_server
 
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
+from app.web_time import format_timestamp_display, parse_iso_datetime_utc
 
 
 def ensure_process_utc_timezone():
@@ -66,6 +68,8 @@ STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "select_guild"}
 WEB_GUI_TITLE_SUFFIX = "GL.iNet UnOfficial Discord Bot Dashboard"
 WEB_GUI_VERSION_PREFIX = "v1.0"
+RECENT_NAV_SESSION_KEY = "recent_admin_pages"
+RECENT_NAV_LIMIT = 6
 THEME_OPTIONS = (
     {"value": "light", "label": "Light"},
     {"value": "black", "label": "Black"},
@@ -1048,18 +1052,7 @@ def _collect_observability_snapshot(state: dict, started_monotonic: float):
 
 
 def _parse_iso_datetime(raw_value: str):
-    text = str(raw_value or "").strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
+    return parse_iso_datetime_utc(raw_value)
 
 
 def _password_change_required(user: dict) -> bool:
@@ -2405,17 +2398,6 @@ def _render_layout(
                 {% endfor %}
               </div>
             </div>
-            {% if restart_enabled %}
-              {% if is_admin %}
-              <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
-                <input type="hidden" name="confirm" value="yes" />
-                <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-                <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
-              </form>
-              {% else %}
-              <button class="btn danger" type="button" disabled title="Read-only users cannot restart the container">Restart Container</button>
-              {% endif %}
-            {% endif %}
           </div>
         </details>
         {% endif %}
@@ -2499,17 +2481,6 @@ def _render_layout(
             {% endif %}
             <option value="{{ url_for('logout') }}">Logout</option>
           </select>
-          {% if restart_enabled %}
-            {% if is_admin %}
-            <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
-              <input type="hidden" name="confirm" value="yes" />
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-              <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
-            </form>
-            {% else %}
-            <button class="btn danger" type="button" disabled title="Read-only users cannot restart the container">Restart Container</button>
-            {% endif %}
-          {% endif %}
         </nav>
       {% endif %}
     </div>
@@ -2724,6 +2695,8 @@ def create_web_app(
 
     @app.after_request
     def apply_security_headers(response):
+        g.response_status_code = int(getattr(response, "status_code", 0) or 0)
+        _remember_navigation_entry()
         request_host = _extract_hostname(str(request.host or ""))
         is_local_request = False
         if request_host:
@@ -3038,6 +3011,71 @@ def create_web_app(
             session_timeout_state.get("minutes", WEB_INACTIVITY_TIMEOUT_MINUTES),
             default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
         )
+
+    def _navigation_label_for_endpoint(endpoint: str) -> str:
+        labels = {
+            "dashboard": "Dashboard",
+            "guild_settings": "Guild Settings",
+            "command_status": "Command Status",
+            "command_permissions": "Command Permissions",
+            "bot_profile": "Bot Profile",
+            "member_activity_page": "Member Activity",
+            "role_access_page": "Role Access",
+            "tag_responses": "Tag Responses",
+            "actions_page": "Action History",
+            "bulk_role_csv": "Bulk Role CSV",
+            "reddit_feeds": "Reddit Feeds",
+            "youtube_subscriptions": "YouTube",
+            "linkedin_subscriptions": "LinkedIn",
+            "beta_program_subscriptions": "Beta Programs",
+            "account": "My Account",
+            "settings": "Global Settings",
+            "public_observability": "Observability",
+            "admin_logs": "Logs",
+            "users": "Users",
+            "documentation": "Documentation",
+            "wiki_proxy": "Wiki",
+        }
+        return labels.get(str(endpoint or "").strip(), "")
+
+    def _recent_navigation_entries() -> list[dict]:
+        entries = session.get(RECENT_NAV_SESSION_KEY, [])
+        if not isinstance(entries, list):
+            return []
+        normalized = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            href = str(item.get("href") or "").strip()
+            if not label or not href:
+                continue
+            normalized.append({"label": label, "href": href})
+        return normalized[:RECENT_NAV_LIMIT]
+
+    def _remember_navigation_entry() -> None:
+        if request.method != "GET":
+            return
+        if int(getattr(g, "response_status_code", 0) or 0) >= 400:
+            return
+        if not _normalize_email(session.get("auth_email", "")):
+            return
+        endpoint = str(request.endpoint or "").strip()
+        label = _navigation_label_for_endpoint(endpoint)
+        if not label or endpoint == "dashboard":
+            return
+        href = str(request.full_path or request.path or "").strip()
+        if href.endswith("?"):
+            href = href[:-1]
+        if not href.startswith("/"):
+            href = str(request.path or "").strip()
+        current_entries = _recent_navigation_entries()
+        updated_entries = [{"label": label, "href": href}]
+        for item in current_entries:
+            if str(item.get("href") or "").strip() == href:
+                continue
+            updated_entries.append(item)
+        session[RECENT_NAV_SESSION_KEY] = updated_entries[:RECENT_NAV_LIMIT]
 
     def _is_active_auth_session():
         email = _normalize_email(session.get("auth_email", ""))
@@ -4095,6 +4133,10 @@ def create_web_app(
             if is_admin
             else "Use the grouped sections below to reach the areas this account is allowed to manage."
         )
+        recent_navigation_html = "".join(
+            f"<div><a href='{escape(str(item.get('href') or ''), quote=True)}'>{escape(str(item.get('label') or 'Open page'))}</a></div>"
+            for item in _recent_navigation_entries()
+        ) or "No recent pages yet."
 
         body = f"""
         <div class="dashboard-shell">
@@ -4132,15 +4174,19 @@ def create_web_app(
               <div class="dashboard-list">
                 <div class="dashboard-list-item">
                   <strong>Configuration</strong>
-                  <span class="muted">{escape(management_text)}</span>
+                  <div class="muted">{escape(management_text)}</div>
                 </div>
                 <div class="dashboard-list-item">
                   <strong>Most common path</strong>
-                  <span class="muted">Guild Settings, then Command Status, then feed pages for channel routing.</span>
+                  <div class="muted"><a href="{escape(url_for('guild_settings'), quote=True)}">Guild Settings</a>, then <a href="{escape(url_for('command_status'), quote=True)}">Command Status</a>, then feed pages for channel routing.</div>
+                </div>
+                <div class="dashboard-list-item">
+                  <strong>Recent pages</strong>
+                  <div class="muted">{recent_navigation_html}</div>
                 </div>
                 <div class="dashboard-list-item">
                   <strong>Documentation</strong>
-                  <span class="muted">{'GitHub Wiki is linked here as an external reference.' if wiki_url else 'Embedded docs remain available from this dashboard.'}</span>
+                  <div class="muted">{'GitHub Wiki is linked here as an external reference.' if wiki_url else 'Embedded docs remain available from this dashboard.'}</div>
                 </div>
               </div>
             </div>
@@ -4408,6 +4454,7 @@ def create_web_app(
             if selected_refresh_seconds > 0
             else ""
         )
+        export_logs_href = url_for("admin_logs_export")
 
         return f"""
         <div class="card">
@@ -4428,12 +4475,56 @@ def create_web_app(
             </div>
           </form>
           <p class="muted">{escape(auto_refresh_note)}</p>
+          <div class="dash-actions" style="margin-top:14px;">
+            <a class="btn secondary" href="{escape(export_logs_href, quote=True)}">Export All Logs</a>
+          </div>
           <div style="margin-top:14px;">
             <textarea readonly style="min-height:520px;">{escape(log_preview)}</textarea>
           </div>
         </div>
         {auto_refresh_script}
         """
+
+    def _build_logs_export_payload():
+        log_dir = Path(str(os.getenv("LOG_DIR", "/logs")).strip() or "/logs")
+        allowed_log_paths = _resolve_observability_log_paths(log_dir)
+        if not allowed_log_paths:
+            return None
+
+        archive_buffer = BytesIO()
+        exported_count = 0
+        generated_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for filename, _label in OBSERVABILITY_LOG_OPTIONS:
+                log_path = allowed_log_paths.get(filename)
+                if log_path is None or not log_path.exists() or not log_path.is_file():
+                    continue
+                try:
+                    archive.writestr(filename, log_path.read_bytes())
+                except OSError:
+                    continue
+                exported_count += 1
+            archive.writestr(
+                "manifest.txt",
+                "\n".join(
+                    [
+                        "GL.iNet UnOfficial Discord Bot log export",
+                        f"generated_at_utc={generated_at}",
+                        f"log_dir={log_dir}",
+                        f"exported_files={exported_count}",
+                    ]
+                )
+                + "\n",
+            )
+
+        if exported_count <= 0:
+            return None
+        archive_buffer.seek(0)
+        return {
+            "filename": f"discord_bot_logs_{generated_at}.zip",
+            "content_type": "application/zip",
+            "data": archive_buffer.getvalue(),
+        }
 
     @app.route("/status", methods=["GET"])
     def public_observability():
@@ -4473,6 +4564,20 @@ def create_web_app(
             str(user.get("display_name") or ""),
         )
 
+    @app.route("/admin/logs/export", methods=["GET"])
+    @login_required
+    def admin_logs_export():
+        payload = _build_logs_export_payload()
+        if not payload:
+            flash("No runtime log files are available to export.", "error")
+            return redirect(url_for("admin_logs"))
+        return send_file(
+            BytesIO(payload["data"]),
+            mimetype=str(payload.get("content_type") or "application/octet-stream"),
+            as_attachment=True,
+            download_name=str(payload.get("filename") or "logs.zip"),
+        )
+
     @app.route("/admin/actions", methods=["GET"])
     @login_required
     def actions_page():
@@ -4493,7 +4598,7 @@ def create_web_app(
         for item in actions:
             rows.append(
                 "<tr>"
-                f"<td class='mono'>{escape(str(item.get('created_at') or ''))}</td>"
+                f"<td class='mono'>{escape(format_timestamp_display(item.get('created_at'), blank=''))}</td>"
                 f"<td>{escape(str(item.get('action') or ''))}</td>"
                 f"<td>{escape(str(item.get('status') or ''))}</td>"
                 f"<td>{escape(str(item.get('moderator') or ''))}</td>"
@@ -4600,7 +4705,7 @@ def create_web_app(
                     f"<td><strong>{escape(display_name)}</strong>{secondary_name}</td>"
                     f"<td>{escape(str(member.get('message_count') or 0))}</td>"
                     f"<td>{escape(str(member.get('active_days') or 0))}</td>"
-                    f"<td class='mono'>{escape(str(member.get('last_message_at') or 'n/a'))}</td>"
+                    f"<td class='mono'>{escape(format_timestamp_display(member.get('last_message_at')))}</td>"
                     "</tr>"
                 )
             window_cards.append(
@@ -5079,8 +5184,8 @@ def create_web_app(
             subreddit = str(feed.get("subreddit") or "").strip()
             channel_id = str(feed.get("channel_id") or "").strip()
             enabled = bool(feed.get("enabled"))
-            last_checked_at = str(feed.get("last_checked_at") or "Never")
-            last_posted_at = str(feed.get("last_posted_at") or "Never")
+            last_checked_at = format_timestamp_display(feed.get("last_checked_at"), blank="Never")
+            last_posted_at = format_timestamp_display(feed.get("last_posted_at"), blank="Never")
             last_error = str(feed.get("last_error") or "").strip()
             status_label = "Enabled" if enabled else "Disabled"
             if last_error:
@@ -5343,7 +5448,7 @@ def create_web_app(
                   <td>{escape(str(subscription.get("source_url") or ""))}</td>
                   <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
                   <td>{escape(str(subscription.get("last_video_title") or "Unknown"))}</td>
-                  <td class="muted">{escape(str(subscription.get("last_published_at") or "Never"))}</td>
+                  <td class="muted">{escape(format_timestamp_display(subscription.get("last_published_at"), blank="Never"))}</td>
                   <td>{actions_html}</td>
                 </tr>
                 """
@@ -5534,8 +5639,8 @@ def create_web_app(
                   <td>{escape(str(subscription.get("source_url") or ""))}</td>
                   <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
                   <td>{escape(_clip_text(str(subscription.get("last_post_text") or "No post captured yet."), max_chars=100))}</td>
-                  <td class="muted">{escape(str(subscription.get("last_published_at") or "Never"))}</td>
-                  <td class="muted">{escape(str(subscription.get("last_checked_at") or "Never"))}</td>
+                  <td class="muted">{escape(format_timestamp_display(subscription.get("last_published_at"), blank="Never"))}</td>
+                  <td class="muted">{escape(format_timestamp_display(subscription.get("last_checked_at"), blank="Never"))}</td>
                   <td class="muted">{escape(str(subscription.get("last_error") or "")) or "OK"}</td>
                   <td>{actions_html}</td>
                 </tr>
@@ -5699,7 +5804,7 @@ def create_web_app(
                   <td><a href="{escape(str(subscription.get("source_url") or source_url), quote=True)}" target="_blank" rel="noopener">{escape(str(subscription.get("source_url") or source_url))}</a></td>
                   <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
                   <td>{program_count}</td>
-                  <td class="muted">{escape(str(subscription.get("last_checked_at") or "Never"))}</td>
+                  <td class="muted">{escape(format_timestamp_display(subscription.get("last_checked_at"), blank="Never"))}</td>
                   <td class="muted">{escape(str(subscription.get("last_error") or "")) or "OK"}</td>
                   <td>{actions_html}</td>
                 </tr>
@@ -6773,8 +6878,8 @@ def create_web_app(
                   <td>{escape(full_name or "n/a")}</td>
                   <td class="mono">{escape(email)}</td>
                   <td>{escape(role_label)}</td>
-                  <td class="mono">{escape(str(entry.get("password_changed_at", "n/a")))}</td>
-                  <td class="mono">{escape(str(entry.get("created_at", "n/a")))}</td>
+                  <td class="mono">{escape(format_timestamp_display(entry.get("password_changed_at"), blank="n/a"))}</td>
+                  <td class="mono">{escape(format_timestamp_display(entry.get("created_at"), blank="n/a"))}</td>
                   <td>
                     <form method="post" style="display:inline;">
                       <input type="hidden" name="action" value="set_role" />
