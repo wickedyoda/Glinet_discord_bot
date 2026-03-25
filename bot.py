@@ -382,6 +382,17 @@ class WebGuiAuditFilter(logging.Filter):
         return message.startswith("WEB_AUDIT ")
 
 
+class DiscordVoiceWarningFilter(logging.Filter):
+    SUPPRESSED_MESSAGE = "PyNaCl is not installed, voice will NOT be supported"
+
+    def filter(self, record: logging.LogRecord):
+        try:
+            message = str(record.getMessage() or "")
+        except Exception:
+            return True
+        return self.SUPPRESSED_MESSAGE not in message
+
+
 web_gui_audit_handler = SecureTimedRotatingFileHandler(
     WEB_GUI_AUDIT_LOG_FILE,
     retention_days=LOG_RETENTION_DAYS,
@@ -419,6 +430,9 @@ log_permission_notices.extend(
 
 def apply_external_logger_levels():
     logging.getLogger("discord").setLevel(to_logging_level(DISCORD_LOG_LEVEL))
+    discord_client_logger = logging.getLogger("discord.client")
+    if not any(isinstance(existing, DiscordVoiceWarningFilter) for existing in discord_client_logger.filters):
+        discord_client_logger.addFilter(DiscordVoiceWarningFilter())
     logging.getLogger("werkzeug").setLevel(to_logging_level(DISCORD_LOG_LEVEL))
 
 
