@@ -635,6 +635,10 @@ OPENWRT_FORUM_MAX_RESULTS = 10
 REDDIT_BASE_URL = "https://www.reddit.com"
 REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(os.getenv("REDDIT_SUBREDDIT", "GlInet"), fallback_value="GlInet")
 REDDIT_MAX_RESULTS = 5
+REDDIT_FEED_NOTIFY_ENABLED = is_truthy_env_value(
+    os.getenv("REDDIT_FEED_NOTIFY_ENABLED", "true"),
+    default_value=True,
+)
 REDDIT_FEED_CHECK_SCHEDULE = (
     str(os.getenv("REDDIT_FEED_CHECK_SCHEDULE", DEFAULT_REDDIT_FEED_CHECK_SCHEDULE)).strip() or DEFAULT_REDDIT_FEED_CHECK_SCHEDULE
 )
@@ -689,6 +693,10 @@ if not FIRMWARE_CHECK_SCHEDULE:
 
 FIRMWARE_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", "30"))
 FIRMWARE_RELEASE_NOTES_MAX_CHARS = max(200, int(os.getenv("FIRMWARE_RELEASE_NOTES_MAX_CHARS", "900")))
+FIRMWARE_MONITOR_ENABLED = is_truthy_env_value(
+    os.getenv("FIRMWARE_MONITOR_ENABLED", "true"),
+    default_value=True,
+)
 WEB_ENABLED = os.getenv("WEB_ENABLED", "true").strip().lower() not in {
     "0",
     "false",
@@ -2615,6 +2623,23 @@ def list_youtube_subscriptions(
     return [dict(row) for row in rows]
 
 
+def get_youtube_subscription(subscription_id: int, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            """
+            SELECT id, guild_id, source_url, channel_id, channel_title, target_channel_id,
+                   target_channel_name, last_video_id, last_video_title, last_published_at,
+                   enabled, created_at, updated_at, created_by_email, updated_by_email
+            FROM youtube_subscriptions
+            WHERE id = ? AND guild_id = ?
+            """,
+            (int(subscription_id), safe_guild_id),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def create_or_update_youtube_subscription(
     guild_id: int | None,
     *,
@@ -2668,6 +2693,59 @@ def create_or_update_youtube_subscription(
             ),
         )
         conn.commit()
+
+
+def update_youtube_subscription(
+    subscription_id: int,
+    guild_id: int | None,
+    *,
+    source_url: str,
+    channel_id: str,
+    channel_title: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    last_video_id: str,
+    last_video_title: str,
+    last_published_at: str,
+    actor_email: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            """
+            UPDATE youtube_subscriptions
+            SET source_url = ?,
+                channel_id = ?,
+                channel_title = ?,
+                target_channel_id = ?,
+                target_channel_name = ?,
+                last_video_id = ?,
+                last_video_title = ?,
+                last_published_at = ?,
+                enabled = 1,
+                updated_at = ?,
+                updated_by_email = ?
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                str(source_url or "").strip(),
+                str(channel_id or "").strip(),
+                str(channel_title or "").strip(),
+                int(target_channel_id),
+                str(target_channel_name or "").strip(),
+                str(last_video_id or "").strip(),
+                str(last_video_title or "").strip(),
+                str(last_published_at or "").strip(),
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                int(subscription_id),
+                safe_guild_id,
+            ),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
 
 
 def delete_youtube_subscription(subscription_id: int, guild_id: int | None = None):
@@ -2732,6 +2810,23 @@ def list_linkedin_subscriptions(
     return [dict(row) for row in rows]
 
 
+def get_linkedin_subscription(subscription_id: int, guild_id: int | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            """
+            SELECT id, guild_id, source_url, profile_name, target_channel_id, target_channel_name,
+                   last_post_id, last_post_url, last_post_text, last_published_at, last_checked_at,
+                   last_posted_at, last_error, enabled, created_at, updated_at, created_by_email, updated_by_email
+            FROM linkedin_subscriptions
+            WHERE id = ? AND guild_id = ?
+            """,
+            (int(subscription_id), safe_guild_id),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
 def create_or_update_linkedin_subscription(
     guild_id: int | None,
     *,
@@ -2785,6 +2880,62 @@ def create_or_update_linkedin_subscription(
             ),
         )
         conn.commit()
+
+
+def update_linkedin_subscription(
+    subscription_id: int,
+    guild_id: int | None,
+    *,
+    source_url: str,
+    profile_name: str,
+    target_channel_id: int,
+    target_channel_name: str,
+    last_post_id: str,
+    last_post_url: str,
+    last_post_text: str,
+    last_published_at: str,
+    actor_email: str,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            """
+            UPDATE linkedin_subscriptions
+            SET source_url = ?,
+                profile_name = ?,
+                target_channel_id = ?,
+                target_channel_name = ?,
+                last_post_id = ?,
+                last_post_url = ?,
+                last_post_text = ?,
+                last_published_at = ?,
+                last_checked_at = '',
+                last_posted_at = '',
+                last_error = '',
+                enabled = 1,
+                updated_at = ?,
+                updated_by_email = ?
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                str(source_url or "").strip(),
+                clip_text(str(profile_name or "").strip(), max_chars=200),
+                int(target_channel_id),
+                str(target_channel_name or "").strip(),
+                str(last_post_id or "").strip(),
+                str(last_post_url or "").strip(),
+                clip_text(str(last_post_text or "").strip(), max_chars=1000),
+                str(last_published_at or "").strip(),
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                int(subscription_id),
+                safe_guild_id,
+            ),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
 
 
 def delete_linkedin_subscription(subscription_id: int, guild_id: int | None = None):
@@ -3098,6 +3249,50 @@ def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: i
             ),
         )
         conn.commit()
+
+
+def update_reddit_feed_subscription(feed_id: int, guild_id: int, subreddit: str, channel_id: int, actor_email: str):
+    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold()
+    if not cleaned_subreddit:
+        raise ValueError("Enter a valid subreddit name or /r/ URL.")
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_channel_id = int(channel_id)
+    if safe_channel_id <= 0:
+        raise ValueError("Choose a valid Discord channel.")
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            """
+            UPDATE reddit_feed_subscriptions
+            SET subreddit = ?,
+                channel_id = ?,
+                enabled = 1,
+                updated_at = ?,
+                updated_by_email = ?,
+                last_checked_at = '',
+                last_posted_at = '',
+                last_error = ''
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                cleaned_subreddit,
+                safe_channel_id,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                int(feed_id),
+                safe_guild_id,
+            ),
+        )
+        if cursor.rowcount <= 0:
+            conn.rollback()
+            return False
+        conn.execute(
+            "DELETE FROM reddit_feed_seen_posts WHERE feed_id = ?",
+            (int(feed_id),),
+        )
+        conn.commit()
+    return True
 
 
 def set_reddit_feed_subscription_enabled(feed_id: int, enabled: bool, actor_email: str):
@@ -4260,6 +4455,16 @@ def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
             channel_id = int(str(payload.get("channel_id") or "0").strip())
             create_reddit_feed_subscription(safe_guild_id, subreddit, channel_id, actor_email)
             message = f"Reddit feed added for r/{normalize_reddit_subreddit_name(subreddit)}."
+        elif action == "edit":
+            feed_id = int(str(payload.get("feed_id") or "0").strip())
+            feed = get_reddit_feed_subscription(feed_id)
+            if feed is None or int(feed.get("guild_id") or 0) != safe_guild_id:
+                return {"ok": False, "error": "Reddit feed entry was not found."}
+            subreddit = str(payload.get("subreddit") or "")
+            channel_id = int(str(payload.get("channel_id") or "0").strip())
+            if not update_reddit_feed_subscription(feed_id, safe_guild_id, subreddit, channel_id, actor_email):
+                return {"ok": False, "error": "Reddit feed entry was not found."}
+            message = f"Reddit feed updated for r/{normalize_reddit_subreddit_name(subreddit)}."
         elif action == "toggle":
             feed_id = int(str(payload.get("feed_id") or "0").strip())
             feed = get_reddit_feed_subscription(feed_id)
@@ -4369,6 +4574,41 @@ def run_web_manage_youtube_subscriptions(payload: dict, actor_email: str, guild_
                 guild_id=safe_guild_id,
             )
             message = "YouTube subscription saved."
+        elif action == "edit":
+            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
+            if get_youtube_subscription(subscription_id, guild_id=safe_guild_id) is None:
+                return {"ok": False, "error": "YouTube subscription entry was not found."}
+            source_url = str(payload.get("source_url") or "").strip()
+            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
+            if target_channel_id <= 0:
+                return {"ok": False, "error": "Choose a valid Discord channel."}
+            resolved = resolve_youtube_subscription_seed(source_url)
+            guild = bot.get_guild(safe_guild_id)
+            target_channel = guild.get_channel(target_channel_id) if guild else None
+            target_channel_name = f"#{target_channel.name}" if isinstance(target_channel, discord.TextChannel) else str(target_channel_id)
+            if not update_youtube_subscription(
+                subscription_id,
+                safe_guild_id,
+                source_url=resolved["source_url"],
+                channel_id=resolved["channel_id"],
+                channel_title=resolved["channel_title"],
+                target_channel_id=target_channel_id,
+                target_channel_name=target_channel_name,
+                last_video_id=resolved["last_video_id"],
+                last_video_title=resolved["last_video_title"],
+                last_published_at=resolved["last_published_at"],
+                actor_email=actor_email,
+            ):
+                return {"ok": False, "error": "YouTube subscription entry was not found."}
+            record_action_safe(
+                action="youtube_subscription_edit",
+                status="success",
+                moderator=audit_actor,
+                target=resolved["channel_title"],
+                reason=truncate_log_text(resolved["source_url"]),
+                guild_id=safe_guild_id,
+            )
+            message = "YouTube subscription updated."
         elif action == "delete":
             subscription_id = int(str(payload.get("subscription_id") or "0").strip())
             if not delete_youtube_subscription(subscription_id, guild_id=safe_guild_id):
@@ -4455,6 +4695,43 @@ def run_web_manage_linkedin_subscriptions(payload: dict, actor_email: str, guild
                 guild_id=safe_guild_id,
             )
             message = "LinkedIn subscription saved."
+        elif action == "edit":
+            subscription_id = int(str(payload.get("subscription_id") or "0").strip())
+            if get_linkedin_subscription(subscription_id, guild_id=safe_guild_id) is None:
+                return {"ok": False, "error": "LinkedIn subscription entry was not found."}
+            source_url = str(payload.get("source_url") or "").strip()
+            target_channel_id = int(str(payload.get("channel_id") or "0").strip())
+            if target_channel_id <= 0:
+                return {"ok": False, "error": "Choose a valid Discord channel."}
+            resolved = resolve_linkedin_subscription_seed(source_url)
+            guild = bot.get_guild(safe_guild_id)
+            target_channel = guild.get_channel(target_channel_id) if guild else None
+            if not isinstance(target_channel, discord.TextChannel):
+                return {"ok": False, "error": "Choose a valid Discord text channel."}
+            target_channel_name = f"#{target_channel.name}"
+            if not update_linkedin_subscription(
+                subscription_id,
+                safe_guild_id,
+                source_url=resolved["source_url"],
+                profile_name=resolved["profile_name"],
+                target_channel_id=target_channel_id,
+                target_channel_name=target_channel_name,
+                last_post_id=resolved["last_post_id"],
+                last_post_url=resolved["last_post_url"],
+                last_post_text=resolved["last_post_text"],
+                last_published_at=resolved["last_published_at"],
+                actor_email=actor_email,
+            ):
+                return {"ok": False, "error": "LinkedIn subscription entry was not found."}
+            record_action_safe(
+                action="linkedin_subscription_edit",
+                status="success",
+                moderator=audit_actor,
+                target=resolved["profile_name"],
+                reason=truncate_log_text(resolved["source_url"]),
+                guild_id=safe_guild_id,
+            )
+            message = "LinkedIn subscription updated."
         elif action == "delete":
             subscription_id = int(str(payload.get("subscription_id") or "0").strip())
             if not delete_linkedin_subscription(subscription_id, guild_id=safe_guild_id):
@@ -6717,6 +6994,9 @@ async def check_firmware_updates_once():
 
 
 async def firmware_monitor_loop():
+    if not FIRMWARE_MONITOR_ENABLED:
+        logger.info("Firmware monitor disabled: set FIRMWARE_MONITOR_ENABLED=true to enable it.")
+        return
     configured_channels = any(
         get_effective_guild_setting(
             guild.id,
@@ -6757,6 +7037,9 @@ def restart_firmware_monitor_task():
     global firmware_monitor_task
     if firmware_monitor_task is not None and not firmware_monitor_task.done():
         firmware_monitor_task.cancel()
+    if not FIRMWARE_MONITOR_ENABLED:
+        firmware_monitor_task = None
+        return
     firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
 
 
@@ -6954,6 +7237,8 @@ async def process_reddit_feed_subscription(feed: dict):
 
 
 async def check_reddit_feed_updates_once():
+    if not REDDIT_FEED_NOTIFY_ENABLED:
+        return
     feeds = list_reddit_feed_subscriptions(enabled_only=True)
     if not feeds:
         return
@@ -6962,6 +7247,9 @@ async def check_reddit_feed_updates_once():
 
 
 async def reddit_feed_monitor_loop():
+    if not REDDIT_FEED_NOTIFY_ENABLED:
+        logger.info("Reddit feed monitor disabled: set REDDIT_FEED_NOTIFY_ENABLED=true to enable it.")
+        return
     if not croniter.is_valid(REDDIT_FEED_CHECK_SCHEDULE):
         logger.error(
             "Reddit feed monitor disabled: invalid REDDIT_FEED_CHECK_SCHEDULE '%s'",
@@ -6988,6 +7276,9 @@ def restart_reddit_feed_monitor_task():
     global reddit_feed_monitor_task
     if reddit_feed_monitor_task is not None and not reddit_feed_monitor_task.done():
         reddit_feed_monitor_task.cancel()
+    if not REDDIT_FEED_NOTIFY_ENABLED:
+        reddit_feed_monitor_task = None
+        return
     reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
 
 
@@ -7444,8 +7735,10 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global KICK_PRUNE_HOURS
     global CSV_ROLE_ASSIGN_MAX_NAMES
     global FIRMWARE_FEED_URL
+    global FIRMWARE_MONITOR_ENABLED
     global FIRMWARE_NOTIFY_CHANNEL_ID
     global FIRMWARE_CHECK_SCHEDULE
+    global REDDIT_FEED_NOTIFY_ENABLED
     global REDDIT_FEED_CHECK_SCHEDULE
     global FIRMWARE_REQUEST_TIMEOUT_SECONDS
     global FIRMWARE_RELEASE_NOTES_MAX_CHARS
@@ -7637,6 +7930,10 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         ),
         FIRMWARE_NOTIFY_CHANNEL_ID,
     )
+    FIRMWARE_MONITOR_ENABLED = is_truthy_env_value(
+        os.getenv("FIRMWARE_MONITOR_ENABLED", "true" if FIRMWARE_MONITOR_ENABLED else "false"),
+        default_value=FIRMWARE_MONITOR_ENABLED,
+    )
     candidate_schedule = (
         os.getenv(
             "firmware_check_schedule",
@@ -7658,6 +7955,10 @@ def refresh_runtime_settings_from_env(_updated_values=None):
             "Ignoring invalid REDDIT_FEED_CHECK_SCHEDULE value: %s",
             candidate_reddit_schedule,
         )
+    REDDIT_FEED_NOTIFY_ENABLED = is_truthy_env_value(
+        os.getenv("REDDIT_FEED_NOTIFY_ENABLED", "true" if REDDIT_FEED_NOTIFY_ENABLED else "false"),
+        default_value=REDDIT_FEED_NOTIFY_ENABLED,
+    )
     FIRMWARE_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
         os.getenv("FIRMWARE_REQUEST_TIMEOUT_SECONDS", FIRMWARE_REQUEST_TIMEOUT_SECONDS),
         FIRMWARE_REQUEST_TIMEOUT_SECONDS,
@@ -8481,9 +8782,9 @@ async def on_ready():
     else:
         logger.warning("Tag slash commands not registered: register_tag_commands_for_guild missing")
 
-    if firmware_monitor_task is None or firmware_monitor_task.done():
+    if FIRMWARE_MONITOR_ENABLED and (firmware_monitor_task is None or firmware_monitor_task.done()):
         firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
-    if reddit_feed_monitor_task is None or reddit_feed_monitor_task.done():
+    if REDDIT_FEED_NOTIFY_ENABLED and (reddit_feed_monitor_task is None or reddit_feed_monitor_task.done()):
         reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
     if YOUTUBE_NOTIFY_ENABLED and (youtube_monitor_task is None or youtube_monitor_task.done()):
         youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
@@ -9506,7 +9807,7 @@ async def modlog_test_slash(interaction: discord.Interaction):
     logger.info("/modlog_test invoked by %s", interaction.user)
     if not await ensure_interaction_command_access(interaction, "modlog_test"):
         return
-    target_channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    target_channel_id = get_effective_logging_channel_id(interaction.guild.id if interaction.guild else 0)
 
     sent = await send_moderation_log(
         interaction.guild,
@@ -9534,7 +9835,7 @@ async def modlog_test_prefix(ctx: commands.Context):
     logger.info("!modlogtest invoked by %s", ctx.author)
     if not await ensure_prefix_command_access(ctx, "modlog_test"):
         return
-    target_channel_id = BOT_LOG_CHANNEL_ID if BOT_LOG_CHANNEL_ID > 0 else MOD_LOG_CHANNEL_ID
+    target_channel_id = get_effective_logging_channel_id(ctx.guild.id if ctx.guild else 0)
 
     sent = await send_moderation_log(
         ctx.guild,
