@@ -557,6 +557,124 @@ ENV_FIELDS = [
 ENV_KEY_ALIASES = {
     "BOT_LOG_CHANNEL_ID": ("GENERAL_CHANNEL_ID",),
 }
+ENV_FIELD_SECTIONS = (
+    (
+        "Bot Identity And Scope",
+        "Core Discord identity, guild scope, and command access defaults.",
+        (
+            "DISCORD_TOKEN",
+            "GUILD_ID",
+            "MANAGED_GUILD_IDS",
+            "MODERATOR_ROLE_ID",
+            "ADMIN_ROLE_ID",
+            "ENABLE_MEMBERS_INTENT",
+            "COMMAND_RESPONSES_EPHEMERAL",
+        ),
+    ),
+    (
+        "Logging And Storage",
+        "Runtime log levels, log rotation, and persistent storage paths.",
+        (
+            "BOT_LOG_CHANNEL_ID",
+            "MOD_LOG_CHANNEL_ID",
+            "LOG_LEVEL",
+            "CONTAINER_LOG_LEVEL",
+            "DISCORD_LOG_LEVEL",
+            "DATA_DIR",
+            "LOG_DIR",
+            "LOG_HARDEN_FILE_PERMISSIONS",
+            "LOG_RETENTION_DAYS",
+            "LOG_ROTATION_INTERVAL_DAYS",
+        ),
+    ),
+    (
+        "Search, Moderation, And Utilities",
+        "Forum/docs search limits and utility command tuning.",
+        (
+            "FORUM_BASE_URL",
+            "FORUM_MAX_RESULTS",
+            "DOCS_MAX_RESULTS_PER_SITE",
+            "DOCS_INDEX_TTL_SECONDS",
+            "SEARCH_RESPONSE_MAX_CHARS",
+            "KICK_PRUNE_HOURS",
+            "CSV_ROLE_ASSIGN_MAX_NAMES",
+            "PUPPY_IMAGE_API_URL",
+            "PUPPY_IMAGE_TIMEOUT_SECONDS",
+            "SHORTENER_ENABLED",
+            "SHORTENER_BASE_URL",
+            "SHORTENER_TIMEOUT_SECONDS",
+        ),
+    ),
+    (
+        "Feed And Status Monitors",
+        "Global defaults for feed polling, notification delivery, and uptime integrations. Guild settings can override the on/off state and some channels per server.",
+        (
+            "firmware_notification_channel",
+            "FIRMWARE_FEED_URL",
+            "firmware_check_schedule",
+            "FIRMWARE_REQUEST_TIMEOUT_SECONDS",
+            "FIRMWARE_RELEASE_NOTES_MAX_CHARS",
+            "FIRMWARE_MONITOR_ENABLED",
+            "REDDIT_FEED_CHECK_SCHEDULE",
+            "REDDIT_FEED_NOTIFY_ENABLED",
+            "YOUTUBE_NOTIFY_ENABLED",
+            "YOUTUBE_POLL_INTERVAL_SECONDS",
+            "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
+            "LINKEDIN_NOTIFY_ENABLED",
+            "LINKEDIN_POLL_INTERVAL_SECONDS",
+            "LINKEDIN_REQUEST_TIMEOUT_SECONDS",
+            "BETA_PROGRAM_NOTIFY_ENABLED",
+            "BETA_PROGRAM_POLL_INTERVAL_SECONDS",
+            "BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS",
+            "UPTIME_STATUS_ENABLED",
+            "UPTIME_STATUS_PAGE_URL",
+            "UPTIME_STATUS_TIMEOUT_SECONDS",
+        ),
+    ),
+    (
+        "Web UI Runtime And Security",
+        "Ports, publish bindings, session policy, proxy behavior, TLS files, and web-admin bootstrap settings.",
+        (
+            "WEB_ENABLED",
+            "WEB_BIND_HOST",
+            "WEB_PORT",
+            "WEB_HTTPS_PORT",
+            "WEB_HTTP_PUBLISH",
+            "WEB_HTTPS_PUBLISH",
+            "WEB_SESSION_TIMEOUT_MINUTES",
+            "WEB_DISCORD_CATALOG_TTL_SECONDS",
+            "WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS",
+            "WEB_BULK_ASSIGN_TIMEOUT_SECONDS",
+            "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES",
+            "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT",
+            "WEB_BOT_PROFILE_TIMEOUT_SECONDS",
+            "WEB_AVATAR_MAX_UPLOAD_BYTES",
+            "WEB_RESTART_ENABLED",
+            "WEB_PUBLIC_BASE_URL",
+            "WEB_HTTPS_ENABLED",
+            "WEB_SSL_DIR",
+            "WEB_SSL_CERT_FILE",
+            "WEB_SSL_KEY_FILE",
+            "WEB_SSL_COMMON_NAME",
+            "WEB_GITHUB_WIKI_URL",
+            "WEB_ENV_FILE",
+            "WEB_ADMIN_DEFAULT_USERNAME",
+            "WEB_ADMIN_DEFAULT_PASSWORD",
+            "WEB_ADMIN_SESSION_SECRET",
+            "WEB_SESSION_COOKIE_SECURE",
+            "WEB_SESSION_COOKIE_SAMESITE",
+            "WEB_TRUST_PROXY_HEADERS",
+            "WEB_ENFORCE_CSRF",
+            "WEB_ENFORCE_SAME_ORIGIN_POSTS",
+            "WEB_HARDEN_FILE_PERMISSIONS",
+        ),
+    ),
+)
+ENV_FIELD_SECTION_LOOKUP = {
+    field_key: (section_title, section_description)
+    for section_title, section_description, field_keys in ENV_FIELD_SECTIONS
+    for field_key in field_keys
+}
 
 
 def _normalize_email(email: str) -> str:
@@ -6342,7 +6460,7 @@ def create_web_app(
                         flash(f"Settings saved to {env_file} and applied where supported.", "success")
                     file_values = _load_effective_env_values(env_file, fallback_env_file)
 
-        rows = []
+        grouped_rows: dict[str, list[str]] = {section_title: [] for section_title, _section_description, _field_keys in ENV_FIELD_SECTIONS}
         for key, label, description in ENV_FIELDS:
             value = _read_env_value(file_values, key)
             safe_value = "" if key in SENSITIVE_KEYS else value
@@ -6461,7 +6579,8 @@ def create_web_app(
                     f"<input type='{escape(input_type)}' name='{escape(key)}' "
                     f"value='{escape(safe_value, quote=True)}' placeholder='{escape(placeholder, quote=True)}' />"
                 )
-            rows.append(
+            section_title, _section_description = ENV_FIELD_SECTION_LOOKUP.get(key, ("Other Settings", ""))
+            grouped_rows.setdefault(section_title, []).append(
                 f"""
                 <tr>
                   <td><strong>{escape(label)}</strong><div class="muted mono">{escape(key)}</div></td>
@@ -6479,17 +6598,33 @@ def create_web_app(
         elif catalog_error:
             catalog_note = f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
 
+        section_cards = []
+        for section_title, section_description, _field_keys in ENV_FIELD_SECTIONS:
+            section_rows = grouped_rows.get(section_title, [])
+            if not section_rows:
+                continue
+            section_cards.append(
+                "<div class='card'>"
+                f"<h3>{escape(section_title)}</h3>"
+                f"<p class='muted'>{escape(section_description)}</p>"
+                "<table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
+                f"<tbody>{''.join(section_rows)}</tbody></table>"
+                "</div>"
+            )
+
         body = (
             "<div class='card'><h2>Global Environment Settings</h2>"
-            "<p class='muted'>These map to runtime bot settings shared across all Discord servers and persist in .env.</p>"
+            "<p class='muted'>These settings are shared across all Discord servers managed by this bot. Use this page for global defaults and runtime behavior.</p>"
+            "<p class='muted'>If a setting also exists in <span class='mono'>/admin/guild-settings</span>, the guild value overrides the global default for that one server.</p>"
             + (
                 f"<p class='muted'>Discord dropdown data is loaded from the selected server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong>.</p>"
                 if selected_guild_id
                 else "<p class='muted'>Select a Discord server to populate live channel and role dropdowns.</p>"
             )
             + f"{catalog_note}"
-            + "<form method='post'><table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
-            f"<tbody>{''.join(rows)}</tbody></table><div style='margin-top:14px;'><button class='btn' type='submit'>Save Settings</button></div></form></div>"
+            + "<form method='post'>"
+            + "".join(section_cards)
+            + "<div class='card'><div style='margin-top:4px;'><button class='btn' type='submit'>Save Global Settings</button></div></div></form>"
         )
         return _render_page("Global Settings", body, user["email"], bool(user.get("is_admin")))
 
