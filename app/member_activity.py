@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import csv
 import io
 import json
 import zipfile
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
+
+from app.csv_utils import build_csv_bytes
 
 if TYPE_CHECKING:
     import discord
@@ -752,13 +753,6 @@ class MemberActivityManager:
                 """,
                 (safe_guild_id,),
             ).fetchall()
-
-        def build_csv_bytes(headers: list[str], rows: list[list[object]]):
-            buffer = io.StringIO()
-            writer = csv.writer(buffer)
-            writer.writerow(headers)
-            writer.writerows(rows)
-            return buffer.getvalue().encode("utf-8")
 
         archive_buffer = io.BytesIO()
         with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:

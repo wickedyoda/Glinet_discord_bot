@@ -2,7 +2,6 @@ import asyncio
 import base64
 import binascii
 import concurrent.futures
-import csv
 import hashlib
 import http.client
 import io
@@ -42,6 +41,7 @@ from app.beta_programs import (
 from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
+from app.csv_utils import parse_csv_cells
 from app.feed_web_callbacks import FeedWebCallbacks
 from app.guild_archive import GuildArchiveManager
 from app.guild_state import GuildStateManager
@@ -382,6 +382,17 @@ class WebGuiAuditFilter(logging.Filter):
         return message.startswith("WEB_AUDIT ")
 
 
+class DiscordVoiceWarningFilter(logging.Filter):
+    SUPPRESSED_MESSAGE = "PyNaCl is not installed, voice will NOT be supported"
+
+    def filter(self, record: logging.LogRecord):
+        try:
+            message = str(record.getMessage() or "")
+        except Exception:
+            return True
+        return self.SUPPRESSED_MESSAGE not in message
+
+
 web_gui_audit_handler = SecureTimedRotatingFileHandler(
     WEB_GUI_AUDIT_LOG_FILE,
     retention_days=LOG_RETENTION_DAYS,
@@ -419,6 +430,9 @@ log_permission_notices.extend(
 
 def apply_external_logger_levels():
     logging.getLogger("discord").setLevel(to_logging_level(DISCORD_LOG_LEVEL))
+    discord_client_logger = logging.getLogger("discord.client")
+    if not any(isinstance(existing, DiscordVoiceWarningFilter) for existing in discord_client_logger.filters):
+        discord_client_logger.addFilter(DiscordVoiceWarningFilter())
     logging.getLogger("werkzeug").setLevel(to_logging_level(DISCORD_LOG_LEVEL))
 
 
@@ -4979,24 +4993,7 @@ def normalize_member_lookup_name(value: str):
 
 
 def parse_member_names_from_csv_bytes(data: bytes):
-    decoded = None
-    for encoding in ("utf-8-sig", "utf-8", "latin-1"):
-        try:
-            decoded = data.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    if decoded is None:
-        return []
-
-    names = []
-    reader = csv.reader(io.StringIO(decoded))
-    for row in reader:
-        for cell in row:
-            candidate = cell.strip()
-            if candidate:
-                names.append(candidate)
-    return names
+    return parse_csv_cells(data)
 
 
 def build_member_name_lookup(guild: discord.Guild):
