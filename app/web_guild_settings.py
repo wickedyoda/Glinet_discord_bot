@@ -225,32 +225,48 @@ def render_guild_settings_body(
     )
     allowed_welcome_extensions_label = ", ".join(ext.upper().lstrip(".") for ext in WELCOME_IMAGE_ALLOWED_EXTENSIONS)
 
-    return f"""
-        <div class="card">
-          <h2>Guild Settings</h2>
-          <p class="muted">These values apply only to <strong>{escape(guild_name)}</strong>. Leave a field blank to use the global fallback.</p>
-          <p class="muted">Welcome message placeholders: <span class="mono">{{member_mention}}</span>, <span class="mono">{{member_name}}</span>, <span class="mono">{{display_name}}</span>, <span class="mono">{{guild_name}}</span>, <span class="mono">{{member_count}}</span>, <span class="mono">{{account_created_at}}</span>.</p>
-          <p class="muted">Welcome image uploads accept {escape(allowed_welcome_extensions_label)}. Max size: {format_byte_size(max_welcome_image_upload_bytes)}. Allowed dimensions: {WELCOME_IMAGE_MIN_WIDTH}x{WELCOME_IMAGE_MIN_HEIGHT} up to {WELCOME_IMAGE_MAX_WIDTH}x{WELCOME_IMAGE_MAX_HEIGHT}. Recommended: landscape artwork around 1200x675 for clearer in-chat presentation.</p>
-          {catalog_note}
-          <form method="post" enctype="multipart/form-data">
-            <table>
-              <thead><tr><th>Setting</th><th>Configured Value</th><th>Effective Value</th></tr></thead>
-              <tbody>
+    def build_section(title: str, note: str, rows: list[str]) -> str:
+        return (
+            "<div class='card'>"
+            f"<h3>{escape(title)}</h3>"
+            f"<p class='muted'>{escape(note)}</p>"
+            "<table><thead><tr><th>Setting</th><th>Configured Value</th><th>Effective Value</th></tr></thead>"
+            f"<tbody>{''.join(rows)}</tbody></table>"
+            "</div>"
+        )
+
+    routing_rows = [
+        f"""
                 <tr>
                   <td><strong>Bot Log Channel</strong><div class="muted mono">bot_log_channel_id</div></td>
                   <td>{bot_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("bot_log_channel_id") or ""))}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("bot_log_channel_id") or "")) or "Use global default"}</td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Moderation Log Channel</strong><div class="muted mono">mod_log_channel_id</div></td>
                   <td>{mod_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("mod_log_channel_id") or ""))}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("mod_log_channel_id") or "")) or "Use global default"}</td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Firmware Notify Channel</strong><div class="muted mono">firmware_notify_channel_id</div></td>
                   <td>{firmware_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("firmware_notify_channel_id") or ""))}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("firmware_notify_channel_id") or "")) or "Use global default"}</td>
                 </tr>
+                """,
+        f"""
+                <tr>
+                  <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
+                  <td>{access_role_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("access_role_id") or "")) or "Disabled"}</td>
+                </tr>
+                """,
+    ]
+    monitor_rows = [
+        f"""
                 <tr>
                   <td><strong>Firmware Monitor</strong><div class="muted mono">firmware_monitor_enabled</div></td>
                   <td>
@@ -259,6 +275,8 @@ def render_guild_settings_body(
                   </td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("firmware_monitor_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(firmware_monitor_override))}</div></td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Reddit Feed Monitor</strong><div class="muted mono">reddit_feed_notify_enabled</div></td>
                   <td>
@@ -267,6 +285,8 @@ def render_guild_settings_body(
                   </td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("reddit_feed_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(reddit_feed_override))}</div></td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>YouTube Notifications</strong><div class="muted mono">youtube_notify_enabled</div></td>
                   <td>
@@ -275,6 +295,8 @@ def render_guild_settings_body(
                   </td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("youtube_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(youtube_notify_override))}</div></td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>LinkedIn Notifications</strong><div class="muted mono">linkedin_notify_enabled</div></td>
                   <td>
@@ -283,6 +305,8 @@ def render_guild_settings_body(
                   </td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("linkedin_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(linkedin_notify_override))}</div></td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Beta Program Notifications</strong><div class="muted mono">beta_program_notify_enabled</div></td>
                   <td>
@@ -291,31 +315,40 @@ def render_guild_settings_body(
                   </td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("beta_program_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(beta_program_notify_override))}</div></td>
                 </tr>
-                <tr>
-                  <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
-                  <td>{access_role_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("access_role_id") or ""))}</td>
-                </tr>
+                """,
+    ]
+    welcome_message_rows = [
+        f"""
                 <tr>
                   <td><strong>Welcome Channel</strong><div class="muted mono">welcome_channel_id</div></td>
                   <td>{welcome_channel_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("welcome_channel_id") or ""))}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("welcome_channel_id") or "")) or "Disabled"}</td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Welcome Channel Message</strong><div class="muted mono">welcome_channel_message</div></td>
                   <td><textarea name="welcome_channel_message" rows="4" placeholder="Welcome to {{guild_name}}, {{member_mention}}.">{escape(welcome_channel_message)}</textarea></td>
                   <td class="muted">{escape(str(effective_settings.get("welcome_channel_message") or "")) or "Default welcome channel message"}</td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Send Welcome DM</strong><div class="muted mono">welcome_dm_enabled</div></td>
                   <td><label><input type="checkbox" name="welcome_dm_enabled" value="1"{' checked' if welcome_dm_enabled else ''} /> Enable DM on join</label></td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("welcome_dm_enabled") or 0) > 0 else 'disabled'}</td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Welcome DM Message</strong><div class="muted mono">welcome_dm_message</div></td>
                   <td><textarea name="welcome_dm_message" rows="4" placeholder="Welcome to {{guild_name}}, {{member_name}}. We&#39;re glad you&#39;re here.">{escape(welcome_dm_message)}</textarea></td>
                   <td class="muted">{escape(str(effective_settings.get("welcome_dm_message") or "")) or "Default welcome DM message"}</td>
                 </tr>
+                """,
+    ]
+    welcome_image_rows = [
+        f"""
                 <tr>
                   <td><strong>Welcome Image</strong><div class="muted mono">welcome_image_file</div></td>
                   <td>
@@ -330,18 +363,37 @@ def render_guild_settings_body(
                     <div class="mono">{escape(welcome_image_dimensions_label)}</div>
                   </td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Attach Image In Channel</strong><div class="muted mono">welcome_channel_image_enabled</div></td>
                   <td><label><input type="checkbox" name="welcome_channel_image_enabled" value="1"{' checked' if welcome_channel_image_enabled else ''} /> Attach uploaded image to channel welcome</label></td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("welcome_channel_image_enabled") or 0) > 0 else 'disabled'}</td>
                 </tr>
+                """,
+        f"""
                 <tr>
                   <td><strong>Attach Image In DM</strong><div class="muted mono">welcome_dm_image_enabled</div></td>
                   <td><label><input type="checkbox" name="welcome_dm_image_enabled" value="1"{' checked' if welcome_dm_image_enabled else ''} /> Attach uploaded image to welcome DM</label></td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("welcome_dm_image_enabled") or 0) > 0 else 'disabled'}</td>
                 </tr>
-              </tbody>
-            </table>
+                """,
+    ]
+
+    return f"""
+        <div class="card">
+          <h2>Guild Settings</h2>
+          <p class="muted">These values apply only to <strong>{escape(guild_name)}</strong>. Use this page when one server needs channels, monitor behavior, or welcome automation that differ from the global defaults.</p>
+          <p class="muted"><strong>Configured Value</strong> stores the guild-specific choice on this page. <strong>Effective Value</strong> shows what the bot actually uses after applying global defaults and guild overrides together.</p>
+          <p class="muted">For channel selectors, leaving the configured value blank keeps the global default. For monitor toggles, leave <strong>Override global setting</strong> unchecked to keep the global default.</p>
+          <p class="muted">Welcome message placeholders: <span class="mono">{{member_mention}}</span>, <span class="mono">{{member_name}}</span>, <span class="mono">{{display_name}}</span>, <span class="mono">{{guild_name}}</span>, <span class="mono">{{member_count}}</span>, <span class="mono">{{account_created_at}}</span>.</p>
+          <p class="muted">Welcome image uploads accept {escape(allowed_welcome_extensions_label)}. Max size: {format_byte_size(max_welcome_image_upload_bytes)}. Allowed dimensions: {WELCOME_IMAGE_MIN_WIDTH}x{WELCOME_IMAGE_MIN_HEIGHT} up to {WELCOME_IMAGE_MAX_WIDTH}x{WELCOME_IMAGE_MAX_HEIGHT}. Recommended: landscape artwork around 1200x675 for clearer in-chat presentation.</p>
+          {catalog_note}
+          <form method="post" enctype="multipart/form-data">
+            {build_section("Channel Routing And Access", "Use this section for guild-specific channels and the optional self-assign role. Blank channel fields keep the global default from /admin/settings.", routing_rows)}
+            {build_section("Monitor Overrides", "These toggles only affect this guild. Leave Override global setting unchecked to inherit the global default.", monitor_rows)}
+            {build_section("Welcome Messages", "Configure the public join message and optional DM. Blank message fields use the built-in defaults.", welcome_message_rows)}
+            {build_section("Welcome Images", "Upload one reusable welcome image for this guild and decide whether it is attached in the channel post, the DM, or both.", welcome_image_rows)}
             <div style="margin-top:14px;">
               <button class="btn" type="submit">Save Guild Settings</button>
             </div>
