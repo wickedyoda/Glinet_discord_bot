@@ -39,6 +39,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
+from app.web_audit import should_log_web_audit_event
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
@@ -2891,7 +2892,12 @@ def create_web_app(
                             str(request.headers.get("X-Forwarded-Proto", "") or ""),
                             _client_ip(),
                         )
-        if logger and request.endpoint != "healthz":
+        authenticated = bool(session.get("auth_email"))
+        if logger and should_log_web_audit_event(
+            endpoint=request.endpoint,
+            status_code=int(getattr(response, "status_code", 0) or 0),
+            authenticated=authenticated,
+        ):
             started = getattr(g, "request_started_monotonic", None)
             if started is None:
                 duration_ms = -1

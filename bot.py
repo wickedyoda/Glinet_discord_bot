@@ -67,6 +67,7 @@ from app.role_access_web_callbacks import RoleAccessWebCallbacks
 from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
 from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
+from app.youtube_monitor import YouTubeFeedError, build_youtube_feed_error
 from web_admin import start_web_admin_interface
 
 
@@ -1403,6 +1404,9 @@ def ensure_db_schema():
                 last_video_id TEXT NOT NULL DEFAULT '',
                 last_video_title TEXT NOT NULL DEFAULT '',
                 last_published_at TEXT NOT NULL DEFAULT '',
+                last_checked_at TEXT NOT NULL DEFAULT '',
+                last_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
@@ -1746,6 +1750,9 @@ def ensure_db_schema():
                     last_video_id TEXT NOT NULL DEFAULT '',
                     last_video_title TEXT NOT NULL DEFAULT '',
                     last_published_at TEXT NOT NULL DEFAULT '',
+                    last_checked_at TEXT NOT NULL DEFAULT '',
+                    last_posted_at TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
                     enabled INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -1764,6 +1771,9 @@ def ensure_db_schema():
                     last_video_id,
                     last_video_title,
                     last_published_at,
+                    last_checked_at,
+                    last_posted_at,
+                    last_error,
                     enabled,
                     created_at,
                     updated_at,
@@ -1781,6 +1791,9 @@ def ensure_db_schema():
                     last_video_id,
                     last_video_title,
                     last_published_at,
+                    '',
+                    '',
+                    '',
                     enabled,
                     created_at,
                     updated_at,
@@ -1793,6 +1806,13 @@ def ensure_db_schema():
                     ON youtube_subscriptions(enabled);
                 """
             )
+        youtube_subscription_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(youtube_subscriptions)").fetchall()}
+        if "last_checked_at" not in youtube_subscription_columns:
+            conn.execute("ALTER TABLE youtube_subscriptions ADD COLUMN last_checked_at TEXT NOT NULL DEFAULT ''")
+        if "last_posted_at" not in youtube_subscription_columns:
+            conn.execute("ALTER TABLE youtube_subscriptions ADD COLUMN last_posted_at TEXT NOT NULL DEFAULT ''")
+        if "last_error" not in youtube_subscription_columns:
+            conn.execute("ALTER TABLE youtube_subscriptions ADD COLUMN last_error TEXT NOT NULL DEFAULT ''")
 
         member_activity_summary_columns = {
             str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_summary)").fetchall()
@@ -2617,8 +2637,8 @@ def list_youtube_subscriptions(
     safe_guild_id = normalize_target_guild_id(guild_id)
     query = (
         "SELECT id, guild_id, source_url, channel_id, channel_title, target_channel_id, "
-        "target_channel_name, last_video_id, last_video_title, last_published_at, enabled, "
-        "created_at, updated_at, created_by_email, updated_by_email "
+        "target_channel_name, last_video_id, last_video_title, last_published_at, last_checked_at, "
+        "last_posted_at, last_error, enabled, created_at, updated_at, created_by_email, updated_by_email "
         "FROM youtube_subscriptions WHERE guild_id = ?"
     )
     params = [safe_guild_id]
@@ -2638,7 +2658,8 @@ def get_youtube_subscription(subscription_id: int, guild_id: int | None = None):
         row = conn.execute(
             """
             SELECT id, guild_id, source_url, channel_id, channel_title, target_channel_id,
-                   target_channel_name, last_video_id, last_video_title, last_published_at,
+                   target_channel_name, last_video_id, last_video_title, last_published_at, last_checked_at,
+                   last_posted_at, last_error,
                    enabled, created_at, updated_at, created_by_email, updated_by_email
             FROM youtube_subscriptions
             WHERE id = ? AND guild_id = ?
@@ -2669,10 +2690,11 @@ def create_or_update_youtube_subscription(
             """
             INSERT INTO youtube_subscriptions (
                 guild_id, source_url, channel_id, channel_title, target_channel_id,
-                target_channel_name, last_video_id, last_video_title, last_published_at,
+                target_channel_name, last_video_id, last_video_title, last_published_at, last_checked_at,
+                last_posted_at, last_error,
                 enabled, created_at, updated_at, created_by_email, updated_by_email
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', '', 1, ?, ?, ?, ?)
             ON CONFLICT(guild_id, channel_id, target_channel_id) DO UPDATE SET
                 source_url=excluded.source_url,
                 channel_title=excluded.channel_title,
@@ -2680,6 +2702,9 @@ def create_or_update_youtube_subscription(
                 last_video_id=excluded.last_video_id,
                 last_video_title=excluded.last_video_title,
                 last_published_at=excluded.last_published_at,
+                last_checked_at='',
+                last_posted_at='',
+                last_error='',
                 enabled=1,
                 updated_at=excluded.updated_at,
                 updated_by_email=excluded.updated_by_email
@@ -2732,6 +2757,9 @@ def update_youtube_subscription(
                 last_video_id = ?,
                 last_video_title = ?,
                 last_published_at = ?,
+                last_checked_at = '',
+                last_posted_at = '',
+                last_error = '',
                 enabled = 1,
                 updated_at = ?,
                 updated_by_email = ?
@@ -2772,23 +2800,48 @@ def update_youtube_subscription_runtime_state(
     subscription_id: int,
     *,
     guild_id: int | None,
-    last_video_id: str,
-    last_video_title: str,
-    last_published_at: str,
+    last_video_id: str | None = None,
+    last_video_title: str | None = None,
+    last_published_at: str | None = None,
+    last_checked_at: str | None = None,
+    last_posted_at: str | None = None,
+    last_error: str | None = None,
+    enabled: int | None = None,
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
+    if (
+        last_video_id is None
+        and last_video_title is None
+        and last_published_at is None
+        and last_checked_at is None
+        and last_posted_at is None
+        and last_error is None
+        and enabled is None
+    ):
+        return
     conn = get_db_connection()
     with db_lock:
         conn.execute(
             """
             UPDATE youtube_subscriptions
-            SET last_video_id = ?, last_video_title = ?, last_published_at = ?, updated_at = ?
+            SET last_video_id = COALESCE(?, last_video_id),
+                last_video_title = COALESCE(?, last_video_title),
+                last_published_at = COALESCE(?, last_published_at),
+                last_checked_at = COALESCE(?, last_checked_at),
+                last_posted_at = COALESCE(?, last_posted_at),
+                last_error = COALESCE(?, last_error),
+                enabled = COALESCE(?, enabled),
+                updated_at = ?
             WHERE id = ? AND guild_id = ?
             """,
             (
-                str(last_video_id or "").strip(),
-                str(last_video_title or "").strip(),
-                str(last_published_at or "").strip(),
+                str(last_video_id or "").strip() if last_video_id is not None else None,
+                str(last_video_title or "").strip() if last_video_title is not None else None,
+                str(last_published_at or "").strip() if last_published_at is not None else None,
+                str(last_checked_at or "").strip() if last_checked_at is not None else None,
+                str(last_posted_at or "").strip() if last_posted_at is not None else None,
+                str(last_error or "").strip() if last_error is not None else None,
+                1 if int(enabled) > 0 else 0 if enabled is not None else None,
                 datetime.now(UTC).isoformat(),
                 int(subscription_id),
                 safe_guild_id,
@@ -5521,8 +5574,15 @@ async def apply_bot_profile_updates_async(
             try:
                 await current_user.edit(username=username)
                 updated_username = True
-            except discord.HTTPException:
-                logger.exception("Failed to update bot username")
+            except discord.HTTPException as exc:
+                if int(getattr(exc, "status", 0) or 0) == 400:
+                    logger.warning(
+                        "Bot username update rejected by Discord validation: username=%r code=%s",
+                        username,
+                        getattr(exc, "code", "unknown"),
+                    )
+                else:
+                    logger.exception("Failed to update bot username")
                 errors.append("Failed to update username. Discord may enforce rename limits; try again later.")
 
     if server_nickname is not BOT_SERVER_NICKNAME_UNSET:
@@ -6247,7 +6307,7 @@ def resolve_youtube_channel_id(source_url: str):
 
 def fetch_latest_youtube_video(channel_id: str):
     if not YOUTUBE_CHANNEL_ID_PATTERN.fullmatch(channel_id):
-        raise RuntimeError("Invalid YouTube channel ID.")
+        raise YouTubeFeedError("Invalid YouTube channel ID.", disable_subscription=True)
     feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
     status, _, body_text = fetch_text_url(
         feed_url,
@@ -6255,11 +6315,11 @@ def fetch_latest_youtube_video(channel_id: str):
         accept="application/atom+xml",
     )
     if status >= 400:
-        raise RuntimeError(f"YouTube feed returned HTTP {status}.")
+        raise build_youtube_feed_error(status)
     try:
         root = ET.fromstring(body_text)
     except ET.ParseError as exc:
-        raise RuntimeError("YouTube feed returned invalid XML.") from exc
+        raise YouTubeFeedError("YouTube feed returned invalid XML.") from exc
     ns = {
         "atom": "http://www.w3.org/2005/Atom",
         "yt": "http://www.youtube.com/xml/schemas/2015",
@@ -6267,7 +6327,7 @@ def fetch_latest_youtube_video(channel_id: str):
     channel_title = root.findtext("atom:title", default="Unknown Channel", namespaces=ns).strip()
     entry = root.find("atom:entry", ns)
     if entry is None:
-        raise RuntimeError("YouTube feed has no entries.")
+        raise YouTubeFeedError("YouTube feed has no entries.")
     video_id = entry.findtext("yt:videoId", default="", namespaces=ns).strip()
     video_title = entry.findtext("atom:title", default="Untitled", namespaces=ns).strip()
     published_at = entry.findtext("atom:published", default="", namespaces=ns).strip()
@@ -6276,9 +6336,9 @@ def fetch_latest_youtube_video(channel_id: str):
     if not video_url and video_id:
         video_url = f"https://www.youtube.com/watch?v={video_id}"
     if not video_id:
-        raise RuntimeError("YouTube feed entry is missing video ID.")
+        raise YouTubeFeedError("YouTube feed entry is missing video ID.")
     if not video_url:
-        raise RuntimeError("YouTube feed entry is missing video URL.")
+        raise YouTubeFeedError("YouTube feed entry is missing video URL.")
     thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
     return {
         "channel_id": channel_id,
@@ -7343,6 +7403,7 @@ async def process_youtube_subscription(subscription: dict):
     channel_id = str(subscription.get("channel_id") or "").strip()
     target_channel_id = int(subscription.get("target_channel_id") or 0)
     last_video_id = str(subscription.get("last_video_id") or "").strip()
+    checked_at = datetime.now(UTC).isoformat()
     if subscription_id <= 0 or guild_id <= 0 or not channel_id or target_channel_id <= 0:
         return
     if not is_managed_guild_id(guild_id):
@@ -7350,12 +7411,68 @@ async def process_youtube_subscription(subscription: dict):
     if not get_effective_guild_feature_enabled(guild_id, "youtube_notify_enabled", YOUTUBE_NOTIFY_ENABLED):
         return
 
-    latest = await asyncio.to_thread(fetch_latest_youtube_video, channel_id)
+    try:
+        latest = await asyncio.to_thread(fetch_latest_youtube_video, channel_id)
+    except YouTubeFeedError as exc:
+        update_youtube_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error=str(exc),
+            enabled=0 if exc.disable_subscription else None,
+        )
+        if exc.disable_subscription:
+            logger.warning(
+                "Disabled YouTube subscription id=%s guild_id=%s channel_id=%s after feed error: %s",
+                subscription_id,
+                guild_id,
+                channel_id,
+                exc,
+            )
+        else:
+            logger.warning(
+                "YouTube subscription poll failed for id=%s guild_id=%s channel_id=%s: %s",
+                subscription_id,
+                guild_id,
+                channel_id,
+                exc,
+            )
+        return
+    except requests.RequestException:
+        update_youtube_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error="Request to YouTube failed.",
+        )
+        logger.exception("YouTube subscription request failed for id=%s", subscription_id)
+        return
+    except Exception:
+        update_youtube_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error="Unexpected YouTube polling error.",
+        )
+        logger.exception("Unexpected YouTube subscription failure for id=%s", subscription_id)
+        return
     if latest["video_id"] == last_video_id:
+        update_youtube_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error="",
+        )
         return
 
     notify_channel = await get_text_channel(bot, target_channel_id)
     if notify_channel is None or notify_channel.guild.id != guild_id:
+        update_youtube_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error="Target channel is unavailable.",
+        )
         logger.warning(
             "Notify channel %s not found for YouTube subscription %s",
             target_channel_id,
@@ -7370,7 +7487,30 @@ async def process_youtube_subscription(subscription: dict):
     )
     embed.set_image(url=latest["thumbnail_url"])
     embed.set_footer(text="YouTube Notification")
-    await notify_channel.send(embed=embed)
+    try:
+        await notify_channel.send(embed=embed)
+    except discord.Forbidden:
+        update_youtube_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error="Bot does not have permission to post in the target channel.",
+        )
+        logger.warning(
+            "No permission to post YouTube subscription %s into channel %s",
+            subscription_id,
+            notify_channel.id,
+        )
+        return
+    except discord.HTTPException:
+        update_youtube_subscription_runtime_state(
+            subscription_id,
+            guild_id=guild_id,
+            last_checked_at=checked_at,
+            last_error="Discord API error while posting YouTube notification.",
+        )
+        logger.exception("Failed to post YouTube notification for subscription %s", subscription_id)
+        return
 
     update_youtube_subscription_runtime_state(
         subscription_id,
@@ -7378,6 +7518,9 @@ async def process_youtube_subscription(subscription: dict):
         last_video_id=latest["video_id"],
         last_video_title=latest["video_title"],
         last_published_at=latest["published_at"],
+        last_checked_at=checked_at,
+        last_posted_at=datetime.now(UTC).isoformat(),
+        last_error="",
     )
     record_action_safe(
         action="youtube_notify",
@@ -7397,13 +7540,7 @@ async def poll_youtube_subscriptions():
     if not subscriptions:
         return
     for subscription in subscriptions:
-        try:
-            await process_youtube_subscription(subscription)
-        except Exception:
-            logger.exception(
-                "YouTube subscription poll failed for id=%s",
-                subscription.get("id"),
-            )
+        await process_youtube_subscription(subscription)
 
 
 async def youtube_monitor_loop():
