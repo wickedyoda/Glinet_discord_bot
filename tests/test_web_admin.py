@@ -368,6 +368,66 @@ def _make_app(tmp_path: Path):
             return get_linkedin_subscriptions(safe_guild_id) | {"message": "LinkedIn subscription saved."}
         return {"ok": False, "error": "Invalid LinkedIn subscription action."}
 
+    role_access_state = [
+        {
+            "guild_id": 1234567890,
+            "code": "531580",
+            "invite_code": "Xjkd246SYq",
+            "invite_url": "https://discord.gg/Xjkd246SYq",
+            "role_id": 111,
+            "created_at": "2026-03-20T00:00:00+00:00",
+            "updated_at": "2026-03-20T00:00:00+00:00",
+            "status": "active",
+        }
+    ]
+
+    def get_role_access_mappings(guild_id):
+        safe_guild_id = int(guild_id)
+        return {"ok": True, "mappings": [dict(item) for item in role_access_state if int(item["guild_id"]) == safe_guild_id]}
+
+    def manage_role_access_mappings(payload, actor_email, guild_id):
+        safe_guild_id = int(guild_id)
+        action = str(payload.get("action") or "").strip().lower()
+        if action == "set_status":
+            code = str(payload.get("code") or "").strip()
+            invite_code = str(payload.get("invite") or "").strip()
+            status = str(payload.get("status") or "").strip().lower()
+            for item in role_access_state:
+                if int(item["guild_id"]) == safe_guild_id and item["code"] == code and item["invite_code"] == invite_code:
+                    item["status"] = status
+                    return get_role_access_mappings(safe_guild_id) | {"message": f"Role access mapping marked {status}."}
+            return {"ok": False, "error": "Role access mapping was not found."}
+        if action == "save":
+            code = str(payload.get("code") or "").strip()
+            invite_code = str(payload.get("invite") or "").strip()
+            role_id = int(str(payload.get("role_id") or "0"))
+            status = str(payload.get("status") or "active").strip().lower() or "active"
+            for item in role_access_state:
+                if int(item["guild_id"]) == safe_guild_id and item["code"] == code:
+                    item.update(
+                        {
+                            "invite_code": invite_code,
+                            "invite_url": f"https://discord.gg/{invite_code}",
+                            "role_id": role_id,
+                            "status": status,
+                        }
+                    )
+                    return get_role_access_mappings(safe_guild_id) | {"message": "Role access mapping saved."}
+            role_access_state.append(
+                {
+                    "guild_id": safe_guild_id,
+                    "code": code,
+                    "invite_code": invite_code,
+                    "invite_url": f"https://discord.gg/{invite_code}",
+                    "role_id": role_id,
+                    "created_at": "",
+                    "updated_at": "",
+                    "status": status,
+                }
+            )
+            return get_role_access_mappings(safe_guild_id) | {"message": "Role access mapping saved."}
+        return {"ok": False, "error": "Invalid role access action."}
+
     app = create_web_app(
         data_dir=str(tmp_path),
         env_file_path=str(env_file),
@@ -502,6 +562,8 @@ def _make_app(tmp_path: Path):
             "source_url": "https://www.gl-inet.com/beta-testing/#register",
             "subscriptions": [],
         },
+        on_get_role_access_mappings=get_role_access_mappings,
+        on_manage_role_access_mappings=manage_role_access_mappings,
         on_leave_guild=lambda guild_id, actor_email: {
             "ok": True,
             "message": f"Bot left guild {guild_id} by {actor_email}.",
@@ -625,6 +687,7 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         "/admin/youtube",
         "/admin/linkedin",
         "/admin/beta-programs",
+        "/admin/role-access",
         "/admin/documentation",
         "/admin/wiki",
         "/status",
@@ -705,6 +768,70 @@ def test_linkedin_page_renders_form(tmp_path: Path):
     assert b"LinkedIn Profiles" in response.data
     assert b"Save Subscription" in response.data
     assert b'value="edit"' in response.data
+
+
+def test_role_access_page_renders_mappings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/role-access", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Role Access Mappings" in response.data
+    assert b"531580" in response.data
+    assert b"Xjkd246SYq" in response.data
+
+
+def test_admin_can_pause_role_access_mapping(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/role-access",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/role-access"),
+            "action": "set_status",
+            "code": "531580",
+            "invite": "Xjkd246SYq",
+            "status": "paused",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Role access mapping marked paused." in response.data
+    assert b"Paused" in response.data
+
+
+def test_admin_can_add_role_access_mapping(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/role-access",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/role-access"),
+            "action": "save",
+            "code": "654321",
+            "invite": "newInvite123",
+            "role_id": "111",
+            "status": "active",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Role access mapping saved." in response.data
+    assert b"654321" in response.data
+    assert b"newInvite123" in response.data
 
 
 def test_reddit_page_renders_edit_controls(tmp_path: Path):

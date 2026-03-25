@@ -27,6 +27,10 @@ Per-command overrides are configured in:
 | `/enter_role` | Slash | Member/Public | none | Opens a modal to redeem a 6-digit code and assigns mapped role |
 | `/getaccess` | Slash | Member/Public | none | Assigns default access role |
 
+Web variation:
+
+- `/admin/role-access` shows stored invite/code mappings for the selected guild and allows pause, disable, activate, and manual restore/add actions.
+
 ## Bulk CSV Role Assignment
 
 | Command | Type | Default Access | Parameters | Notes |

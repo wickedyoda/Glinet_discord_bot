@@ -116,6 +116,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
 - LinkedIn profile management page lets admins map public LinkedIn profiles to Discord text channels for new-post notifications.
 - GL.iNet beta program page lets admins map the public GL.iNet beta-testing page to Discord text channels for added/removed program notifications.
+- Role access page lets admins review invite/code/role mappings, pause or disable them individually, and manually restore a mapping with an existing Discord invite.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
 - Member activity page shows top-20 member activity windows for the selected server.
 - Member activity exports are generated for the selected server only and match the currently retained 90-day dataset.
@@ -158,6 +159,28 @@ UI forms include show/hide password toggles and validation feedback.
   - welcome channel message
   - welcome DM enable/disable
   - welcome DM message
+
+### `/admin/role-access`
+
+- Scoped to the selected server
+- Shows each stored role-access mapping with:
+  - 6-digit code
+  - invite link
+  - invite code
+  - target role
+  - current status
+- Quick actions:
+  - `Activate`
+  - `Pause`
+  - `Disable`
+- Manual restore/add form lets admins enter:
+  - 6-digit code
+  - existing Discord invite URL or invite code
+  - target role
+  - initial status
+- Paused and disabled entries stop working for both:
+  - join-by-invite role assignment
+  - `/enter_role`
   - uploaded welcome image
   - image attachment enable/disable for channel and DM
 - Bot log, moderation log, and firmware notification channels can be set here per guild

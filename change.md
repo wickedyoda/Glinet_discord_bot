@@ -11,6 +11,27 @@ All notable changes to this project are documented in this file.
 - Added `scripts/export_github_wiki.sh` to export the repo `wiki/` directory into the standalone GitHub wiki repository layout.
 - Published the current wiki content to `https://github.com/wickedyoda/Glinet_discord_bot.wiki.git`.
 
+## [2026-03-25] - Web Role Access Management
+
+### Added
+
+- Added `/admin/role-access` for guild-scoped management of invite/code role access mappings.
+- The new page shows the stored:
+  - invite link
+  - invite code
+  - 6-digit code
+  - target role
+  - current status
+- Added per-mapping status controls:
+  - `Activate`
+  - `Pause`
+  - `Disable`
+- Added manual web restore/add flow for invite/code mappings using an existing Discord invite.
+
+### Changed
+
+- `/enter_role` and join-by-invite role assignment now respect role-access mapping status and only honor `active` mappings.
+
 ## [2026-03-23] - Welcome Automation Enhancements
 
 ### Added
