@@ -46,6 +46,8 @@ This page lists all supported environment variables, defaults, and accepted opti
 
 ## Utility Integrations
 
+Global monitor toggles in this section act as defaults. Selected servers can override them in `/admin/guild-settings`.
+
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|
 | `COMMAND_RESPONSES_EPHEMERAL` | `false` | Boolean | When true, utility slash-command replies default to ephemeral where supported |
@@ -77,6 +79,8 @@ This page lists all supported environment variables, defaults, and accepted opti
 
 ## Moderation
 
+Global channel IDs in this section act as defaults. Selected servers can override them in `/admin/guild-settings`.
+
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|
 | `MODERATOR_ROLE_ID` | `1294957416294645771` | Integer role ID | Moderator role gate |
@@ -94,6 +98,8 @@ This page lists all supported environment variables, defaults, and accepted opti
 | `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT` | `50` | Integer, `>= 1` | Max items shown per result section |
 
 ## Firmware Monitor
+
+Global firmware channel and schedule values in this section act as defaults. Selected servers can override the target channel and on/off state in `/admin/guild-settings`.
 
 | Variable | Default | Allowed / Options | Notes |
 |---|---|---|---|

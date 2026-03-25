@@ -56,6 +56,11 @@ def _make_app(tmp_path: Path):
         "bot_log_channel_id": "",
         "mod_log_channel_id": "",
         "firmware_notify_channel_id": "",
+        "firmware_monitor_enabled": "-1",
+        "reddit_feed_notify_enabled": "-1",
+        "youtube_notify_enabled": "-1",
+        "linkedin_notify_enabled": "-1",
+        "beta_program_notify_enabled": "-1",
         "access_role_id": "",
         "welcome_channel_id": "",
         "welcome_dm_enabled": "",
@@ -86,6 +91,11 @@ def _make_app(tmp_path: Path):
                 "bot_log_channel_id": str(payload.get("bot_log_channel_id") or "").strip(),
                 "mod_log_channel_id": str(payload.get("mod_log_channel_id") or "").strip(),
                 "firmware_notify_channel_id": str(payload.get("firmware_notify_channel_id") or "").strip(),
+                "firmware_monitor_enabled": str(payload.get("firmware_monitor_enabled", guild_settings_state.get("firmware_monitor_enabled", "-1"))),
+                "reddit_feed_notify_enabled": str(payload.get("reddit_feed_notify_enabled", guild_settings_state.get("reddit_feed_notify_enabled", "-1"))),
+                "youtube_notify_enabled": str(payload.get("youtube_notify_enabled", guild_settings_state.get("youtube_notify_enabled", "-1"))),
+                "linkedin_notify_enabled": str(payload.get("linkedin_notify_enabled", guild_settings_state.get("linkedin_notify_enabled", "-1"))),
+                "beta_program_notify_enabled": str(payload.get("beta_program_notify_enabled", guild_settings_state.get("beta_program_notify_enabled", "-1"))),
                 "access_role_id": str(payload.get("access_role_id") or "").strip(),
                 "welcome_channel_id": str(payload.get("welcome_channel_id") or "").strip(),
                 "welcome_dm_enabled": str(payload.get("welcome_dm_enabled") or "").strip(),
@@ -885,8 +895,8 @@ def test_command_permissions_page_supports_disabled_mode(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"Command Permissions" in response.data
-    assert b"Disabled" in response.data
-    assert b'value="disabled" selected' in response.data
+    assert b'name="enabled__ping"' in response.data
+    assert b"Enabled" in response.data
 
 
 def test_dashboard_shows_command_status_for_selected_guild(tmp_path: Path):
@@ -919,6 +929,15 @@ def test_admin_can_save_guild_settings(tmp_path: Path):
             "bot_log_channel_id": "9999",
             "mod_log_channel_id": "9999",
             "firmware_notify_channel_id": "9999",
+            "firmware_monitor_enabled__override": "1",
+            "firmware_monitor_enabled": "1",
+            "reddit_feed_notify_enabled__override": "1",
+            "reddit_feed_notify_enabled": "1",
+            "youtube_notify_enabled__override": "1",
+            "youtube_notify_enabled": "1",
+            "linkedin_notify_enabled__override": "1",
+            "linkedin_notify_enabled": "1",
+            "beta_program_notify_enabled__override": "1",
             "access_role_id": "111",
             "welcome_channel_id": "9999",
             "welcome_dm_enabled": "1",
@@ -941,6 +960,11 @@ def test_admin_can_save_guild_settings(tmp_path: Path):
     assert b"Current value (not found): 9999" not in response.data
     assert b"welcome_channel_message" in response.data
     assert b"welcome_dm_message" in response.data
+    assert b"Firmware Monitor" in response.data
+    assert b"Reddit Feed Monitor" in response.data
+    assert b"YouTube Notifications" in response.data
+    assert b"LinkedIn Notifications" in response.data
+    assert b"Beta Program Notifications" in response.data
     assert b"Allowed dimensions: 64x64 up to 4096x4096" in response.data
 
 

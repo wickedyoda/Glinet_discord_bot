@@ -5502,8 +5502,10 @@ def create_web_app(
                     role_ids_payload = selected_role_ids if role_options else manual_role_ids
                     if role_options and not selected_role_ids and manual_role_ids.strip():
                         role_ids_payload = manual_role_ids
+                    enabled = request.form.get(f"enabled__{command_key}") == "1"
+                    selected_mode = request.form.get(f"mode__{command_key}", "default")
                     command_updates[command_key] = {
-                        "mode": request.form.get(f"mode__{command_key}", "default"),
+                        "mode": selected_mode if enabled else "disabled",
                         "role_ids": role_ids_payload,
                     }
                 response = on_save_command_permissions({"commands": command_updates}, user["email"], selected_guild_id)
@@ -5548,8 +5550,8 @@ def create_web_app(
             role_ids_value = ",".join(str(value) for value in role_ids)
             default_selected = " selected" if mode == "default" else ""
             public_selected = " selected" if mode == "public" else ""
-            disabled_selected = " selected" if mode == "disabled" else ""
             custom_selected = " selected" if mode == "custom_roles" else ""
+            enabled_checked = "" if mode == "disabled" else " checked"
             if role_options:
                 role_input_html = (
                     _render_multi_select_input(
@@ -5578,10 +5580,12 @@ def create_web_app(
                   </td>
                   <td class="muted">{escape(default_policy_label)}</td>
                   <td>
+                    <label><input type="checkbox" name="enabled__{escape(command_key, quote=True)}" value="1"{enabled_checked} /> Enabled</label>
+                  </td>
+                  <td>
                     <select name="mode__{escape(command_key, quote=True)}">
                       <option value="default"{default_selected}>Default rule</option>
                       <option value="public"{public_selected}>Public (any member)</option>
-                      <option value="disabled"{disabled_selected}>Disabled</option>
                       <option value="custom_roles"{custom_selected}>Custom roles</option>
                     </select>
                   </td>
@@ -5606,14 +5610,14 @@ def create_web_app(
         <div class="card">
           <h2>Command Permissions</h2>
           <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
-          <p class="muted">Set access mode per command. Default mode follows built-in behavior. Disabled turns the command off for this server. Custom mode requires at least one role ID.</p>
+          <p class="muted">Use the Enabled checkbox to turn a command on or off for this server. Access mode controls who can run enabled commands. Custom mode requires at least one role ID.</p>
           <p class="muted">Default named-role gate: {escape(", ".join(str(item) for item in allowed_role_names) or "None")}</p>
           <p class="muted">Current moderator role IDs: <span class="mono">{escape(",".join(str(item) for item in moderator_role_ids) or "None")}</span></p>
           {role_hint_html}
           <form method="post">
             <table>
               <thead>
-                <tr><th>Command</th><th>Default Access</th><th>Mode</th><th>Custom Role Selection</th></tr>
+                <tr><th>Command</th><th>Default Access</th><th>Enabled</th><th>Mode</th><th>Custom Role Selection</th></tr>
               </thead>
               <tbody>
                 {"".join(rows)}

@@ -105,10 +105,12 @@ UI forms include show/hide password toggles and validation feedback.
 ## Command Permissions
 
 - `/admin/command-permissions` manages command access per selected guild.
-- Available modes:
+- Each command has an `Enabled` checkbox.
+  - unchecked: command is disabled for that guild
+  - checked: command is enabled and follows the selected access mode
+- Available modes for enabled commands:
   - `Default rule`: follow the bot's built-in default access policy for that command
   - `Public`: allow any guild member
-  - `Disabled`: turn the command off for that guild
   - `Custom roles`: restrict the command to one or more selected roles
 - Custom-role mode requires at least one role ID or selected role.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
@@ -146,6 +148,11 @@ UI forms include show/hide password toggles and validation feedback.
   - bot log channel
   - moderation log channel
   - firmware notify channel
+  - firmware monitor enabled/disabled
+  - Reddit feed monitor enabled/disabled
+  - YouTube notifications enabled/disabled
+  - LinkedIn notifications enabled/disabled
+  - beta program notifications enabled/disabled
   - self-assign access role
   - welcome channel
   - welcome channel message
@@ -154,8 +161,10 @@ UI forms include show/hide password toggles and validation feedback.
   - uploaded welcome image
   - image attachment enable/disable for channel and DM
 - Bot log, moderation log, and firmware notification channels can be set here per guild
+- Monitor feature flags can also be overridden here per guild
 - These values override the global defaults configured in `/admin/settings`
 - If a guild-level channel is left unset, the bot falls back to the corresponding global channel setting
+- If a per-guild feature override is left unset, the bot falls back to the corresponding global feature toggle
 
 Welcome-message placeholders:
 
@@ -185,6 +194,10 @@ Notes:
 - Supported image formats: `PNG`, `JPG`, `JPEG`, `WEBP`, `GIF`
 - Upload size follows the configured web avatar upload limit (`WEB_AVATAR_MAX_UPLOAD_BYTES`; default `2097152` bytes / `2048 KiB`)
 - Welcome images must be between `64x64` and `4096x4096`
+- Per-guild monitor overrides use two controls:
+  - `Override global setting`
+  - `Enabled for this guild`
+- If `Override global setting` is unchecked, the selected server follows the global setting from `/admin/settings`
 - The page shows current uploaded image metadata:
   - filename
   - media type

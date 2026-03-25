@@ -79,6 +79,11 @@ def test_load_guild_settings_uses_global_fallbacks_for_all_guilds_without_rows()
             bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
             mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
             firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+            firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1,
+            reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
             access_role_id INTEGER NOT NULL DEFAULT 0,
             welcome_channel_id INTEGER NOT NULL DEFAULT 0,
             welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
@@ -116,6 +121,11 @@ def test_save_and_load_guild_settings_persists_welcome_image():
             bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
             mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
             firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+            firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1,
+            reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
             access_role_id INTEGER NOT NULL DEFAULT 0,
             welcome_channel_id INTEGER NOT NULL DEFAULT 0,
             welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
@@ -174,3 +184,48 @@ def test_save_and_load_guild_settings_persists_welcome_image():
     assert settings["welcome_image_width"] == 640
     assert settings["welcome_image_height"] == 360
     assert settings["welcome_image_base64"]
+
+
+def test_effective_guild_feature_enabled_uses_override_or_global():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE guild_settings (
+            guild_id INTEGER PRIMARY KEY,
+            bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
+            mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
+            firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+            firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1,
+            reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            access_role_id INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_id INTEGER NOT NULL DEFAULT 0,
+            welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_image_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_dm_image_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_message TEXT NOT NULL DEFAULT '',
+            welcome_dm_message TEXT NOT NULL DEFAULT '',
+            welcome_image_filename TEXT NOT NULL DEFAULT '',
+            welcome_image_media_type TEXT NOT NULL DEFAULT '',
+            welcome_image_size_bytes INTEGER NOT NULL DEFAULT 0,
+            welcome_image_width INTEGER NOT NULL DEFAULT 0,
+            welcome_image_height INTEGER NOT NULL DEFAULT 0,
+            welcome_image_base64 TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            updated_by_email TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    manager = build_manager(get_db_connection=lambda: conn, db_lock=threading.Lock())
+
+    assert manager.get_effective_guild_feature_enabled(123, "youtube_notify_enabled", True) is True
+    assert manager.get_effective_guild_feature_enabled(123, "youtube_notify_enabled", False) is False
+
+    manager.save_guild_settings(123, {"youtube_notify_enabled": "1"}, actor_email="admin@example.com")
+    assert manager.get_effective_guild_feature_enabled(123, "youtube_notify_enabled", False) is True
+
+    manager.save_guild_settings(123, {"youtube_notify_enabled": "0"}, actor_email="admin@example.com")
+    assert manager.get_effective_guild_feature_enabled(123, "youtube_notify_enabled", True) is False

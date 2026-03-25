@@ -1296,6 +1296,11 @@ def ensure_db_schema():
                 bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+                firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1,
+                reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 access_role_id INTEGER NOT NULL DEFAULT 0,
                 welcome_channel_id INTEGER NOT NULL DEFAULT 0,
                 welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1572,6 +1577,16 @@ def ensure_db_schema():
             )
 
         guild_settings_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
+        if "firmware_monitor_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1")
+        if "reddit_feed_notify_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1")
+        if "youtube_notify_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN youtube_notify_enabled INTEGER NOT NULL DEFAULT -1")
+        if "linkedin_notify_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1")
+        if "beta_program_notify_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1")
         if "welcome_channel_id" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_id INTEGER NOT NULL DEFAULT 0")
         if "welcome_dm_enabled" not in guild_settings_columns:
@@ -2038,6 +2053,10 @@ def save_guild_settings(
 
 def get_effective_guild_setting(guild_id: int | None, key: str, fallback_value: int = 0):
     return guild_state_manager.get_effective_guild_setting(guild_id, key, fallback_value)
+
+
+def get_effective_guild_feature_enabled(guild_id: int | None, key: str, fallback_value: bool = False):
+    return guild_state_manager.get_effective_guild_feature_enabled(guild_id, key, fallback_value)
 
 
 def get_effective_logging_channel_id(guild_id: int | None):
@@ -4913,6 +4932,11 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
             "bot_log_channel_id": int(settings.get("bot_log_channel_id") or 0),
             "mod_log_channel_id": int(settings.get("mod_log_channel_id") or 0),
             "firmware_notify_channel_id": int(settings.get("firmware_notify_channel_id") or 0),
+            "firmware_monitor_enabled": int(settings.get("firmware_monitor_enabled", -1)),
+            "reddit_feed_notify_enabled": int(settings.get("reddit_feed_notify_enabled", -1)),
+            "youtube_notify_enabled": int(settings.get("youtube_notify_enabled", -1)),
+            "linkedin_notify_enabled": int(settings.get("linkedin_notify_enabled", -1)),
+            "beta_program_notify_enabled": int(settings.get("beta_program_notify_enabled", -1)),
             "access_role_id": int(settings.get("access_role_id") or 0),
             "welcome_channel_id": int(settings.get("welcome_channel_id") or 0),
             "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
@@ -4935,6 +4959,31 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
                 "firmware_notify_channel_id",
                 FIRMWARE_NOTIFY_CHANNEL_ID,
             ),
+            "firmware_monitor_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "firmware_monitor_enabled",
+                FIRMWARE_MONITOR_ENABLED,
+            ) else 0,
+            "reddit_feed_notify_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "reddit_feed_notify_enabled",
+                REDDIT_FEED_NOTIFY_ENABLED,
+            ) else 0,
+            "youtube_notify_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "youtube_notify_enabled",
+                YOUTUBE_NOTIFY_ENABLED,
+            ) else 0,
+            "linkedin_notify_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "linkedin_notify_enabled",
+                LINKEDIN_NOTIFY_ENABLED,
+            ) else 0,
+            "beta_program_notify_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "beta_program_notify_enabled",
+                BETA_PROGRAM_NOTIFY_ENABLED,
+            ) else 0,
             "access_role_id": get_effective_guild_setting(safe_guild_id, "access_role_id", 0),
             "welcome_channel_id": get_effective_guild_setting(safe_guild_id, "welcome_channel_id", 0),
             "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
@@ -6836,6 +6885,8 @@ async def resolve_firmware_notify_channels():
     targets = []
     seen_channel_ids = set()
     for guild in bot.guilds:
+        if not get_effective_guild_feature_enabled(guild.id, "firmware_monitor_enabled", FIRMWARE_MONITOR_ENABLED):
+            continue
         channel_id = get_effective_guild_setting(
             guild.id,
             "firmware_notify_channel_id",
@@ -6910,6 +6961,11 @@ def log_firmware_channel_unavailable(reason_key: str, pending_count: int):
 
 
 async def check_firmware_updates_once():
+    if not any(
+        get_effective_guild_feature_enabled(guild.id, "firmware_monitor_enabled", FIRMWARE_MONITOR_ENABLED)
+        for guild in bot.guilds
+    ):
+        return
     try:
         entries, sync_label = await asyncio.to_thread(fetch_firmware_entries)
     except requests.RequestException:
@@ -7002,10 +7058,9 @@ async def check_firmware_updates_once():
 
 
 async def firmware_monitor_loop():
-    if not FIRMWARE_MONITOR_ENABLED:
-        logger.info("Firmware monitor disabled: set FIRMWARE_MONITOR_ENABLED=true to enable it.")
-        return
     configured_channels = any(
+        get_effective_guild_feature_enabled(guild.id, "firmware_monitor_enabled", FIRMWARE_MONITOR_ENABLED)
+        and
         get_effective_guild_setting(
             guild.id,
             "firmware_notify_channel_id",
@@ -7015,7 +7070,7 @@ async def firmware_monitor_loop():
         for guild in bot.guilds
     )
     if not configured_channels and FIRMWARE_NOTIFY_CHANNEL_ID <= 0:
-        logger.info("Firmware monitor disabled: set a guild firmware notification channel or firmware_notification_channel to enable it.")
+        logger.info("Firmware monitor disabled: no enabled guild has a configured firmware notification channel.")
         return
 
     if not croniter.is_valid(FIRMWARE_CHECK_SCHEDULE):
@@ -7045,9 +7100,6 @@ def restart_firmware_monitor_task():
     global firmware_monitor_task
     if firmware_monitor_task is not None and not firmware_monitor_task.done():
         firmware_monitor_task.cancel()
-    if not FIRMWARE_MONITOR_ENABLED:
-        firmware_monitor_task = None
-        return
     firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
 
 
@@ -7081,9 +7133,12 @@ async def resolve_reddit_feed_channel(channel_id: int):
 
 async def process_reddit_feed_subscription(feed: dict):
     feed_id = int(feed.get("id") or 0)
+    guild_id = int(feed.get("guild_id") or 0)
     subreddit = str(feed.get("subreddit") or "").strip()
     channel_id = int(feed.get("channel_id") or 0)
     checked_at = datetime.now(UTC).isoformat()
+    if guild_id <= 0 or not get_effective_guild_feature_enabled(guild_id, "reddit_feed_notify_enabled", REDDIT_FEED_NOTIFY_ENABLED):
+        return
 
     try:
         normalized_subreddit, posts = await asyncio.to_thread(fetch_reddit_subreddit_new_posts, subreddit)
@@ -7245,8 +7300,6 @@ async def process_reddit_feed_subscription(feed: dict):
 
 
 async def check_reddit_feed_updates_once():
-    if not REDDIT_FEED_NOTIFY_ENABLED:
-        return
     feeds = list_reddit_feed_subscriptions(enabled_only=True)
     if not feeds:
         return
@@ -7255,9 +7308,6 @@ async def check_reddit_feed_updates_once():
 
 
 async def reddit_feed_monitor_loop():
-    if not REDDIT_FEED_NOTIFY_ENABLED:
-        logger.info("Reddit feed monitor disabled: set REDDIT_FEED_NOTIFY_ENABLED=true to enable it.")
-        return
     if not croniter.is_valid(REDDIT_FEED_CHECK_SCHEDULE):
         logger.error(
             "Reddit feed monitor disabled: invalid REDDIT_FEED_CHECK_SCHEDULE '%s'",
@@ -7284,9 +7334,6 @@ def restart_reddit_feed_monitor_task():
     global reddit_feed_monitor_task
     if reddit_feed_monitor_task is not None and not reddit_feed_monitor_task.done():
         reddit_feed_monitor_task.cancel()
-    if not REDDIT_FEED_NOTIFY_ENABLED:
-        reddit_feed_monitor_task = None
-        return
     reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
 
 
@@ -7306,6 +7353,8 @@ async def process_youtube_subscription(subscription: dict):
     if subscription_id <= 0 or guild_id <= 0 or not channel_id or target_channel_id <= 0:
         return
     if not is_managed_guild_id(guild_id):
+        return
+    if not get_effective_guild_feature_enabled(guild_id, "youtube_notify_enabled", YOUTUBE_NOTIFY_ENABLED):
         return
 
     latest = await asyncio.to_thread(fetch_latest_youtube_video, channel_id)
@@ -7379,9 +7428,6 @@ def restart_youtube_monitor_task():
     global youtube_monitor_task
     if youtube_monitor_task is not None and not youtube_monitor_task.done():
         youtube_monitor_task.cancel()
-    if not YOUTUBE_NOTIFY_ENABLED:
-        youtube_monitor_task = None
-        return
     youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
 
 
@@ -7401,6 +7447,8 @@ async def process_linkedin_subscription(subscription: dict):
     if subscription_id <= 0 or guild_id <= 0 or not source_url or target_channel_id <= 0:
         return
     if not is_managed_guild_id(guild_id):
+        return
+    if not get_effective_guild_feature_enabled(guild_id, "linkedin_notify_enabled", LINKEDIN_NOTIFY_ENABLED):
         return
 
     checked_at = datetime.now(UTC).isoformat()
@@ -7539,9 +7587,6 @@ def restart_linkedin_monitor_task():
     global linkedin_monitor_task
     if linkedin_monitor_task is not None and not linkedin_monitor_task.done():
         linkedin_monitor_task.cancel()
-    if not LINKEDIN_NOTIFY_ENABLED:
-        linkedin_monitor_task = None
-        return
     linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
 
 
@@ -7560,6 +7605,8 @@ async def process_beta_program_subscription(subscription: dict):
     if subscription_id <= 0 or guild_id <= 0 or not source_url or target_channel_id <= 0:
         return
     if not is_managed_guild_id(guild_id):
+        return
+    if not get_effective_guild_feature_enabled(guild_id, "beta_program_notify_enabled", BETA_PROGRAM_NOTIFY_ENABLED):
         return
 
     checked_at = datetime.now(UTC).isoformat()
@@ -7715,9 +7762,6 @@ def restart_beta_program_monitor_task():
     global beta_program_monitor_task
     if beta_program_monitor_task is not None and not beta_program_monitor_task.done():
         beta_program_monitor_task.cancel()
-    if not BETA_PROGRAM_NOTIFY_ENABLED:
-        beta_program_monitor_task = None
-        return
     beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
 
 
@@ -8791,15 +8835,15 @@ async def on_ready():
     else:
         logger.warning("Tag slash commands not registered: register_tag_commands_for_guild missing")
 
-    if FIRMWARE_MONITOR_ENABLED and (firmware_monitor_task is None or firmware_monitor_task.done()):
+    if firmware_monitor_task is None or firmware_monitor_task.done():
         firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
-    if REDDIT_FEED_NOTIFY_ENABLED and (reddit_feed_monitor_task is None or reddit_feed_monitor_task.done()):
+    if reddit_feed_monitor_task is None or reddit_feed_monitor_task.done():
         reddit_feed_monitor_task = asyncio.create_task(reddit_feed_monitor_loop(), name="reddit_feed_monitor")
-    if YOUTUBE_NOTIFY_ENABLED and (youtube_monitor_task is None or youtube_monitor_task.done()):
+    if youtube_monitor_task is None or youtube_monitor_task.done():
         youtube_monitor_task = asyncio.create_task(youtube_monitor_loop(), name="youtube_monitor")
-    if LINKEDIN_NOTIFY_ENABLED and (linkedin_monitor_task is None or linkedin_monitor_task.done()):
+    if linkedin_monitor_task is None or linkedin_monitor_task.done():
         linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
-    if BETA_PROGRAM_NOTIFY_ENABLED and (beta_program_monitor_task is None or beta_program_monitor_task.done()):
+    if beta_program_monitor_task is None or beta_program_monitor_task.done():
         beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
     if MEMBER_ACTIVITY_BACKFILL_ENABLED and (member_activity_backfill_task is None or member_activity_backfill_task.done()):
         member_activity_backfill_task = asyncio.create_task(
