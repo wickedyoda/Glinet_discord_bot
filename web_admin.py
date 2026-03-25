@@ -3134,6 +3134,26 @@ def create_web_app(
             restart_enabled=_restart_enabled(),
         )
 
+    def _load_discord_catalog_options(selected_guild_id: str, *, channel_type: str | None = None):
+        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) and selected_guild_id else None
+        channel_options = []
+        role_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                channel_options = discord_catalog.get("channels", []) or []
+                role_options = discord_catalog.get("roles", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
+        if channel_type is not None:
+            expected_type = str(channel_type or "").strip().lower()
+            channel_options = [
+                option
+                for option in channel_options
+                if str(option.get("type") or "").strip().lower() == expected_type
+            ]
+        return channel_options, role_options, catalog_error
+
     def _redirect_for_password_rotation(user: dict):
         if not user:
             return None
@@ -4633,15 +4653,10 @@ def create_web_app(
         if not croniter.is_valid(current_schedule):
             current_schedule = "*/30 * * * *"
 
-        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
-        channel_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
-        text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
         channel_labels = {
             str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
             for option in text_channel_options
@@ -4915,15 +4930,10 @@ def create_web_app(
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
 
-        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
-        channel_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
-        text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
         channel_labels = {
             str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
             for option in text_channel_options
@@ -5111,15 +5121,10 @@ def create_web_app(
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
 
-        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
-        channel_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
-        text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
         channel_labels = {
             str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
             for option in text_channel_options
@@ -5313,15 +5318,10 @@ def create_web_app(
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
 
-        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
-        channel_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
-        text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
         channel_labels = {
             str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
             for option in text_channel_options
@@ -5482,14 +5482,7 @@ def create_web_app(
             if callable(on_get_command_permissions)
             else {"ok": False, "error": "Not configured"}
         )
-        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
-        role_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                role_options = discord_catalog.get("roles", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
+        _channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         if request.method == "POST":
             if not callable(on_save_command_permissions):
@@ -5646,17 +5639,10 @@ def create_web_app(
             if callable(on_get_guild_settings)
             else {"ok": False, "error": "Guild settings callbacks are not configured."}
         )
-        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
-        channel_options = []
-        role_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-                role_options = discord_catalog.get("roles", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
-        text_channel_options = [option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"]
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        text_channel_options = [
+            option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"
+        ]
         max_welcome_image_upload_bytes = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
 
         if request.method == "POST":
@@ -5719,16 +5705,7 @@ def create_web_app(
                 os.environ["WEB_ENV_FILE"] = str(saved_env_file)
                 for key, value in file_values.items():
                     os.environ[key] = value
-        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) and selected_guild_id else None
-        channel_options = []
-        role_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-                role_options = discord_catalog.get("roles", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         if request.method == "POST":
             updated_values = {}
@@ -5934,12 +5911,9 @@ def create_web_app(
             )
         catalog_note = ""
         if channel_options or role_options:
-            guild_info = discord_catalog.get("guild", {}) if isinstance(discord_catalog, dict) else {}
-            guild_name = str(guild_info.get("name") or "unknown")
-            guild_id = str(guild_info.get("id") or "unknown")
             catalog_note = (
-                f"<p class='muted'>Loaded live Discord options from {escape(guild_name)} "
-                f"({escape(guild_id)}). Channels: {len(channel_options)}; Roles: {len(role_options)}.</p>"
+                f"<p class='muted'>Loaded live Discord options from {escape(str(selected_guild.get('name') or 'unknown'))} "
+                f"({escape(selected_guild_id or 'unknown')}). Channels: {len(channel_options)}; Roles: {len(role_options)}.</p>"
             )
         elif catalog_error:
             catalog_note = f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
@@ -6035,14 +6009,7 @@ def create_web_app(
         operation_result = None
         max_upload_bytes = _get_int_env("WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
         report_list_limit = _get_int_env("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", 50, minimum=1)
-        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
-        role_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                role_options = discord_catalog.get("roles", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
+        _channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         if request.method == "POST":
             selected_role_input = request.form.get("role_id_select", "").strip()
