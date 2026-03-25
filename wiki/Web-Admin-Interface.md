@@ -16,7 +16,7 @@ Password-protected admin UI for runtime bot and policy management.
 - Login uses email + password (web-only account model)
 - Optional "Keep me signed in" extends session to 5 days on device
 - Inactivity timeout is configurable: `5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, or `120` minutes
-- Theme options in header: `Light` and `Black`
+- Theme options in header: `Light`, `Black`, `Forest`, `Ember`, and `Ice`
 
 Security controls include:
 
@@ -135,12 +135,21 @@ UI forms include show/hide password toggles and validation feedback.
 ### `/admin/dashboard`
 
 - Server dashboard overview
-- Quick links to settings, users, moderation tooling, and logs-related actions for the selected server
-- Includes a `Command Status` table for the selected server
-- Lists each command with:
+- Grouped sections for core controls, community tools, notification feeds, and runtime operations
+- Quick Notes panel includes:
+  - direct links for the most common admin path
+  - clickable recently visited page links for the current web session
+- Links to the dedicated `Command Status`, `Guild Settings`, feed pages, logs, docs, and account areas for the selected server
+
+### `/admin/command-status`
+
+- Scoped to the selected server
+- Dedicated quick-toggle page for command enable/disable state
+- Shows each command with:
   - effective access level (`Public`, `Mod Only`, `Named Roles`, `Custom Roles`, or `Disabled`)
   - current enabled/disabled state
 - Uses the same guild-scoped command-permissions data the bot enforces at runtime
+- Intended for fast on/off control without opening the deeper permissions editor
 
 ### `/admin/guild-settings`
 
@@ -159,28 +168,6 @@ UI forms include show/hide password toggles and validation feedback.
   - welcome channel message
   - welcome DM enable/disable
   - welcome DM message
-
-### `/admin/role-access`
-
-- Scoped to the selected server
-- Shows each stored role-access mapping with:
-  - 6-digit code
-  - invite link
-  - invite code
-  - target role
-  - current status
-- Quick actions:
-  - `Activate`
-  - `Pause`
-  - `Disable`
-- Manual restore/add form lets admins enter:
-  - 6-digit code
-  - existing Discord invite URL or invite code
-  - target role
-  - initial status
-- Paused and disabled entries stop working for both:
-  - join-by-invite role assignment
-  - `/enter_role`
   - uploaded welcome image
   - image attachment enable/disable for channel and DM
 - Bot log, moderation log, and firmware notification channels can be set here per guild
@@ -228,6 +215,28 @@ Notes:
   - width x height
 - Recommended welcome image layout is landscape artwork around `1200x675` for clearer preview sizing inside Discord
 
+### `/admin/role-access`
+
+- Scoped to the selected server
+- Shows each stored role-access mapping with:
+  - 6-digit code
+  - invite link
+  - invite code
+  - target role
+  - current status
+- Quick actions:
+  - `Activate`
+  - `Pause`
+  - `Disable`
+- Manual restore/add form lets admins enter:
+  - 6-digit code
+  - existing Discord invite URL or invite code
+  - target role
+  - initial status
+- Paused and disabled entries stop working for both:
+  - join-by-invite role assignment
+  - `/enter_role`
+
 ### `/admin/settings`
 
 - Global environment-backed settings editor
@@ -273,14 +282,17 @@ Notes:
 
 ### `/admin/logs` (Login Required)
 
-- Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`, `web_probe.log`)
+- Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`)
 - Refresh button plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
+- `Export All Logs` downloads a single ZIP archive containing the available runtime logs plus a manifest file
+- Log timestamps in the GUI are rendered in readable UTC format
 - Requires web GUI login
 
 ### `/admin/actions`
 
 - Scoped to the selected server
 - Read-only activity history for moderation actions and server-event log writes
+- Timestamps are rendered in readable UTC format
 - Useful for reviewing what the bot did without reading raw log files
 
 ### `/admin/account`
@@ -302,6 +314,7 @@ Notes:
   - message count
   - active day count
   - last seen timestamp
+- Timestamps are rendered in readable UTC format
 - Export option at the bottom of the page downloads a compressed ZIP archive for the selected server
 - Export respects the selected server context; there is no cross-guild combined export
 - Export includes:

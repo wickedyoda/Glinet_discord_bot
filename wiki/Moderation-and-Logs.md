@@ -34,6 +34,16 @@ Moderator tooling for members, roles, and operational incident visibility.
 - Ephemeral response to reduce accidental exposure.
 - Intended for production incident triage without shell access.
 
+## Web GUI Logs Page
+
+- `/admin/logs` provides the browser log viewer for:
+  - `bot.log`
+  - `bot_log.log`
+  - `container_errors.log`
+  - `web_gui_audit.log`
+- `Export All Logs` downloads the available runtime logs as one ZIP archive with a manifest.
+- GUI-rendered timestamps are shown in readable UTC format.
+
 ## `/random_choice` Behavior
 
 - Randomly selects one eligible non-staff member from the current guild.

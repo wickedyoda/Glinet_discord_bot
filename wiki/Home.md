@@ -24,7 +24,9 @@ Core capabilities:
 - Member activity analytics with private `/stats`, rolling 90-day retention, optional startup backfill, and ZIP export from the web GUI
 - Guild-scoped welcome automation with optional channel message, optional DM, and optional uploaded image attachment with enforced size and dimension validation
 - Secure web admin interface with per-command permissions, action history, observability, Reddit/YouTube/LinkedIn subscriptions, member activity views, and user management
-- Dashboard command-status view showing the selected server's commands, effective access level, and enabled/disabled state
+- Dashboard quick-notes view with direct common-path links and clickable recent page links for the active web session
+- Dedicated command-status page showing the selected server's commands, effective access level, and enabled/disabled state
+- Log export ZIP download from the web GUI logs page
 - Multi-guild admin model with optional managed-guild allowlist filtering
 - Guild data archival for 14 days after the bot leaves a server, with automatic restore on same-ID rejoin during that window
 - Three web-user roles:
