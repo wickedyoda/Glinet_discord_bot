@@ -3827,7 +3827,14 @@ async def sync_commands_for_guild(guild: discord.Guild):
     tree.clear_commands(guild=guild_obj)
     tree.copy_global_to(guild=guild_obj)
     register_tag_commands_for_guild(guild.id)
-    synced = await tree.sync(guild=guild_obj)
+    try:
+        synced = await tree.sync(guild=guild_obj)
+    except TimeoutError:
+        logger.warning("Timed out syncing commands to guild %s", guild.id)
+        return []
+    except discord.HTTPException:
+        logger.exception("Failed to sync commands to guild %s", guild.id)
+        return []
     logger.info("Synced %d command(s) to guild %s", len(synced), guild.id)
     return synced
 
@@ -6309,11 +6316,16 @@ def fetch_latest_youtube_video(channel_id: str):
     if not YOUTUBE_CHANNEL_ID_PATTERN.fullmatch(channel_id):
         raise YouTubeFeedError("Invalid YouTube channel ID.", disable_subscription=True)
     feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    status, _, body_text = fetch_text_url(
-        feed_url,
-        timeout_seconds=YOUTUBE_REQUEST_TIMEOUT_SECONDS,
-        accept="application/atom+xml",
-    )
+    try:
+        status, _, body_text = fetch_text_url(
+            feed_url,
+            timeout_seconds=YOUTUBE_REQUEST_TIMEOUT_SECONDS,
+            accept="application/atom+xml",
+        )
+    except RuntimeError as exc:
+        if str(exc).startswith("Request failed:"):
+            raise YouTubeFeedError(str(exc)) from exc
+        raise
     if status >= 400:
         raise build_youtube_feed_error(status)
     try:
