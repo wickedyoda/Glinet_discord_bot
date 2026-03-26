@@ -9504,16 +9504,20 @@ class CodeEntryModal(discord.ui.Modal):
         effective_guild_id = interaction.guild.id if interaction.guild else GUILD_ID
         role_id = get_role_id_by_code(self.code.value.strip(), guild_id=effective_guild_id)
         if not role_id:
-            await interaction.response.send_message("❌ Invalid code.", ephemeral=True)
+            await send_safe_interaction_message(interaction, "❌ Invalid code.", ephemeral=True)
             return
 
-        role = interaction.guild.get_role(role_id)
+        role = interaction.guild.get_role(role_id) if interaction.guild else None
         if not role:
-            await interaction.response.send_message("❌ Role not found.", ephemeral=True)
+            await send_safe_interaction_message(interaction, "❌ Role not found.", ephemeral=True)
             return
 
         await interaction.user.add_roles(role)
-        await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
+        await send_safe_interaction_message(
+            interaction,
+            f"✅ You've been given the **{role.name}** role!",
+            ephemeral=True,
+        )
 
 
 @tree.command(
