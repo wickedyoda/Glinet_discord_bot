@@ -4985,6 +4985,11 @@ def run_web_save_guild_settings(payload: dict, actor_email: str, guild_id: int |
     try:
         safe_guild_id = normalize_target_guild_id(guild_id)
         save_guild_settings(safe_guild_id, payload, actor_email=actor_email)
+        schedule_firmware_monitor_restart()
+        schedule_reddit_feed_monitor_restart()
+        schedule_youtube_monitor_restart()
+        schedule_linkedin_monitor_restart()
+        schedule_beta_program_monitor_restart()
         return {
             **build_guild_settings_web_payload(safe_guild_id),
             "message": "Guild settings updated.",
@@ -6955,15 +6960,12 @@ async def resolve_firmware_notify_channels():
         channel_id = get_effective_guild_setting(
             guild.id,
             "firmware_notify_channel_id",
-            FIRMWARE_NOTIFY_CHANNEL_ID if guild.id == GUILD_ID else 0,
+            0,
         )
         if channel_id <= 0 or channel_id in seen_channel_ids:
             continue
         seen_channel_ids.add(channel_id)
         targets.append((guild.id, channel_id))
-
-    if not targets and FIRMWARE_NOTIFY_CHANNEL_ID > 0:
-        targets.append((GUILD_ID, FIRMWARE_NOTIFY_CHANNEL_ID))
 
     if not targets:
         return [], ["channel_id_not_configured"]
@@ -7129,7 +7131,7 @@ async def firmware_monitor_loop():
         get_effective_guild_setting(
             guild.id,
             "firmware_notify_channel_id",
-            FIRMWARE_NOTIFY_CHANNEL_ID if guild.id == GUILD_ID else 0,
+            0,
         )
         > 0
         for guild in bot.guilds
