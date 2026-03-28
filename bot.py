@@ -64,6 +64,11 @@ from app.member_activity_backfill import (
 )
 from app.role_access_schema import ensure_role_access_schema_locked
 from app.role_access_web_callbacks import RoleAccessWebCallbacks
+from app.service_monitor import (
+    format_service_monitor_transition_message,
+    normalize_service_monitor_targets,
+    run_service_monitor_check,
+)
 from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
 from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
@@ -791,11 +796,31 @@ BETA_PROGRAM_NOTIFY_ENABLED = is_truthy_env_value(
 )
 BETA_PROGRAM_POLL_INTERVAL_SECONDS = parse_positive_int_env("BETA_PROGRAM_POLL_INTERVAL_SECONDS", 900, minimum=60)
 BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS", 20, minimum=5)
+SERVICE_MONITOR_ENABLED = is_truthy_env_value(
+    os.getenv("SERVICE_MONITOR_ENABLED", "false"),
+    default_value=False,
+)
+SERVICE_MONITOR_CHECK_SCHEDULE = str(os.getenv("SERVICE_MONITOR_CHECK_SCHEDULE", "*/5 * * * *") or "").strip() or "*/5 * * * *"
+SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS", 10, minimum=3)
+SERVICE_MONITOR_TARGETS_JSON = str(os.getenv("SERVICE_MONITOR_TARGETS_JSON", "") or "").strip()
+try:
+    SERVICE_MONITOR_DEFAULT_CHANNEL_ID = int(str(os.getenv("SERVICE_MONITOR_DEFAULT_CHANNEL_ID", "0") or "0").strip())
+except ValueError:
+    SERVICE_MONITOR_DEFAULT_CHANNEL_ID = 0
 UPTIME_STATUS_ENABLED = is_truthy_env_value(
     os.getenv("UPTIME_STATUS_ENABLED", "false"),
     default_value=False,
 )
+UPTIME_STATUS_NOTIFY_ENABLED = is_truthy_env_value(
+    os.getenv("UPTIME_STATUS_NOTIFY_ENABLED", "false"),
+    default_value=False,
+)
 UPTIME_STATUS_TIMEOUT_SECONDS = parse_positive_int_env("UPTIME_STATUS_TIMEOUT_SECONDS", 10, minimum=1)
+UPTIME_STATUS_CHECK_SCHEDULE = str(os.getenv("UPTIME_STATUS_CHECK_SCHEDULE", "*/5 * * * *") or "").strip() or "*/5 * * * *"
+try:
+    UPTIME_STATUS_NOTIFY_CHANNEL_ID = int(str(os.getenv("UPTIME_STATUS_NOTIFY_CHANNEL_ID", "0") or "0").strip())
+except ValueError:
+    UPTIME_STATUS_NOTIFY_CHANNEL_ID = 0
 try:
     WEB_DISCORD_CATALOG_TTL_SECONDS = max(15, int(os.getenv("WEB_DISCORD_CATALOG_TTL_SECONDS", "120")))
 except ValueError:
@@ -1179,6 +1204,8 @@ reddit_feed_monitor_task = None
 youtube_monitor_task = None
 linkedin_monitor_task = None
 beta_program_monitor_task = None
+service_monitor_task = None
+uptime_status_monitor_task = None
 member_activity_backfill_task = None
 feed_web_callbacks = None
 role_access_web_callbacks = None
@@ -1203,6 +1230,7 @@ member_activity_recent_prune_marker = ""
 FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS = 3600
 FIRMWARE_NOTIFICATION_ITEM_LIMIT = 12
 firmware_channel_warning_state = {"reason": "", "last_logged_at": 0.0}
+service_monitor_warning_state = {"reason": "", "last_logged_at": 0.0}
 
 
 def normalize_tag(tag: str) -> str:
@@ -6699,6 +6727,365 @@ def format_uptime_summary(snapshot: dict):
     )
 
 
+def load_uptime_status_monitor_state():
+    raw_value = db_kv_get("uptime_status_monitor_state")
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid uptime status monitor state payload in kv_store.")
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def save_uptime_status_monitor_state(state: dict):
+    db_kv_set(
+        "uptime_status_monitor_state",
+        json.dumps(state or {}, sort_keys=True, separators=(",", ":")),
+    )
+
+
+async def resolve_uptime_status_notify_channel():
+    if UPTIME_STATUS_NOTIFY_CHANNEL_ID <= 0:
+        return None
+    channel = bot.get_channel(UPTIME_STATUS_NOTIFY_CHANNEL_ID)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(UPTIME_STATUS_NOTIFY_CHANNEL_ID)
+        except discord.NotFound:
+            return None
+        except discord.Forbidden:
+            logger.warning("Uptime status notify channel %s is not accessible to the bot.", UPTIME_STATUS_NOTIFY_CHANNEL_ID)
+            return None
+        except discord.HTTPException:
+            logger.exception("Failed to fetch uptime status notify channel %s", UPTIME_STATUS_NOTIFY_CHANNEL_ID)
+            return None
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+    logger.warning("Uptime status notify channel %s is not a text/thread channel.", UPTIME_STATUS_NOTIFY_CHANNEL_ID)
+    return None
+
+
+def format_uptime_status_transition_message(snapshot: dict, newly_down: list[dict], recovered: list[dict]):
+    title = str(snapshot.get("title") or "Uptime Status").strip()
+    page_url = str(snapshot.get("page_url") or UPTIME_STATUS_PAGE_URL).strip()
+    lines = [f"📈 **{title} status change**"]
+    if newly_down:
+        lines.append("Newly down:")
+        for monitor in newly_down[:10]:
+            monitor_name = str(monitor.get("name") or "Unknown monitor").strip()
+            uptime_value = monitor.get("uptime_24")
+            if isinstance(uptime_value, (int, float)):
+                lines.append(f"- 🔴 {monitor_name} ({uptime_value * 100:.1f}% 24h)")
+            else:
+                lines.append(f"- 🔴 {monitor_name}")
+    if recovered:
+        lines.append("Recovered:")
+        for monitor in recovered[:10]:
+            monitor_name = str(monitor.get("name") or "Unknown monitor").strip()
+            lines.append(f"- 🟢 {monitor_name}")
+    last_sample = str(snapshot.get("last_sample") or "").strip()
+    if last_sample:
+        lines.append(f"Last sample: `{last_sample}`")
+    if page_url:
+        lines.append(f"Page: <{page_url}>")
+    return trim_discord_message("\n".join(lines))
+
+
+async def check_uptime_status_once():
+    if not UPTIME_STATUS_ENABLED or not UPTIME_STATUS_NOTIFY_ENABLED:
+        return
+    snapshot = await asyncio.to_thread(fetch_uptime_snapshot)
+    monitors = snapshot.get("monitors") if isinstance(snapshot, dict) else None
+    if not isinstance(monitors, list):
+        return
+
+    current_down = {}
+    current_lookup = {}
+    for monitor in monitors:
+        if not isinstance(monitor, dict):
+            continue
+        monitor_id = str(monitor.get("id") or monitor.get("name") or "").strip()
+        if not monitor_id:
+            continue
+        current_lookup[monitor_id] = dict(monitor)
+        if str(monitor.get("status") or "").strip().lower() == "down":
+            current_down[monitor_id] = {
+                "name": str(monitor.get("name") or monitor_id).strip(),
+                "uptime_24": monitor.get("uptime_24"),
+            }
+
+    state = load_uptime_status_monitor_state()
+    previous_down = state.get("down") if isinstance(state.get("down"), dict) else None
+    if previous_down is None:
+        save_uptime_status_monitor_state(
+            {
+                "down": current_down,
+                "last_sample": str(snapshot.get("last_sample") or "").strip(),
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        )
+        logger.info("Uptime status alert baseline initialized with %d down monitor(s)", len(current_down))
+        return
+
+    newly_down = [
+        current_lookup[monitor_id]
+        for monitor_id in current_down
+        if monitor_id not in previous_down
+    ]
+    recovered = [
+        {"id": monitor_id, "name": str(previous_down[monitor_id].get("name") or monitor_id).strip()}
+        for monitor_id in previous_down
+        if monitor_id not in current_down
+    ]
+
+    save_uptime_status_monitor_state(
+        {
+            "down": current_down,
+            "last_sample": str(snapshot.get("last_sample") or "").strip(),
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+    )
+
+    if not newly_down and not recovered:
+        return
+
+    channel = await resolve_uptime_status_notify_channel()
+    if channel is None:
+        logger.warning("Uptime status changes detected but notify channel is unavailable.")
+        return
+    await channel.send(format_uptime_status_transition_message(snapshot, newly_down, recovered))
+    logger.info(
+        "Uptime status posted %d down and %d recovered monitor(s) into channel %s",
+        len(newly_down),
+        len(recovered),
+        channel.id,
+    )
+
+
+async def uptime_status_monitor_loop():
+    if not UPTIME_STATUS_ENABLED or not UPTIME_STATUS_NOTIFY_ENABLED:
+        logger.info("Uptime status monitor disabled.")
+        return
+    if not croniter.is_valid(UPTIME_STATUS_CHECK_SCHEDULE):
+        logger.error("Uptime status monitor disabled: invalid UPTIME_STATUS_CHECK_SCHEDULE '%s'", UPTIME_STATUS_CHECK_SCHEDULE)
+        return
+    if UPTIME_STATUS_NOTIFY_CHANNEL_ID <= 0:
+        logger.info("Uptime status monitor disabled: no notify channel configured.")
+        return
+
+    logger.info(
+        "Uptime status monitor active: checking on cron '%s' (UTC)",
+        UPTIME_STATUS_CHECK_SCHEDULE,
+    )
+    try:
+        await check_uptime_status_once()
+    except Exception:
+        logger.exception("Initial uptime status monitor check failed")
+
+    while not bot.is_closed():
+        now_utc = datetime.now(UTC)
+        next_run_utc = croniter(UPTIME_STATUS_CHECK_SCHEDULE, now_utc).get_next(datetime)
+        wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
+        logger.debug("Next uptime status check scheduled for %s UTC", next_run_utc.isoformat())
+        await asyncio.sleep(wait_seconds)
+        try:
+            await check_uptime_status_once()
+        except Exception:
+            logger.exception("Uptime status monitor check failed")
+
+
+def restart_uptime_status_monitor_task():
+    global uptime_status_monitor_task
+    if uptime_status_monitor_task is not None and not uptime_status_monitor_task.done():
+        uptime_status_monitor_task.cancel()
+    uptime_status_monitor_task = asyncio.create_task(uptime_status_monitor_loop(), name="uptime_status_monitor")
+
+
+def schedule_uptime_status_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_uptime_status_monitor_task)
+
+
+def parse_service_monitor_targets_config():
+    return normalize_service_monitor_targets(
+        SERVICE_MONITOR_TARGETS_JSON,
+        default_timeout_seconds=SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS,
+        default_channel_id=SERVICE_MONITOR_DEFAULT_CHANNEL_ID,
+    )
+
+
+def load_service_monitor_state():
+    raw_value = db_kv_get("service_monitor_state")
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid service monitor state payload in kv_store.")
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def save_service_monitor_state(state: dict):
+    db_kv_set(
+        "service_monitor_state",
+        json.dumps(state or {}, sort_keys=True, separators=(",", ":")),
+    )
+
+
+async def resolve_service_monitor_channel(channel_id: int):
+    if int(channel_id or 0) <= 0:
+        return None
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.NotFound:
+            return None
+        except discord.Forbidden:
+            logger.warning("Service monitor channel %s is not accessible to the bot.", channel_id)
+            return None
+        except discord.HTTPException:
+            logger.exception("Failed to fetch service monitor channel %s", channel_id)
+            return None
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel
+    logger.warning("Service monitor channel %s is not a text/thread channel.", channel_id)
+    return None
+
+
+def log_service_monitor_unavailable(reason_key: str, target_count: int):
+    reason_messages = {
+        "service_monitor_disabled": "service monitor is disabled",
+        "invalid_schedule": "service monitor cron schedule is invalid",
+        "invalid_targets": "service monitor targets configuration is invalid",
+        "channel_not_configured": "service monitor channel is not configured",
+        "channel_unavailable": "service monitor channel is unavailable",
+    }
+    normalized_reason_key = str(reason_key or "").split(":", 1)[-1]
+    reason_text = reason_messages.get(normalized_reason_key, "service monitor is unavailable")
+    now_ts = time.time()
+    last_reason = service_monitor_warning_state.get("reason", "")
+    last_logged_at = float(service_monitor_warning_state.get("last_logged_at", 0.0))
+    if reason_key == last_reason and (now_ts - last_logged_at) < FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS:
+        return
+    service_monitor_warning_state["reason"] = reason_key
+    service_monitor_warning_state["last_logged_at"] = now_ts
+    logger.warning(
+        "Service monitor paused: %s (default_channel_id=%s, configured_targets=%d).",
+        reason_text,
+        SERVICE_MONITOR_DEFAULT_CHANNEL_ID,
+        target_count,
+    )
+
+
+async def check_service_monitors_once():
+    if not SERVICE_MONITOR_ENABLED:
+        return
+    try:
+        targets = parse_service_monitor_targets_config()
+    except ValueError as exc:
+        log_service_monitor_unavailable("invalid_targets", 0)
+        logger.warning("%s", exc)
+        return
+    if not targets:
+        return
+
+    state = load_service_monitor_state()
+    changed = False
+    delivered = 0
+    for target in targets:
+        result = await asyncio.to_thread(run_service_monitor_check, target)
+        monitor_id = str(target.get("id") or "")
+        previous = state.get(monitor_id) if isinstance(state.get(monitor_id), dict) else {}
+        previous_state = str(previous.get("state") or "").strip().lower()
+        current_state = str(result.get("state") or "").strip().lower()
+        state[monitor_id] = {
+            "state": current_state,
+            "status_code": int(result.get("status_code") or 0),
+            "error": str(result.get("error") or "").strip(),
+            "checked_at": str(result.get("checked_at") or "").strip(),
+            "changed_at": (
+                str(result.get("checked_at") or "").strip()
+                if previous_state != current_state
+                else str(previous.get("changed_at") or previous.get("checked_at") or result.get("checked_at") or "").strip()
+            ),
+        }
+        changed = True
+
+        if not previous_state or previous_state == current_state:
+            continue
+
+        channel = await resolve_service_monitor_channel(int(target.get("channel_id") or 0))
+        if channel is None:
+            log_service_monitor_unavailable("channel_unavailable", len(targets))
+            continue
+
+        try:
+            await channel.send(format_service_monitor_transition_message(target, previous_state, result))
+            delivered += 1
+        except discord.Forbidden:
+            logger.warning("No permission to post service monitor notification in channel %s", channel.id)
+        except discord.HTTPException:
+            logger.exception("Failed to post service monitor notification to channel %s", channel.id)
+
+    if changed:
+        save_service_monitor_state(state)
+    if delivered > 0:
+        service_monitor_warning_state["reason"] = ""
+        service_monitor_warning_state["last_logged_at"] = 0.0
+
+
+async def service_monitor_loop():
+    if not SERVICE_MONITOR_ENABLED:
+        logger.info("Service monitor disabled via SERVICE_MONITOR_ENABLED.")
+        return
+    if not croniter.is_valid(SERVICE_MONITOR_CHECK_SCHEDULE):
+        logger.error("Service monitor disabled: invalid SERVICE_MONITOR_CHECK_SCHEDULE '%s'", SERVICE_MONITOR_CHECK_SCHEDULE)
+        return
+    try:
+        targets = parse_service_monitor_targets_config()
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return
+    if not targets:
+        logger.info("Service monitor disabled: no targets configured.")
+        return
+
+    logger.info(
+        "Service monitor active: checking %d target(s) on cron '%s' (UTC)",
+        len(targets),
+        SERVICE_MONITOR_CHECK_SCHEDULE,
+    )
+    await check_service_monitors_once()
+
+    while not bot.is_closed():
+        now_utc = datetime.now(UTC)
+        next_run_utc = croniter(SERVICE_MONITOR_CHECK_SCHEDULE, now_utc).get_next(datetime)
+        wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
+        logger.debug("Next service monitor check scheduled for %s UTC", next_run_utc.isoformat())
+        await asyncio.sleep(wait_seconds)
+        await check_service_monitors_once()
+
+
+def restart_service_monitor_task():
+    global service_monitor_task
+    if service_monitor_task is not None and not service_monitor_task.done():
+        service_monitor_task.cancel()
+    service_monitor_task = asyncio.create_task(service_monitor_loop(), name="service_monitor")
+
+
+def schedule_service_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_service_monitor_task)
+
+
 def read_recent_log_lines(path: str, max_lines: int):
     try:
         line_limit = max(10, min(400, int(max_lines)))
@@ -7961,8 +8348,16 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global BETA_PROGRAM_NOTIFY_ENABLED
     global BETA_PROGRAM_POLL_INTERVAL_SECONDS
     global BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS
+    global SERVICE_MONITOR_ENABLED
+    global SERVICE_MONITOR_CHECK_SCHEDULE
+    global SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS
+    global SERVICE_MONITOR_TARGETS_JSON
+    global SERVICE_MONITOR_DEFAULT_CHANNEL_ID
     global UPTIME_STATUS_ENABLED
+    global UPTIME_STATUS_NOTIFY_ENABLED
     global UPTIME_STATUS_TIMEOUT_SECONDS
+    global UPTIME_STATUS_CHECK_SCHEDULE
+    global UPTIME_STATUS_NOTIFY_CHANNEL_ID
 
     LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", LOG_LEVEL), fallback=LOG_LEVEL)
     CONTAINER_LOG_LEVEL = normalize_log_level(
@@ -8066,14 +8461,57 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS,
         minimum=5,
     )
+    SERVICE_MONITOR_ENABLED = is_truthy_env_value(
+        os.getenv("SERVICE_MONITOR_ENABLED", "true" if SERVICE_MONITOR_ENABLED else "false"),
+        default_value=SERVICE_MONITOR_ENABLED,
+    )
+    candidate_service_monitor_schedule = (
+        str(os.getenv("SERVICE_MONITOR_CHECK_SCHEDULE", SERVICE_MONITOR_CHECK_SCHEDULE)).strip()
+        or SERVICE_MONITOR_CHECK_SCHEDULE
+    )
+    if croniter.is_valid(candidate_service_monitor_schedule):
+        SERVICE_MONITOR_CHECK_SCHEDULE = candidate_service_monitor_schedule
+    else:
+        logger.warning(
+            "Ignoring invalid SERVICE_MONITOR_CHECK_SCHEDULE value: %s",
+            candidate_service_monitor_schedule,
+        )
+    SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS", SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS),
+        SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS,
+        minimum=3,
+    )
+    SERVICE_MONITOR_TARGETS_JSON = str(os.getenv("SERVICE_MONITOR_TARGETS_JSON", SERVICE_MONITOR_TARGETS_JSON) or "").strip()
+    SERVICE_MONITOR_DEFAULT_CHANNEL_ID = parse_int_setting(
+        os.getenv("SERVICE_MONITOR_DEFAULT_CHANNEL_ID", SERVICE_MONITOR_DEFAULT_CHANNEL_ID),
+        SERVICE_MONITOR_DEFAULT_CHANNEL_ID,
+        minimum=0,
+    )
     UPTIME_STATUS_ENABLED = is_truthy_env_value(
         os.getenv("UPTIME_STATUS_ENABLED", "true" if UPTIME_STATUS_ENABLED else "false"),
         default_value=UPTIME_STATUS_ENABLED,
+    )
+    UPTIME_STATUS_NOTIFY_ENABLED = is_truthy_env_value(
+        os.getenv("UPTIME_STATUS_NOTIFY_ENABLED", "true" if UPTIME_STATUS_NOTIFY_ENABLED else "false"),
+        default_value=UPTIME_STATUS_NOTIFY_ENABLED,
     )
     UPTIME_STATUS_TIMEOUT_SECONDS = parse_int_setting(
         os.getenv("UPTIME_STATUS_TIMEOUT_SECONDS", UPTIME_STATUS_TIMEOUT_SECONDS),
         UPTIME_STATUS_TIMEOUT_SECONDS,
         minimum=1,
+    )
+    candidate_uptime_status_schedule = (
+        str(os.getenv("UPTIME_STATUS_CHECK_SCHEDULE", UPTIME_STATUS_CHECK_SCHEDULE)).strip()
+        or UPTIME_STATUS_CHECK_SCHEDULE
+    )
+    if croniter.is_valid(candidate_uptime_status_schedule):
+        UPTIME_STATUS_CHECK_SCHEDULE = candidate_uptime_status_schedule
+    else:
+        logger.warning("Ignoring invalid UPTIME_STATUS_CHECK_SCHEDULE value: %s", candidate_uptime_status_schedule)
+    UPTIME_STATUS_NOTIFY_CHANNEL_ID = parse_int_setting(
+        os.getenv("UPTIME_STATUS_NOTIFY_CHANNEL_ID", UPTIME_STATUS_NOTIFY_CHANNEL_ID),
+        UPTIME_STATUS_NOTIFY_CHANNEL_ID,
+        minimum=0,
     )
     DOCS_MAX_RESULTS_PER_SITE = parse_int_setting(
         os.getenv("DOCS_MAX_RESULTS_PER_SITE", DOCS_MAX_RESULTS_PER_SITE),
@@ -8214,6 +8652,8 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     schedule_youtube_monitor_restart()
     schedule_linkedin_monitor_restart()
     schedule_beta_program_monitor_restart()
+    schedule_service_monitor_restart()
+    schedule_uptime_status_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
 
 
@@ -8960,6 +9400,8 @@ async def on_ready():
     global youtube_monitor_task
     global linkedin_monitor_task
     global beta_program_monitor_task
+    global service_monitor_task
+    global uptime_status_monitor_task
     global member_activity_backfill_task
     install_asyncio_exception_logging(asyncio.get_running_loop())
     purged_archives = purge_expired_guild_archives()
@@ -8991,6 +9433,13 @@ async def on_ready():
         linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
     if beta_program_monitor_task is None or beta_program_monitor_task.done():
         beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
+    if service_monitor_task is None or service_monitor_task.done():
+        service_monitor_task = asyncio.create_task(service_monitor_loop(), name="service_monitor")
+    if uptime_status_monitor_task is None or uptime_status_monitor_task.done():
+        uptime_status_monitor_task = asyncio.create_task(
+            uptime_status_monitor_loop(),
+            name="uptime_status_monitor",
+        )
     if MEMBER_ACTIVITY_BACKFILL_ENABLED and (member_activity_backfill_task is None or member_activity_backfill_task.done()):
         member_activity_backfill_task = asyncio.create_task(
             member_activity_backfill_job(),

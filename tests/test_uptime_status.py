@@ -1,4 +1,9 @@
-from app.uptime_status import fetch_uptime_snapshot, format_uptime_summary
+from app.uptime_status import (
+    build_uptime_api_urls,
+    extract_service_monitor_targets_from_uptime_config,
+    fetch_uptime_snapshot,
+    format_uptime_summary,
+)
 
 
 def test_fetch_uptime_snapshot_summarizes_monitors():
@@ -36,6 +41,8 @@ def test_fetch_uptime_snapshot_summarizes_monitors():
     assert snapshot["counts"]["down"] == 1
     assert snapshot["last_sample"] == "2026-03-20T10:05:00Z"
     assert snapshot["down_monitors"] == ["Website (97.5% 24h)"]
+    assert snapshot["monitors"][0]["status"] == "up"
+    assert snapshot["monitors"][1]["status"] == "down"
 
 
 def test_format_uptime_summary_renders_down_monitors():
@@ -56,3 +63,36 @@ def test_format_uptime_summary_renders_down_monitors():
     assert "Monitors: 2 | Up: 1 | Down: 1" in summary
     assert "Down monitors:" in summary
     assert "Website (97.5% 24h)" in summary
+
+
+def test_build_uptime_api_urls_parses_status_page_url():
+    urls = build_uptime_api_urls("https://status.example.com/status/default")
+
+    assert urls["slug"] == "default"
+    assert urls["config_url"] == "https://status.example.com/api/status-page/default"
+    assert urls["heartbeat_url"] == "https://status.example.com/api/status-page/heartbeat/default"
+
+
+def test_extract_service_monitor_targets_from_uptime_config_skips_entries_without_public_urls():
+    extracted = extract_service_monitor_targets_from_uptime_config(
+        {
+            "publicGroupList": [
+                {
+                    "name": "GL DDNS",
+                    "monitorList": [
+                        {"name": "GLDDNS Update API", "url": "https://api.example.com/health"},
+                        {"name": "Nameserver", "url": "https://"},
+                    ],
+                }
+            ]
+        },
+        guild_id=1234567890,
+        channel_id=9999,
+        timeout_seconds=10,
+    )
+
+    assert len(extracted["targets"]) == 1
+    assert extracted["targets"][0]["guild_id"] == 1234567890
+    assert extracted["targets"][0]["channel_id"] == 9999
+    assert extracted["targets"][0]["url"] == "https://api.example.com/health"
+    assert len(extracted["skipped"]) == 1

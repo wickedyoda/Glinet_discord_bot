@@ -21,6 +21,8 @@ Core capabilities:
 - Firmware feed monitor with scheduled notification delivery
 - Reddit feed monitor with channel-to-Discord posting for configured subreddits
 - YouTube feed monitor with channel-to-Discord posting
+- Generic service monitor for website/API online-offline alerts
+- Dedicated web GUI page for service monitors and Uptime Kuma imports/alerts
 - LinkedIn public profile monitor with channel-to-Discord posting
 - Member activity analytics with private `/stats`, rolling 90-day retention, optional startup backfill, and ZIP export from the web GUI
 - Guild-scoped welcome automation with optional channel message, optional DM, and optional uploaded image attachment with enforced size and dimension validation
