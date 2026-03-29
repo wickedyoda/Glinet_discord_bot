@@ -6,7 +6,6 @@ import os
 import re
 import secrets
 import shutil
-import sqlite3
 import ssl
 import subprocess  # nosec B404
 import threading
@@ -60,6 +59,33 @@ from app.web_audit import should_log_web_audit_event
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
+from app.web_user_store import (
+    current_time_iso as _store_now_iso,
+)
+from app.web_user_store import (
+    ensure_default_admin as _store_ensure_default_admin,
+)
+from app.web_user_store import (
+    normalize_guild_group_name as _store_normalize_guild_group_name,
+)
+from app.web_user_store import (
+    normalize_id_string_list as _normalize_id_string_list,
+)
+from app.web_user_store import (
+    normalize_string_id_list as _normalize_string_id_list,
+)
+from app.web_user_store import (
+    read_guild_groups as _store_read_guild_groups,
+)
+from app.web_user_store import (
+    read_users as _store_read_users,
+)
+from app.web_user_store import (
+    save_guild_groups as _store_save_guild_groups,
+)
+from app.web_user_store import (
+    save_users as _store_save_users,
+)
 
 
 def ensure_process_utc_timezone():
@@ -1289,436 +1315,54 @@ def _password_age_days(user: dict) -> int:
 
 
 def _now_iso():
-    return datetime.now(UTC).isoformat()
-
-
-def _normalize_id_string_list(raw_values):
-    if raw_values is None:
-        items = []
-    elif isinstance(raw_values, (list, tuple, set)):
-        items = list(raw_values)
-    else:
-        raw_text = str(raw_values or "").strip()
-        if not raw_text:
-            items = []
-        else:
-            try:
-                parsed = json.loads(raw_text)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, list):
-                items = parsed
-            else:
-                items = [part.strip() for part in raw_text.split(",")]
-
-    normalized = []
-    seen = set()
-    for item in items:
-        value = str(item or "").strip()
-        if not value or not value.isdigit() or value in seen:
-            continue
-        normalized.append(value)
-        seen.add(value)
-    return normalized
-
-
-def _serialize_id_string_list(raw_values):
-    return json.dumps(_normalize_id_string_list(raw_values), separators=(",", ":"))
-
-
-def _normalize_string_id_list(raw_values):
-    if raw_values is None:
-        items = []
-    elif isinstance(raw_values, (list, tuple, set)):
-        items = list(raw_values)
-    else:
-        raw_text = str(raw_values or "").strip()
-        if not raw_text:
-            items = []
-        else:
-            try:
-                parsed = json.loads(raw_text)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, list):
-                items = parsed
-            else:
-                items = [part.strip() for part in raw_text.split(",")]
-
-    normalized = []
-    seen = set()
-    for item in items:
-        value = str(item or "").strip()
-        if not value or value in seen:
-            continue
-        normalized.append(value)
-        seen.add(value)
-    return normalized
-
-
-def _serialize_string_id_list(raw_values):
-    return json.dumps(_normalize_string_id_list(raw_values), separators=(",", ":"))
+    return _store_now_iso()
 
 
 def _normalize_guild_group_name(value: str):
-    return _clean_profile_text(str(value or ""), max_length=80)
-
-
-def _ensure_users_table_columns(conn):
-    rows = conn.execute("PRAGMA table_info(web_users)").fetchall()
-    columns = {str(row["name"]) for row in rows}
-    alter_statements = []
-    if "role" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN role TEXT NOT NULL DEFAULT ''")
-    if "first_name" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN first_name TEXT NOT NULL DEFAULT ''")
-    if "last_name" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN last_name TEXT NOT NULL DEFAULT ''")
-    if "display_name" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
-    if "password_changed_at" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN password_changed_at TEXT NOT NULL DEFAULT ''")
-    if "email_changed_at" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN email_changed_at TEXT NOT NULL DEFAULT ''")
-    if "updated_at" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
-    if "created_at" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
-    if "guild_group_ids_json" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN guild_group_ids_json TEXT NOT NULL DEFAULT '[]'")
-    for statement in alter_statements:
-        conn.execute(statement)
-
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS web_guild_groups (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            guild_ids_json TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-
-    now_iso = _now_iso()
-    conn.execute(
-        """
-        UPDATE web_users
-        SET created_at = COALESCE(NULLIF(TRIM(created_at), ''), ?)
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET updated_at = COALESCE(NULLIF(TRIM(updated_at), ''), created_at, ?)
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET password_changed_at = COALESCE(
-            NULLIF(TRIM(password_changed_at), ''),
-            NULLIF(TRIM(updated_at), ''),
-            NULLIF(TRIM(created_at), ''),
-            ?
-        )
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET email_changed_at = COALESCE(
-            NULLIF(TRIM(email_changed_at), ''),
-            NULLIF(TRIM(updated_at), ''),
-            NULLIF(TRIM(created_at), ''),
-            ?
-        )
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET role = CASE
-            WHEN TRIM(COALESCE(role, '')) = '' THEN CASE WHEN is_admin = 1 THEN 'admin' ELSE 'read_only' END
-            ELSE LOWER(TRIM(role))
-        END
-        """
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET first_name = COALESCE(first_name, ''),
-            last_name = COALESCE(last_name, ''),
-            display_name = COALESCE(display_name, ''),
-            guild_group_ids_json = COALESCE(NULLIF(TRIM(guild_group_ids_json), ''), '[]')
-        """
-    )
-    conn.commit()
-
-
-def _open_users_db(users_db_file: Path):
-    conn = sqlite3.connect(str(users_db_file), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS web_users (
-            email TEXT PRIMARY KEY,
-            password_hash TEXT NOT NULL,
-            is_admin INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    _ensure_users_table_columns(conn)
-    try:
-        os.chmod(users_db_file, 0o600)
-    except (PermissionError, OSError):
-        pass
-    return conn
+    return _store_normalize_guild_group_name(value, clean_profile_text=_clean_profile_text)
 
 
 def _read_users(users_db_file: Path):
-    conn = _open_users_db(users_db_file)
-    try:
-        rows = conn.execute(
-            """
-            SELECT
-                email,
-                password_hash,
-                is_admin,
-                role,
-                first_name,
-                last_name,
-                display_name,
-                guild_group_ids_json,
-                password_changed_at,
-                email_changed_at,
-                created_at,
-                updated_at
-            FROM web_users
-            ORDER BY created_at ASC, email ASC
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-
-    return [
-        {
-            "email": str(row["email"]).strip().lower(),
-            "password_hash": str(row["password_hash"]),
-            "role": _normalize_web_user_role(str(row["role"] or ""), is_admin=bool(row["is_admin"])),
-            "is_admin": _normalize_web_user_role(str(row["role"] or ""), is_admin=bool(row["is_admin"])) == "admin",
-            "first_name": _clean_profile_text(str(row["first_name"] or ""), max_length=80),
-            "last_name": _clean_profile_text(str(row["last_name"] or ""), max_length=80),
-            "display_name": _clean_profile_text(
-                str(row["display_name"] or "") or _default_display_name(str(row["email"] or "")),
-                max_length=80,
-            ),
-            "guild_group_ids": _normalize_string_id_list(str(row["guild_group_ids_json"] or "[]")),
-            "password_changed_at": str(row["password_changed_at"] or row["updated_at"] or row["created_at"] or _now_iso()),
-            "email_changed_at": str(row["email_changed_at"] or row["updated_at"] or row["created_at"] or _now_iso()),
-            "created_at": str(row["created_at"] or _now_iso()),
-            "updated_at": str(row["updated_at"] or row["created_at"] or _now_iso()),
-        }
-        for row in rows
-        if str(row["email"]).strip() and str(row["password_hash"]).strip()
-    ]
+    return _store_read_users(
+        users_db_file,
+        normalize_role=_normalize_web_user_role,
+        clean_profile_text=_clean_profile_text,
+        default_display_name=_default_display_name,
+    )
 
 
 def _save_users(users_db_file: Path, users):
-    now_iso = _now_iso()
-    conn = _open_users_db(users_db_file)
-    try:
-        with conn:
-            conn.execute("DELETE FROM web_users")
-            for entry in users:
-                email = _normalize_email(entry.get("email", ""))
-                password_hash = str(entry.get("password_hash", "")).strip()
-                if not email or not password_hash:
-                    continue
-                role = _normalize_web_user_role(str(entry.get("role", "")), is_admin=bool(entry.get("is_admin", False)))
-                is_admin = 1 if role == "admin" else 0
-                first_name = _clean_profile_text(str(entry.get("first_name", "")), max_length=80)
-                last_name = _clean_profile_text(str(entry.get("last_name", "")), max_length=80)
-                display_name = _clean_profile_text(str(entry.get("display_name", "")), max_length=80) or _default_display_name(email)
-                guild_group_ids_json = _serialize_string_id_list(entry.get("guild_group_ids", []))
-                created_at = str(entry.get("created_at") or now_iso)
-                password_changed_at = str(entry.get("password_changed_at") or created_at or now_iso)
-                email_changed_at = str(entry.get("email_changed_at") or created_at or now_iso)
-                conn.execute(
-                    """
-                    INSERT INTO web_users (
-                        email,
-                        password_hash,
-                        is_admin,
-                        role,
-                        first_name,
-                        last_name,
-                        display_name,
-                        guild_group_ids_json,
-                        password_changed_at,
-                        email_changed_at,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        email,
-                        password_hash,
-                        is_admin,
-                        role,
-                        first_name,
-                        last_name,
-                        display_name,
-                        guild_group_ids_json,
-                        password_changed_at,
-                        email_changed_at,
-                        created_at,
-                        now_iso,
-                    ),
-                )
-    finally:
-        conn.close()
+    _store_save_users(
+        users_db_file,
+        users,
+        normalize_email=_normalize_email,
+        normalize_role=_normalize_web_user_role,
+        clean_profile_text=_clean_profile_text,
+        default_display_name=_default_display_name,
+    )
 
 
 def _ensure_default_admin(users_db_file: Path, default_email: str, default_password: str, logger):
-    users = _read_users(users_db_file)
-    if users:
-        return
-
-    email = _normalize_email(default_email) or "admin@example.com"
-    if not _is_valid_email(email):
-        email = "admin@example.com"
-
-    password = default_password or ""
-    if _password_policy_errors(password):
-        message = (
-            "WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet password policy. "
-            "Set a strong password before first boot so the initial admin user can be created securely."
-        )
-        if logger:
-            logger.error(message)
-        raise ValueError(message)
-
-    now_iso = _now_iso()
-    display_name = _default_display_name(email)
-    conn = _open_users_db(users_db_file)
-    try:
-        with conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO web_users (
-                    email,
-                    password_hash,
-                    is_admin,
-                    role,
-                    first_name,
-                    last_name,
-                    display_name,
-                    guild_group_ids_json,
-                    password_changed_at,
-                    email_changed_at,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    email,
-                    _hash_password(password),
-                    1,
-                    "admin",
-                    "",
-                    "",
-                    display_name,
-                    "[]",
-                    now_iso,
-                    now_iso,
-                    now_iso,
-                    now_iso,
-                ),
-            )
-    finally:
-        conn.close()
+    _store_ensure_default_admin(
+        users_db_file,
+        default_email,
+        default_password,
+        logger,
+        read_users_func=_read_users,
+        normalize_email=_normalize_email,
+        is_valid_email=_is_valid_email,
+        password_policy_errors=_password_policy_errors,
+        hash_password=_hash_password,
+        default_display_name=_default_display_name,
+    )
 
 
 def _read_guild_groups(users_db_file: Path):
-    conn = _open_users_db(users_db_file)
-    try:
-        rows = conn.execute(
-            """
-            SELECT
-                id,
-                name,
-                guild_ids_json,
-                created_at,
-                updated_at
-            FROM web_guild_groups
-            ORDER BY LOWER(name) ASC, created_at ASC, id ASC
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-
-    groups = []
-    for row in rows:
-        group_id = str(row["id"] or "").strip()
-        if not group_id:
-            continue
-        groups.append(
-            {
-                "id": group_id,
-                "name": _normalize_guild_group_name(str(row["name"] or "")) or "Guild Group",
-                "guild_ids": _normalize_id_string_list(str(row["guild_ids_json"] or "[]")),
-                "created_at": str(row["created_at"] or _now_iso()),
-                "updated_at": str(row["updated_at"] or row["created_at"] or _now_iso()),
-            }
-        )
-    return groups
+    return _store_read_guild_groups(users_db_file, clean_profile_text=_clean_profile_text)
 
 
 def _save_guild_groups(users_db_file: Path, groups):
-    now_iso = _now_iso()
-    conn = _open_users_db(users_db_file)
-    try:
-        with conn:
-            conn.execute("DELETE FROM web_guild_groups")
-            for entry in groups:
-                group_id = str(entry.get("id") or "").strip()
-                group_name = _normalize_guild_group_name(str(entry.get("name") or ""))
-                if not group_id or not group_name:
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO web_guild_groups (
-                        id,
-                        name,
-                        guild_ids_json,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        group_id,
-                        group_name,
-                        _serialize_id_string_list(entry.get("guild_ids", [])),
-                        str(entry.get("created_at") or now_iso),
-                        now_iso,
-                    ),
-                )
-    finally:
-        conn.close()
+    _store_save_guild_groups(users_db_file, groups, clean_profile_text=_clean_profile_text)
 
 
 def _parse_env_file(env_file: Path):
