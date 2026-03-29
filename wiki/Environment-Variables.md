@@ -79,13 +79,22 @@ Global monitor toggles in this section act as defaults. Selected servers can ove
 | `SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS` | `10` | Integer, `>= 3` | Default timeout for service checks |
 | `SERVICE_MONITOR_TARGETS_JSON` | `[]` | JSON array | List of websites/APIs to check for up/down transitions |
 | `UPTIME_STATUS_ENABLED` | `false` | Boolean | Enables `/uptime` command |
-| `UPTIME_STATUS_NOTIFY_ENABLED` | `false` | Boolean | Enables scheduled outage/recovery alerts from the configured public Uptime Kuma page |
+| `UPTIME_STATUS_NOTIFY_ENABLED` | `false` | Boolean | Enables scheduled outage/recovery alerts from the configured Uptime Kuma source |
 | `UPTIME_STATUS_NOTIFY_CHANNEL_ID` | empty | Integer channel ID or `<#channel_id>` | Discord channel used for Uptime Kuma alerts |
 | `UPTIME_STATUS_CHECK_SCHEDULE` | `*/5 * * * *` | Valid 5-field cron (UTC) | Poll cadence for Uptime Kuma alert checks |
-| `UPTIME_STATUS_PAGE_URL` | `https://status.example.invalid/status/everything` | URL | Public status page used for uptime summary lookups |
+| `UPTIME_STATUS_PAGE_URL` | `https://status.example.invalid/status/everything` | URL | Optional public status page used for uptime summary lookups |
+| `UPTIME_STATUS_INSTANCE_URL` | empty | URL | Optional authenticated Uptime Kuma base URL such as `https://kuma.example.com/` |
+| `UPTIME_STATUS_API_KEY` | empty | Secret string | Optional Uptime Kuma API key used to read the instance metrics endpoint |
 | `UPTIME_STATUS_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for uptime status fetch |
+| `UPTIME_STATUS_VERIFY_TLS` | `true` | Boolean | Whether Kuma requests should verify TLS certificates |
 
 For normal web-GUI operations, use `/admin/service-monitors` instead of hand-editing these values. That page updates the same environment-backed settings for direct service checks and the Uptime Kuma watcher.
+
+Operational notes:
+
+- If `UPTIME_STATUS_ENABLED=false` or unset, startup will log `Uptime status monitor disabled.`
+- If `SERVICE_MONITOR_ENABLED=false` or unset, startup will log `Service monitor disabled via SERVICE_MONITOR_ENABLED.`
+- You do not need to hand-edit `/app/env.env` if you configure these values in `/admin/service-monitors`; the web GUI writes the same settings to the active env file or the writable fallback env file.
 
 ### `SERVICE_MONITOR_TARGETS_JSON` format
 
@@ -121,6 +130,11 @@ Supported keys per entry:
 - optional `contains_text`: marks the service down if the response body does not contain this string
 - optional `timeout_seconds`
 - optional `channel_id`: overrides `SERVICE_MONITOR_DEFAULT_CHANNEL_ID`
+
+Web GUI shortcuts on `/admin/service-monitors`:
+- `Add GL.iNet Domain Set`: bulk-adds the standard GL.iNet domain list and removes duplicates by URL within the selected guild
+- `Add Tailscale Status`: quick-adds `https://status.tailscale.com/`
+- `Import From Uptime Kuma`: converts public HTTP(S) monitors from a public status page or authenticated instance into direct checks
 
 ## Moderation
 

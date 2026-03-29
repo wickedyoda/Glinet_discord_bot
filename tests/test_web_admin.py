@@ -6,6 +6,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 
 import web_admin
+from app.service_monitor import GLINET_DOMAIN_MONITOR_PRESETS, normalize_service_monitor_targets
 from web_admin import create_web_app
 
 
@@ -31,15 +32,23 @@ def _make_app(tmp_path: Path):
                     "member_count": 42,
                     "icon_url": "",
                     "is_primary": True,
+                },
+                {
+                    "id": "2222222222",
+                    "name": "Support Guild",
+                    "member_count": 17,
+                    "icon_url": "",
+                    "is_primary": False,
                 }
             ],
             "primary_guild_id": "1234567890",
         }
 
     def catalog(guild_id):
+        guild_name = "Support Guild" if str(guild_id) == "2222222222" else "Test Guild"
         return {
             "ok": True,
-            "guild": {"id": str(guild_id), "name": "Test Guild"},
+            "guild": {"id": str(guild_id), "name": guild_name},
             "channels": [
                 {
                     "id": "9999",
@@ -605,13 +614,13 @@ def _extract_csrf_token(response):
     return match.group(1)
 
 
-def _select_guild(client):
+def _select_guild(client, guild_id: str = "1234567890"):
     admin_page = client.get("/admin", base_url="https://docker.example:8443")
     assert admin_page.status_code == 200
     csrf_token = _extract_csrf_token(admin_page)
     response = client.post(
         "/admin/select-guild",
-        data={"guild_id": "1234567890"},
+        data={"guild_id": guild_id},
         base_url="https://docker.example:8443",
         headers={"X-CSRF-Token": csrf_token},
         follow_redirects=True,
@@ -774,8 +783,11 @@ def test_service_monitors_page_renders_forms(tmp_path: Path):
     assert b"Service Monitors" in response.data
     assert b"Direct Service Monitor Settings" in response.data
     assert b"Add Direct Service Monitor" in response.data
+    assert b"Add GL.iNet Domain Set" in response.data
     assert b"Add Tailscale Status" in response.data
     assert b"Uptime Kuma Watcher" in response.data
+    assert b"Authenticated instance URL" in response.data
+    assert b"API key" in response.data
 
 
 def test_linkedin_page_renders_form(tmp_path: Path):
@@ -972,6 +984,57 @@ def test_admin_can_quick_add_tailscale_status_monitor(tmp_path: Path):
     assert b"https://status.tailscale.com/" in response.data
 
 
+def test_admin_can_quick_add_glinet_domain_set_without_duplicates(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    first_response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "add_glinet_domain_set",
+            "glinet_preset_channel_id": "9999",
+            "glinet_preset_timeout_seconds": "10",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert first_response.status_code == 200
+    assert b"Added 17 GL.iNet domain monitor(s)." in first_response.data
+    assert b"https://gl-inet.com/" in first_response.data
+    assert b"https://glddns.com/" in first_response.data
+    assert b"https://docs.astrowarp.net/" in first_response.data
+
+    second_response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "add_glinet_domain_set",
+            "glinet_preset_channel_id": "9999",
+            "glinet_preset_timeout_seconds": "15",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert second_response.status_code == 200
+    assert b"Added 0 GL.iNet domain monitor(s), updated 17." in second_response.data
+    env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
+    targets = normalize_service_monitor_targets(
+        env_values.get("SERVICE_MONITOR_TARGETS_JSON", "[]"),
+        default_timeout_seconds=10,
+        default_channel_id=0,
+    )
+    target_urls = [target["url"] for target in targets]
+    preset_urls = [entry["url"] for entry in GLINET_DOMAIN_MONITOR_PRESETS]
+    for preset_url in preset_urls:
+        assert preset_url in target_urls
+        assert target_urls.count(preset_url) == 1
+
+
 def test_admin_can_import_direct_service_monitors_from_uptime_kuma(tmp_path: Path, monkeypatch):
     app = _make_app(tmp_path)
     client = app.test_client()
@@ -1010,6 +1073,112 @@ def test_admin_can_import_direct_service_monitors_from_uptime_kuma(tmp_path: Pat
     assert b"Imported 1 new direct service monitor" in response.data
     assert b"Websites - GL.iNet Website" in response.data
     assert b"https://www.gl-inet.com" in response.data
+
+
+def test_admin_can_import_direct_service_monitors_from_authenticated_uptime_kuma(
+    tmp_path: Path,
+    monkeypatch,
+):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    monkeypatch.setattr(
+        web_admin,
+        "fetch_uptime_metrics_text",
+        lambda *, instance_url, api_key, fetch_text: (
+            'monitor_status{monitor_name="Kuma API",monitor_url="https://api.example.com/health",monitor_hostname="null",monitor_port="null"} 1\n'
+            'monitor_status{monitor_name="Internal TCP",monitor_url="null",monitor_hostname="db.internal",monitor_port="5432"} 1\n'
+        ),
+    )
+
+    response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "import_uptime_instance_targets",
+            "uptime_import_instance_url": "https://kuma.example.com/",
+            "uptime_import_api_key": "secret",
+            "uptime_import_verify_tls": "true",
+            "uptime_import_channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Imported 1 new direct service monitor" in response.data
+    assert b"Kuma API" in response.data
+    assert b"https://api.example.com/health" in response.data
+
+
+def test_admin_can_import_from_testing_uptime_instance_without_typing_api_key(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.delenv("UPTIME_STATUS_API_KEY", raising=False)
+    monkeypatch.delenv("UPTIME_STATUS_INSTANCE_URL", raising=False)
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    captured = {}
+
+    def fake_fetch_metrics_text(*, instance_url, api_key, fetch_text):
+        captured["instance_url"] = instance_url
+        captured["api_key"] = api_key
+        return 'monitor_status{monitor_name="Kuma API",monitor_url="https://api.example.com/health",monitor_hostname="null",monitor_port="null"} 1\n'
+
+    monkeypatch.setattr(web_admin, "fetch_uptime_metrics_text", fake_fetch_metrics_text)
+
+    response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "import_uptime_instance_targets",
+            "uptime_import_instance_url": "https://randy.wickedyoda.com/",
+            "uptime_import_api_key": "",
+            "uptime_import_verify_tls": "true",
+            "uptime_import_channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert captured["instance_url"] == "https://randy.wickedyoda.com/"
+    assert captured["api_key"] == "uk1_8F5mp7aFThP-bookSOOWQLUWfcVNmHpv5UjdSyZz"
+
+
+def test_admin_can_save_authenticated_uptime_kuma_settings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "save_uptime_settings",
+            "uptime_status_enabled": "true",
+            "uptime_status_notify_enabled": "true",
+            "uptime_status_instance_url": "https://kuma.example.com/",
+            "uptime_status_api_key": "secret",
+            "uptime_status_verify_tls": "true",
+            "uptime_notify_channel_id": "9999",
+            "uptime_status_schedule": "*/5 * * * *",
+            "uptime_status_timeout": "15",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Uptime Kuma watcher settings updated." in response.data
+    assert b"https://kuma.example.com/" in response.data
 
 
 def test_admin_can_edit_linkedin_subscription(tmp_path: Path):
@@ -1715,6 +1884,198 @@ def test_glinet_rw_role_can_edit_only_primary_guild_scoped_settings(tmp_path: Pa
     assert global_settings_response.status_code == 200
     assert b"GL.iNet-scoped access is limited to the primary GL.iNet Community Discord server." in global_settings_response.data
     assert b"Dashboard" in global_settings_response.data
+
+
+def test_admin_can_create_and_assign_guild_group_to_guild_admin(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    create_group_response = client.post(
+        "/admin/users",
+        data={
+            "action": "create_group",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "group_name": "Support Servers",
+            "guild_ids": ["2222222222"],
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_group_response.status_code == 200
+    assert b"Created guild group Support Servers." in create_group_response.data
+    assert b"Support Servers" in create_group_response.data
+    assert b"Support Guild" in create_group_response.data
+
+    users_db = tmp_path / "bot_data.db"
+    groups = web_admin._read_guild_groups(users_db)
+    assert len(groups) == 1
+    group_id = str(groups[0]["id"])
+
+    create_user_response = client.post(
+        "/admin/users",
+        data={
+            "action": "create",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "first_name": "Scoped",
+            "last_name": "Admin",
+            "display_name": "Scoped Admin",
+            "email": "guild-admin@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+            "role": "guild_admin",
+            "guild_group_ids": [group_id],
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_user_response.status_code == 200
+    assert b"guild-admin@example.com" in create_user_response.data
+    assert b"Guild Admin" in create_user_response.data
+    assert b"Support Servers" in create_user_response.data
+
+
+def test_guild_admin_only_sees_assigned_guilds_and_can_manage_them(tmp_path: Path):
+    app = _make_app(tmp_path)
+    admin_client = app.test_client()
+    _login(admin_client)
+
+    create_group_response = admin_client.post(
+        "/admin/users",
+        data={
+            "action": "create_group",
+            "csrf_token": _page_csrf_token(admin_client, "/admin/users"),
+            "group_name": "Support Servers",
+            "guild_ids": ["2222222222"],
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_group_response.status_code == 200
+
+    users_db = tmp_path / "bot_data.db"
+    groups = web_admin._read_guild_groups(users_db)
+    group_id = str(groups[0]["id"])
+
+    create_user_response = admin_client.post(
+        "/admin/users",
+        data={
+            "action": "create",
+            "csrf_token": _page_csrf_token(admin_client, "/admin/users"),
+            "first_name": "Scoped",
+            "last_name": "Admin",
+            "display_name": "Scoped Admin",
+            "email": "guild-admin@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+            "role": "guild_admin",
+            "guild_group_ids": [group_id],
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_user_response.status_code == 200
+
+    client = app.test_client()
+    _login_as(client, "guild-admin@example.com", "Ab!12xy")
+
+    guilds_response = client.get("/admin", base_url="https://docker.example:8443")
+    assert guilds_response.status_code == 200
+    assert b"Support Guild" in guilds_response.data
+    assert b"Test Guild" not in guilds_response.data
+
+    selected_response = _select_guild(client, "2222222222")
+    assert selected_response.status_code == 200
+    assert b"Support Guild" in selected_response.data
+
+    guild_settings_response = client.post(
+        "/admin/guild-settings",
+        data={
+            "bot_log_channel_id": "9999",
+            "mod_log_channel_id": "",
+            "firmware_notify_channel_id": "",
+            "access_role_id": "111",
+            "csrf_token": _page_csrf_token(client, "/admin/guild-settings"),
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert guild_settings_response.status_code == 200
+    assert b"Guild settings updated by guild-admin@example.com." in guild_settings_response.data
+
+    blocked_select_response = client.post(
+        "/admin/select-guild",
+        data={"guild_id": "1234567890"},
+        base_url="https://docker.example:8443",
+        headers={"X-CSRF-Token": _extract_csrf_token(client.get("/admin", base_url="https://docker.example:8443"))},
+        follow_redirects=True,
+    )
+    assert blocked_select_response.status_code == 200
+    assert b"Support Guild" in blocked_select_response.data
+    assert b"Test Guild" not in blocked_select_response.data
+
+
+def test_guild_admin_cannot_access_global_admin_pages(tmp_path: Path):
+    app = _make_app(tmp_path)
+    admin_client = app.test_client()
+    _login(admin_client)
+
+    create_group_response = admin_client.post(
+        "/admin/users",
+        data={
+            "action": "create_group",
+            "csrf_token": _page_csrf_token(admin_client, "/admin/users"),
+            "group_name": "Support Servers",
+            "guild_ids": ["2222222222"],
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_group_response.status_code == 200
+
+    users_db = tmp_path / "bot_data.db"
+    groups = web_admin._read_guild_groups(users_db)
+    group_id = str(groups[0]["id"])
+
+    create_user_response = admin_client.post(
+        "/admin/users",
+        data={
+            "action": "create",
+            "csrf_token": _page_csrf_token(admin_client, "/admin/users"),
+            "first_name": "Scoped",
+            "last_name": "Admin",
+            "display_name": "Scoped Admin",
+            "email": "guild-admin@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+            "role": "guild_admin",
+            "guild_group_ids": [group_id],
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_user_response.status_code == 200
+
+    client = app.test_client()
+    _login_as(client, "guild-admin@example.com", "Ab!12xy")
+
+    users_response = client.get(
+        "/admin/users",
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert users_response.status_code == 200
+    assert b"Guild Admin access is limited to assigned Discord server groups." in users_response.data
+    assert b"Dashboard" in users_response.data
+
+    settings_response = client.get(
+        "/admin/settings",
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert settings_response.status_code == 200
+    assert b"Guild Admin access is limited to assigned Discord server groups." in settings_response.data
+    assert b"Dashboard" in settings_response.data
 
 
 def test_admin_logs_page_offers_export_link(tmp_path: Path, monkeypatch):
