@@ -19,6 +19,7 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
 
+import requests
 from croniter import croniter
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -39,6 +40,12 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
+from app.service_monitor import normalize_service_monitor_targets, serialize_service_monitor_targets
+from app.uptime_status import (
+    build_uptime_api_urls,
+    extract_service_monitor_targets_from_uptime_config,
+    fetch_uptime_public_config,
+)
 from app.web_audit import should_log_web_audit_event
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
@@ -94,6 +101,7 @@ REDDIT_FEED_SCHEDULE_OPTIONS = (
     ("0 * * * *", "Every hour"),
     ("0 */2 * * *", "Every 2 hours"),
 )
+MONITOR_RECHECK_SCHEDULE_OPTIONS = REDDIT_FEED_SCHEDULE_OPTIONS
 OBSERVABILITY_HISTORY_RETENTION_HOURS = 24
 OBSERVABILITY_HISTORY_SAMPLE_SECONDS = 60
 LOG_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
@@ -388,9 +396,49 @@ ENV_FIELDS = [
         "Timeout in seconds for GL.iNet beta program requests.",
     ),
     (
+        "SERVICE_MONITOR_ENABLED",
+        "Service Monitor Enabled",
+        "Enable or disable generic website/API outage checks.",
+    ),
+    (
+        "SERVICE_MONITOR_DEFAULT_CHANNEL_ID",
+        "Service Monitor Default Channel",
+        "Discord text channel used for service outage alerts when a target does not specify its own channel_id.",
+    ),
+    (
+        "SERVICE_MONITOR_CHECK_SCHEDULE",
+        "Service Monitor Schedule",
+        "5-field cron schedule in UTC for website/API checks.",
+    ),
+    (
+        "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS",
+        "Service Monitor Timeout",
+        "Default HTTP timeout in seconds for service checks.",
+    ),
+    (
+        "SERVICE_MONITOR_TARGETS_JSON",
+        "Service Monitor Targets JSON",
+        "JSON array of service checks. Each item supports name, url, optional method, expected_status, contains_text, timeout_seconds, and channel_id.",
+    ),
+    (
         "UPTIME_STATUS_ENABLED",
         "Uptime Status Enabled",
         "Enable /uptime integration against a public Uptime Kuma page.",
+    ),
+    (
+        "UPTIME_STATUS_NOTIFY_ENABLED",
+        "Uptime Status Alerting",
+        "Enable scheduled outage/recovery notifications from the configured public Uptime Kuma page.",
+    ),
+    (
+        "UPTIME_STATUS_NOTIFY_CHANNEL_ID",
+        "Uptime Status Notify Channel",
+        "Discord text channel that receives Uptime Kuma outage and recovery alerts.",
+    ),
+    (
+        "UPTIME_STATUS_CHECK_SCHEDULE",
+        "Uptime Status Check Schedule",
+        "5-field cron schedule in UTC for Uptime Kuma alert checks.",
     ),
     (
         "UPTIME_STATUS_PAGE_URL",
@@ -627,7 +675,15 @@ ENV_FIELD_SECTIONS = (
             "BETA_PROGRAM_NOTIFY_ENABLED",
             "BETA_PROGRAM_POLL_INTERVAL_SECONDS",
             "BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS",
+            "SERVICE_MONITOR_ENABLED",
+            "SERVICE_MONITOR_DEFAULT_CHANNEL_ID",
+            "SERVICE_MONITOR_CHECK_SCHEDULE",
+            "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS",
+            "SERVICE_MONITOR_TARGETS_JSON",
             "UPTIME_STATUS_ENABLED",
+            "UPTIME_STATUS_NOTIFY_ENABLED",
+            "UPTIME_STATUS_NOTIFY_CHANNEL_ID",
+            "UPTIME_STATUS_CHECK_SCHEDULE",
             "UPTIME_STATUS_PAGE_URL",
             "UPTIME_STATUS_TIMEOUT_SECONDS",
         ),
@@ -1738,8 +1794,30 @@ def _validate_env_updates(updated_values: dict):
             errors.append("firmware_check_schedule must be a valid 5-field cron expression.")
         if key == "REDDIT_FEED_CHECK_SCHEDULE" and value and not croniter.is_valid(value):
             errors.append("REDDIT_FEED_CHECK_SCHEDULE must be a valid 5-field cron expression.")
+        if key == "SERVICE_MONITOR_CHECK_SCHEDULE" and value and not croniter.is_valid(value):
+            errors.append("SERVICE_MONITOR_CHECK_SCHEDULE must be a valid 5-field cron expression.")
+        if key == "UPTIME_STATUS_CHECK_SCHEDULE" and value and not croniter.is_valid(value):
+            errors.append("UPTIME_STATUS_CHECK_SCHEDULE must be a valid 5-field cron expression.")
         if key == "firmware_notification_channel" and value and not CHANNEL_ID_PATTERN.fullmatch(value):
             errors.append("firmware_notification_channel must be numeric ID or <#channel> format.")
+        if key == "SERVICE_MONITOR_DEFAULT_CHANNEL_ID" and value and not CHANNEL_ID_PATTERN.fullmatch(value):
+            errors.append("SERVICE_MONITOR_DEFAULT_CHANNEL_ID must be numeric ID or <#channel> format.")
+        if key == "UPTIME_STATUS_NOTIFY_CHANNEL_ID" and value and not CHANNEL_ID_PATTERN.fullmatch(value):
+            errors.append("UPTIME_STATUS_NOTIFY_CHANNEL_ID must be numeric ID or <#channel> format.")
+        if key == "UPTIME_STATUS_PAGE_URL" and value:
+            try:
+                build_uptime_api_urls(value)
+            except ValueError as exc:
+                errors.append(str(exc))
+        if key == "SERVICE_MONITOR_TARGETS_JSON" and value:
+            try:
+                normalize_service_monitor_targets(
+                    value,
+                    default_timeout_seconds=10,
+                    default_channel_id=0,
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
         if key == "WEB_ADMIN_DEFAULT_USERNAME" and value and not _is_valid_email(value):
             errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email.")
         if key == "WEB_ADMIN_DEFAULT_PASSWORD" and value:
@@ -2457,6 +2535,7 @@ def _render_layout(
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
@@ -2470,6 +2549,7 @@ def _render_layout(
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
@@ -2570,6 +2650,7 @@ def _render_layout(
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+            <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
             <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
@@ -2583,6 +2664,7 @@ def _render_layout(
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+            <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
             <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
@@ -3149,6 +3231,7 @@ def create_web_app(
             "actions_page": "Action History",
             "bulk_role_csv": "Bulk Role CSV",
             "reddit_feeds": "Reddit Feeds",
+            "service_monitors_page": "Service Monitors",
             "youtube_subscriptions": "YouTube",
             "linkedin_subscriptions": "LinkedIn",
             "beta_program_subscriptions": "Beta Programs",
@@ -3385,6 +3468,7 @@ def create_web_app(
                 "guild_settings",
                 "command_permissions",
                 "reddit_feeds",
+                "service_monitors_page",
                 "youtube_subscriptions",
                 "linkedin_subscriptions",
                 "beta_program_subscriptions",
@@ -3412,6 +3496,7 @@ def create_web_app(
             "command_status",
             "command_permissions",
             "reddit_feeds",
+            "service_monitors_page",
             "youtube_subscriptions",
             "linkedin_subscriptions",
             "beta_program_subscriptions",
@@ -3447,6 +3532,7 @@ def create_web_app(
             "command_status",
             "command_permissions",
             "reddit_feeds",
+            "service_monitors_page",
             "youtube_subscriptions",
             "linkedin_subscriptions",
             "beta_program_subscriptions",
@@ -4144,6 +4230,12 @@ def create_web_app(
                 "Map subreddit feeds to Discord channels and schedule automatic post checks.",
                 url_for("reddit_feeds"),
                 "Open Reddit Feeds",
+            ),
+            build_dashboard_card(
+                "Service Monitors",
+                "Manage direct website and API checks, plus Uptime Kuma-based imports and alerts.",
+                url_for("service_monitors_page"),
+                "Open Service Monitors",
             ),
             build_dashboard_card(
                 "YouTube Subscriptions",
@@ -5993,6 +6085,619 @@ def create_web_app(
             str(user.get("display_name") or ""),
         )
 
+    @app.route("/admin/service-monitors", methods=["GET", "POST"])
+    @login_required
+    def service_monitors_page():
+        user = _current_user()
+        can_manage = _is_admin_user(user) or _is_glinet_rw_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "").strip()
+        selected_guild_id_int = int(selected_guild_id) if selected_guild_id.isdigit() else 0
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        fallback_env_file = _env_fallback_file_path(data_dir)
+
+        def _fetch_json_url(url: str):
+            response = requests.get(
+                str(url or "").strip(),
+                timeout=15,
+                headers={
+                    "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                    "Accept": "application/json",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Status page API returned an unexpected payload.")
+            return payload
+
+        def _load_page_state():
+            file_values = _load_effective_env_values(env_file, fallback_env_file)
+            raw_default_channel = str(_read_env_value(file_values, "SERVICE_MONITOR_DEFAULT_CHANNEL_ID") or "").strip()
+            try:
+                default_channel_id = int(raw_default_channel or 0)
+            except ValueError:
+                default_channel_id = 0
+            raw_timeout = str(_read_env_value(file_values, "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS") or "10").strip()
+            try:
+                service_timeout = max(3, int(raw_timeout or 10))
+            except ValueError:
+                service_timeout = 10
+            raw_targets = _read_env_value(file_values, "SERVICE_MONITOR_TARGETS_JSON")
+            targets_error = ""
+            try:
+                all_targets = normalize_service_monitor_targets(
+                    raw_targets,
+                    default_timeout_seconds=service_timeout,
+                    default_channel_id=default_channel_id,
+                )
+            except ValueError as exc:
+                all_targets = []
+                targets_error = str(exc)
+
+            visible_targets = []
+            for target in all_targets:
+                target_guild_id = int(target.get("guild_id") or 0)
+                if target_guild_id not in {0, selected_guild_id_int}:
+                    continue
+                visible_targets.append(dict(target))
+
+            service_schedule = str(
+                _read_env_value(file_values, "SERVICE_MONITOR_CHECK_SCHEDULE") or "*/5 * * * *"
+            ).strip() or "*/5 * * * *"
+            if not croniter.is_valid(service_schedule):
+                service_schedule = "*/5 * * * *"
+
+            uptime_schedule = str(
+                _read_env_value(file_values, "UPTIME_STATUS_CHECK_SCHEDULE") or "*/5 * * * *"
+            ).strip() or "*/5 * * * *"
+            if not croniter.is_valid(uptime_schedule):
+                uptime_schedule = "*/5 * * * *"
+
+            raw_uptime_timeout = str(_read_env_value(file_values, "UPTIME_STATUS_TIMEOUT_SECONDS") or "15").strip()
+            try:
+                uptime_timeout = max(3, int(raw_uptime_timeout or 15))
+            except ValueError:
+                uptime_timeout = 15
+
+            return {
+                "file_values": file_values,
+                "all_targets": all_targets,
+                "visible_targets": visible_targets,
+                "targets_error": targets_error,
+                "service_enabled": str(_read_env_value(file_values, "SERVICE_MONITOR_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "service_default_channel_id": default_channel_id,
+                "service_schedule": service_schedule,
+                "service_timeout": service_timeout,
+                "uptime_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "uptime_notify_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "uptime_page_url": str(_read_env_value(file_values, "UPTIME_STATUS_PAGE_URL") or "").strip(),
+                "uptime_notify_channel_id": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_CHANNEL_ID") or "").strip(),
+                "uptime_schedule": uptime_schedule,
+                "uptime_timeout": uptime_timeout,
+            }
+
+        def _persist_monitor_updates(applied_updates: dict):
+            merged_values = _load_effective_env_values(env_file, fallback_env_file)
+            for key, value in applied_updates.items():
+                merged_values[str(key)] = "" if value is None else str(value)
+            normalized_values = _normalize_env_updates(merged_values)
+            validation_errors = _validate_env_updates(applied_updates)
+            if validation_errors:
+                return False, validation_errors[0]
+
+            saved, save_error, saved_env_file, skipped_keys = _try_write_env_file_with_fallback(
+                env_file,
+                fallback_env_file,
+                normalized_values,
+            )
+            if not saved:
+                return False, save_error
+
+            for key, value in applied_updates.items():
+                os.environ[str(key)] = "" if value is None else str(value)
+            os.environ["WEB_ENV_FILE"] = str(saved_env_file)
+            if callable(on_env_settings_saved):
+                on_env_settings_saved({**applied_updates, "WEB_ENV_FILE": str(saved_env_file)})
+            if skipped_keys:
+                flash(
+                    "Sensitive settings were not written to the fallback env file.",
+                    "warning",
+                )
+            if saved_env_file != env_file:
+                flash(
+                    f"Monitor settings saved to fallback env file {saved_env_file}.",
+                    "success",
+                )
+            return True, ""
+
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
+        channel_labels = {
+            str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
+            for option in text_channel_options
+            if str(option.get("id") or "").strip()
+        }
+
+        page_state = _load_page_state()
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not can_manage:
+                flash("Read-only account: this action is not allowed.", "error")
+            elif action == "save_service_settings":
+                selected_default_channel_id = str(request.form.get("default_channel_id") or "").strip()
+                updates = {
+                    "SERVICE_MONITOR_ENABLED": "true"
+                    if str(request.form.get("service_monitor_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+                    else "false",
+                    "SERVICE_MONITOR_CHECK_SCHEDULE": str(request.form.get("service_monitor_schedule") or "*/5 * * * *").strip(),
+                    "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS": str(
+                        request.form.get("service_monitor_timeout") or page_state["service_timeout"] or 10
+                    ).strip(),
+                    "SERVICE_MONITOR_DEFAULT_CHANNEL_ID": selected_default_channel_id,
+                }
+                ok, error_text = _persist_monitor_updates(updates)
+                if ok:
+                    flash("Direct service monitor settings updated.", "success")
+                else:
+                    flash(error_text, "error")
+            elif action in {"add_target", "edit_target", "delete_target", "import_uptime_targets", "add_tailscale_status"}:
+                all_targets = list(page_state["all_targets"])
+                if action == "delete_target":
+                    target_id = str(request.form.get("target_id") or "").strip()
+                    next_targets = []
+                    removed = False
+                    for target in all_targets:
+                        target_guild_id = int(target.get("guild_id") or 0)
+                        if str(target.get("id") or "") == target_id and target_guild_id in {0, selected_guild_id_int}:
+                            removed = True
+                            continue
+                        next_targets.append(target)
+                    if not removed:
+                        flash("Service monitor entry was not found.", "error")
+                    else:
+                        ok, error_text = _persist_monitor_updates(
+                            {"SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets)}
+                        )
+                        if ok:
+                            flash("Service monitor deleted.", "success")
+                        else:
+                            flash(error_text, "error")
+                elif action == "import_uptime_targets":
+                    import_page_url = str(request.form.get("uptime_import_page_url") or page_state["uptime_page_url"] or "").strip()
+                    import_channel_id = str(request.form.get("uptime_import_channel_id") or "").strip()
+                    if not import_channel_id:
+                        import_channel_id = str(page_state["service_default_channel_id"] or "").strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if import_channel_id and valid_text_channel_ids and import_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel for imported service monitors.", "error")
+                    else:
+                        try:
+                            channel_id_int = int(import_channel_id or 0)
+                            config_payload = fetch_uptime_public_config(page_url=import_page_url, fetch_json=_fetch_json_url)
+                            extracted = extract_service_monitor_targets_from_uptime_config(
+                                config_payload,
+                                guild_id=selected_guild_id_int,
+                                channel_id=channel_id_int,
+                                timeout_seconds=page_state["service_timeout"],
+                            )
+                            next_targets = []
+                            existing_by_key = {}
+                            for target in all_targets:
+                                target_copy = dict(target)
+                                key = (
+                                    int(target_copy.get("guild_id") or 0),
+                                    str(target_copy.get("url") or "").strip().lower(),
+                                    int(target_copy.get("channel_id") or 0),
+                                )
+                                existing_by_key[key] = target_copy
+                                next_targets.append(target_copy)
+                            added = 0
+                            updated = 0
+                            for imported_target in extracted.get("targets", []):
+                                key = (
+                                    int(imported_target.get("guild_id") or 0),
+                                    str(imported_target.get("url") or "").strip().lower(),
+                                    int(imported_target.get("channel_id") or 0),
+                                )
+                                existing = existing_by_key.get(key)
+                                if existing is None:
+                                    next_targets.append(imported_target)
+                                    existing_by_key[key] = imported_target
+                                    added += 1
+                                    continue
+                                existing.update(imported_target)
+                                updated += 1
+                            ok, error_text = _persist_monitor_updates(
+                                {
+                                    "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets),
+                                    "UPTIME_STATUS_PAGE_URL": import_page_url,
+                                }
+                            )
+                            if ok:
+                                skipped_count = len(extracted.get("skipped", []) or [])
+                                summary = f"Imported {added} new direct service monitor(s)"
+                                if updated:
+                                    summary += f", updated {updated}"
+                                if skipped_count:
+                                    summary += f", skipped {skipped_count} page-only monitor(s)"
+                                summary += "."
+                                flash(summary, "success")
+                        except (requests.RequestException, ValueError) as exc:
+                            flash(str(exc), "error")
+                else:
+                    target_id = str(request.form.get("target_id") or "").strip()
+                    if action == "add_tailscale_status":
+                        name = "Tailscale Status"
+                        url = "https://status.tailscale.com/"
+                        method = "GET"
+                        expected_status = "200"
+                        contains_text = ""
+                        channel_id = str(request.form.get("preset_channel_id") or "").strip()
+                        timeout_seconds = str(
+                            request.form.get("preset_timeout_seconds") or page_state["service_timeout"] or 10
+                        ).strip()
+                    else:
+                        name = str(request.form.get("name") or "").strip()
+                        url = str(request.form.get("url") or "").strip()
+                        method = str(request.form.get("method") or "GET").strip().upper()
+                        expected_status = str(request.form.get("expected_status") or "200").strip() or "200"
+                        contains_text = str(request.form.get("contains_text") or "").strip()
+                        channel_id = str(request.form.get("channel_id") or "").strip()
+                        timeout_seconds = str(
+                            request.form.get("timeout_seconds") or page_state["service_timeout"] or 10
+                        ).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if channel_id and valid_text_channel_ids and channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                    else:
+                        channel_id_value = int(channel_id or page_state["service_default_channel_id"] or 0)
+                        candidate = {
+                            "guild_id": selected_guild_id_int,
+                            "name": name,
+                            "url": url,
+                            "method": method,
+                            "expected_status": expected_status,
+                            "contains_text": contains_text,
+                            "timeout_seconds": timeout_seconds,
+                            "channel_id": channel_id_value,
+                        }
+                        try:
+                            normalized_candidate = normalize_service_monitor_targets(
+                                [candidate],
+                                default_timeout_seconds=page_state["service_timeout"],
+                                default_channel_id=page_state["service_default_channel_id"],
+                            )[0]
+                            next_targets = []
+                            if action == "edit_target":
+                                replaced = False
+                                for target in all_targets:
+                                    target_guild_id = int(target.get("guild_id") or 0)
+                                    if str(target.get("id") or "") == target_id and target_guild_id in {0, selected_guild_id_int}:
+                                        next_targets.append(normalized_candidate)
+                                        replaced = True
+                                    else:
+                                        next_targets.append(target)
+                                if not replaced:
+                                    flash("Service monitor entry was not found.", "error")
+                                    page_state = _load_page_state()
+                                    target_rows = []
+                                    # fall through to render
+                                    next_targets = None
+                            else:
+                                next_targets = list(all_targets) + [normalized_candidate]
+                            if next_targets is not None:
+                                ok, error_text = _persist_monitor_updates(
+                                    {"SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets)}
+                                )
+                                if ok:
+                                    flash(
+                                        "Service monitor updated."
+                                        if action == "edit_target"
+                                        else "Tailscale status monitor added."
+                                        if action == "add_tailscale_status"
+                                        else "Service monitor added.",
+                                        "success",
+                                    )
+                                else:
+                                    flash(error_text, "error")
+                        except ValueError as exc:
+                            flash(str(exc), "error")
+            elif action == "save_uptime_settings":
+                notify_channel_id = str(request.form.get("uptime_notify_channel_id") or "").strip()
+                valid_text_channel_ids = {
+                    str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                }
+                if notify_channel_id and valid_text_channel_ids and notify_channel_id not in valid_text_channel_ids:
+                    flash("Choose a valid Discord text channel for Uptime Kuma alerts.", "error")
+                else:
+                    updates = {
+                        "UPTIME_STATUS_ENABLED": "true"
+                        if str(request.form.get("uptime_status_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                        "UPTIME_STATUS_NOTIFY_ENABLED": "true"
+                        if str(request.form.get("uptime_status_notify_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                        "UPTIME_STATUS_PAGE_URL": str(request.form.get("uptime_status_page_url") or "").strip(),
+                        "UPTIME_STATUS_NOTIFY_CHANNEL_ID": notify_channel_id,
+                        "UPTIME_STATUS_CHECK_SCHEDULE": str(request.form.get("uptime_status_schedule") or "*/5 * * * *").strip(),
+                        "UPTIME_STATUS_TIMEOUT_SECONDS": str(
+                            request.form.get("uptime_status_timeout") or page_state["uptime_timeout"] or 15
+                        ).strip(),
+                    }
+                    ok, error_text = _persist_monitor_updates(updates)
+                    if ok:
+                        flash("Uptime Kuma watcher settings updated.", "success")
+                    else:
+                        flash(error_text, "error")
+            else:
+                flash("Invalid service monitor action.", "error")
+            page_state = _load_page_state()
+
+        enabled_options = [
+            {"value": "true", "label": "Enabled"},
+            {"value": "false", "label": "Disabled"},
+        ]
+        channel_catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord for <strong>{escape(guild_name)}</strong>.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        direct_settings_channel_select = _render_select_input(
+            "default_channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Optional fallback Discord text channel...",
+        )
+        add_target_channel_select = _render_select_input(
+            "channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        preset_target_channel_select = _render_select_input(
+            "preset_channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        import_target_channel_select = _render_select_input(
+            "uptime_import_channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        uptime_notify_channel_select = _render_select_input(
+            "uptime_notify_channel_id",
+            str(page_state["uptime_notify_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        service_schedule_select = _render_fixed_select_input(
+            "service_monitor_schedule",
+            page_state["service_schedule"],
+            [{"value": value, "label": label} for value, label in MONITOR_RECHECK_SCHEDULE_OPTIONS],
+            placeholder="Select recheck interval...",
+        )
+        uptime_schedule_select = _render_fixed_select_input(
+            "uptime_status_schedule",
+            page_state["uptime_schedule"],
+            [{"value": value, "label": label} for value, label in MONITOR_RECHECK_SCHEDULE_OPTIONS],
+            placeholder="Select recheck interval...",
+        )
+        service_enabled_select = _render_fixed_select_input(
+            "service_monitor_enabled",
+            "true" if page_state["service_enabled"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        uptime_enabled_select = _render_fixed_select_input(
+            "uptime_status_enabled",
+            "true" if page_state["uptime_enabled"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        uptime_notify_enabled_select = _render_fixed_select_input(
+            "uptime_status_notify_enabled",
+            "true" if page_state["uptime_notify_enabled"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        method_options = [{"value": "GET", "label": "GET"}, {"value": "HEAD", "label": "HEAD"}]
+        target_rows = []
+        for target in page_state["visible_targets"]:
+            target_id = str(target.get("id") or "").strip()
+            target_channel_id = str(target.get("channel_id") or "").strip()
+            target_channel_label = channel_labels.get(target_channel_id, f"Unknown channel ({target_channel_id or 'not set'})")
+            edit_channel_select = _render_select_input(
+                "channel_id",
+                target_channel_id,
+                text_channel_options,
+                placeholder="Choose the Discord text channel...",
+            )
+            edit_method_select = _render_fixed_select_input(
+                "method",
+                str(target.get("method") or "GET").strip().upper(),
+                method_options,
+                placeholder="Choose method...",
+            )
+            actions_html = (
+                f"""
+                <form method="post" style="display:inline-block;min-width:320px;">
+                  <input type="hidden" name="action" value="edit_target" />
+                  <input type="hidden" name="target_id" value="{escape(target_id, quote=True)}" />
+                  <input type="text" name="name" value="{escape(str(target.get('name') or ''), quote=True)}" placeholder="Friendly name" required style="margin-bottom:8px;" />
+                  <input type="text" name="url" value="{escape(str(target.get('url') or ''), quote=True)}" placeholder="https://example.com/health" required style="margin-bottom:8px;" />
+                  {edit_method_select}
+                  <input type="number" name="expected_status" min="100" max="599" value="{escape(str(target.get('expected_status') or 200), quote=True)}" placeholder="Expected HTTP status" style="margin-top:8px;" />
+                  <input type="text" name="contains_text" value="{escape(str(target.get('contains_text') or ''), quote=True)}" placeholder="Optional required text" style="margin-top:8px;" />
+                  {edit_channel_select}
+                  <input type="number" name="timeout_seconds" min="3" max="120" value="{escape(str(target.get('timeout_seconds') or page_state['service_timeout']), quote=True)}" placeholder="Timeout seconds" style="margin-top:8px;" />
+                  <button class="btn" type="submit" style="margin-top:8px;">Save</button>
+                </form>
+                <form method="post" style="display:inline;" onsubmit="return confirm('Delete this direct service monitor?');">
+                  <input type="hidden" name="action" value="delete_target" />
+                  <input type="hidden" name="target_id" value="{escape(target_id, quote=True)}" />
+                  <button class="btn danger" type="submit">Delete</button>
+                </form>
+                """
+                if can_manage
+                else "<div class='dash-actions'><button class='btn' type='button' disabled>Edit</button><button class='btn danger' type='button' disabled>Delete</button></div>"
+            )
+            target_rows.append(
+                f"""
+                <tr>
+                  <td><strong>{escape(str(target.get("name") or ""))}</strong></td>
+                  <td><a href="{escape(str(target.get("url") or ""), quote=True)}" target="_blank" rel="noopener">{escape(str(target.get("url") or ""))}</a></td>
+                  <td>{escape(str(target.get("method") or "GET"))}<div class="muted">HTTP {escape(str(target.get("expected_status") or 200))}</div></td>
+                  <td>{escape(target_channel_label)}<div class="muted mono">{escape(target_channel_id)}</div></td>
+                  <td class="muted">{escape(str(target.get("contains_text") or "")) or "Any valid response"}</td>
+                  <td class="muted">{escape(str(target.get("timeout_seconds") or page_state["service_timeout"]))}s</td>
+                  <td>{actions_html}</td>
+                </tr>
+                """
+            )
+
+        manage_disabled_attr = "" if can_manage else " disabled"
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Direct Service Monitor Settings</h2>
+            <p class="muted">These checks watch websites and API endpoints directly and only alert on state changes. The current page manages the entries scoped to <strong>{escape(guild_name)}</strong>.</p>
+            {channel_catalog_note}
+            <form method="post">
+              <input type="hidden" name="action" value="save_service_settings" />
+              <label>Direct monitor state</label>
+              {service_enabled_select}
+              <label style="margin-top:10px;display:block;">Recheck interval</label>
+              {service_schedule_select}
+              <label>Request timeout (seconds)</label>
+              <input type="number" name="service_monitor_timeout" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Fallback Discord channel</label>
+              {direct_settings_channel_select}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{manage_disabled_attr}>Save Direct Monitor Settings</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Import From Uptime Kuma</h2>
+            <p class="muted">Use a public Uptime Kuma status page to seed direct service checks without hand-entering every URL. Only services with a public HTTP(S) URL can be imported directly.</p>
+            <form method="post">
+              <input type="hidden" name="action" value="import_uptime_targets" />
+              <label>Public status page URL</label>
+              <input type="text" name="uptime_import_page_url" value="{escape(page_state['uptime_page_url'] or 'https://status.glinet.admon.me/status/default', quote=True)}" placeholder="https://status.example.com/status/default" required{manage_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {import_target_channel_select}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{manage_disabled_attr}>Import Direct Checks</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:16px;">
+          <div class="card">
+            <h2>Add Direct Service Monitor</h2>
+            <p class="muted">Create a direct website or API check for <strong>{escape(guild_name)}</strong>. Use optional required text when a simple HTTP status code is not enough.</p>
+            <div class="card" style="margin:0 0 16px 0;">
+              <h3 style="margin-top:0;">Quick Preset: Tailscale</h3>
+              <p class="muted">Add a ready-to-use monitor for <span class="mono">https://status.tailscale.com/</span>.</p>
+              <form method="post">
+                <input type="hidden" name="action" value="add_tailscale_status" />
+                <label>Discord channel</label>
+                {preset_target_channel_select}
+                <label>Request timeout (seconds)</label>
+                <input type="number" name="preset_timeout_seconds" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
+                <div style="margin-top:14px;">
+                  <button class="btn" type="submit"{manage_disabled_attr}>Add Tailscale Status</button>
+                </div>
+              </form>
+            </div>
+            <form method="post">
+              <input type="hidden" name="action" value="add_target" />
+              <label>Friendly name</label>
+              <input type="text" name="name" placeholder="Discord Status" required{manage_disabled_attr} />
+              <label>URL</label>
+              <input type="text" name="url" placeholder="https://status.discord.com" required{manage_disabled_attr} />
+              <label>Method</label>
+              {_render_fixed_select_input("method", "GET", method_options, placeholder="Choose method...")}
+              <label>Expected HTTP status</label>
+              <input type="number" name="expected_status" min="100" max="599" value="200"{manage_disabled_attr} />
+              <label>Required text (optional)</label>
+              <input type="text" name="contains_text" placeholder="Optional response text"{manage_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {add_target_channel_select}
+              <label>Request timeout (seconds)</label>
+              <input type="number" name="timeout_seconds" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{manage_disabled_attr}>Add Direct Monitor</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Uptime Kuma Watcher</h2>
+            <p class="muted">This watcher reads a public Uptime Kuma page API and alerts when any monitor on that page changes state. Use it for services that cannot be imported as direct URL checks.</p>
+            <form method="post">
+              <input type="hidden" name="action" value="save_uptime_settings" />
+              <label>Watcher enabled</label>
+              {uptime_enabled_select}
+              <label style="margin-top:10px;display:block;">Discord alerting</label>
+              {uptime_notify_enabled_select}
+              <label>Public status page URL</label>
+              <input type="text" name="uptime_status_page_url" value="{escape(page_state['uptime_page_url'], quote=True)}" placeholder="https://status.example.com/status/default"{manage_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {uptime_notify_channel_select}
+              <label style="margin-top:10px;display:block;">Recheck interval</label>
+              {uptime_schedule_select}
+              <label>Request timeout (seconds)</label>
+              <input type="number" name="uptime_status_timeout" min="3" max="120" value="{escape(str(page_state['uptime_timeout']), quote=True)}"{manage_disabled_attr} />
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{manage_disabled_attr}>Save Uptime Kuma Watcher</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured Direct Service Monitors</h2>
+          <p class="muted">These checks belong to <strong>{escape(guild_name)}</strong> and use the global direct-monitor interval shown above. Alerts are sent only when a service changes from up to down or recovers from down to up.</p>
+          {f"<p class='muted'>Current target configuration could not be parsed: {escape(page_state['targets_error'])}</p>" if page_state["targets_error"] else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>URL</th>
+                <th>Request</th>
+                <th>Discord Channel</th>
+                <th>Required Text</th>
+                <th>Timeout</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(target_rows) if target_rows else "<tr><td colspan='7' class='muted'>No direct service monitors are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page("Service Monitors", body, user["email"], bool(user.get("is_admin")), str(user.get("display_name") or ""))
+
     @app.route("/admin/role-access", methods=["GET", "POST"])
     @login_required
     def role_access_page():
@@ -6498,7 +7203,9 @@ def create_web_app(
                 "YOUTUBE_NOTIFY_ENABLED",
                 "LINKEDIN_NOTIFY_ENABLED",
                 "BETA_PROGRAM_NOTIFY_ENABLED",
+                "SERVICE_MONITOR_ENABLED",
                 "UPTIME_STATUS_ENABLED",
+                "UPTIME_STATUS_NOTIFY_ENABLED",
             }:
                 safe_value = "true" if _is_truthy_env_value(safe_value) else "false"
                 static_select_options = [
@@ -6558,6 +7265,18 @@ def create_web_app(
                     )
                 ]
                 select_placeholder = "Select LinkedIn polling interval..."
+            elif key == "UPTIME_STATUS_CHECK_SCHEDULE":
+                static_select_options = [
+                    {"value": value, "label": label}
+                    for value, label in (
+                        ("*/1 * * * *", "Every 1 minute"),
+                        ("*/5 * * * *", "Every 5 minutes"),
+                        ("*/10 * * * *", "Every 10 minutes"),
+                        ("*/15 * * * *", "Every 15 minutes"),
+                        ("*/30 * * * *", "Every 30 minutes"),
+                    )
+                ]
+                select_placeholder = "Select Uptime Kuma polling interval..."
             elif key in {"YOUTUBE_REQUEST_TIMEOUT_SECONDS", "LINKEDIN_REQUEST_TIMEOUT_SECONDS", "UPTIME_STATUS_TIMEOUT_SECONDS"}:
                 static_select_options = [{"value": value, "label": f"{value}s"} for value in ("5", "8", "10", "12", "15", "30")]
                 select_placeholder = "Select timeout..."
@@ -6566,7 +7285,13 @@ def create_web_app(
             elif key.endswith("_ROLE_ID"):
                 select_options = role_options
 
-            if static_select_options:
+            if key == "SERVICE_MONITOR_TARGETS_JSON":
+                input_html = (
+                    f"<textarea name='{escape(key, quote=True)}' "
+                    "placeholder='[{&quot;name&quot;:&quot;Discord Status&quot;,&quot;url&quot;:&quot;https://discordstatus.com&quot;}]'>"
+                    f"{escape(str(safe_value or ''))}</textarea>"
+                )
+            elif static_select_options:
                 input_html = _render_fixed_select_input(
                     name=key,
                     selected_value=safe_value,

@@ -73,9 +73,54 @@ Global monitor toggles in this section act as defaults. Selected servers can ove
 | `BETA_PROGRAM_NOTIFY_ENABLED` | `true` | Boolean | Enables or disables the GL.iNet beta program monitor while keeping the web page and saved monitors |
 | `BETA_PROGRAM_POLL_INTERVAL_SECONDS` | `900` | Integer, `>= 60` | Poll cadence for GL.iNet beta program checks |
 | `BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for GL.iNet beta page requests |
+| `SERVICE_MONITOR_ENABLED` | `false` | Boolean | Enables generic website/API outage monitoring |
+| `SERVICE_MONITOR_DEFAULT_CHANNEL_ID` | empty | Integer channel ID or `<#channel_id>` | Default Discord channel for service outage alerts |
+| `SERVICE_MONITOR_CHECK_SCHEDULE` | `*/5 * * * *` | Valid 5-field cron (UTC) | Poll cadence for service checks |
+| `SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS` | `10` | Integer, `>= 3` | Default timeout for service checks |
+| `SERVICE_MONITOR_TARGETS_JSON` | `[]` | JSON array | List of websites/APIs to check for up/down transitions |
 | `UPTIME_STATUS_ENABLED` | `false` | Boolean | Enables `/uptime` command |
+| `UPTIME_STATUS_NOTIFY_ENABLED` | `false` | Boolean | Enables scheduled outage/recovery alerts from the configured public Uptime Kuma page |
+| `UPTIME_STATUS_NOTIFY_CHANNEL_ID` | empty | Integer channel ID or `<#channel_id>` | Discord channel used for Uptime Kuma alerts |
+| `UPTIME_STATUS_CHECK_SCHEDULE` | `*/5 * * * *` | Valid 5-field cron (UTC) | Poll cadence for Uptime Kuma alert checks |
 | `UPTIME_STATUS_PAGE_URL` | `https://status.example.invalid/status/everything` | URL | Public status page used for uptime summary lookups |
 | `UPTIME_STATUS_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for uptime status fetch |
+
+For normal web-GUI operations, use `/admin/service-monitors` instead of hand-editing these values. That page updates the same environment-backed settings for direct service checks and the Uptime Kuma watcher.
+
+### `SERVICE_MONITOR_TARGETS_JSON` format
+
+```json
+[
+  {
+    "name": "Discord Status",
+    "url": "https://discordstatus.com",
+    "expected_status": 200
+  },
+  {
+    "name": "GL.iNet DDNS",
+    "url": "https://glddns.com",
+    "expected_status": 200,
+    "channel_id": 123456789012345678
+  },
+  {
+    "name": "Tailscale Control",
+    "url": "https://login.tailscale.com",
+    "method": "HEAD",
+    "expected_status": 200,
+    "timeout_seconds": 8
+  }
+]
+```
+
+Supported keys per entry:
+- `name`
+- `url`
+- optional `guild_id`: used by the web GUI to scope an entry to a selected server
+- optional `method`: `GET` or `HEAD`
+- optional `expected_status`: defaults to `200`
+- optional `contains_text`: marks the service down if the response body does not contain this string
+- optional `timeout_seconds`
+- optional `channel_id`: overrides `SERVICE_MONITOR_DEFAULT_CHANNEL_ID`
 
 ## Moderation
 

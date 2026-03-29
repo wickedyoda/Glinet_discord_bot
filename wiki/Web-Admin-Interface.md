@@ -114,6 +114,7 @@ UI forms include show/hide password toggles and validation feedback.
   - `Custom roles`: restrict the command to one or more selected roles
 - Custom-role mode requires at least one role ID or selected role.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
+- Service monitors page lets admins manage direct website/API outage checks and Uptime Kuma alerting without editing raw JSON.
 - LinkedIn profile management page lets admins map public LinkedIn profiles to Discord text channels for new-post notifications.
 - GL.iNet beta program page lets admins map the public GL.iNet beta-testing page to Discord text channels for added/removed program notifications.
 - Role access page lets admins review invite/code/role mappings, pause or disable them individually, and manually restore a mapping with an existing Discord invite.
@@ -150,6 +151,34 @@ UI forms include show/hide password toggles and validation feedback.
   - current enabled/disabled state
 - Uses the same guild-scoped command-permissions data the bot enforces at runtime
 - Intended for fast on/off control without opening the deeper permissions editor
+
+### `/admin/service-monitors`
+
+- Scoped to the selected server
+- Dedicated monitor-management page for:
+  - direct website/API checks
+  - Uptime Kuma page alerting
+  - Uptime Kuma import into direct checks
+- Direct monitor management supports:
+  - add
+  - edit
+  - delete
+  - quick-add preset for `https://status.tailscale.com/`
+  - per-target Discord channel
+  - request method (`GET` or `HEAD`)
+  - expected HTTP status
+  - optional required response text
+  - per-target request timeout
+- Direct monitor recheck interval is configured once for the direct-monitor loop
+- Uptime Kuma watcher management supports:
+  - enable/disable
+  - alert enable/disable
+  - public status page URL
+  - Discord notify channel
+  - recheck interval
+  - request timeout
+- Import action reads the public Uptime Kuma API and converts monitors with public HTTP(S) URLs into direct service-monitor entries
+- Monitors that do not expose a usable public URL stay covered by the Uptime Kuma watcher instead of the direct monitor list
 
 ### `/admin/guild-settings`
 
@@ -252,6 +281,7 @@ Notes:
 - Web-session/security settings
 - Auto-logout selection (`5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, `120` minutes)
 - Writes to `WEB_ENV_FILE`, which should point to a writable path such as `${DATA_DIR}/web-settings.env`
+- Service-monitor and Uptime Kuma fields still appear here as raw environment values, but `/admin/service-monitors` is the preferred page for normal monitor management
 
 ### Feed and Profile Watchers
 
@@ -502,6 +532,21 @@ If behind proxy, ensure forwarded headers include:
 - `UPTIME_STATUS_ENABLED`
 - `UPTIME_STATUS_PAGE_URL`
 - `UPTIME_STATUS_TIMEOUT_SECONDS`
+- `SERVICE_MONITOR_ENABLED`
+- `SERVICE_MONITOR_DEFAULT_CHANNEL_ID`
+- `SERVICE_MONITOR_CHECK_SCHEDULE`
+- `SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS`
+- `SERVICE_MONITOR_TARGETS_JSON`
+
+Use `SERVICE_MONITOR_TARGETS_JSON` to monitor external websites or APIs for outages. The bot will establish a baseline on first successful check, then post only when a target changes from up to down or from down to up.
+
+The preferred UI for editing those entries is `/admin/service-monitors`, which writes the same backing environment values for you.
+
+- `UPTIME_STATUS_NOTIFY_ENABLED`
+- `UPTIME_STATUS_NOTIFY_CHANNEL_ID`
+- `UPTIME_STATUS_CHECK_SCHEDULE`
+
+If `UPTIME_STATUS_ENABLED` is on, the bot can also poll a public Uptime Kuma status page on a schedule and post only when one or more Kuma monitors go down or recover.
 
 ## Related Pages
 
