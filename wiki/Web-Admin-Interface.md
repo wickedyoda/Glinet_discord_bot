@@ -34,7 +34,7 @@ Each web user includes:
 - First name
 - Last name
 - Display name (shown in GUI)
-- Role (`Admin`, `Read-only`, `Glinet-Read-Only`, or `Glinet-RW`)
+- Role (`Admin`, `Read-only`, `Guild Admin`, `Glinet-Read-Only`, or `Glinet-RW`)
 - Password age metadata (90-day rotation enforcement)
 
 User self-service capabilities:
@@ -49,12 +49,27 @@ Admin-only user management capabilities:
 - Delete users
 - Promote/demote admin users
 - Reset user credentials as needed
+- Create, edit, and delete guild groups used by `Guild Admin`
 
 Read-only capabilities:
 
 - Can sign in and navigate all admin pages
 - Can view all settings/options/data exposed by the web GUI
 - Cannot apply management/configuration changes (save/update/delete/restart actions are blocked server-side)
+
+`Guild Admin` capabilities:
+
+- Can sign in and see only the Discord servers included in their assigned guild groups
+- Can select and manage only those assigned servers
+- Can save guild-scoped settings/pages for allowed servers, including:
+  - command permissions
+  - guild settings
+  - Reddit/YouTube/LinkedIn/Beta subscriptions
+  - service monitors
+  - tag responses
+  - bot nickname on the selected server
+- Can manage their own `/admin/account` page
+- Cannot access global settings, logs, documentation, user management, or servers outside their assigned guild groups
 
 `Glinet-Read-Only` capabilities:
 
@@ -131,6 +146,7 @@ UI forms include show/hide password toggles and validation feedback.
 - Lists every Discord server the bot can currently access
 - Sets the active server context used by guild-scoped admin pages
 - Admin users can remove the bot from a server directly from this page using the per-server `Remove Bot` action
+- `Guild Admin` users stay on this page and only see the servers included in their assigned guild groups
 - `Glinet-Read-Only` and `Glinet-RW` users do not stay here; they are redirected to `/admin/dashboard` using the primary guild
 
 ### `/admin/dashboard`
@@ -157,12 +173,14 @@ UI forms include show/hide password toggles and validation feedback.
 - Scoped to the selected server
 - Dedicated monitor-management page for:
   - direct website/API checks
-  - Uptime Kuma page alerting
+  - Uptime Kuma public-page alerting
+  - Uptime Kuma authenticated-instance alerting
   - Uptime Kuma import into direct checks
 - Direct monitor management supports:
   - add
   - edit
   - delete
+  - bulk-add preset for the standard GL.iNet domain set
   - quick-add preset for `https://status.tailscale.com/`
   - per-target Discord channel
   - request method (`GET` or `HEAD`)
@@ -174,11 +192,46 @@ UI forms include show/hide password toggles and validation feedback.
   - enable/disable
   - alert enable/disable
   - public status page URL
+  - authenticated instance URL
+  - API key storage and clearing
   - Discord notify channel
+  - TLS verification toggle
   - recheck interval
   - request timeout
-- Import action reads the public Uptime Kuma API and converts monitors with public HTTP(S) URLs into direct service-monitor entries
+- Import supports both:
+  - public status pages
+  - authenticated Kuma instances through the metrics endpoint
+- The GL.iNet bulk preset currently adds and deduplicates direct checks for:
+  - `gl-inet.com`
+  - `gl-inet.cn`
+  - `gl-inet.net`
+  - `fw.gl-inet.com`
+  - `dl.gl-inet.com`
+  - `dev.gl-inet.com`
+  - `glinet.io`
+  - `goodcloud.xyz`
+  - `remotetohome.io`
+  - `glddns.com`
+  - `docs.gl-inet.com`
+  - `forum.gl-inet.com`
+  - `astrowarp.net`
+  - `docs.astrowarp.net`
+  - `glinet.biz`
+  - `glinet.ai`
+  - `glinet.hk`
+- Import converts monitors with public HTTP(S) URLs into direct service-monitor entries
 - Monitors that do not expose a usable public URL stay covered by the Uptime Kuma watcher instead of the direct monitor list
+
+### `/admin/users`
+
+- Admin-only user management page
+- Supports:
+  - create, edit, and delete web users
+  - password resets
+  - role changes
+  - guild group creation/edit/delete
+- Guild groups are reusable named sets of Discord servers
+- Assign one or more guild groups to a `Guild Admin` user to limit that account to those servers only
 
 ### `/admin/guild-settings`
 
