@@ -8,6 +8,25 @@ from urllib.parse import urlparse
 import requests
 
 ALLOWED_HTTP_METHODS = {"GET", "HEAD"}
+GLINET_DOMAIN_MONITOR_PRESETS = (
+    {"name": "GL.iNet Core: gl-inet.com", "url": "https://gl-inet.com/"},
+    {"name": "GL.iNet Core: gl-inet.cn", "url": "https://gl-inet.cn/"},
+    {"name": "GL.iNet Core: gl-inet.net", "url": "https://gl-inet.net/"},
+    {"name": "Firmware: fw.gl-inet.com", "url": "https://fw.gl-inet.com/"},
+    {"name": "Firmware: dl.gl-inet.com", "url": "https://dl.gl-inet.com/"},
+    {"name": "Firmware: dev.gl-inet.com", "url": "https://dev.gl-inet.com/"},
+    {"name": "Cloud: glinet.io", "url": "https://glinet.io/"},
+    {"name": "Cloud: goodcloud.xyz", "url": "https://goodcloud.xyz/"},
+    {"name": "Cloud: remotetohome.io", "url": "https://remotetohome.io/"},
+    {"name": "Cloud: glddns.com", "url": "https://glddns.com/"},
+    {"name": "Docs: docs.gl-inet.com", "url": "https://docs.gl-inet.com/"},
+    {"name": "Community: forum.gl-inet.com", "url": "https://forum.gl-inet.com/"},
+    {"name": "Ecosystem: astrowarp.net", "url": "https://astrowarp.net/"},
+    {"name": "Ecosystem: docs.astrowarp.net", "url": "https://docs.astrowarp.net/"},
+    {"name": "Supporting: glinet.biz", "url": "https://glinet.biz/"},
+    {"name": "Supporting: glinet.ai", "url": "https://glinet.ai/"},
+    {"name": "Supporting: glinet.hk", "url": "https://glinet.hk/"},
+)
 
 
 def normalize_service_monitor_targets(
@@ -87,6 +106,78 @@ def serialize_service_monitor_targets(targets):
         default_channel_id=0,
     )
     return json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+
+
+def build_glinet_domain_monitor_targets(*, guild_id: int, channel_id: int, timeout_seconds: int):
+    raw_targets = [
+        {
+            "guild_id": int(guild_id or 0),
+            "name": str(entry["name"]),
+            "url": str(entry["url"]),
+            "method": "GET",
+            "expected_status": 200,
+            "contains_text": "",
+            "timeout_seconds": int(timeout_seconds or 10),
+            "channel_id": int(channel_id or 0),
+        }
+        for entry in GLINET_DOMAIN_MONITOR_PRESETS
+    ]
+    return normalize_service_monitor_targets(
+        raw_targets,
+        default_timeout_seconds=max(3, int(timeout_seconds or 10)),
+        default_channel_id=int(channel_id or 0),
+    )
+
+
+def merge_service_monitor_targets(existing_targets, incoming_targets):
+    merged = []
+    key_to_index: dict[tuple[int, str], int] = {}
+    added = 0
+    updated = 0
+    deduped = 0
+
+    for target in existing_targets or []:
+        target_copy = dict(target)
+        key = (
+            int(target_copy.get("guild_id") or 0),
+            str(target_copy.get("url") or "").strip().lower(),
+        )
+        if key in key_to_index:
+            existing_entry = merged[key_to_index[key]]
+            preserved_id = existing_entry.get("id")
+            existing_entry.update(target_copy)
+            if preserved_id:
+                existing_entry["id"] = preserved_id
+            deduped += 1
+            continue
+        key_to_index[key] = len(merged)
+        merged.append(target_copy)
+
+    for target in incoming_targets or []:
+        target_copy = dict(target)
+        key = (
+            int(target_copy.get("guild_id") or 0),
+            str(target_copy.get("url") or "").strip().lower(),
+        )
+        existing_index = key_to_index.get(key)
+        if existing_index is None:
+            key_to_index[key] = len(merged)
+            merged.append(target_copy)
+            added += 1
+            continue
+        existing_entry = merged[existing_index]
+        preserved_id = existing_entry.get("id")
+        existing_entry.update(target_copy)
+        if preserved_id:
+            existing_entry["id"] = preserved_id
+        updated += 1
+
+    return {
+        "targets": merged,
+        "added": added,
+        "updated": updated,
+        "deduped": deduped,
+    }
 
 
 def is_valid_service_monitor_url(raw_url: str):

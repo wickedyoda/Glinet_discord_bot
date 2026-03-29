@@ -1,21 +1,46 @@
 from __future__ import annotations
 
+import re
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 from app.service_monitor import is_valid_service_monitor_url
+
+TEST_DEFAULT_UPTIME_INSTANCE_HOST = "randy.wickedyoda.com"
+TEST_DEFAULT_UPTIME_API_KEY = "uk1_8F5mp7aFThP-bookSOOWQLUWfcVNmHpv5UjdSyZz"
+PROMETHEUS_METRIC_LINE_PATTERN = re.compile(
+    r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([^\s]+)(?:\s+([^\s]+))?$"
+)
+PROMETHEUS_LABEL_PATTERN = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
 
 
 def _status_label(status_code: int):
     return {0: "down", 1: "up", 2: "pending", 3: "maintenance"}.get(status_code, "unknown")
 
 
+def _validate_http_url(raw_value: str, *, field_name: str):
+    normalized = str(raw_value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} is required.")
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must start with http:// or https://.")
+    return parsed
+
+
+def default_uptime_api_key(instance_url: str):
+    normalized = str(instance_url or "").strip()
+    if not normalized:
+        return ""
+    parsed = _validate_http_url(normalized, field_name="Uptime Kuma instance URL")
+    if parsed.netloc.strip().lower() == TEST_DEFAULT_UPTIME_INSTANCE_HOST:
+        return TEST_DEFAULT_UPTIME_API_KEY
+    return ""
+
+
 def build_uptime_api_urls(page_url: str):
     normalized_page_url = str(page_url or "").strip()
-    if not normalized_page_url:
-        raise ValueError("Uptime Kuma page URL is required.")
-    parsed = urlparse(normalized_page_url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("Uptime Kuma page URL must start with http:// or https://.")
+    parsed = _validate_http_url(normalized_page_url, field_name="Uptime Kuma page URL")
     path_parts = [part for part in parsed.path.split("/") if part]
     if len(path_parts) != 2 or path_parts[0] != "status":
         raise ValueError("Uptime Kuma page URL must match /status/<slug>.")
@@ -31,9 +56,135 @@ def build_uptime_api_urls(page_url: str):
     }
 
 
+def build_uptime_instance_urls(instance_url: str):
+    normalized_instance_url = str(instance_url or "").strip()
+    parsed = _validate_http_url(normalized_instance_url, field_name="Uptime Kuma instance URL")
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+    return {
+        "instance_url": base_url,
+        "metrics_url": f"{base_url}/metrics",
+    }
+
+
+def build_uptime_source_config(*, page_url: str = "", instance_url: str = "", api_key: str = ""):
+    normalized_api_key = str(api_key or "").strip()
+    normalized_instance_url = str(instance_url or "").strip()
+    normalized_page_url = str(page_url or "").strip()
+    if normalized_instance_url:
+        settings = build_uptime_instance_urls(normalized_instance_url)
+        settings.update(
+            {
+                "mode": "metrics",
+                "api_key": normalized_api_key,
+                "source_url": settings["instance_url"],
+                "display_url": settings["instance_url"],
+            }
+        )
+        return settings
+    if normalized_page_url:
+        settings = build_uptime_api_urls(normalized_page_url)
+        settings.update(
+            {
+                "mode": "public_page",
+                "api_key": "",
+                "source_url": settings["page_url"],
+                "display_url": settings["page_url"],
+            }
+        )
+        return settings
+    raise ValueError("Configure either a public Uptime Kuma status page URL or an authenticated instance URL.")
+
+
 def fetch_uptime_public_config(*, page_url: str, fetch_json):
     api_urls = build_uptime_api_urls(page_url)
     return fetch_json(api_urls["config_url"])
+
+
+def fetch_uptime_metrics_text(*, instance_url: str, api_key: str, fetch_text):
+    metrics_urls = build_uptime_instance_urls(instance_url)
+    return fetch_text(metrics_urls["metrics_url"], api_key=api_key)
+
+
+def _decode_prometheus_label_value(raw_value: str):
+    return bytes(str(raw_value or ""), "utf-8").decode("unicode_escape")
+
+
+def _parse_prometheus_labels(raw_labels: str):
+    labels = {}
+    for match in PROMETHEUS_LABEL_PATTERN.finditer(str(raw_labels or "")):
+        labels[match.group(1)] = _decode_prometheus_label_value(match.group(2))
+    return labels
+
+
+def _parse_monitor_status_entries(metrics_text: str):
+    monitor_entries = []
+    for raw_line in str(metrics_text or "").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = PROMETHEUS_METRIC_LINE_PATTERN.match(line)
+        if match is None:
+            continue
+        metric_name, raw_labels, raw_value, _timestamp = match.groups()
+        if metric_name != "monitor_status":
+            continue
+        labels = _parse_prometheus_labels(raw_labels or "")
+        try:
+            status_code = int(float(raw_value))
+        except (TypeError, ValueError):
+            continue
+        monitor_name = str(labels.get("monitor_name") or "").strip() or "Service"
+        monitor_url = str(labels.get("monitor_url") or "").strip()
+        monitor_hostname = str(labels.get("monitor_hostname") or "").strip()
+        monitor_port = str(labels.get("monitor_port") or "").strip()
+        stable_id = "|".join(
+            part for part in (monitor_name, monitor_url, monitor_hostname, monitor_port) if part and part.lower() != "null"
+        ) or monitor_name
+        monitor_entries.append(
+            {
+                "id": stable_id,
+                "name": monitor_name,
+                "url": monitor_url if monitor_url.lower() != "null" else "",
+                "hostname": monitor_hostname if monitor_hostname.lower() != "null" else "",
+                "port": monitor_port if monitor_port.lower() != "null" else "",
+                "status": _status_label(status_code),
+            }
+        )
+    return monitor_entries
+
+
+def parse_uptime_metrics_snapshot(metrics_text: str, *, source_url: str):
+    monitor_entries = _parse_monitor_status_entries(metrics_text)
+    counts = {"up": 0, "down": 0, "pending": 0, "maintenance": 0, "unknown": 0}
+    down_monitors = []
+    monitors = []
+
+    for monitor in sorted(monitor_entries, key=lambda item: (str(item.get("name") or "").casefold(), str(item.get("id") or ""))):
+        status_label = str(monitor.get("status") or "unknown").strip().lower()
+        if status_label not in counts:
+            status_label = "unknown"
+        counts[status_label] += 1
+        normalized_monitor = {
+            "id": str(monitor.get("id") or "").strip(),
+            "name": str(monitor.get("name") or "Service").strip(),
+            "status": status_label,
+            "uptime_24": None,
+            "time": "",
+            "url": str(monitor.get("url") or "").strip(),
+        }
+        monitors.append(normalized_monitor)
+        if status_label == "down":
+            down_monitors.append(normalized_monitor["name"])
+
+    return {
+        "title": "Uptime Kuma",
+        "page_url": str(source_url or "").strip(),
+        "total": len(monitors),
+        "counts": counts,
+        "down_monitors": down_monitors,
+        "monitors": monitors,
+        "last_sample": datetime.now(UTC).isoformat(),
+    }
 
 
 def extract_service_monitor_targets_from_uptime_config(
@@ -90,13 +241,67 @@ def extract_service_monitor_targets_from_uptime_config(
     }
 
 
+def extract_service_monitor_targets_from_uptime_metrics(
+    metrics_text: str,
+    *,
+    guild_id: int = 0,
+    channel_id: int = 0,
+    timeout_seconds: int = 10,
+):
+    targets = []
+    skipped = []
+    for monitor in _parse_monitor_status_entries(metrics_text):
+        monitor_name = str(monitor.get("name") or "").strip() or "Service"
+        raw_url = str(monitor.get("url") or "").strip()
+        if not is_valid_service_monitor_url(raw_url):
+            skipped.append(
+                {
+                    "group_name": "Uptime Kuma",
+                    "monitor_name": monitor_name,
+                    "reason": "no public http(s) URL",
+                }
+            )
+            continue
+        targets.append(
+            {
+                "guild_id": int(guild_id or 0),
+                "name": monitor_name,
+                "url": raw_url,
+                "method": "GET",
+                "expected_status": 200,
+                "contains_text": "",
+                "timeout_seconds": max(3, int(timeout_seconds or 10)),
+                "channel_id": int(channel_id or 0),
+            }
+        )
+    return {
+        "targets": targets,
+        "skipped": skipped,
+    }
+
+
 def fetch_uptime_snapshot(
     *,
-    config_url: str,
-    heartbeat_url: str,
+    config_url: str = "",
+    heartbeat_url: str = "",
     page_url: str,
-    fetch_json,
+    instance_url: str = "",
+    api_key: str = "",
+    fetch_json=None,
+    fetch_text=None,
 ):
+    if instance_url:
+        if fetch_text is None:
+            raise RuntimeError("Uptime metrics fetcher is unavailable.")
+        metrics_text = fetch_uptime_metrics_text(
+            instance_url=instance_url,
+            api_key=api_key,
+            fetch_text=fetch_text,
+        )
+        return parse_uptime_metrics_snapshot(
+            metrics_text,
+            source_url=instance_url,
+        )
     if not config_url or not heartbeat_url:
         raise RuntimeError("UPTIME_STATUS_PAGE_URL is not configured correctly.")
     config_payload = fetch_json(config_url)
