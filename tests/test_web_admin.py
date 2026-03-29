@@ -687,6 +687,7 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         "/admin/actions",
         "/admin/member-activity",
         "/admin/command-status",
+        "/admin/service-monitors",
         "/admin/youtube",
         "/admin/linkedin",
         "/admin/beta-programs",
@@ -759,6 +760,22 @@ def test_youtube_page_renders_form(tmp_path: Path):
     assert b"YouTube Subscriptions" in response.data
     assert b"Save Subscription" in response.data
     assert b'value="edit"' in response.data
+
+
+def test_service_monitors_page_renders_forms(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/service-monitors", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Service Monitors" in response.data
+    assert b"Direct Service Monitor Settings" in response.data
+    assert b"Add Direct Service Monitor" in response.data
+    assert b"Add Tailscale Status" in response.data
+    assert b"Uptime Kuma Watcher" in response.data
 
 
 def test_linkedin_page_renders_form(tmp_path: Path):
@@ -900,6 +917,99 @@ def test_admin_can_edit_youtube_subscription(tmp_path: Path):
     assert response.status_code == 200
     assert b"YouTube subscription updated." in response.data
     assert b"https://www.youtube.com/@glinetnew" in response.data
+
+
+def test_admin_can_add_direct_service_monitor(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "add_target",
+            "name": "Discord Status",
+            "url": "https://discordstatus.com",
+            "method": "GET",
+            "expected_status": "200",
+            "contains_text": "",
+            "channel_id": "9999",
+            "timeout_seconds": "10",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Service monitor added." in response.data
+    assert b"Discord Status" in response.data
+    assert b"https://discordstatus.com" in response.data
+
+
+def test_admin_can_quick_add_tailscale_status_monitor(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "add_tailscale_status",
+            "preset_channel_id": "9999",
+            "preset_timeout_seconds": "10",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Tailscale status monitor added." in response.data
+    assert b"Tailscale Status" in response.data
+    assert b"https://status.tailscale.com/" in response.data
+
+
+def test_admin_can_import_direct_service_monitors_from_uptime_kuma(tmp_path: Path, monkeypatch):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    monkeypatch.setattr(
+        web_admin,
+        "fetch_uptime_public_config",
+        lambda *, page_url, fetch_json: {
+            "publicGroupList": [
+                {
+                    "name": "Websites",
+                    "monitorList": [
+                        {"name": "GL.iNet Website", "url": "https://www.gl-inet.com"},
+                        {"name": "Internal Check", "url": "https://"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "import_uptime_targets",
+            "uptime_import_page_url": "https://status.glinet.admon.me/status/default",
+            "uptime_import_channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Imported 1 new direct service monitor" in response.data
+    assert b"Websites - GL.iNet Website" in response.data
+    assert b"https://www.gl-inet.com" in response.data
 
 
 def test_admin_can_edit_linkedin_subscription(tmp_path: Path):
@@ -1283,6 +1393,10 @@ def test_admin_settings_includes_global_channel_defaults_and_monitor_toggles(tmp
     assert b"Firmware Monitor Enabled" in response.data
     assert b"Reddit Feed Monitor Enabled" in response.data
     assert b"Beta Program Monitor Enabled" in response.data
+    assert b"Service Monitor Enabled" in response.data
+    assert b"Service Monitor Targets JSON" in response.data
+    assert b"Uptime Status Alerting" in response.data
+    assert b"Uptime Status Notify Channel" in response.data
 
 
 def test_settings_post_handles_read_only_env_file(tmp_path: Path, monkeypatch):
