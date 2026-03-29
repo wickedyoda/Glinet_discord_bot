@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import warnings
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
@@ -24,6 +25,7 @@ from urllib.parse import urljoin
 
 import discord
 import requests
+import urllib3
 from bs4 import BeautifulSoup
 from croniter import croniter
 from cryptography.fernet import Fernet, InvalidToken
@@ -69,6 +71,7 @@ from app.service_monitor import (
     normalize_service_monitor_targets,
     run_service_monitor_check,
 )
+from app.uptime_status import build_uptime_source_config, default_uptime_api_key
 from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
 from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
@@ -821,6 +824,23 @@ try:
     UPTIME_STATUS_NOTIFY_CHANNEL_ID = int(str(os.getenv("UPTIME_STATUS_NOTIFY_CHANNEL_ID", "0") or "0").strip())
 except ValueError:
     UPTIME_STATUS_NOTIFY_CHANNEL_ID = 0
+UPTIME_STATUS_PAGE_URL = normalize_http_url_setting(
+    os.getenv("UPTIME_STATUS_PAGE_URL", ""),
+    "",
+    "UPTIME_STATUS_PAGE_URL",
+)
+UPTIME_STATUS_INSTANCE_URL = normalize_http_url_setting(
+    os.getenv("UPTIME_STATUS_INSTANCE_URL", ""),
+    "",
+    "UPTIME_STATUS_INSTANCE_URL",
+)
+UPTIME_STATUS_API_KEY = str(
+    os.getenv("UPTIME_STATUS_API_KEY", default_uptime_api_key(UPTIME_STATUS_INSTANCE_URL)) or ""
+).strip()
+UPTIME_STATUS_VERIFY_TLS = is_truthy_env_value(
+    os.getenv("UPTIME_STATUS_VERIFY_TLS", "true"),
+    default_value=True,
+)
 try:
     WEB_DISCORD_CATALOG_TTL_SECONDS = max(15, int(os.getenv("WEB_DISCORD_CATALOG_TTL_SECONDS", "120")))
 except ValueError:
@@ -874,24 +894,57 @@ SHORTENER_BASE_URL = normalize_http_url_setting(
     "SHORTENER_BASE_URL",
 ).rstrip("/")
 SHORTENER_HOST = urllib.parse.urlparse(SHORTENER_BASE_URL).netloc.lower()
-UPTIME_STATUS_PAGE_URL = normalize_http_url_setting(
-    os.getenv("UPTIME_STATUS_PAGE_URL", ""),
-    "https://status.example.invalid/status/everything",
-    "UPTIME_STATUS_PAGE_URL",
-)
-_uptime_status_page_parsed = urllib.parse.urlparse(UPTIME_STATUS_PAGE_URL)
-uptime_slug_match = STATUS_PAGE_PATH_REGEX.match(_uptime_status_page_parsed.path.rstrip("/"))
-if uptime_slug_match is None:
-    logger.warning("UPTIME_STATUS_PAGE_URL must match /status/<slug>; uptime integration will be unavailable.")
+UPTIME_STATUS_SLUG = ""
+UPTIME_API_BASE = ""
+UPTIME_API_CONFIG_URL = ""
+UPTIME_API_HEARTBEAT_URL = ""
+UPTIME_API_METRICS_URL = ""
+UPTIME_STATUS_SOURCE_MODE = ""
+UPTIME_STATUS_SOURCE_URL = ""
+
+
+def configure_uptime_status_source():
+    global UPTIME_STATUS_SLUG
+    global UPTIME_API_BASE
+    global UPTIME_API_CONFIG_URL
+    global UPTIME_API_HEARTBEAT_URL
+    global UPTIME_API_METRICS_URL
+    global UPTIME_STATUS_SOURCE_MODE
+    global UPTIME_STATUS_SOURCE_URL
+
     UPTIME_STATUS_SLUG = ""
     UPTIME_API_BASE = ""
     UPTIME_API_CONFIG_URL = ""
     UPTIME_API_HEARTBEAT_URL = ""
-else:
-    UPTIME_STATUS_SLUG = uptime_slug_match.group(1)
-    UPTIME_API_BASE = f"{_uptime_status_page_parsed.scheme}://{_uptime_status_page_parsed.netloc}"
-    UPTIME_API_CONFIG_URL = f"{UPTIME_API_BASE}/api/status-page/{UPTIME_STATUS_SLUG}"
-    UPTIME_API_HEARTBEAT_URL = f"{UPTIME_API_BASE}/api/status-page/heartbeat/{UPTIME_STATUS_SLUG}"
+    UPTIME_API_METRICS_URL = ""
+    UPTIME_STATUS_SOURCE_MODE = ""
+    UPTIME_STATUS_SOURCE_URL = ""
+
+    if not UPTIME_STATUS_PAGE_URL and not UPTIME_STATUS_INSTANCE_URL:
+        return
+
+    try:
+        source_config = build_uptime_source_config(
+            page_url=UPTIME_STATUS_PAGE_URL,
+            instance_url=UPTIME_STATUS_INSTANCE_URL,
+            api_key=UPTIME_STATUS_API_KEY,
+        )
+    except ValueError as exc:
+        logger.warning("Uptime Kuma integration is not configured correctly: %s", exc)
+        return
+
+    UPTIME_STATUS_SOURCE_MODE = str(source_config.get("mode") or "").strip()
+    UPTIME_STATUS_SOURCE_URL = str(source_config.get("source_url") or source_config.get("display_url") or "").strip()
+    UPTIME_API_BASE = urllib.parse.urlparse(UPTIME_STATUS_SOURCE_URL).scheme + "://" + urllib.parse.urlparse(UPTIME_STATUS_SOURCE_URL).netloc if UPTIME_STATUS_SOURCE_URL else ""
+    if UPTIME_STATUS_SOURCE_MODE == "public_page":
+        UPTIME_STATUS_SLUG = str(source_config.get("slug") or "").strip()
+        UPTIME_API_CONFIG_URL = str(source_config.get("config_url") or "").strip()
+        UPTIME_API_HEARTBEAT_URL = str(source_config.get("heartbeat_url") or "").strip()
+    elif UPTIME_STATUS_SOURCE_MODE == "metrics":
+        UPTIME_API_METRICS_URL = str(source_config.get("metrics_url") or "").strip()
+
+
+configure_uptime_status_source()
 
 ROLE_FILE = os.path.join(DATA_DIR, "access_role.txt")
 INVITE_FILE = os.path.join(DATA_DIR, "permanent_invite.txt")
@@ -6692,13 +6745,7 @@ def get_role_access_web_callbacks():
 
 
 def uptime_request_json(url: str):
-    status, _, body_text = fetch_text_url(
-        url,
-        timeout_seconds=UPTIME_STATUS_TIMEOUT_SECONDS,
-        accept="application/json",
-    )
-    if status >= 400:
-        raise RuntimeError(f"Uptime endpoint returned HTTP {status}.")
+    body_text = uptime_request_text(url)
     try:
         parsed_body = json.loads(body_text)
     except json.JSONDecodeError as exc:
@@ -6708,12 +6755,65 @@ def uptime_request_json(url: str):
     return parsed_body
 
 
+def _uptime_request_auth_variants(api_key: str):
+    normalized_api_key = str(api_key or "").strip()
+    if not normalized_api_key:
+        return [{}]
+    basic_auth = base64.b64encode(f":{normalized_api_key}".encode()).decode("ascii")
+    return [
+        {"Authorization": f"Basic {basic_auth}"},
+        {"Authorization": f"Bearer {normalized_api_key}"},
+        {"X-API-Key": normalized_api_key},
+    ]
+
+
+def uptime_request_text(url: str, *, api_key: str = ""):
+    last_status = 0
+    last_error = ""
+    auth_variants = _uptime_request_auth_variants(api_key)
+    for auth_headers in auth_variants:
+        try:
+            with warnings.catch_warnings():
+                if not UPTIME_STATUS_VERIFY_TLS:
+                    warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+                response = requests.get(
+                    url,
+                    timeout=UPTIME_STATUS_TIMEOUT_SECONDS,
+                    allow_redirects=True,
+                    verify=UPTIME_STATUS_VERIFY_TLS,
+                    headers={
+                        "User-Agent": "GLiNetUnofficialDiscordBot/1.0",
+                        "Accept": "application/json, text/plain;q=0.9, */*;q=0.8",
+                        **auth_headers,
+                    },
+                )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Request failed: {exc}") from exc
+
+        last_status = int(response.status_code)
+        if last_status == 401 and str(api_key or "").strip() and auth_headers is not auth_variants[-1]:
+            last_error = "Uptime endpoint rejected the provided credentials."
+            continue
+        if last_status >= 400:
+            raise RuntimeError(f"Uptime endpoint returned HTTP {last_status}.")
+        return response.text
+
+    if last_error:
+        raise RuntimeError(last_error)
+    raise RuntimeError(f"Uptime endpoint returned HTTP {last_status}.")
+
+
 def fetch_uptime_snapshot():
+    if not UPTIME_STATUS_SOURCE_MODE:
+        raise RuntimeError("Configure a public Uptime Kuma status page or an authenticated Uptime Kuma instance first.")
     return fetch_uptime_snapshot_impl(
         config_url=UPTIME_API_CONFIG_URL,
         heartbeat_url=UPTIME_API_HEARTBEAT_URL,
         page_url=UPTIME_STATUS_PAGE_URL,
+        instance_url=UPTIME_STATUS_INSTANCE_URL,
+        api_key=UPTIME_STATUS_API_KEY,
         fetch_json=uptime_request_json,
+        fetch_text=uptime_request_text,
     )
 
 
@@ -6721,7 +6821,7 @@ def format_uptime_summary(snapshot: dict):
     return trim_search_message(
         format_uptime_summary_impl(
             snapshot,
-            page_url=UPTIME_STATUS_PAGE_URL,
+            page_url=UPTIME_STATUS_SOURCE_URL or UPTIME_STATUS_PAGE_URL or UPTIME_STATUS_INSTANCE_URL,
             truncate_text=truncate_log_text,
         )
     )
@@ -6769,7 +6869,7 @@ async def resolve_uptime_status_notify_channel():
 
 def format_uptime_status_transition_message(snapshot: dict, newly_down: list[dict], recovered: list[dict]):
     title = str(snapshot.get("title") or "Uptime Status").strip()
-    page_url = str(snapshot.get("page_url") or UPTIME_STATUS_PAGE_URL).strip()
+    page_url = str(snapshot.get("page_url") or UPTIME_STATUS_SOURCE_URL or UPTIME_STATUS_PAGE_URL or UPTIME_STATUS_INSTANCE_URL).strip()
     lines = [f"📈 **{title} status change**"]
     if newly_down:
         lines.append("Newly down:")
@@ -8358,6 +8458,10 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global UPTIME_STATUS_TIMEOUT_SECONDS
     global UPTIME_STATUS_CHECK_SCHEDULE
     global UPTIME_STATUS_NOTIFY_CHANNEL_ID
+    global UPTIME_STATUS_PAGE_URL
+    global UPTIME_STATUS_INSTANCE_URL
+    global UPTIME_STATUS_API_KEY
+    global UPTIME_STATUS_VERIFY_TLS
 
     LOG_LEVEL = normalize_log_level(os.getenv("LOG_LEVEL", LOG_LEVEL), fallback=LOG_LEVEL)
     CONTAINER_LOG_LEVEL = normalize_log_level(
@@ -8513,6 +8617,24 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         UPTIME_STATUS_NOTIFY_CHANNEL_ID,
         minimum=0,
     )
+    UPTIME_STATUS_PAGE_URL = normalize_http_url_setting(
+        os.getenv("UPTIME_STATUS_PAGE_URL", UPTIME_STATUS_PAGE_URL),
+        "",
+        "UPTIME_STATUS_PAGE_URL",
+    )
+    UPTIME_STATUS_INSTANCE_URL = normalize_http_url_setting(
+        os.getenv("UPTIME_STATUS_INSTANCE_URL", UPTIME_STATUS_INSTANCE_URL),
+        "",
+        "UPTIME_STATUS_INSTANCE_URL",
+    )
+    UPTIME_STATUS_API_KEY = str(
+        os.getenv("UPTIME_STATUS_API_KEY", default_uptime_api_key(UPTIME_STATUS_INSTANCE_URL) or UPTIME_STATUS_API_KEY) or ""
+    ).strip()
+    UPTIME_STATUS_VERIFY_TLS = is_truthy_env_value(
+        os.getenv("UPTIME_STATUS_VERIFY_TLS", "true" if UPTIME_STATUS_VERIFY_TLS else "false"),
+        default_value=UPTIME_STATUS_VERIFY_TLS,
+    )
+    configure_uptime_status_source()
     DOCS_MAX_RESULTS_PER_SITE = parse_int_setting(
         os.getenv("DOCS_MAX_RESULTS_PER_SITE", DOCS_MAX_RESULTS_PER_SITE),
         DOCS_MAX_RESULTS_PER_SITE,

@@ -22,7 +22,7 @@ Core capabilities:
 - Reddit feed monitor with channel-to-Discord posting for configured subreddits
 - YouTube feed monitor with channel-to-Discord posting
 - Generic service monitor for website/API online-offline alerts
-- Dedicated web GUI page for service monitors and Uptime Kuma imports/alerts
+- Dedicated web GUI page for service monitors and Uptime Kuma public-page or authenticated-instance imports/alerts
 - LinkedIn public profile monitor with channel-to-Discord posting
 - Member activity analytics with private `/stats`, rolling 90-day retention, optional startup backfill, and ZIP export from the web GUI
 - Guild-scoped welcome automation with optional channel message, optional DM, and optional uploaded image attachment with enforced size and dimension validation
@@ -31,10 +31,12 @@ Core capabilities:
 - Dedicated command-status page showing the selected server's commands, effective access level, and enabled/disabled state
 - Log export ZIP download from the web GUI logs page
 - Multi-guild admin model with optional managed-guild allowlist filtering
+- Guild-group scoped web admin model with `Guild Admin` users limited to assigned Discord server groups
 - Guild data archival for 14 days after the bot leaves a server, with automatic restore on same-ID rejoin during that window
-- Three web-user roles:
+- Four web-user roles:
   - `Admin`
   - `Read-only`
+  - `Guild Admin` (group-scoped access limited to assigned Discord server groups)
   - `Glinet-Read-Only` (primary-guild-only read access to GL.iNet community management pages)
   - `Glinet-RW` (primary-guild-only guild-scoped write access for the GL.iNet community)
 - SQLite-backed persistence with legacy merge imports on startup

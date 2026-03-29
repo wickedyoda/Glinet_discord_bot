@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import ipaddress
 import json
@@ -5,7 +6,6 @@ import os
 import re
 import secrets
 import shutil
-import sqlite3
 import ssl
 import subprocess  # nosec B404
 import threading
@@ -40,16 +40,52 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
-from app.service_monitor import normalize_service_monitor_targets, serialize_service_monitor_targets
+from app.service_monitor import (
+    build_glinet_domain_monitor_targets,
+    merge_service_monitor_targets,
+    normalize_service_monitor_targets,
+    serialize_service_monitor_targets,
+)
 from app.uptime_status import (
-    build_uptime_api_urls,
+    build_uptime_instance_urls,
+    build_uptime_source_config,
+    default_uptime_api_key,
     extract_service_monitor_targets_from_uptime_config,
+    extract_service_monitor_targets_from_uptime_metrics,
+    fetch_uptime_metrics_text,
     fetch_uptime_public_config,
 )
 from app.web_audit import should_log_web_audit_event
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
+from app.web_user_store import (
+    current_time_iso as _store_now_iso,
+)
+from app.web_user_store import (
+    ensure_default_admin as _store_ensure_default_admin,
+)
+from app.web_user_store import (
+    normalize_guild_group_name as _store_normalize_guild_group_name,
+)
+from app.web_user_store import (
+    normalize_id_string_list as _normalize_id_string_list,
+)
+from app.web_user_store import (
+    normalize_string_id_list as _normalize_string_id_list,
+)
+from app.web_user_store import (
+    read_guild_groups as _store_read_guild_groups,
+)
+from app.web_user_store import (
+    read_users as _store_read_users,
+)
+from app.web_user_store import (
+    save_guild_groups as _store_save_guild_groups,
+)
+from app.web_user_store import (
+    save_users as _store_save_users,
+)
 
 
 def ensure_process_utc_timezone():
@@ -144,6 +180,7 @@ SENSITIVE_KEYS = {
     "DISCORD_TOKEN",
     "WEB_ADMIN_DEFAULT_PASSWORD",
     "WEB_ADMIN_SESSION_SECRET",
+    "UPTIME_STATUS_API_KEY",
 }
 FALLBACK_PROTECTED_ENV_KEYS = SENSITIVE_KEYS | {"WEB_ENV_FILE"}
 
@@ -423,12 +460,12 @@ ENV_FIELDS = [
     (
         "UPTIME_STATUS_ENABLED",
         "Uptime Status Enabled",
-        "Enable /uptime integration against a public Uptime Kuma page.",
+        "Enable /uptime integration against either a public Uptime Kuma page or an authenticated Uptime Kuma instance.",
     ),
     (
         "UPTIME_STATUS_NOTIFY_ENABLED",
         "Uptime Status Alerting",
-        "Enable scheduled outage/recovery notifications from the configured public Uptime Kuma page.",
+        "Enable scheduled outage/recovery notifications from the configured Uptime Kuma source.",
     ),
     (
         "UPTIME_STATUS_NOTIFY_CHANNEL_ID",
@@ -443,7 +480,22 @@ ENV_FIELDS = [
     (
         "UPTIME_STATUS_PAGE_URL",
         "Uptime Status Page URL",
-        "Public uptime page URL in /status/<slug> format.",
+        "Optional public uptime page URL in /status/<slug> format.",
+    ),
+    (
+        "UPTIME_STATUS_INSTANCE_URL",
+        "Uptime Kuma Instance URL",
+        "Optional authenticated Uptime Kuma base URL such as https://kuma.example.com/.",
+    ),
+    (
+        "UPTIME_STATUS_API_KEY",
+        "Uptime Kuma API Key",
+        "Optional API key used to read the authenticated instance metrics endpoint.",
+    ),
+    (
+        "UPTIME_STATUS_VERIFY_TLS",
+        "Uptime Kuma Verify TLS",
+        "Set to true/false to enforce or skip TLS certificate verification for Kuma requests.",
     ),
     (
         "UPTIME_STATUS_TIMEOUT_SECONDS",
@@ -685,7 +737,10 @@ ENV_FIELD_SECTIONS = (
             "UPTIME_STATUS_NOTIFY_CHANNEL_ID",
             "UPTIME_STATUS_CHECK_SCHEDULE",
             "UPTIME_STATUS_PAGE_URL",
+            "UPTIME_STATUS_INSTANCE_URL",
+            "UPTIME_STATUS_API_KEY",
             "UPTIME_STATUS_TIMEOUT_SECONDS",
+            "UPTIME_STATUS_VERIFY_TLS",
         ),
     ),
     (
@@ -841,7 +896,7 @@ def _normalize_web_user_role(value: str | None, *, is_admin: bool = False) -> st
     raw = str(value or "").strip().lower()
     if raw == "glinet":
         return "glinet_read_only"
-    if raw in {"admin", "read_only", "glinet_read_only", "glinet_rw"}:
+    if raw in {"admin", "read_only", "glinet_read_only", "glinet_rw", "guild_admin"}:
         return raw
     return "admin" if bool(is_admin) else "read_only"
 
@@ -854,6 +909,10 @@ def _is_glinet_rw_user(user: dict | None) -> bool:
     return _normalize_web_user_role((user or {}).get("role", "")) == "glinet_rw"
 
 
+def _is_guild_admin_user(user: dict | None) -> bool:
+    return _normalize_web_user_role((user or {}).get("role", "")) == "guild_admin"
+
+
 def _is_glinet_scoped_user(user: dict | None) -> bool:
     normalized = _normalize_web_user_role((user or {}).get("role", ""))
     return normalized in {"glinet_read_only", "glinet_rw"}
@@ -863,6 +922,8 @@ def _user_role_label(role_value: str | None = None, *, is_admin: bool = False) -
     normalized = _normalize_web_user_role(role_value, is_admin=is_admin)
     if normalized == "admin":
         return "Admin"
+    if normalized == "guild_admin":
+        return "Guild Admin"
     if normalized == "glinet_rw":
         return "Glinet-RW"
     if normalized == "glinet_read_only":
@@ -1254,275 +1315,54 @@ def _password_age_days(user: dict) -> int:
 
 
 def _now_iso():
-    return datetime.now(UTC).isoformat()
+    return _store_now_iso()
 
 
-def _ensure_users_table_columns(conn):
-    rows = conn.execute("PRAGMA table_info(web_users)").fetchall()
-    columns = {str(row["name"]) for row in rows}
-    alter_statements = []
-    if "role" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN role TEXT NOT NULL DEFAULT ''")
-    if "first_name" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN first_name TEXT NOT NULL DEFAULT ''")
-    if "last_name" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN last_name TEXT NOT NULL DEFAULT ''")
-    if "display_name" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
-    if "password_changed_at" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN password_changed_at TEXT NOT NULL DEFAULT ''")
-    if "email_changed_at" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN email_changed_at TEXT NOT NULL DEFAULT ''")
-    if "updated_at" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''")
-    if "created_at" not in columns:
-        alter_statements.append("ALTER TABLE web_users ADD COLUMN created_at TEXT NOT NULL DEFAULT ''")
-    for statement in alter_statements:
-        conn.execute(statement)
-
-    now_iso = _now_iso()
-    conn.execute(
-        """
-        UPDATE web_users
-        SET created_at = COALESCE(NULLIF(TRIM(created_at), ''), ?)
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET updated_at = COALESCE(NULLIF(TRIM(updated_at), ''), created_at, ?)
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET password_changed_at = COALESCE(
-            NULLIF(TRIM(password_changed_at), ''),
-            NULLIF(TRIM(updated_at), ''),
-            NULLIF(TRIM(created_at), ''),
-            ?
-        )
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET email_changed_at = COALESCE(
-            NULLIF(TRIM(email_changed_at), ''),
-            NULLIF(TRIM(updated_at), ''),
-            NULLIF(TRIM(created_at), ''),
-            ?
-        )
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET role = CASE
-            WHEN TRIM(COALESCE(role, '')) = '' THEN CASE WHEN is_admin = 1 THEN 'admin' ELSE 'read_only' END
-            ELSE LOWER(TRIM(role))
-        END
-        """
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET first_name = COALESCE(first_name, ''),
-            last_name = COALESCE(last_name, ''),
-            display_name = COALESCE(display_name, '')
-        """
-    )
-    conn.commit()
-
-
-def _open_users_db(users_db_file: Path):
-    conn = sqlite3.connect(str(users_db_file), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS web_users (
-            email TEXT PRIMARY KEY,
-            password_hash TEXT NOT NULL,
-            is_admin INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    _ensure_users_table_columns(conn)
-    try:
-        os.chmod(users_db_file, 0o600)
-    except (PermissionError, OSError):
-        pass
-    return conn
+def _normalize_guild_group_name(value: str):
+    return _store_normalize_guild_group_name(value, clean_profile_text=_clean_profile_text)
 
 
 def _read_users(users_db_file: Path):
-    conn = _open_users_db(users_db_file)
-    try:
-        rows = conn.execute(
-            """
-            SELECT
-                email,
-                password_hash,
-                is_admin,
-                role,
-                first_name,
-                last_name,
-                display_name,
-                password_changed_at,
-                email_changed_at,
-                created_at,
-                updated_at
-            FROM web_users
-            ORDER BY created_at ASC, email ASC
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-
-    return [
-        {
-            "email": str(row["email"]).strip().lower(),
-            "password_hash": str(row["password_hash"]),
-            "role": _normalize_web_user_role(str(row["role"] or ""), is_admin=bool(row["is_admin"])),
-            "is_admin": _normalize_web_user_role(str(row["role"] or ""), is_admin=bool(row["is_admin"])) == "admin",
-            "first_name": _clean_profile_text(str(row["first_name"] or ""), max_length=80),
-            "last_name": _clean_profile_text(str(row["last_name"] or ""), max_length=80),
-            "display_name": _clean_profile_text(
-                str(row["display_name"] or "") or _default_display_name(str(row["email"] or "")),
-                max_length=80,
-            ),
-            "password_changed_at": str(row["password_changed_at"] or row["updated_at"] or row["created_at"] or _now_iso()),
-            "email_changed_at": str(row["email_changed_at"] or row["updated_at"] or row["created_at"] or _now_iso()),
-            "created_at": str(row["created_at"] or _now_iso()),
-            "updated_at": str(row["updated_at"] or row["created_at"] or _now_iso()),
-        }
-        for row in rows
-        if str(row["email"]).strip() and str(row["password_hash"]).strip()
-    ]
+    return _store_read_users(
+        users_db_file,
+        normalize_role=_normalize_web_user_role,
+        clean_profile_text=_clean_profile_text,
+        default_display_name=_default_display_name,
+    )
 
 
 def _save_users(users_db_file: Path, users):
-    now_iso = _now_iso()
-    conn = _open_users_db(users_db_file)
-    try:
-        with conn:
-            conn.execute("DELETE FROM web_users")
-            for entry in users:
-                email = _normalize_email(entry.get("email", ""))
-                password_hash = str(entry.get("password_hash", "")).strip()
-                if not email or not password_hash:
-                    continue
-                role = _normalize_web_user_role(str(entry.get("role", "")), is_admin=bool(entry.get("is_admin", False)))
-                is_admin = 1 if role == "admin" else 0
-                first_name = _clean_profile_text(str(entry.get("first_name", "")), max_length=80)
-                last_name = _clean_profile_text(str(entry.get("last_name", "")), max_length=80)
-                display_name = _clean_profile_text(str(entry.get("display_name", "")), max_length=80) or _default_display_name(email)
-                created_at = str(entry.get("created_at") or now_iso)
-                password_changed_at = str(entry.get("password_changed_at") or created_at or now_iso)
-                email_changed_at = str(entry.get("email_changed_at") or created_at or now_iso)
-                conn.execute(
-                    """
-                    INSERT INTO web_users (
-                        email,
-                        password_hash,
-                        is_admin,
-                        role,
-                        first_name,
-                        last_name,
-                        display_name,
-                        password_changed_at,
-                        email_changed_at,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        email,
-                        password_hash,
-                        is_admin,
-                        role,
-                        first_name,
-                        last_name,
-                        display_name,
-                        password_changed_at,
-                        email_changed_at,
-                        created_at,
-                        now_iso,
-                    ),
-                )
-    finally:
-        conn.close()
+    _store_save_users(
+        users_db_file,
+        users,
+        normalize_email=_normalize_email,
+        normalize_role=_normalize_web_user_role,
+        clean_profile_text=_clean_profile_text,
+        default_display_name=_default_display_name,
+    )
 
 
 def _ensure_default_admin(users_db_file: Path, default_email: str, default_password: str, logger):
-    users = _read_users(users_db_file)
-    if users:
-        return
+    _store_ensure_default_admin(
+        users_db_file,
+        default_email,
+        default_password,
+        logger,
+        read_users_func=_read_users,
+        normalize_email=_normalize_email,
+        is_valid_email=_is_valid_email,
+        password_policy_errors=_password_policy_errors,
+        hash_password=_hash_password,
+        default_display_name=_default_display_name,
+    )
 
-    email = _normalize_email(default_email) or "admin@example.com"
-    if not _is_valid_email(email):
-        email = "admin@example.com"
 
-    password = default_password or ""
-    if _password_policy_errors(password):
-        message = (
-            "WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet password policy. "
-            "Set a strong password before first boot so the initial admin user can be created securely."
-        )
-        if logger:
-            logger.error(message)
-        raise ValueError(message)
+def _read_guild_groups(users_db_file: Path):
+    return _store_read_guild_groups(users_db_file, clean_profile_text=_clean_profile_text)
 
-    now_iso = _now_iso()
-    display_name = _default_display_name(email)
-    conn = _open_users_db(users_db_file)
-    try:
-        with conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO web_users (
-                    email,
-                    password_hash,
-                    is_admin,
-                    role,
-                    first_name,
-                    last_name,
-                    display_name,
-                    password_changed_at,
-                    email_changed_at,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    email,
-                    _hash_password(password),
-                    1,
-                    "admin",
-                    "",
-                    "",
-                    display_name,
-                    now_iso,
-                    now_iso,
-                    now_iso,
-                    now_iso,
-                ),
-            )
-    finally:
-        conn.close()
-    if logger:
-        logger.info("Created default web admin user.")
+
+def _save_guild_groups(users_db_file: Path, groups):
+    _store_save_guild_groups(users_db_file, groups, clean_profile_text=_clean_profile_text)
 
 
 def _parse_env_file(env_file: Path):
@@ -1806,7 +1646,13 @@ def _validate_env_updates(updated_values: dict):
             errors.append("UPTIME_STATUS_NOTIFY_CHANNEL_ID must be numeric ID or <#channel> format.")
         if key == "UPTIME_STATUS_PAGE_URL" and value:
             try:
-                build_uptime_api_urls(value)
+                _validate_http_url = build_uptime_source_config(page_url=value)
+                _ = _validate_http_url
+            except ValueError as exc:
+                errors.append(str(exc))
+        if key == "UPTIME_STATUS_INSTANCE_URL" and value:
+            try:
+                build_uptime_instance_urls(value)
             except ValueError as exc:
                 errors.append(str(exc))
         if key == "SERVICE_MONITOR_TARGETS_JSON" and value:
@@ -1831,6 +1677,8 @@ def _validate_env_updates(updated_values: dict):
                 errors.append("WEB_SESSION_COOKIE_SAMESITE must be Lax, Strict, or None.")
         if key == "WEB_RESTART_ENABLED" and value.lower() not in truthy_values:
             errors.append("WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off).")
+        if key == "UPTIME_STATUS_VERIFY_TLS" and value.lower() not in truthy_values:
+            errors.append("UPTIME_STATUS_VERIFY_TLS must be true/false (or 1/0, yes/no, on/off).")
         if (
             key
             in {
@@ -3056,7 +2904,40 @@ def create_web_app(
                 return user
         return None
 
-    def _load_available_guilds():
+    def _guild_groups_by_id():
+        return {
+            str(entry.get("id") or "").strip(): entry
+            for entry in _read_guild_groups(users_file)
+            if str(entry.get("id") or "").strip()
+        }
+
+    def _allowed_guild_ids_for_user(user: dict | None):
+        if not _is_guild_admin_user(user):
+            return None
+        allowed_ids = []
+        seen = set()
+        for group_id in _normalize_string_id_list((user or {}).get("guild_group_ids", [])):
+            group_entry = _guild_groups_by_id().get(group_id)
+            if not isinstance(group_entry, dict):
+                continue
+            for guild_id in _normalize_id_string_list(group_entry.get("guild_ids", [])):
+                if guild_id in seen:
+                    continue
+                allowed_ids.append(guild_id)
+                seen.add(guild_id)
+        return allowed_ids
+
+    def _filter_guilds_for_user(guilds: list[dict], user: dict | None):
+        if _is_glinet_scoped_user(user):
+            preferred = _preferred_glinet_guild()
+            return [preferred] if isinstance(preferred, dict) else []
+        allowed_guild_ids = _allowed_guild_ids_for_user(user)
+        if allowed_guild_ids is None:
+            return list(guilds)
+        allowed_set = set(allowed_guild_ids)
+        return [entry for entry in guilds if str(entry.get("id") or "").strip() in allowed_set]
+
+    def _load_all_guilds():
         payload = on_get_guilds() if callable(on_get_guilds) else None
         if not isinstance(payload, dict) or not payload.get("ok"):
             return [], str(payload.get("error") or "") if isinstance(payload, dict) else ""
@@ -3081,6 +2962,10 @@ def create_web_app(
         normalized.sort(key=lambda item: item["name"].casefold())
         return normalized, ""
 
+    def _load_available_guilds():
+        guilds, error_text = _load_all_guilds()
+        return _filter_guilds_for_user(guilds, _current_user()), error_text
+
     def _selected_guild_id():
         user = _current_user()
         if _is_glinet_scoped_user(user):
@@ -3100,6 +2985,11 @@ def create_web_app(
             return selected
         if selected and selected not in valid_ids:
             session.pop("selected_guild_id", None)
+        if _is_guild_admin_user(user) and guilds:
+            selected = str(guilds[0].get("id") or "").strip()
+            if selected:
+                session["selected_guild_id"] = selected
+                return selected
         return ""
 
     def _selected_guild():
@@ -3134,7 +3024,7 @@ def create_web_app(
         return False
 
     def _preferred_glinet_guild():
-        guilds, _error_text = _load_available_guilds()
+        guilds, _error_text = _load_all_guilds()
         if not guilds:
             return None
         for entry in guilds:
@@ -3483,6 +3373,28 @@ def create_web_app(
                         flash("Glinet-RW can only edit the bot nickname for the GL.iNet Community Discord.", "error")
                         return redirect(url_for("bot_profile"))
                 return None
+        if _is_guild_admin_user(user):
+            guild_admin_write_endpoints = {
+                "account",
+                "command_status",
+                "guild_settings",
+                "command_permissions",
+                "reddit_feeds",
+                "service_monitors_page",
+                "youtube_subscriptions",
+                "linkedin_subscriptions",
+                "beta_program_subscriptions",
+                "role_access_page",
+                "tag_responses",
+                "bot_profile",
+            }
+            if request.endpoint in guild_admin_write_endpoints:
+                if request.endpoint == "bot_profile":
+                    action = str(request.form.get("action", "") or "").strip().lower()
+                    if action not in {"nickname"}:
+                        flash("Guild Admin can only edit the bot nickname inside allowed servers.", "error")
+                        return redirect(url_for("bot_profile"))
+                return None
         if logger:
             logger.warning(
                 "Blocked write request for read-only user: endpoint=%s method=%s ip=%s",
@@ -3513,7 +3425,7 @@ def create_web_app(
     @app.before_request
     def enforce_glinet_role_route_restrictions():
         user = _current_user()
-        if user is None or not _is_glinet_scoped_user(user):
+        if user is None or (not _is_glinet_scoped_user(user) and not _is_guild_admin_user(user)):
             return None
         allowed_endpoints = {
             "index",
@@ -3543,7 +3455,10 @@ def create_web_app(
         }
         if request.endpoint in allowed_endpoints:
             return None
-        flash("GL.iNet-scoped access is limited to the primary GL.iNet Community Discord server.", "error")
+        if _is_guild_admin_user(user):
+            flash("Guild Admin access is limited to assigned Discord server groups.", "error")
+        else:
+            flash("GL.iNet-scoped access is limited to the primary GL.iNet Community Discord server.", "error")
         if _selected_guild():
             return redirect(url_for("dashboard"))
         return redirect(url_for("guilds_page"))
@@ -6089,7 +6004,7 @@ def create_web_app(
     @login_required
     def service_monitors_page():
         user = _current_user()
-        can_manage = _is_admin_user(user) or _is_glinet_rw_user(user)
+        can_manage = _is_admin_user(user) or _is_glinet_rw_user(user) or _is_guild_admin_user(user)
         selection_redirect = _require_selected_guild_redirect()
         if selection_redirect is not None:
             return selection_redirect
@@ -6100,10 +6015,11 @@ def create_web_app(
         guild_name = str(selected_guild.get("name") or "Unknown")
         fallback_env_file = _env_fallback_file_path(data_dir)
 
-        def _fetch_json_url(url: str):
+        def _fetch_json_url(url: str, *, verify_tls: bool = True):
             response = requests.get(
                 str(url or "").strip(),
                 timeout=15,
+                verify=verify_tls,
                 headers={
                     "User-Agent": "glinet-discord-bot-web-admin/1.0",
                     "Accept": "application/json",
@@ -6114,6 +6030,37 @@ def create_web_app(
             if not isinstance(payload, dict):
                 raise ValueError("Status page API returned an unexpected payload.")
             return payload
+
+        def _fetch_text_url(url: str, *, api_key: str = "", verify_tls: bool = True):
+            request_headers = {
+                "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                "Accept": "text/plain, application/openmetrics-text;q=0.9, */*;q=0.8",
+            }
+            normalized_api_key = str(api_key or "").strip()
+            auth_variants = [{}]
+            if normalized_api_key:
+                encoded = base64.b64encode(f":{normalized_api_key}".encode()).decode("ascii")
+                auth_variants = [
+                    {"Authorization": f"Basic {encoded}"},
+                    {"Authorization": f"Bearer {normalized_api_key}"},
+                    {"X-API-Key": normalized_api_key},
+                ]
+            last_response = None
+            for auth_headers in auth_variants:
+                response = requests.get(
+                    str(url or "").strip(),
+                    timeout=15,
+                    verify=verify_tls,
+                    headers={**request_headers, **auth_headers},
+                )
+                last_response = response
+                if response.status_code == 401 and normalized_api_key and auth_headers is not auth_variants[-1]:
+                    continue
+                response.raise_for_status()
+                return response.text
+            if last_response is not None:
+                last_response.raise_for_status()
+            raise ValueError("Uptime Kuma instance did not return any response.")
 
         def _load_page_state():
             file_values = _load_effective_env_values(env_file, fallback_env_file)
@@ -6179,9 +6126,16 @@ def create_web_app(
                 "uptime_notify_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_ENABLED") or "false").strip().lower()
                 in {"1", "true", "yes", "on"},
                 "uptime_page_url": str(_read_env_value(file_values, "UPTIME_STATUS_PAGE_URL") or "").strip(),
+                "uptime_instance_url": str(_read_env_value(file_values, "UPTIME_STATUS_INSTANCE_URL") or "").strip(),
+                "uptime_api_key_configured": bool(
+                    str(_read_env_value(file_values, "UPTIME_STATUS_API_KEY") or "").strip()
+                    or default_uptime_api_key(str(_read_env_value(file_values, "UPTIME_STATUS_INSTANCE_URL") or "").strip())
+                ),
                 "uptime_notify_channel_id": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_CHANNEL_ID") or "").strip(),
                 "uptime_schedule": uptime_schedule,
                 "uptime_timeout": uptime_timeout,
+                "uptime_verify_tls": str(_read_env_value(file_values, "UPTIME_STATUS_VERIFY_TLS") or "true").strip().lower()
+                in {"1", "true", "yes", "on"},
             }
 
         def _persist_monitor_updates(applied_updates: dict):
@@ -6250,7 +6204,15 @@ def create_web_app(
                     flash("Direct service monitor settings updated.", "success")
                 else:
                     flash(error_text, "error")
-            elif action in {"add_target", "edit_target", "delete_target", "import_uptime_targets", "add_tailscale_status"}:
+            elif action in {
+                "add_target",
+                "edit_target",
+                "delete_target",
+                "import_uptime_targets",
+                "import_uptime_instance_targets",
+                "add_tailscale_status",
+                "add_glinet_domain_set",
+            }:
                 all_targets = list(page_state["all_targets"])
                 if action == "delete_target":
                     target_id = str(request.form.get("target_id") or "").strip()
@@ -6285,40 +6247,18 @@ def create_web_app(
                     else:
                         try:
                             channel_id_int = int(import_channel_id or 0)
-                            config_payload = fetch_uptime_public_config(page_url=import_page_url, fetch_json=_fetch_json_url)
+                            config_payload = fetch_uptime_public_config(
+                                page_url=import_page_url,
+                                fetch_json=lambda url: _fetch_json_url(url, verify_tls=page_state["uptime_verify_tls"]),
+                            )
                             extracted = extract_service_monitor_targets_from_uptime_config(
                                 config_payload,
                                 guild_id=selected_guild_id_int,
                                 channel_id=channel_id_int,
                                 timeout_seconds=page_state["service_timeout"],
                             )
-                            next_targets = []
-                            existing_by_key = {}
-                            for target in all_targets:
-                                target_copy = dict(target)
-                                key = (
-                                    int(target_copy.get("guild_id") or 0),
-                                    str(target_copy.get("url") or "").strip().lower(),
-                                    int(target_copy.get("channel_id") or 0),
-                                )
-                                existing_by_key[key] = target_copy
-                                next_targets.append(target_copy)
-                            added = 0
-                            updated = 0
-                            for imported_target in extracted.get("targets", []):
-                                key = (
-                                    int(imported_target.get("guild_id") or 0),
-                                    str(imported_target.get("url") or "").strip().lower(),
-                                    int(imported_target.get("channel_id") or 0),
-                                )
-                                existing = existing_by_key.get(key)
-                                if existing is None:
-                                    next_targets.append(imported_target)
-                                    existing_by_key[key] = imported_target
-                                    added += 1
-                                    continue
-                                existing.update(imported_target)
-                                updated += 1
+                            merge_result = merge_service_monitor_targets(all_targets, extracted.get("targets", []))
+                            next_targets = merge_result["targets"]
                             ok, error_text = _persist_monitor_updates(
                                 {
                                     "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets),
@@ -6327,13 +6267,78 @@ def create_web_app(
                             )
                             if ok:
                                 skipped_count = len(extracted.get("skipped", []) or [])
-                                summary = f"Imported {added} new direct service monitor(s)"
-                                if updated:
-                                    summary += f", updated {updated}"
+                                summary = f"Imported {merge_result['added']} new direct service monitor(s)"
+                                if merge_result["updated"]:
+                                    summary += f", updated {merge_result['updated']}"
+                                if merge_result["deduped"]:
+                                    summary += f", removed {merge_result['deduped']} duplicate(s)"
                                 if skipped_count:
                                     summary += f", skipped {skipped_count} page-only monitor(s)"
                                 summary += "."
                                 flash(summary, "success")
+                        except (requests.RequestException, ValueError) as exc:
+                            flash(str(exc), "error")
+                elif action == "import_uptime_instance_targets":
+                    import_instance_url = str(
+                        request.form.get("uptime_import_instance_url") or page_state["uptime_instance_url"] or ""
+                    ).strip()
+                    import_channel_id = str(request.form.get("uptime_import_channel_id") or "").strip()
+                    if not import_channel_id:
+                        import_channel_id = str(page_state["service_default_channel_id"] or "").strip()
+                    import_verify_tls = (
+                        str(request.form.get("uptime_import_verify_tls") or "").strip().lower()
+                        in {"1", "true", "yes", "on"}
+                    )
+                    stored_api_key = str(_read_env_value(page_state["file_values"], "UPTIME_STATUS_API_KEY") or "").strip()
+                    if not stored_api_key:
+                        stored_api_key = default_uptime_api_key(import_instance_url)
+                    import_api_key = str(request.form.get("uptime_import_api_key") or "").strip() or stored_api_key
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if import_channel_id and valid_text_channel_ids and import_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel for imported service monitors.", "error")
+                    else:
+                        try:
+                            channel_id_int = int(import_channel_id or 0)
+                            metrics_text = fetch_uptime_metrics_text(
+                                instance_url=import_instance_url,
+                                api_key=import_api_key,
+                                fetch_text=lambda url, api_key="": _fetch_text_url(
+                                    url,
+                                    api_key=api_key,
+                                    verify_tls=import_verify_tls,
+                                ),
+                            )
+                            extracted = extract_service_monitor_targets_from_uptime_metrics(
+                                metrics_text,
+                                guild_id=selected_guild_id_int,
+                                channel_id=channel_id_int,
+                                timeout_seconds=page_state["service_timeout"],
+                            )
+                            merge_result = merge_service_monitor_targets(all_targets, extracted.get("targets", []))
+                            next_targets = merge_result["targets"]
+                            import_updates = {
+                                "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets),
+                                "UPTIME_STATUS_INSTANCE_URL": import_instance_url,
+                                "UPTIME_STATUS_VERIFY_TLS": "true" if import_verify_tls else "false",
+                            }
+                            if str(request.form.get("uptime_import_api_key") or "").strip():
+                                import_updates["UPTIME_STATUS_API_KEY"] = str(request.form.get("uptime_import_api_key") or "").strip()
+                            ok, error_text = _persist_monitor_updates(import_updates)
+                            if ok:
+                                skipped_count = len(extracted.get("skipped", []) or [])
+                                summary = f"Imported {merge_result['added']} new direct service monitor(s)"
+                                if merge_result["updated"]:
+                                    summary += f", updated {merge_result['updated']}"
+                                if merge_result["deduped"]:
+                                    summary += f", removed {merge_result['deduped']} duplicate(s)"
+                                if skipped_count:
+                                    summary += f", skipped {skipped_count} page-only monitor(s)"
+                                summary += "."
+                                flash(summary, "success")
+                            else:
+                                flash(error_text, "error")
                         except (requests.RequestException, ValueError) as exc:
                             flash(str(exc), "error")
                 else:
@@ -6348,6 +6353,16 @@ def create_web_app(
                         timeout_seconds = str(
                             request.form.get("preset_timeout_seconds") or page_state["service_timeout"] or 10
                         ).strip()
+                    elif action == "add_glinet_domain_set":
+                        channel_id = str(request.form.get("glinet_preset_channel_id") or "").strip()
+                        timeout_seconds = str(
+                            request.form.get("glinet_preset_timeout_seconds") or page_state["service_timeout"] or 10
+                        ).strip()
+                        name = ""
+                        url = ""
+                        method = "GET"
+                        expected_status = "200"
+                        contains_text = ""
                     else:
                         name = str(request.form.get("name") or "").strip()
                         url = str(request.form.get("url") or "").strip()
@@ -6365,23 +6380,33 @@ def create_web_app(
                         flash("Choose a valid Discord text channel.", "error")
                     else:
                         channel_id_value = int(channel_id or page_state["service_default_channel_id"] or 0)
-                        candidate = {
-                            "guild_id": selected_guild_id_int,
-                            "name": name,
-                            "url": url,
-                            "method": method,
-                            "expected_status": expected_status,
-                            "contains_text": contains_text,
-                            "timeout_seconds": timeout_seconds,
-                            "channel_id": channel_id_value,
-                        }
                         try:
-                            normalized_candidate = normalize_service_monitor_targets(
-                                [candidate],
-                                default_timeout_seconds=page_state["service_timeout"],
-                                default_channel_id=page_state["service_default_channel_id"],
-                            )[0]
-                            next_targets = []
+                            if action == "add_glinet_domain_set":
+                                incoming_targets = build_glinet_domain_monitor_targets(
+                                    guild_id=selected_guild_id_int,
+                                    channel_id=channel_id_value,
+                                    timeout_seconds=int(timeout_seconds or page_state["service_timeout"] or 10),
+                                )
+                                merge_result = merge_service_monitor_targets(all_targets, incoming_targets)
+                                next_targets = merge_result["targets"]
+                            else:
+                                candidate = {
+                                    "guild_id": selected_guild_id_int,
+                                    "name": name,
+                                    "url": url,
+                                    "method": method,
+                                    "expected_status": expected_status,
+                                    "contains_text": contains_text,
+                                    "timeout_seconds": timeout_seconds,
+                                    "channel_id": channel_id_value,
+                                }
+                                normalized_candidate = normalize_service_monitor_targets(
+                                    [candidate],
+                                    default_timeout_seconds=page_state["service_timeout"],
+                                    default_channel_id=page_state["service_default_channel_id"],
+                                )[0]
+                                next_targets = []
+                                merge_result = None
                             if action == "edit_target":
                                 replaced = False
                                 for target in all_targets:
@@ -6397,6 +6422,8 @@ def create_web_app(
                                     target_rows = []
                                     # fall through to render
                                     next_targets = None
+                            elif action == "add_glinet_domain_set":
+                                pass
                             else:
                                 next_targets = list(all_targets) + [normalized_candidate]
                             if next_targets is not None:
@@ -6407,6 +6434,21 @@ def create_web_app(
                                     flash(
                                         "Service monitor updated."
                                         if action == "edit_target"
+                                        else (
+                                            f"Added {merge_result['added']} GL.iNet domain monitor(s)"
+                                            + (
+                                                f", updated {merge_result['updated']}"
+                                                if merge_result and merge_result["updated"]
+                                                else ""
+                                            )
+                                            + (
+                                                f", removed {merge_result['deduped']} duplicate(s)"
+                                                if merge_result and merge_result["deduped"]
+                                                else ""
+                                            )
+                                            + "."
+                                        )
+                                        if action == "add_glinet_domain_set"
                                         else "Tailscale status monitor added."
                                         if action == "add_tailscale_status"
                                         else "Service monitor added.",
@@ -6424,6 +6466,7 @@ def create_web_app(
                 if notify_channel_id and valid_text_channel_ids and notify_channel_id not in valid_text_channel_ids:
                     flash("Choose a valid Discord text channel for Uptime Kuma alerts.", "error")
                 else:
+                    uptime_api_key_value = str(request.form.get("uptime_status_api_key") or "").strip()
                     updates = {
                         "UPTIME_STATUS_ENABLED": "true"
                         if str(request.form.get("uptime_status_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -6432,12 +6475,20 @@ def create_web_app(
                         if str(request.form.get("uptime_status_notify_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
                         else "false",
                         "UPTIME_STATUS_PAGE_URL": str(request.form.get("uptime_status_page_url") or "").strip(),
+                        "UPTIME_STATUS_INSTANCE_URL": str(request.form.get("uptime_status_instance_url") or "").strip(),
                         "UPTIME_STATUS_NOTIFY_CHANNEL_ID": notify_channel_id,
                         "UPTIME_STATUS_CHECK_SCHEDULE": str(request.form.get("uptime_status_schedule") or "*/5 * * * *").strip(),
                         "UPTIME_STATUS_TIMEOUT_SECONDS": str(
                             request.form.get("uptime_status_timeout") or page_state["uptime_timeout"] or 15
                         ).strip(),
+                        "UPTIME_STATUS_VERIFY_TLS": "true"
+                        if str(request.form.get("uptime_status_verify_tls") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
                     }
+                    if uptime_api_key_value:
+                        updates["UPTIME_STATUS_API_KEY"] = uptime_api_key_value
+                    elif str(request.form.get("uptime_status_api_key_clear") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                        updates["UPTIME_STATUS_API_KEY"] = ""
                     ok, error_text = _persist_monitor_updates(updates)
                     if ok:
                         flash("Uptime Kuma watcher settings updated.", "success")
@@ -6472,8 +6523,8 @@ def create_web_app(
             text_channel_options,
             placeholder="Choose the Discord text channel...",
         )
-        preset_target_channel_select = _render_select_input(
-            "preset_channel_id",
+        glinet_preset_target_channel_select = _render_select_input(
+            "glinet_preset_channel_id",
             str(page_state["service_default_channel_id"] or ""),
             text_channel_options,
             placeholder="Choose the Discord text channel...",
@@ -6489,6 +6540,18 @@ def create_web_app(
             str(page_state["uptime_notify_channel_id"] or ""),
             text_channel_options,
             placeholder="Choose the Discord text channel...",
+        )
+        uptime_verify_tls_select = _render_fixed_select_input(
+            "uptime_status_verify_tls",
+            "true" if page_state["uptime_verify_tls"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        import_verify_tls_select = _render_fixed_select_input(
+            "uptime_import_verify_tls",
+            "true" if page_state["uptime_verify_tls"] else "false",
+            enabled_options,
+            placeholder="Select state...",
         )
         service_schedule_select = _render_fixed_select_input(
             "service_monitor_schedule",
@@ -6599,17 +6662,39 @@ def create_web_app(
           </div>
           <div class="card">
             <h2>Import From Uptime Kuma</h2>
-            <p class="muted">Use a public Uptime Kuma status page to seed direct service checks without hand-entering every URL. Only services with a public HTTP(S) URL can be imported directly.</p>
-            <form method="post">
-              <input type="hidden" name="action" value="import_uptime_targets" />
-              <label>Public status page URL</label>
-              <input type="text" name="uptime_import_page_url" value="{escape(page_state['uptime_page_url'] or 'https://status.glinet.admon.me/status/default', quote=True)}" placeholder="https://status.example.com/status/default" required{manage_disabled_attr} />
-              <label style="margin-top:10px;display:block;">Discord channel</label>
-              {import_target_channel_select}
-              <div style="margin-top:14px;">
-                <button class="btn" type="submit"{manage_disabled_attr}>Import Direct Checks</button>
+            <p class="muted">Seed direct service checks from either a public Uptime Kuma status page or an authenticated Kuma instance. Only monitors with a public HTTP(S) URL can become direct checks.</p>
+            <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
+              <div class="card" style="margin:0;">
+                <h3 style="margin-top:0;">From Public Page</h3>
+                <form method="post">
+                  <input type="hidden" name="action" value="import_uptime_targets" />
+                  <label>Public status page URL</label>
+                  <input type="text" name="uptime_import_page_url" value="{escape(page_state['uptime_page_url'] or 'https://status.glinet.admon.me/status/default', quote=True)}" placeholder="https://status.example.com/status/default" required{manage_disabled_attr} />
+                  <label style="margin-top:10px;display:block;">Discord channel</label>
+                  {import_target_channel_select}
+                  <div style="margin-top:14px;">
+                    <button class="btn" type="submit"{manage_disabled_attr}>Import Direct Checks</button>
+                  </div>
+                </form>
               </div>
-            </form>
+              <div class="card" style="margin:0;">
+                <h3 style="margin-top:0;">From Authenticated Instance</h3>
+                <form method="post">
+                  <input type="hidden" name="action" value="import_uptime_instance_targets" />
+                  <label>Authenticated instance URL</label>
+                  <input type="text" name="uptime_import_instance_url" value="{escape(page_state['uptime_instance_url'], quote=True)}" placeholder="https://kuma.example.com/" required{manage_disabled_attr} />
+                  <label>API key</label>
+                  <input type="password" name="uptime_import_api_key" value="" placeholder="{'•••••• (stored key will be used if blank)' if page_state['uptime_api_key_configured'] else 'Paste a Uptime Kuma API key'}"{manage_disabled_attr} />
+                  <label style="margin-top:10px;display:block;">Verify TLS certificates</label>
+                  {import_verify_tls_select}
+                  <label style="margin-top:10px;display:block;">Discord channel</label>
+                  {import_target_channel_select}
+                  <div style="margin-top:14px;">
+                    <button class="btn" type="submit"{manage_disabled_attr}>Import From Instance</button>
+                  </div>
+                </form>
+              </div>
+            </div>
           </div>
         </div>
         <div class="grid" style="margin-top:16px;">
@@ -6617,12 +6702,31 @@ def create_web_app(
             <h2>Add Direct Service Monitor</h2>
             <p class="muted">Create a direct website or API check for <strong>{escape(guild_name)}</strong>. Use optional required text when a simple HTTP status code is not enough.</p>
             <div class="card" style="margin:0 0 16px 0;">
+              <h3 style="margin-top:0;">Quick Preset: GL.iNet Domains</h3>
+              <p class="muted">Add the standard GL.iNet domain set for this guild and automatically remove duplicates by URL.</p>
+              <form method="post">
+                <input type="hidden" name="action" value="add_glinet_domain_set" />
+                <label>Discord channel</label>
+                {glinet_preset_target_channel_select}
+                <label>Request timeout (seconds)</label>
+                <input type="number" name="glinet_preset_timeout_seconds" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
+                <div style="margin-top:14px;">
+                  <button class="btn" type="submit"{manage_disabled_attr}>Add GL.iNet Domain Set</button>
+                </div>
+              </form>
+            </div>
+            <div class="card" style="margin:0 0 16px 0;">
               <h3 style="margin-top:0;">Quick Preset: Tailscale</h3>
               <p class="muted">Add a ready-to-use monitor for <span class="mono">https://status.tailscale.com/</span>.</p>
               <form method="post">
                 <input type="hidden" name="action" value="add_tailscale_status" />
                 <label>Discord channel</label>
-                {preset_target_channel_select}
+                {_render_select_input(
+                    "preset_channel_id",
+                    str(page_state["service_default_channel_id"] or ""),
+                    text_channel_options,
+                    placeholder="Choose the Discord text channel...",
+                )}
                 <label>Request timeout (seconds)</label>
                 <input type="number" name="preset_timeout_seconds" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
                 <div style="margin-top:14px;">
@@ -6653,17 +6757,27 @@ def create_web_app(
           </div>
           <div class="card">
             <h2>Uptime Kuma Watcher</h2>
-            <p class="muted">This watcher reads a public Uptime Kuma page API and alerts when any monitor on that page changes state. Use it for services that cannot be imported as direct URL checks.</p>
+            <p class="muted">This watcher can read either a public Uptime Kuma status page or an authenticated Kuma instance. If both are configured, the authenticated instance takes priority and covers all monitors exposed by the instance metrics endpoint.</p>
             <form method="post">
               <input type="hidden" name="action" value="save_uptime_settings" />
               <label>Watcher enabled</label>
               {uptime_enabled_select}
               <label style="margin-top:10px;display:block;">Discord alerting</label>
               {uptime_notify_enabled_select}
-              <label>Public status page URL</label>
+              <label>Public status page URL (optional)</label>
               <input type="text" name="uptime_status_page_url" value="{escape(page_state['uptime_page_url'], quote=True)}" placeholder="https://status.example.com/status/default"{manage_disabled_attr} />
+              <label>Authenticated instance URL (optional)</label>
+              <input type="text" name="uptime_status_instance_url" value="{escape(page_state['uptime_instance_url'], quote=True)}" placeholder="https://kuma.example.com/"{manage_disabled_attr} />
+              <label>API key (optional)</label>
+              <input type="password" name="uptime_status_api_key" value="" placeholder="{'•••••• (unchanged if blank)' if page_state['uptime_api_key_configured'] else 'Paste a Uptime Kuma API key'}"{manage_disabled_attr} />
+              <label class="checkbox" style="margin-top:8px;">
+                <input type="checkbox" name="uptime_status_api_key_clear" value="true"{manage_disabled_attr} />
+                Clear stored API key
+              </label>
               <label style="margin-top:10px;display:block;">Discord channel</label>
               {uptime_notify_channel_select}
+              <label style="margin-top:10px;display:block;">Verify TLS certificates</label>
+              {uptime_verify_tls_select}
               <label style="margin-top:10px;display:block;">Recheck interval</label>
               {uptime_schedule_select}
               <label>Request timeout (seconds)</label>
@@ -7206,6 +7320,7 @@ def create_web_app(
                 "SERVICE_MONITOR_ENABLED",
                 "UPTIME_STATUS_ENABLED",
                 "UPTIME_STATUS_NOTIFY_ENABLED",
+                "UPTIME_STATUS_VERIFY_TLS",
             }:
                 safe_value = "true" if _is_truthy_env_value(safe_value) else "false"
                 static_select_options = [
@@ -7551,14 +7666,105 @@ def create_web_app(
         return _render_page("Bulk Role CSV", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/users", methods=["GET", "POST"])
-    @login_required
+    @admin_required
     def users():
         user = _current_user()
         users_data = _read_users(users_file)
+        groups_data = _read_guild_groups(users_file)
+        all_guilds, guild_error = _load_all_guilds()
+        guild_options = [
+            {
+                "id": str(entry.get("id") or "").strip(),
+                "label": str(entry.get("name") or entry.get("id") or "Unknown"),
+            }
+            for entry in all_guilds
+            if str(entry.get("id") or "").strip()
+        ]
+        group_options = [
+            {
+                "id": str(entry.get("id") or "").strip(),
+                "label": str(entry.get("name") or entry.get("id") or "Unknown"),
+            }
+            for entry in groups_data
+            if str(entry.get("id") or "").strip()
+        ]
+        group_name_by_id = {
+            str(entry.get("id") or "").strip(): str(entry.get("name") or "").strip()
+            for entry in groups_data
+            if str(entry.get("id") or "").strip()
+        }
 
         if request.method == "POST":
             action = request.form.get("action", "").strip()
-            if action == "create":
+            if action == "create_group":
+                group_name = _normalize_guild_group_name(request.form.get("group_name", ""))
+                guild_ids = _normalize_id_string_list(request.form.getlist("guild_ids"))
+                if not group_name:
+                    flash("Guild group name is required.", "error")
+                elif not guild_ids:
+                    flash("Choose at least one Discord server for the guild group.", "error")
+                elif any(str(entry.get("name") or "").strip().casefold() == group_name.casefold() for entry in groups_data):
+                    flash("A guild group with that name already exists.", "error")
+                else:
+                    groups_data.append(
+                        {
+                            "id": secrets.token_hex(8),
+                            "name": group_name,
+                            "guild_ids": guild_ids,
+                            "created_at": _now_iso(),
+                        }
+                    )
+                    _save_guild_groups(users_file, groups_data)
+                    flash(f"Created guild group {group_name}.", "success")
+                    groups_data = _read_guild_groups(users_file)
+            elif action == "edit_group":
+                group_id = str(request.form.get("group_id", "") or "").strip()
+                group_name = _normalize_guild_group_name(request.form.get("group_name", ""))
+                guild_ids = _normalize_id_string_list(request.form.getlist("guild_ids"))
+                if not group_id:
+                    flash("Guild group ID is required.", "error")
+                elif not group_name:
+                    flash("Guild group name is required.", "error")
+                elif not guild_ids:
+                    flash("Choose at least one Discord server for the guild group.", "error")
+                elif any(
+                    str(entry.get("name") or "").strip().casefold() == group_name.casefold()
+                    and str(entry.get("id") or "").strip() != group_id
+                    for entry in groups_data
+                ):
+                    flash("Another guild group already uses that name.", "error")
+                else:
+                    changed = False
+                    for entry in groups_data:
+                        if str(entry.get("id") or "").strip() == group_id:
+                            entry["name"] = group_name
+                            entry["guild_ids"] = guild_ids
+                            changed = True
+                            break
+                    if changed:
+                        _save_guild_groups(users_file, groups_data)
+                        flash(f"Updated guild group {group_name}.", "success")
+                        groups_data = _read_guild_groups(users_file)
+                    else:
+                        flash("Guild group not found.", "error")
+            elif action == "delete_group":
+                group_id = str(request.form.get("group_id", "") or "").strip()
+                next_groups = [entry for entry in groups_data if str(entry.get("id") or "").strip() != group_id]
+                if len(next_groups) == len(groups_data):
+                    flash("Guild group not found.", "error")
+                else:
+                    for entry in users_data:
+                        entry["guild_group_ids"] = [
+                            value
+                            for value in _normalize_string_id_list(entry.get("guild_group_ids", []))
+                            if value != group_id
+                        ]
+                    _save_guild_groups(users_file, next_groups)
+                    _save_users(users_file, users_data)
+                    flash("Deleted guild group.", "success")
+                    groups_data = _read_guild_groups(users_file)
+                    users_data = _read_users(users_file)
+            elif action == "create":
                 email = _normalize_email(request.form.get("email", ""))
                 password = request.form.get("password", "")
                 confirm_password = request.form.get("confirm_password", "")
@@ -7566,6 +7772,7 @@ def create_web_app(
                 last_name = _clean_profile_text(request.form.get("last_name", ""), max_length=80)
                 display_name = _clean_profile_text(request.form.get("display_name", ""), max_length=80)
                 requested_role = _normalize_web_user_role(request.form.get("role", "read_only"))
+                guild_group_ids = _normalize_string_id_list(request.form.getlist("guild_group_ids"))
                 is_admin = requested_role == "admin"
                 if not _is_valid_email(email):
                     flash("Enter a valid email.", "error")
@@ -7577,6 +7784,8 @@ def create_web_app(
                     flash("Display name is required.", "error")
                 elif any(entry["email"] == email for entry in users_data):
                     flash("A user with that email already exists.", "error")
+                elif requested_role == "guild_admin" and not guild_group_ids:
+                    flash("Guild Admin users must be assigned at least one guild group.", "error")
                 elif password != confirm_password:
                     flash("Password and confirmation must match.", "error")
                 else:
@@ -7594,6 +7803,7 @@ def create_web_app(
                                 "first_name": first_name,
                                 "last_name": last_name,
                                 "display_name": display_name,
+                                "guild_group_ids": guild_group_ids,
                                 "password_changed_at": _now_iso(),
                                 "email_changed_at": _now_iso(),
                                 "created_at": _now_iso(),
@@ -7650,6 +7860,7 @@ def create_web_app(
                 first_name = _clean_profile_text(request.form.get("first_name", ""), max_length=80)
                 last_name = _clean_profile_text(request.form.get("last_name", ""), max_length=80)
                 display_name = _clean_profile_text(request.form.get("display_name", ""), max_length=80)
+                guild_group_ids = _normalize_string_id_list(request.form.getlist("guild_group_ids"))
                 if not target_email:
                     flash("User email is required.", "error")
                 elif not _is_valid_email(updated_email):
@@ -7672,6 +7883,8 @@ def create_web_app(
                             entry["first_name"] = first_name
                             entry["last_name"] = last_name
                             entry["display_name"] = display_name
+                            if _normalize_web_user_role(entry.get("role", ""), is_admin=bool(entry.get("is_admin"))) == "guild_admin":
+                                entry["guild_group_ids"] = guild_group_ids
                             if updated_email != original_email:
                                 entry["email_changed_at"] = now_iso
                             changed = True
@@ -7696,6 +7909,10 @@ def create_web_app(
                     changed = False
                     for entry in users_data:
                         if entry["email"] == target_email:
+                            if requested_role == "guild_admin" and not _normalize_string_id_list(entry.get("guild_group_ids", [])):
+                                flash("Assign at least one guild group before changing this user to Guild Admin.", "error")
+                                changed = False
+                                break
                             entry["role"] = requested_role
                             entry["is_admin"] = target_is_admin
                             changed = True
@@ -7719,11 +7936,15 @@ def create_web_app(
             current_role_value = _normalize_web_user_role(entry.get("role", ""), is_admin=bool(entry.get("is_admin")))
             is_admin_entry = current_role_value == "admin"
             role_label = _user_role_label(current_role_value, is_admin=is_admin_entry)
+            assigned_group_ids = _normalize_string_id_list(entry.get("guild_group_ids", []))
+            assigned_group_names = [group_name_by_id.get(group_id, f"Unknown ({group_id})") for group_id in assigned_group_ids]
+            group_scope_label = ", ".join(assigned_group_names) if assigned_group_names else ("All guilds" if current_role_value in {"admin", "read_only"} else "Primary GL.iNet guild only" if current_role_value in {"glinet_read_only", "glinet_rw"} else "No guild groups")
             role_select_html = _render_fixed_select_input(
                 f"role__{email}",
                 current_role_value,
                 [
                     {"value": "read_only", "label": "Read-only"},
+                    {"value": "guild_admin", "label": "Guild Admin"},
                     {"value": "glinet_read_only", "label": "Glinet-Read-Only"},
                     {"value": "glinet_rw", "label": "Glinet-RW"},
                     {"value": "admin", "label": "Admin"},
@@ -7744,6 +7965,7 @@ def create_web_app(
                   <td>{escape(full_name or "n/a")}</td>
                   <td class="mono">{escape(email)}</td>
                   <td>{escape(role_label)}</td>
+                  <td>{escape(group_scope_label)}</td>
                   <td class="mono">{escape(format_timestamp_display(entry.get("password_changed_at"), blank="n/a"))}</td>
                   <td class="mono">{escape(format_timestamp_display(entry.get("created_at"), blank="n/a"))}</td>
                   <td>
@@ -7779,6 +8001,9 @@ def create_web_app(
                             <input type="text" name="display_name" autocomplete="nickname" value="{escape(display_name, quote=True)}" required />
                             <label style="margin-top:10px;display:block;">Email</label>
                             <input type="email" name="updated_email" autocomplete="email" autocapitalize="none" spellcheck="false" value="{escape(email, quote=True)}" required />
+                            <label style="margin-top:10px;display:block;">Guild Groups</label>
+                            {_render_multi_select_input("guild_group_ids", assigned_group_ids, group_options, size=6)}
+                            <p class="muted">Only used when this account role is <strong>Guild Admin</strong>. Use Ctrl/Cmd-click to select multiple groups.</p>
                             <button class="btn" type="submit" style="margin-top:14px;">Save User Changes</button>
                           </form>
                         </div>
@@ -7833,23 +8058,61 @@ def create_web_app(
               <label style="margin-top:10px;display:block;">Role</label>
               <select name="role">
                 <option value="read_only">Read-only</option>
+                <option value="guild_admin">Guild Admin</option>
                 <option value="glinet_read_only">Glinet-Read-Only</option>
                 <option value="glinet_rw">Glinet-RW</option>
                 <option value="admin">Admin</option>
               </select>
+              <label style="margin-top:10px;display:block;">Guild Groups</label>
+              {_render_multi_select_input("guild_group_ids", [], group_options, size=6)}
+              <p class="muted">Guild Groups only apply to the <strong>Guild Admin</strong> role. Use Ctrl/Cmd-click to select multiple groups.</p>
               <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>
               <button class="btn" type="submit">Create User</button>
             </form>
           </div>
           <div class="card">
-            <h2>Edit Existing Users</h2>
-            <p class="muted">Use the per-user edit section below to change names, email, role, or reset a password.</p>
+            <h2>Guild Groups</h2>
+            <p class="muted">Guild Groups define which Discord servers a <strong>Guild Admin</strong> can manage. Assign one or more groups to a user to scope their server access.</p>
+            {f"<p class='muted'>Could not load Discord guild list: {escape(guild_error)}</p>" if guild_error else ""}
+            <form method="post">
+              <input type="hidden" name="action" value="create_group" />
+              <label>Group Name</label>
+              <input type="text" name="group_name" placeholder="Support Servers" required />
+              <label style="margin-top:10px;display:block;">Discord Servers</label>
+              {_render_multi_select_input("guild_ids", [], guild_options, size=6)}
+              <p class="muted">Use Ctrl/Cmd-click to select multiple servers.</p>
+              <button class="btn" type="submit">Create Guild Group</button>
+            </form>
+            {"".join(
+                f'''
+                <details style="margin-top:12px;">
+                  <summary>{escape(str(group.get("name") or "Guild Group"))}</summary>
+                  <form method="post" style="margin-top:12px;">
+                    <input type="hidden" name="action" value="edit_group" />
+                    <input type="hidden" name="group_id" value="{escape(str(group.get("id") or ""), quote=True)}" />
+                    <label>Group Name</label>
+                    <input type="text" name="group_name" value="{escape(str(group.get("name") or ""), quote=True)}" required />
+                    <label style="margin-top:10px;display:block;">Discord Servers</label>
+                    {_render_multi_select_input("guild_ids", group.get("guild_ids", []), guild_options, size=6)}
+                    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+                      <button class="btn" type="submit">Save Group</button>
+                    </div>
+                  </form>
+                  <form method="post" style="margin-top:8px;" onsubmit="return confirm('Delete this guild group? Assigned users will lose access from this group.');">
+                    <input type="hidden" name="action" value="delete_group" />
+                    <input type="hidden" name="group_id" value="{escape(str(group.get("id") or ""), quote=True)}" />
+                    <button class="btn danger" type="submit">Delete Group</button>
+                  </form>
+                </details>
+                '''
+                for group in groups_data
+            ) if groups_data else "<p class='muted'>No guild groups created yet.</p>"}
           </div>
         </div>
         <div class="card">
           <h2>Existing Users</h2>
           <table>
-            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Role</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Role</th><th>Guild Scope</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody>{"".join(user_rows)}</tbody>
           </table>
         </div>
