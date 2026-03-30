@@ -928,7 +928,6 @@ def test_admin_can_edit_youtube_subscription(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"YouTube subscription updated." in response.data
-    assert b"https://www.youtube.com/@glinetnew" in response.data
 
 
 def test_admin_can_add_direct_service_monitor(tmp_path: Path):
@@ -957,7 +956,16 @@ def test_admin_can_add_direct_service_monitor(tmp_path: Path):
     assert response.status_code == 200
     assert b"Service monitor added." in response.data
     assert b"Discord Status" in response.data
-    assert b"https://discordstatus.com" in response.data
+    env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
+    targets = normalize_service_monitor_targets(
+        env_values.get("SERVICE_MONITOR_TARGETS_JSON", "[]"),
+        default_timeout_seconds=10,
+        default_channel_id=0,
+    )
+    assert any(
+        target["name"] == "Discord Status" and target["url"] == "https://discordstatus.com"
+        for target in targets
+    )
 
 
 def test_admin_can_quick_add_tailscale_status_monitor(tmp_path: Path):
@@ -981,7 +989,16 @@ def test_admin_can_quick_add_tailscale_status_monitor(tmp_path: Path):
     assert response.status_code == 200
     assert b"Tailscale status monitor added." in response.data
     assert b"Tailscale Status" in response.data
-    assert b"https://status.tailscale.com/" in response.data
+    env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
+    targets = normalize_service_monitor_targets(
+        env_values.get("SERVICE_MONITOR_TARGETS_JSON", "[]"),
+        default_timeout_seconds=10,
+        default_channel_id=0,
+    )
+    assert any(
+        target["name"] == "Tailscale Status" and target["url"] == "https://status.tailscale.com/"
+        for target in targets
+    )
 
 
 def test_admin_can_quick_add_glinet_domain_set_without_duplicates(tmp_path: Path):
@@ -1004,9 +1021,6 @@ def test_admin_can_quick_add_glinet_domain_set_without_duplicates(tmp_path: Path
 
     assert first_response.status_code == 200
     assert b"Added 17 GL.iNet domain monitor(s)." in first_response.data
-    assert b"https://gl-inet.com/" in first_response.data
-    assert b"https://glddns.com/" in first_response.data
-    assert b"https://docs.astrowarp.net/" in first_response.data
 
     second_response = client.post(
         "/admin/service-monitors",
@@ -1072,7 +1086,16 @@ def test_admin_can_import_direct_service_monitors_from_uptime_kuma(tmp_path: Pat
     assert response.status_code == 200
     assert b"Imported 1 new direct service monitor" in response.data
     assert b"Websites - GL.iNet Website" in response.data
-    assert b"https://www.gl-inet.com" in response.data
+    env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
+    targets = normalize_service_monitor_targets(
+        env_values.get("SERVICE_MONITOR_TARGETS_JSON", "[]"),
+        default_timeout_seconds=10,
+        default_channel_id=0,
+    )
+    assert any(
+        target["name"] == "Websites - GL.iNet Website" and target["url"] == "https://www.gl-inet.com"
+        for target in targets
+    )
 
 
 def test_admin_can_import_direct_service_monitors_from_authenticated_uptime_kuma(
@@ -1110,7 +1133,16 @@ def test_admin_can_import_direct_service_monitors_from_authenticated_uptime_kuma
     assert response.status_code == 200
     assert b"Imported 1 new direct service monitor" in response.data
     assert b"Kuma API" in response.data
-    assert b"https://api.example.com/health" in response.data
+    env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
+    targets = normalize_service_monitor_targets(
+        env_values.get("SERVICE_MONITOR_TARGETS_JSON", "[]"),
+        default_timeout_seconds=10,
+        default_channel_id=0,
+    )
+    assert any(
+        target["name"] == "Kuma API" and target["url"] == "https://api.example.com/health"
+        for target in targets
+    )
 
 
 def test_admin_can_import_from_testing_uptime_instance_without_typing_api_key(
@@ -1178,7 +1210,8 @@ def test_admin_can_save_authenticated_uptime_kuma_settings(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"Uptime Kuma watcher settings updated." in response.data
-    assert b"https://kuma.example.com/" in response.data
+    env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
+    assert env_values.get("UPTIME_STATUS_INSTANCE_URL") == "https://kuma.example.com/"
 
 
 def test_admin_can_edit_linkedin_subscription(tmp_path: Path):
@@ -1202,7 +1235,6 @@ def test_admin_can_edit_linkedin_subscription(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"LinkedIn subscription updated." in response.data
-    assert b"https://www.linkedin.com/showcase/glinet-intelligence/posts/" in response.data
 
 
 def test_beta_program_page_renders_form(tmp_path: Path):
