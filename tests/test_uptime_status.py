@@ -1,4 +1,5 @@
 from app.uptime_status import (
+    UptimeStatusAuthError,
     build_uptime_api_urls,
     build_uptime_instance_urls,
     build_uptime_source_config,
@@ -8,6 +9,7 @@ from app.uptime_status import (
     fetch_uptime_snapshot,
     format_uptime_summary,
     parse_uptime_metrics_snapshot,
+    raise_uptime_http_error,
 )
 
 
@@ -163,3 +165,22 @@ monitor_status{monitor_name="DNS",monitor_url="null",monitor_hostname="resolver.
     assert extracted["targets"][0]["url"] == "https://www.example.com"
     assert extracted["targets"][0]["guild_id"] == 1234567890
     assert len(extracted["skipped"]) == 1
+
+
+def test_raise_uptime_http_error_reports_missing_auth_configuration():
+    try:
+        raise_uptime_http_error(401, api_key_present=False)
+    except UptimeStatusAuthError as exc:
+        assert "requires authentication" in str(exc)
+        assert "UPTIME_STATUS_API_KEY" in str(exc)
+    else:
+        raise AssertionError("Expected UptimeStatusAuthError for 401 without API key")
+
+
+def test_raise_uptime_http_error_reports_rejected_credentials():
+    try:
+        raise_uptime_http_error(401, api_key_present=True)
+    except UptimeStatusAuthError as exc:
+        assert "rejected the configured credentials" in str(exc)
+    else:
+        raise AssertionError("Expected UptimeStatusAuthError for 401 with API key")
