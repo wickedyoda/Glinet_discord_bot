@@ -90,11 +90,11 @@ def test_build_glinet_domain_monitor_targets_contains_expected_domains():
         timeout_seconds=10,
     )
 
-    urls = {target["url"] for target in targets}
+    names = {target["name"] for target in targets}
     assert len(targets) == 17
-    assert "https://gl-inet.com/" in urls
-    assert "https://glddns.com/" in urls
-    assert "https://docs.astrowarp.net/" in urls
+    assert "GL.iNet Core: gl-inet.com" in names
+    assert "Cloud: glddns.com" in names
+    assert "Ecosystem: docs.astrowarp.net" in names
 
 
 def test_merge_service_monitor_targets_dedupes_by_guild_and_url():

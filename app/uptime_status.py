@@ -11,7 +11,6 @@ TEST_DEFAULT_UPTIME_API_KEY = "uk1_8F5mp7aFThP-bookSOOWQLUWfcVNmHpv5UjdSyZz"
 PROMETHEUS_METRIC_LINE_PATTERN = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([^\s]+)(?:\s+([^\s]+))?$"
 )
-PROMETHEUS_LABEL_PATTERN = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
 
 
 class UptimeStatusAuthError(RuntimeError):
@@ -130,8 +129,59 @@ def _decode_prometheus_label_value(raw_value: str):
 
 def _parse_prometheus_labels(raw_labels: str):
     labels = {}
-    for match in PROMETHEUS_LABEL_PATTERN.finditer(str(raw_labels or "")):
-        labels[match.group(1)] = _decode_prometheus_label_value(match.group(2))
+    text = str(raw_labels or "")
+    length = len(text)
+    index = 0
+
+    while index < length:
+        while index < length and text[index] in {" ", ","}:
+            index += 1
+        if index >= length:
+            break
+
+        key_start = index
+        if not (text[index].isalpha() or text[index] == "_"):
+            break
+        index += 1
+        while index < length and (text[index].isalnum() or text[index] == "_"):
+            index += 1
+        key = text[key_start:index]
+        if not key:
+            break
+
+        if index >= length or text[index] != "=":
+            break
+        index += 1
+        if index >= length or text[index] != '"':
+            break
+        index += 1
+
+        value_parts: list[str] = []
+        while index < length:
+            char = text[index]
+            if char == "\\":
+                if index + 1 >= length:
+                    value_parts.append("\\")
+                    index += 1
+                    break
+                value_parts.append(char)
+                value_parts.append(text[index + 1])
+                index += 2
+                continue
+            if char == '"':
+                index += 1
+                break
+            value_parts.append(char)
+            index += 1
+        else:
+            break
+
+        labels[key] = _decode_prometheus_label_value("".join(value_parts))
+
+        while index < length and text[index] == " ":
+            index += 1
+        if index < length and text[index] == ",":
+            index += 1
     return labels
 
 
