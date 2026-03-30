@@ -18,12 +18,13 @@ RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs
 # Install dependencies
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir --upgrade \
+    --root-user-action=ignore \
     pip \
     "setuptools>=78.1.1" \
     "cryptography>=46.0.5" \
     "wheel>=0.46.2" \
     "jaraco.context>=6.1.0" \
-  && python -m pip install --no-cache-dir -r requirements.txt
+  && python -m pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
 
 # Copy the bot code and env files into the container
 COPY . .

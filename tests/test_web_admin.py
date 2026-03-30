@@ -1,4 +1,6 @@
+import os
 import re
+import time
 import zipfile
 from io import BytesIO
 from pathlib import Path
@@ -471,6 +473,20 @@ def _make_app(tmp_path: Path):
             "excluded_role_ids": [],
             "excluded_role_names": ["Employee", "Admin", "Gl.iNet Moderator"],
             "windows": [
+                {
+                    "key": "last_180_days",
+                    "label": "Last 180 Days",
+                    "members": [
+                        {
+                            "rank": 1,
+                            "display_name": "Tester",
+                            "username": "tester",
+                            "message_count": 456,
+                            "active_days": 42,
+                            "last_message_at": "2026-03-15T00:00:00+00:00",
+                        }
+                    ],
+                },
                 {
                     "key": "last_90_days",
                     "label": "Last 90 Days",
@@ -1363,6 +1379,7 @@ def test_member_activity_page_renders_tables(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"Member Activity" in response.data
+    assert b"Last 180 Days" in response.data
     assert b"Last 90 Days" in response.data
     assert b"Tester" in response.data
     assert b"Download Activity Export" in response.data
@@ -2211,3 +2228,24 @@ def test_admin_logs_export_downloads_zip(tmp_path: Path, monkeypatch):
         assert "web_gui_audit.log" in names
         assert "manifest.txt" in names
         assert archive.read("bot.log").decode("utf-8") == "bot runtime\n"
+
+
+def test_admin_logs_export_prunes_old_archives(tmp_path: Path, monkeypatch):
+    log_dir = tmp_path / "logs"
+    export_dir = log_dir / "exports"
+    export_dir.mkdir(parents=True)
+    stale_export = export_dir / "discord_bot_logs_20260301T000000Z.zip"
+    stale_export.write_bytes(b"old export")
+    old_timestamp = time.time() - (48 * 3600)
+    os.utime(stale_export, (old_timestamp, old_timestamp))
+    (log_dir / "bot.log").write_text("bot runtime\n", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(log_dir))
+
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    response = client.get("/admin/logs/export", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert not stale_export.exists()
