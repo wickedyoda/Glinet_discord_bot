@@ -1,11 +1,13 @@
 import base64
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import ssl
 import subprocess  # nosec B404
 import threading
@@ -17,7 +19,7 @@ from functools import wraps
 from html import escape
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 import requests
 from croniter import croniter
@@ -142,6 +144,7 @@ OBSERVABILITY_HISTORY_RETENTION_HOURS = 24
 OBSERVABILITY_HISTORY_SAMPLE_SECONDS = 60
 LOG_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 LOG_SECRET_PATTERN = re.compile(r"(?i)\b(discord_token|token|password|authorization|cookie|secret)\b\s*[:=]\s*([^\s,;]+)")
+SAFE_OUTBOUND_MAX_REDIRECTS = 3
 INT_KEYS = {
     "GUILD_ID",
     "BOT_LOG_CHANNEL_ID",
@@ -1761,6 +1764,226 @@ def _render_fixed_select_input(name: str, selected_value: str, options: list[dic
     if selected and selected not in seen:
         rows.append(f"<option value='{escape(selected, quote=True)}' selected>Current value: {escape(selected)}</option>")
     return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
+
+
+def _extract_hostname_from_value(value: str):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text if "://" in text else f"//{text}")
+    return str(parsed.hostname or "").strip().lower()
+
+
+def _is_private_or_local_ip(raw_value: str):
+    ip_value = ipaddress.ip_address(str(raw_value or "").strip())
+    return (
+        ip_value.is_loopback
+        or ip_value.is_private
+        or ip_value.is_link_local
+        or ip_value.is_multicast
+        or ip_value.is_reserved
+        or ip_value.is_unspecified
+    )
+
+
+def _validate_safe_outbound_url(url: str, *, field_name: str = "URL"):
+    normalized = str(url or "").strip()
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must start with http:// or https://.")
+
+    hostname = _extract_hostname_from_value(normalized)
+    if not hostname:
+        raise ValueError(f"{field_name} is missing a hostname.")
+    if hostname == "localhost" or hostname.endswith(".local") or "." not in hostname:
+        raise ValueError(f"{field_name} must not target localhost or a private host.")
+
+    try:
+        if _is_private_or_local_ip(hostname):
+            raise ValueError(f"{field_name} must not resolve to a private or local address.")
+        return normalized
+    except ValueError as err:
+        try:
+            address_info = socket.getaddrinfo(hostname, parsed.port or None, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError(f"{field_name} hostname could not be resolved.") from exc
+
+        resolved_ips = set()
+        for entry in address_info:
+            sockaddr = entry[4]
+            if not sockaddr:
+                continue
+            ip_text = str(sockaddr[0] or "").strip()
+            if not ip_text:
+                continue
+            resolved_ips.add(ip_text)
+        if not resolved_ips:
+            raise ValueError(f"{field_name} hostname could not be resolved.") from err
+        if any(_is_private_or_local_ip(ip_text) for ip_text in resolved_ips):
+            raise ValueError(f"{field_name} must not resolve to a private or local address.") from err
+        return normalized
+
+
+def _resolve_public_ip_for_hostname(hostname: str, port: int | None):
+    try:
+        address_info = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("Outbound URL hostname could not be resolved.") from exc
+
+    public_ip = ""
+    for entry in address_info:
+        sockaddr = entry[4]
+        if not sockaddr:
+            continue
+        ip_text = str(sockaddr[0] or "").strip()
+        if not ip_text:
+            continue
+        if _is_private_or_local_ip(ip_text):
+            raise ValueError("Outbound URL must not resolve to a private or local address.")
+        if not public_ip:
+            public_ip = ip_text
+    if not public_ip:
+        raise ValueError("Outbound URL hostname could not be resolved.")
+    return public_ip
+
+
+class _FixedHostHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, connect_host: str, request_host: str, **kwargs):
+        self._connect_host = connect_host
+        super().__init__(request_host, **kwargs)
+
+    def connect(self):
+        self.sock = self._create_connection(
+            (self._connect_host, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _FixedHostHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, connect_host: str, request_host: str, **kwargs):
+        self._connect_host = connect_host
+        self._request_host = request_host
+        super().__init__(request_host, **kwargs)
+
+    def connect(self):
+        sock = self._create_connection(
+            (self._connect_host, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        self.sock = self._context.wrap_socket(sock, server_hostname=self._request_host)
+
+
+class _SafeOutboundResponse:
+    def __init__(self, *, url: str, status_code: int, reason: str, headers: dict[str, str], body: bytes):
+        self.url = url
+        self.status_code = int(status_code)
+        self.reason = str(reason or "")
+        self.headers = headers
+        self._body = body
+
+    @property
+    def text(self):
+        return self._body.decode("utf-8", errors="replace")
+
+    def json(self):
+        return json.loads(self.text)
+
+    @property
+    def is_redirect(self):
+        return self.status_code in {301, 302, 303, 307, 308}
+
+    @property
+    def is_permanent_redirect(self):
+        return self.status_code in {301, 308}
+
+    def raise_for_status(self):
+        if 400 <= self.status_code:
+            raise requests.HTTPError(
+                f"{self.status_code} {self.reason}".strip(),
+                response=self,
+            )
+
+
+def _perform_safe_outbound_get(url: str, *, headers: dict[str, str], timeout: int, verify_tls: bool = True):
+    parsed = urlparse(url)
+    hostname = str(parsed.hostname or "").strip()
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not hostname:
+        raise ValueError("Outbound URL is missing a hostname.")
+
+    connect_ip = _resolve_public_ip_for_hostname(hostname, port)
+    request_target = parsed.path or "/"
+    if parsed.query:
+        request_target += f"?{parsed.query}"
+
+    request_headers = dict(headers)
+    request_headers["Host"] = parsed.netloc
+
+    connection_kwargs = {"timeout": timeout}
+    if parsed.scheme == "https":
+        # This branch preserves the existing admin-controlled "verify TLS" toggle.
+        ssl_context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()  # nosec B323
+        connection = _FixedHostHTTPSConnection(
+            connect_ip,
+            hostname,
+            port=port,
+            context=ssl_context,
+            **connection_kwargs,
+        )
+    else:
+        connection = _FixedHostHTTPConnection(
+            connect_ip,
+            hostname,
+            port=port,
+            **connection_kwargs,
+        )
+
+    try:
+        connection.request("GET", request_target, headers=request_headers)
+        raw_response = connection.getresponse()
+        body = raw_response.read()
+    except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+        raise requests.RequestException(f"Outbound request failed: {exc}") from exc
+    finally:
+        connection.close()
+
+    return _SafeOutboundResponse(
+        url=url,
+        status_code=raw_response.status,
+        reason=raw_response.reason,
+        headers={str(key): str(value) for key, value in raw_response.headers.items()},
+        body=body,
+    )
+
+
+def _safe_outbound_get(url: str, *, headers: dict[str, str], timeout: int, verify_tls: bool = True):
+    current_url = _validate_safe_outbound_url(url, field_name="Outbound URL")
+    for _redirect_count in range(SAFE_OUTBOUND_MAX_REDIRECTS + 1):
+        response = _perform_safe_outbound_get(
+            current_url,
+            timeout=timeout,
+            verify_tls=verify_tls,
+            headers=headers,
+        )
+        if response.is_redirect or response.is_permanent_redirect:
+            location = str(response.headers.get("Location") or "").strip()
+            if not location:
+                return response
+            current_url = _validate_safe_outbound_url(
+                urljoin(current_url, location),
+                field_name="Redirect URL",
+            )
+            continue
+        return response
+    raise ValueError("Outbound request exceeded the maximum redirect limit.")
 
 
 def _render_multi_select_input(name: str, selected_values, options: list[dict], size: int = 8):
@@ -6016,10 +6239,10 @@ def create_web_app(
         fallback_env_file = _env_fallback_file_path(data_dir)
 
         def _fetch_json_url(url: str, *, verify_tls: bool = True):
-            response = requests.get(
+            response = _safe_outbound_get(
                 str(url or "").strip(),
                 timeout=15,
-                verify=verify_tls,
+                verify_tls=verify_tls,
                 headers={
                     "User-Agent": "glinet-discord-bot-web-admin/1.0",
                     "Accept": "application/json",
@@ -6047,10 +6270,10 @@ def create_web_app(
                 ]
             last_response = None
             for auth_headers in auth_variants:
-                response = requests.get(
+                response = _safe_outbound_get(
                     str(url or "").strip(),
                     timeout=15,
-                    verify=verify_tls,
+                    verify_tls=verify_tls,
                     headers={**request_headers, **auth_headers},
                 )
                 last_response = response

@@ -1098,6 +1098,33 @@ def test_admin_can_import_direct_service_monitors_from_uptime_kuma(tmp_path: Pat
     )
 
 
+def test_admin_cannot_import_uptime_targets_from_private_host(tmp_path: Path, monkeypatch):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    def fail_requests_get(*args, **kwargs):
+        raise AssertionError("requests.get should not be reached for blocked private hosts")
+
+    monkeypatch.setattr(web_admin.requests, "get", fail_requests_get)
+
+    response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "import_uptime_targets",
+            "uptime_import_page_url": "http://127.0.0.1/status/default",
+            "uptime_import_channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"must not resolve to a private or local address" in response.data
+
+
 def test_admin_can_import_direct_service_monitors_from_authenticated_uptime_kuma(
     tmp_path: Path,
     monkeypatch,
@@ -1143,6 +1170,35 @@ def test_admin_can_import_direct_service_monitors_from_authenticated_uptime_kuma
         target["name"] == "Kuma API" and target["url"] == "https://api.example.com/health"
         for target in targets
     )
+
+
+def test_admin_cannot_import_authenticated_uptime_targets_from_private_host(tmp_path: Path, monkeypatch):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    def fail_requests_get(*args, **kwargs):
+        raise AssertionError("requests.get should not be reached for blocked private hosts")
+
+    monkeypatch.setattr(web_admin.requests, "get", fail_requests_get)
+
+    response = client.post(
+        "/admin/service-monitors",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "action": "import_uptime_instance_targets",
+            "uptime_import_instance_url": "http://127.0.0.1/",
+            "uptime_import_api_key": "secret",
+            "uptime_import_verify_tls": "true",
+            "uptime_import_channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"must not resolve to a private or local address" in response.data
 
 
 def test_admin_can_import_from_testing_uptime_instance_without_typing_api_key(
