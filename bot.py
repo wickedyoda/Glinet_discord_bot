@@ -71,7 +71,7 @@ from app.service_monitor import (
     normalize_service_monitor_targets,
     run_service_monitor_check,
 )
-from app.uptime_status import build_uptime_source_config, default_uptime_api_key
+from app.uptime_status import UptimeStatusAuthError, build_uptime_source_config, default_uptime_api_key, raise_uptime_http_error
 from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
 from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
@@ -6769,8 +6769,8 @@ def _uptime_request_auth_variants(api_key: str):
 
 def uptime_request_text(url: str, *, api_key: str = ""):
     last_status = 0
-    last_error = ""
     auth_variants = _uptime_request_auth_variants(api_key)
+    api_key_present = bool(str(api_key or "").strip())
     for auth_headers in auth_variants:
         try:
             with warnings.catch_warnings():
@@ -6791,16 +6791,13 @@ def uptime_request_text(url: str, *, api_key: str = ""):
             raise RuntimeError(f"Request failed: {exc}") from exc
 
         last_status = int(response.status_code)
-        if last_status == 401 and str(api_key or "").strip() and auth_headers is not auth_variants[-1]:
-            last_error = "Uptime endpoint rejected the provided credentials."
+        if last_status == 401 and api_key_present and auth_headers is not auth_variants[-1]:
             continue
         if last_status >= 400:
-            raise RuntimeError(f"Uptime endpoint returned HTTP {last_status}.")
+            raise_uptime_http_error(last_status, api_key_present=api_key_present)
         return response.text
 
-    if last_error:
-        raise RuntimeError(last_error)
-    raise RuntimeError(f"Uptime endpoint returned HTTP {last_status}.")
+    raise_uptime_http_error(last_status, api_key_present=api_key_present)
 
 
 def fetch_uptime_snapshot():
@@ -6981,6 +6978,13 @@ async def uptime_status_monitor_loop():
     )
     try:
         await check_uptime_status_once()
+    except UptimeStatusAuthError as exc:
+        logger.error(
+            "Initial uptime status monitor check failed: %s "
+            "The monitor will stay idle until the Uptime configuration is corrected and reloaded.",
+            exc,
+        )
+        return
     except Exception:
         logger.exception("Initial uptime status monitor check failed")
 
@@ -6992,6 +6996,13 @@ async def uptime_status_monitor_loop():
         await asyncio.sleep(wait_seconds)
         try:
             await check_uptime_status_once()
+        except UptimeStatusAuthError as exc:
+            logger.error(
+                "Uptime status monitor stopped: %s "
+                "The monitor will stay idle until the Uptime configuration is corrected and reloaded.",
+                exc,
+            )
+            return
         except Exception:
             logger.exception("Uptime status monitor check failed")
 
