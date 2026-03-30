@@ -1,5 +1,7 @@
 from app.service_monitor import (
+    build_glinet_domain_monitor_targets,
     format_service_monitor_transition_message,
+    merge_service_monitor_targets,
     normalize_service_monitor_targets,
     run_service_monitor_check,
     serialize_service_monitor_targets,
@@ -79,3 +81,67 @@ def test_serialize_service_monitor_targets_preserves_guild_scope():
         default_channel_id=0,
     )
     assert normalized[0]["guild_id"] == 1234567890
+
+
+def test_build_glinet_domain_monitor_targets_contains_expected_domains():
+    targets = build_glinet_domain_monitor_targets(
+        guild_id=1234567890,
+        channel_id=9999,
+        timeout_seconds=10,
+    )
+
+    urls = {target["url"] for target in targets}
+    assert len(targets) == 17
+    assert "https://gl-inet.com/" in urls
+    assert "https://glddns.com/" in urls
+    assert "https://docs.astrowarp.net/" in urls
+
+
+def test_merge_service_monitor_targets_dedupes_by_guild_and_url():
+    result = merge_service_monitor_targets(
+        [
+            {
+                "id": "one",
+                "guild_id": 1234567890,
+                "name": "GL.iNet Core: gl-inet.com",
+                "url": "https://gl-inet.com/",
+                "method": "GET",
+                "expected_status": 200,
+                "contains_text": "",
+                "timeout_seconds": 10,
+                "channel_id": 9999,
+            },
+            {
+                "id": "duplicate",
+                "guild_id": 1234567890,
+                "name": "Duplicate",
+                "url": "https://gl-inet.com/",
+                "method": "GET",
+                "expected_status": 200,
+                "contains_text": "",
+                "timeout_seconds": 10,
+                "channel_id": 9999,
+            },
+        ],
+        [
+            {
+                "id": "incoming",
+                "guild_id": 1234567890,
+                "name": "Updated GL.iNet Core",
+                "url": "https://gl-inet.com/",
+                "method": "GET",
+                "expected_status": 200,
+                "contains_text": "",
+                "timeout_seconds": 15,
+                "channel_id": 7777,
+            }
+        ],
+    )
+
+    assert result["added"] == 0
+    assert result["updated"] == 1
+    assert result["deduped"] == 1
+    assert len(result["targets"]) == 1
+    assert result["targets"][0]["id"] == "one"
+    assert result["targets"][0]["channel_id"] == 7777
+    assert result["targets"][0]["timeout_seconds"] == 15

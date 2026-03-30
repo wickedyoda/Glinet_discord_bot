@@ -1,8 +1,13 @@
 from app.uptime_status import (
     build_uptime_api_urls,
+    build_uptime_instance_urls,
+    build_uptime_source_config,
+    default_uptime_api_key,
     extract_service_monitor_targets_from_uptime_config,
+    extract_service_monitor_targets_from_uptime_metrics,
     fetch_uptime_snapshot,
     format_uptime_summary,
+    parse_uptime_metrics_snapshot,
 )
 
 
@@ -95,4 +100,66 @@ def test_extract_service_monitor_targets_from_uptime_config_skips_entries_withou
     assert extracted["targets"][0]["guild_id"] == 1234567890
     assert extracted["targets"][0]["channel_id"] == 9999
     assert extracted["targets"][0]["url"] == "https://api.example.com/health"
+    assert len(extracted["skipped"]) == 1
+
+
+def test_build_uptime_instance_urls_normalizes_dashboard_path():
+    urls = build_uptime_instance_urls("https://kuma.example.com/dashboard")
+
+    assert urls["instance_url"] == "https://kuma.example.com"
+    assert urls["metrics_url"] == "https://kuma.example.com/metrics"
+
+
+def test_build_uptime_source_config_prefers_authenticated_instance():
+    config = build_uptime_source_config(
+        page_url="https://status.example.com/status/default",
+        instance_url="https://kuma.example.com/",
+        api_key="secret",
+    )
+
+    assert config["mode"] == "metrics"
+    assert config["instance_url"] == "https://kuma.example.com"
+    assert config["api_key"] == "secret"
+
+
+def test_default_uptime_api_key_only_applies_to_testing_instance():
+    assert default_uptime_api_key("https://randy.wickedyoda.com/") == "uk1_8F5mp7aFThP-bookSOOWQLUWfcVNmHpv5UjdSyZz"
+    assert default_uptime_api_key("https://status.example.com/") == ""
+
+
+def test_parse_uptime_metrics_snapshot_summarizes_monitor_statuses():
+    metrics_text = """
+# HELP monitor_status Monitor status
+# TYPE monitor_status gauge
+monitor_status{monitor_name="Website",monitor_url="https://www.example.com",monitor_hostname="null",monitor_port="null"} 1
+monitor_status{monitor_name="API",monitor_url="https://api.example.com/health",monitor_hostname="null",monitor_port="null"} 0
+"""
+
+    snapshot = parse_uptime_metrics_snapshot(
+        metrics_text,
+        source_url="https://kuma.example.com",
+    )
+
+    assert snapshot["title"] == "Uptime Kuma"
+    assert snapshot["total"] == 2
+    assert snapshot["counts"]["up"] == 1
+    assert snapshot["counts"]["down"] == 1
+    assert snapshot["down_monitors"] == ["API"]
+
+
+def test_extract_service_monitor_targets_from_uptime_metrics_skips_entries_without_public_urls():
+    extracted = extract_service_monitor_targets_from_uptime_metrics(
+        """
+monitor_status{monitor_name="Website",monitor_url="https://www.example.com",monitor_hostname="null",monitor_port="null"} 1
+monitor_status{monitor_name="DNS",monitor_url="null",monitor_hostname="resolver.internal",monitor_port="53"} 1
+""",
+        guild_id=1234567890,
+        channel_id=9999,
+        timeout_seconds=12,
+    )
+
+    assert len(extracted["targets"]) == 1
+    assert extracted["targets"][0]["name"] == "Website"
+    assert extracted["targets"][0]["url"] == "https://www.example.com"
+    assert extracted["targets"][0]["guild_id"] == 1234567890
     assert len(extracted["skipped"]) == 1
