@@ -14,6 +14,25 @@ PROMETHEUS_METRIC_LINE_PATTERN = re.compile(
 PROMETHEUS_LABEL_PATTERN = re.compile(r'([a-zA-Z_][a-zA-Z0-9_]*)="((?:[^"\\]|\\.)*)"')
 
 
+class UptimeStatusAuthError(RuntimeError):
+    """Raised when the configured Uptime Kuma endpoint rejects authentication."""
+
+
+def raise_uptime_http_error(status_code: int, *, api_key_present: bool = False):
+    status = int(status_code or 0)
+    if status == 401:
+        if api_key_present:
+            raise UptimeStatusAuthError(
+                "Uptime endpoint rejected the configured credentials (HTTP 401). "
+                "Check UPTIME_STATUS_API_KEY or the Uptime Kuma auth configuration."
+            )
+        raise UptimeStatusAuthError(
+            "Uptime endpoint requires authentication (HTTP 401). "
+            "Configure UPTIME_STATUS_API_KEY for the Uptime Kuma instance."
+        )
+    raise RuntimeError(f"Uptime endpoint returned HTTP {status}.")
+
+
 def _status_label(status_code: int):
     return {0: "down", 1: "up", 2: "pending", 3: "maintenance"}.get(status_code, "unknown")
 
