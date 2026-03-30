@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import ssl
 import subprocess  # nosec B404
 import threading
@@ -142,6 +143,7 @@ OBSERVABILITY_HISTORY_RETENTION_HOURS = 24
 OBSERVABILITY_HISTORY_SAMPLE_SECONDS = 60
 LOG_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 LOG_SECRET_PATTERN = re.compile(r"(?i)\b(discord_token|token|password|authorization|cookie|secret)\b\s*[:=]\s*([^\s,;]+)")
+SAFE_OUTBOUND_MAX_REDIRECTS = 3
 INT_KEYS = {
     "GUILD_ID",
     "BOT_LOG_CHANNEL_ID",
@@ -1761,6 +1763,87 @@ def _render_fixed_select_input(name: str, selected_value: str, options: list[dic
     if selected and selected not in seen:
         rows.append(f"<option value='{escape(selected, quote=True)}' selected>Current value: {escape(selected)}</option>")
     return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
+
+
+def _extract_hostname_from_value(value: str):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text if "://" in text else f"//{text}")
+    return str(parsed.hostname or "").strip().lower()
+
+
+def _is_private_or_local_ip(raw_value: str):
+    ip_value = ipaddress.ip_address(str(raw_value or "").strip())
+    return (
+        ip_value.is_loopback
+        or ip_value.is_private
+        or ip_value.is_link_local
+        or ip_value.is_multicast
+        or ip_value.is_reserved
+        or ip_value.is_unspecified
+    )
+
+
+def _validate_safe_outbound_url(url: str, *, field_name: str = "URL"):
+    normalized = str(url or "").strip()
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must start with http:// or https://.")
+
+    hostname = _extract_hostname_from_value(normalized)
+    if not hostname:
+        raise ValueError(f"{field_name} is missing a hostname.")
+    if hostname == "localhost" or hostname.endswith(".local") or "." not in hostname:
+        raise ValueError(f"{field_name} must not target localhost or a private host.")
+
+    try:
+        if _is_private_or_local_ip(hostname):
+            raise ValueError(f"{field_name} must not resolve to a private or local address.")
+        return normalized
+    except ValueError as err:
+        try:
+            address_info = socket.getaddrinfo(hostname, parsed.port or None, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError(f"{field_name} hostname could not be resolved.") from exc
+
+        resolved_ips = set()
+        for entry in address_info:
+            sockaddr = entry[4]
+            if not sockaddr:
+                continue
+            ip_text = str(sockaddr[0] or "").strip()
+            if not ip_text:
+                continue
+            resolved_ips.add(ip_text)
+        if not resolved_ips:
+            raise ValueError(f"{field_name} hostname could not be resolved.") from err
+        if any(_is_private_or_local_ip(ip_text) for ip_text in resolved_ips):
+            raise ValueError(f"{field_name} must not resolve to a private or local address.") from err
+        return normalized
+
+
+def _safe_outbound_get(url: str, *, headers: dict[str, str], timeout: int, verify_tls: bool = True):
+    current_url = _validate_safe_outbound_url(url, field_name="Outbound URL")
+    for _redirect_count in range(SAFE_OUTBOUND_MAX_REDIRECTS + 1):
+        response = requests.get(
+            current_url,
+            timeout=timeout,
+            verify=verify_tls,
+            headers=headers,
+            allow_redirects=False,
+        )
+        if response.is_redirect or response.is_permanent_redirect:
+            location = str(response.headers.get("Location") or "").strip()
+            if not location:
+                return response
+            current_url = _validate_safe_outbound_url(
+                requests.compat.urljoin(current_url, location),
+                field_name="Redirect URL",
+            )
+            continue
+        return response
+    raise ValueError("Outbound request exceeded the maximum redirect limit.")
 
 
 def _render_multi_select_input(name: str, selected_values, options: list[dict], size: int = 8):
@@ -6016,10 +6099,10 @@ def create_web_app(
         fallback_env_file = _env_fallback_file_path(data_dir)
 
         def _fetch_json_url(url: str, *, verify_tls: bool = True):
-            response = requests.get(
+            response = _safe_outbound_get(
                 str(url or "").strip(),
                 timeout=15,
-                verify=verify_tls,
+                verify_tls=verify_tls,
                 headers={
                     "User-Agent": "glinet-discord-bot-web-admin/1.0",
                     "Accept": "application/json",
@@ -6047,10 +6130,10 @@ def create_web_app(
                 ]
             last_response = None
             for auth_headers in auth_variants:
-                response = requests.get(
+                response = _safe_outbound_get(
                     str(url or "").strip(),
                     timeout=15,
-                    verify=verify_tls,
+                    verify_tls=verify_tls,
                     headers={**request_headers, **auth_headers},
                 )
                 last_response = response
