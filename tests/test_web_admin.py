@@ -1639,7 +1639,8 @@ def test_settings_fallback_env_file_excludes_sensitive_keys(tmp_path: Path, monk
     )
 
     assert response.status_code == 200
-    assert b"Sensitive settings were not written to the fallback env file" in response.data
+    assert b"Settings saved to fallback env file" in response.data
+    assert b"Sensitive settings were not written to the fallback env file" not in response.data
     fallback_env = tmp_path / "web-settings.env"
     fallback_text = fallback_env.read_text()
     assert "DISCORD_TOKEN=" not in fallback_text

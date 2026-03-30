@@ -6160,11 +6160,6 @@ def create_web_app(
             os.environ["WEB_ENV_FILE"] = str(saved_env_file)
             if callable(on_env_settings_saved):
                 on_env_settings_saved({**applied_updates, "WEB_ENV_FILE": str(saved_env_file)})
-            if skipped_keys:
-                flash(
-                    "Sensitive settings were not written to the fallback env file.",
-                    "warning",
-                )
             if saved_env_file != env_file:
                 flash(
                     f"Monitor settings saved to fallback env file {saved_env_file}.",
@@ -7275,12 +7270,6 @@ def create_web_app(
                             f"Settings saved to fallback env file {saved_env_file} and applied where supported.",
                             "success",
                         )
-                        if skipped_keys:
-                            flash(
-                                "Sensitive settings were not written to the fallback env file: "
-                                + ", ".join(skipped_keys),
-                                "warning",
-                            )
                     else:
                         flash(f"Settings saved to {env_file} and applied where supported.", "success")
                     file_values = _load_effective_env_values(env_file, fallback_env_file)
