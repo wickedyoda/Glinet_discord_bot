@@ -661,6 +661,7 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 OPENWRT_FORUM_BASE_URL = "https://forum.openwrt.org"
 OPENWRT_FORUM_MAX_RESULTS = 10
 REDDIT_BASE_URL = "https://www.reddit.com"
+REDDIT_FALLBACK_BASE_URL = "https://old.reddit.com"
 REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(os.getenv("REDDIT_SUBREDDIT", "GlInet"), fallback_value="GlInet")
 REDDIT_MAX_RESULTS = 5
 REDDIT_FEED_NOTIFY_ENABLED = is_truthy_env_value(
@@ -9225,14 +9226,9 @@ def search_openwrt_forum_links(query: str):
 
 
 def search_reddit_posts(query: str):
-    request_headers = {
-        "Accept": "application/json,text/plain,*/*",
-        "User-Agent": REDDIT_REQUEST_USER_AGENT,
-    }
     try:
-        search_endpoint = f"{REDDIT_BASE_URL}/r/{REDDIT_SUBREDDIT}/search.json"
-        response = requests.get(
-            search_endpoint,
+        data = fetch_reddit_json(
+            f"/r/{REDDIT_SUBREDDIT}/search.json",
             params={
                 "q": query,
                 "sort": "relevance",
@@ -9241,11 +9237,8 @@ def search_reddit_posts(query: str):
                 "raw_json": 1,
                 "restrict_sr": 1,
             },
-            timeout=10,
-            headers=request_headers,
+            timeout_seconds=10,
         )
-        response.raise_for_status()
-        data = response.json()
     except requests.HTTPError as exc:
         status_code = getattr(exc.response, "status_code", None)
         if status_code == 429:
@@ -9287,22 +9280,49 @@ def search_reddit_posts(query: str):
     return posts, ""
 
 
+def fetch_reddit_json(path: str, *, params: dict, timeout_seconds: int = 10):
+    normalized_path = "/" + str(path or "").lstrip("/")
+    request_headers = {
+        "Accept": "application/json,text/plain,*/*",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
+    }
+    last_http_error = None
+    for index, base_url in enumerate((REDDIT_BASE_URL, REDDIT_FALLBACK_BASE_URL)):
+        response = requests.get(
+            f"{base_url}{normalized_path}",
+            params=params,
+            timeout=timeout_seconds,
+            headers=request_headers,
+        )
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            last_http_error = exc
+            if status_code == 403 and index == 0:
+                logger.warning(
+                    "Reddit endpoint %s returned HTTP 403 for %s; retrying fallback endpoint.",
+                    base_url,
+                    normalized_path,
+                )
+                continue
+            raise
+        return response.json()
+    if last_http_error is not None:
+        raise last_http_error
+    raise RuntimeError(f"Reddit request failed for {normalized_path}.")
+
+
 def fetch_reddit_subreddit_new_posts(subreddit: str):
     cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold()
     if not cleaned_subreddit:
         raise LookupError("Invalid subreddit.")
 
-    response = requests.get(
-        f"{REDDIT_BASE_URL}/r/{cleaned_subreddit}/new.json",
+    data = fetch_reddit_json(
+        f"/r/{cleaned_subreddit}/new.json",
         params={"limit": REDDIT_FEED_FETCH_LIMIT, "raw_json": 1},
-        timeout=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
-        headers={
-            "Accept": "application/json,text/plain,*/*",
-            "User-Agent": REDDIT_REQUEST_USER_AGENT,
-        },
+        timeout_seconds=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
     )
-    response.raise_for_status()
-    data = response.json()
     children = ((data or {}).get("data") or {}).get("children", [])
     if not isinstance(children, list):
         children = []
