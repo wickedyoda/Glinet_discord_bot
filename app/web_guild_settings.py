@@ -57,7 +57,6 @@ def process_guild_settings_submission(
     upload_valid = True
     payload = {
         "bot_log_channel_id": form.get("bot_log_channel_id", ""),
-        "mod_log_channel_id": form.get("mod_log_channel_id", ""),
         "firmware_notify_channel_id": form.get("firmware_notify_channel_id", ""),
         "firmware_monitor_enabled": -1 if not form.get("firmware_monitor_enabled__override") else (1 if form.get("firmware_monitor_enabled") else 0),
         "reddit_feed_notify_enabled": -1 if not form.get("reddit_feed_notify_enabled__override") else (1 if form.get("reddit_feed_notify_enabled") else 0),
@@ -170,12 +169,6 @@ def render_guild_settings_body(
         text_channel_options,
         placeholder="Use global fallback",
     )
-    mod_log_select = render_select_input(
-        "mod_log_channel_id",
-        str(current_settings.get("mod_log_channel_id") or ""),
-        text_channel_options,
-        placeholder="Use global fallback",
-    )
     firmware_select = render_select_input(
         "firmware_notify_channel_id",
         str(current_settings.get("firmware_notify_channel_id") or ""),
@@ -241,13 +234,6 @@ def render_guild_settings_body(
                   <td><strong>Bot Log Channel</strong><div class="muted mono">bot_log_channel_id</div></td>
                   <td>{bot_log_select}</td>
                   <td class="muted mono">{escape(str(effective_settings.get("bot_log_channel_id") or "")) or "Use global default"}</td>
-                </tr>
-                """,
-        f"""
-                <tr>
-                  <td><strong>Moderation Log Channel</strong><div class="muted mono">mod_log_channel_id</div></td>
-                  <td>{mod_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("mod_log_channel_id") or "")) or "Use global default"}</td>
                 </tr>
                 """,
         f"""
@@ -390,7 +376,7 @@ def render_guild_settings_body(
           <p class="muted">Welcome image uploads accept {escape(allowed_welcome_extensions_label)}. Max size: {format_byte_size(max_welcome_image_upload_bytes)}. Allowed dimensions: {WELCOME_IMAGE_MIN_WIDTH}x{WELCOME_IMAGE_MIN_HEIGHT} up to {WELCOME_IMAGE_MAX_WIDTH}x{WELCOME_IMAGE_MAX_HEIGHT}. Recommended: landscape artwork around 1200x675 for clearer in-chat presentation.</p>
           {catalog_note}
           <form method="post" enctype="multipart/form-data">
-            {build_section("Channel Routing And Access", "Use this section for guild-specific channels and the optional self-assign role. Blank channel fields keep the global default from /admin/settings.", routing_rows)}
+            {build_section("Channel Routing And Access", "Use this section for guild-specific channels and the optional self-assign role. Blank channel fields keep the global default from /admin/settings. Moderation controls now live on /admin/moderation.", routing_rows)}
             {build_section("Monitor Overrides", "These toggles only affect this guild. Leave Override global setting unchecked to inherit the global default.", monitor_rows)}
             {build_section("Welcome Messages", "Configure the public join message and optional DM. Blank message fields use the built-in defaults.", welcome_message_rows)}
             {build_section("Welcome Images", "Upload one reusable welcome image for this guild and decide whether it is attached in the channel post, the DM, or both.", welcome_image_rows)}

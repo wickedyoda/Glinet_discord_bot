@@ -64,6 +64,7 @@ from app.member_activity_backfill import (
 from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
 )
+from app.moderation_runtime import apply_bad_word_moderation as apply_bad_word_moderation_impl
 from app.role_access_schema import ensure_role_access_schema_locked
 from app.role_access_web_callbacks import RoleAccessWebCallbacks
 from app.service_monitor import (
@@ -1403,6 +1404,12 @@ def ensure_db_schema():
                 bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+                bad_words_enabled INTEGER NOT NULL DEFAULT 0,
+                bad_words_list_json TEXT NOT NULL DEFAULT '[]',
+                bad_words_warning_window_hours INTEGER NOT NULL DEFAULT 72,
+                bad_words_warning_threshold INTEGER NOT NULL DEFAULT 3,
+                bad_words_action TEXT NOT NULL DEFAULT 'timeout',
+                bad_words_timeout_minutes INTEGER NOT NULL DEFAULT 60,
                 firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1,
                 reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
@@ -1434,6 +1441,17 @@ def ensure_db_schema():
                 moderator TEXT NOT NULL DEFAULT '',
                 target TEXT NOT NULL DEFAULT '',
                 reason TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS moderation_warnings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                warning_type TEXT NOT NULL DEFAULT 'bad_word',
+                matched_term TEXT NOT NULL DEFAULT '',
+                message_excerpt TEXT NOT NULL DEFAULT '',
+                action_taken TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS firmware_seen (
@@ -1595,6 +1613,8 @@ def ensure_db_schema():
             );
 
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
+            CREATE INDEX IF NOT EXISTS idx_moderation_warnings_guild_user_created_at
+                ON moderation_warnings(guild_id, user_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
                 ON reddit_feed_subscriptions(subreddit);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_enabled
@@ -1645,6 +1665,18 @@ def ensure_db_schema():
             )
 
         guild_settings_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
+        if "bad_words_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN bad_words_enabled INTEGER NOT NULL DEFAULT 0")
+        if "bad_words_list_json" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN bad_words_list_json TEXT NOT NULL DEFAULT '[]'")
+        if "bad_words_warning_window_hours" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN bad_words_warning_window_hours INTEGER NOT NULL DEFAULT 72")
+        if "bad_words_warning_threshold" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN bad_words_warning_threshold INTEGER NOT NULL DEFAULT 3")
+        if "bad_words_action" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN bad_words_action TEXT NOT NULL DEFAULT 'timeout'")
+        if "bad_words_timeout_minutes" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN bad_words_timeout_minutes INTEGER NOT NULL DEFAULT 60")
         if "firmware_monitor_enabled" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1")
         if "reddit_feed_notify_enabled" not in guild_settings_columns:
@@ -1702,6 +1734,13 @@ def ensure_db_schema():
                 CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
                 """
             )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_moderation_warnings_guild_user_created_at
+            ON moderation_warnings(guild_id, user_id, created_at)
+            """
+        )
 
         if "guild_id" not in command_permission_columns:
             conn.executescript(
@@ -2167,6 +2206,61 @@ def record_action_safe(
 
 def list_recent_actions(guild_id: int | None, limit: int = 200):
     return guild_state_manager.list_recent_actions(guild_id, limit)
+
+
+def record_moderation_warning(
+    *,
+    guild_id: int | None,
+    user_id: int,
+    warning_type: str = "bad_word",
+    matched_term: str = "",
+    message_excerpt: str = "",
+    action_taken: str = "",
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO moderation_warnings (
+                guild_id,
+                user_id,
+                created_at,
+                warning_type,
+                matched_term,
+                message_excerpt,
+                action_taken
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                int(user_id),
+                datetime.now(UTC).isoformat(),
+                str(warning_type or "bad_word").strip() or "bad_word",
+                truncate_log_text(str(matched_term or "").strip(), max_length=120),
+                truncate_log_text(sanitize_log_text(str(message_excerpt or "").strip()), max_length=500),
+                truncate_log_text(str(action_taken or "").strip(), max_length=120),
+            ),
+        )
+        conn.commit()
+
+
+def count_recent_moderation_warnings(guild_id: int | None, user_id: int, *, within_hours: int = 72) -> int:
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_hours = max(1, int(within_hours or 72))
+    cutoff = (datetime.now(UTC) - timedelta(hours=safe_hours)).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM moderation_warnings
+            WHERE guild_id = ? AND user_id = ? AND created_at >= ?
+            """,
+            (safe_guild_id, int(user_id), cutoff),
+        ).fetchone()
+    return int((row["total"] if row else 0) or 0)
 
 
 def ensure_random_choice_history_schema_locked(conn):
@@ -6164,6 +6258,20 @@ def truncate_log_text(text: str, max_length: int = 300):
     return f"{value[: max_length - 3]}..."
 
 
+async def apply_bad_word_moderation(message: discord.Message):
+    return await apply_bad_word_moderation_impl(
+        message=message,
+        bot_user_id=bot.user.id if bot.user else 0,
+        load_guild_settings=load_guild_settings,
+        parse_int_setting=parse_int_setting,
+        count_recent_warnings=count_recent_moderation_warnings,
+        record_warning=record_moderation_warning,
+        send_moderation_log=send_moderation_log,
+        logger=logger,
+        clip_text=clip_text,
+    )
+
+
 def normalize_target_url(raw_url: str):
     value = str(raw_url or "").strip()
     if not value:
@@ -9857,6 +9965,16 @@ async def on_message(message: discord.Message):
         return
     if message.guild is not None and not is_managed_guild_id(message.guild.id):
         return
+    if message.guild is not None and isinstance(message.author, discord.Member) and not has_moderator_access(message.author):
+        try:
+            if await apply_bad_word_moderation(message):
+                return
+        except Exception:
+            logger.exception(
+                "Failed applying bad-word moderation to message %s in guild %s",
+                getattr(message, "id", "unknown"),
+                getattr(message.guild, "id", "unknown"),
+            )
     if message.guild is not None:
         try:
             record_member_message_activity(message)

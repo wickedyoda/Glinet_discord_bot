@@ -67,6 +67,12 @@ def _make_app(tmp_path: Path):
         "bot_log_channel_id": "",
         "mod_log_channel_id": "",
         "firmware_notify_channel_id": "",
+        "bad_words_enabled": "0",
+        "bad_words_list_json": "[]",
+        "bad_words_warning_window_hours": "72",
+        "bad_words_warning_threshold": "3",
+        "bad_words_action": "timeout",
+        "bad_words_timeout_minutes": "60",
         "firmware_monitor_enabled": "-1",
         "reddit_feed_notify_enabled": "-1",
         "youtube_notify_enabled": "-1",
@@ -102,6 +108,12 @@ def _make_app(tmp_path: Path):
                 "bot_log_channel_id": str(payload.get("bot_log_channel_id") or "").strip(),
                 "mod_log_channel_id": str(payload.get("mod_log_channel_id") or "").strip(),
                 "firmware_notify_channel_id": str(payload.get("firmware_notify_channel_id") or "").strip(),
+                "bad_words_enabled": str(payload.get("bad_words_enabled", guild_settings_state.get("bad_words_enabled", "0"))).strip(),
+                "bad_words_list_json": str(payload.get("bad_words_list_json", guild_settings_state.get("bad_words_list_json", "[]"))).strip(),
+                "bad_words_warning_window_hours": str(payload.get("bad_words_warning_window_hours", guild_settings_state.get("bad_words_warning_window_hours", "72"))).strip(),
+                "bad_words_warning_threshold": str(payload.get("bad_words_warning_threshold", guild_settings_state.get("bad_words_warning_threshold", "3"))).strip(),
+                "bad_words_action": str(payload.get("bad_words_action", guild_settings_state.get("bad_words_action", "timeout"))).strip(),
+                "bad_words_timeout_minutes": str(payload.get("bad_words_timeout_minutes", guild_settings_state.get("bad_words_timeout_minutes", "60"))).strip(),
                 "firmware_monitor_enabled": str(payload.get("firmware_monitor_enabled", guild_settings_state.get("firmware_monitor_enabled", "-1"))),
                 "reddit_feed_notify_enabled": str(payload.get("reddit_feed_notify_enabled", guild_settings_state.get("reddit_feed_notify_enabled", "-1"))),
                 "youtube_notify_enabled": str(payload.get("youtube_notify_enabled", guild_settings_state.get("youtube_notify_enabled", "-1"))),
@@ -1575,6 +1587,55 @@ def test_guild_settings_page_clarifies_scope_and_sections(tmp_path: Path):
     assert b"Welcome Messages" in response.data
     assert b"Welcome Images" in response.data
     assert b"Save Guild Settings" in response.data
+    assert b"Moderation controls now live on /admin/moderation." in response.data
+
+
+def test_moderation_page_renders_controls_and_saves_settings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get(
+        "/admin/moderation",
+        base_url="https://docker.example:8443",
+    )
+
+    assert response.status_code == 200
+    assert b"Moderation" in response.data
+    assert b"Bad Word Filter" in response.data
+    assert b"Blocked Words / Phrases" in response.data
+    assert b"Escalation Action" in response.data
+    assert b"Timeout Length" in response.data
+
+    payload = _form_payload(client, "/admin/moderation")
+    payload.update(
+        {
+            "mod_log_channel_id": "9999",
+            "bad_words_enabled": "1",
+            "bad_words_list_json": "badword\nother phrase",
+            "bad_words_warning_window_hours": "48",
+            "bad_words_warning_threshold": "4",
+            "bad_words_action": "warn_only",
+            "bad_words_timeout_minutes": "180",
+        }
+    )
+
+    response = client.post(
+        "/admin/moderation",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Guild settings updated by admin@example.com." in response.data
+    assert b"badword" in response.data
+    assert b"other phrase" in response.data
+    assert b"48 hour(s)" in response.data
+    assert b"4 warning(s)" in response.data
+    assert b"Warning only" in response.data
+    assert b"180 minute(s)" in response.data
 
 
 def test_admin_can_save_global_settings(tmp_path: Path):
@@ -2091,6 +2152,24 @@ def test_guild_admin_only_sees_assigned_guilds_and_can_manage_them(tmp_path: Pat
     )
     assert guild_settings_response.status_code == 200
     assert b"Guild settings updated by guild-admin@example.com." in guild_settings_response.data
+
+    moderation_response = client.post(
+        "/admin/moderation",
+        data={
+            "mod_log_channel_id": "9999",
+            "bad_words_enabled": "1",
+            "bad_words_list_json": "badword",
+            "bad_words_warning_window_hours": "24",
+            "bad_words_warning_threshold": "2",
+            "bad_words_action": "timeout",
+            "bad_words_timeout_minutes": "60",
+            "csrf_token": _page_csrf_token(client, "/admin/moderation"),
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert moderation_response.status_code == 200
+    assert b"Guild settings updated by guild-admin@example.com." in moderation_response.data
 
     blocked_select_response = client.post(
         "/admin/select-guild",
