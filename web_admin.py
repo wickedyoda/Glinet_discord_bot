@@ -143,6 +143,7 @@ REDDIT_FEED_SCHEDULE_OPTIONS = (
 MONITOR_RECHECK_SCHEDULE_OPTIONS = REDDIT_FEED_SCHEDULE_OPTIONS
 OBSERVABILITY_HISTORY_RETENTION_HOURS = 24
 OBSERVABILITY_HISTORY_SAMPLE_SECONDS = 60
+LOG_EXPORT_RETENTION_HOURS = 24
 LOG_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
 LOG_SECRET_PATTERN = re.compile(r"(?i)\b(discord_token|token|password|authorization|cookie|secret)\b\s*[:=]\s*([^\s,;]+)")
 SAFE_OUTBOUND_MAX_REDIRECTS = 3
@@ -4857,22 +4858,49 @@ def create_web_app(
         {auto_refresh_script}
         """
 
+    def _prune_expired_log_exports(log_dir: Path):
+        export_dir = log_dir / "exports"
+        cutoff_timestamp = time.time() - (LOG_EXPORT_RETENTION_HOURS * 3600)
+        if not export_dir.exists():
+            return export_dir
+        for export_path in export_dir.glob("discord_bot_logs_*.zip"):
+            try:
+                if export_path.is_file() and export_path.stat().st_mtime < cutoff_timestamp:
+                    export_path.unlink()
+            except OSError:
+                continue
+        return export_dir
+
+    def _schedule_log_export_cleanup(archive_path: Path):
+        def _cleanup():
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        cleanup_timer = threading.Timer(LOG_EXPORT_RETENTION_HOURS * 3600, _cleanup)
+        cleanup_timer.daemon = True
+        cleanup_timer.start()
+
     def _build_logs_export_payload():
         log_dir = Path(str(os.getenv("LOG_DIR", "/logs")).strip() or "/logs")
         allowed_log_paths = _resolve_observability_log_paths(log_dir)
         if not allowed_log_paths:
             return None
+        export_dir = _prune_expired_log_exports(log_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        _chmod_if_possible(export_dir, 0o700)
 
-        archive_buffer = BytesIO()
         exported_count = 0
         generated_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive_path = export_dir / f"discord_bot_logs_{generated_at}.zip"
+        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
             for filename, _label in OBSERVABILITY_LOG_OPTIONS:
                 log_path = allowed_log_paths.get(filename)
                 if log_path is None or not log_path.exists() or not log_path.is_file():
                     continue
                 try:
-                    archive.writestr(filename, log_path.read_bytes())
+                    archive.write(log_path, arcname=filename)
                 except OSError:
                     continue
                 exported_count += 1
@@ -4890,12 +4918,17 @@ def create_web_app(
             )
 
         if exported_count <= 0:
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             return None
-        archive_buffer.seek(0)
+        _chmod_if_possible(archive_path, 0o600)
+        _schedule_log_export_cleanup(archive_path)
         return {
-            "filename": f"discord_bot_logs_{generated_at}.zip",
+            "filename": archive_path.name,
             "content_type": "application/zip",
-            "data": archive_buffer.getvalue(),
+            "path": str(archive_path),
         }
 
     @app.route("/status", methods=["GET"])
@@ -4927,6 +4960,7 @@ def create_web_app(
     @login_required
     def admin_logs():
         user = _current_user()
+        _prune_expired_log_exports(Path(str(os.getenv("LOG_DIR", "/logs")).strip() or "/logs"))
         body = _render_log_view()
         return _render_page(
             "Log Viewer",
@@ -4944,7 +4978,7 @@ def create_web_app(
             flash("No runtime log files are available to export.", "error")
             return redirect(url_for("admin_logs"))
         return send_file(
-            BytesIO(payload["data"]),
+            str(payload["path"]),
             mimetype=str(payload.get("content_type") or "application/octet-stream"),
             as_attachment=True,
             download_name=str(payload.get("filename") or "logs.zip"),

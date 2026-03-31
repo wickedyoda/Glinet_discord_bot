@@ -154,9 +154,10 @@ BETA_PROGRAM_REQUEST_USER_AGENT = (
     "Chrome/137.0.0.0 Safari/537.36"
 )
 BETA_PROGRAM_MAX_NOTIFICATIONS_PER_RUN = 10
-MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 90
+MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 200
 MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
 MEMBER_ACTIVITY_WINDOW_SPECS = (
+    ("last_180_days", "Last 180 Days", timedelta(days=180)),
     ("last_90_days", "Last 90 Days", timedelta(days=90)),
     ("last_30_days", "Last 30 Days", timedelta(days=30)),
     ("last_7_days", "Last 7 Days", timedelta(days=7)),
@@ -337,7 +338,7 @@ LOG_HARDEN_FILE_PERMISSIONS = is_truthy_env_value(
     os.getenv("LOG_HARDEN_FILE_PERMISSIONS", "true"),
     default_value=True,
 )
-LOG_RETENTION_DAYS = parse_positive_int_env("LOG_RETENTION_DAYS", 90, minimum=1)
+LOG_RETENTION_DAYS = parse_positive_int_env("LOG_RETENTION_DAYS", 30, minimum=1)
 LOG_ROTATION_INTERVAL_DAYS = parse_positive_int_env("LOG_ROTATION_INTERVAL_DAYS", 1, minimum=1)
 LOG_DIR = resolve_log_dir(os.getenv("LOG_DIR", "/logs"))
 BOT_LOG_FILE = os.path.join(LOG_DIR, "bot.log")
@@ -2984,6 +2985,7 @@ def update_youtube_subscription_runtime_state(
     enabled: int | None = None,
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
+    normalized_enabled = None if enabled is None else (1 if int(enabled) > 0 else 0)
     if (
         last_video_id is None
         and last_video_title is None
@@ -3016,7 +3018,7 @@ def update_youtube_subscription_runtime_state(
                 str(last_checked_at or "").strip() if last_checked_at is not None else None,
                 str(last_posted_at or "").strip() if last_posted_at is not None else None,
                 str(last_error or "").strip() if last_error is not None else None,
-                1 if int(enabled) > 0 else 0 if enabled is not None else None,
+                normalized_enabled,
                 datetime.now(UTC).isoformat(),
                 int(subscription_id),
                 safe_guild_id,
