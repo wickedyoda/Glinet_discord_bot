@@ -59,6 +59,7 @@ from app.uptime_status import (
 )
 from app.web_audit import should_log_web_audit_event
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
+from app.web_moderation import process_moderation_submission, render_moderation_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
 from app.web_user_store import (
@@ -2604,6 +2605,7 @@ def _render_layout(
                 <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
                 <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('moderation_page') }}">Moderation</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -2618,6 +2620,7 @@ def _render_layout(
                 <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
                 <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('moderation_page') }}">Moderation</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -2649,12 +2652,14 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
                 <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
                 <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
                 {% else %}
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
                 <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
                 <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
                 {% endif %}
@@ -2719,6 +2724,7 @@ def _render_layout(
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+            <option value="{{ url_for('moderation_page') }}">Moderation</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -2733,6 +2739,7 @@ def _render_layout(
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
             <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+            <option value="{{ url_for('moderation_page') }}">Moderation</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -3335,6 +3342,7 @@ def create_web_app(
         labels = {
             "dashboard": "Dashboard",
             "guild_settings": "Guild Settings",
+            "moderation_page": "Moderation",
             "command_status": "Command Status",
             "command_permissions": "Command Permissions",
             "bot_profile": "Bot Profile",
@@ -3579,6 +3587,7 @@ def create_web_app(
                 "account",
                 "command_status",
                 "guild_settings",
+                "moderation_page",
                 "command_permissions",
                 "reddit_feeds",
                 "service_monitors_page",
@@ -3601,6 +3610,7 @@ def create_web_app(
                 "account",
                 "command_status",
                 "guild_settings",
+                "moderation_page",
                 "command_permissions",
                 "reddit_feeds",
                 "service_monitors_page",
@@ -3630,6 +3640,7 @@ def create_web_app(
             "bot_profile",
             "command_status",
             "command_permissions",
+            "moderation_page",
             "reddit_feeds",
             "service_monitors_page",
             "youtube_subscriptions",
@@ -3661,6 +3672,7 @@ def create_web_app(
             "select_guild",
             "dashboard",
             "guild_settings",
+            "moderation_page",
             "actions_page",
             "member_activity_page",
             "member_activity_export",
@@ -4320,6 +4332,12 @@ def create_web_app(
                 "Set access mode per command and pick restricted roles from Discord role lists.",
                 url_for("command_permissions"),
                 "Open Permissions",
+            ),
+            build_dashboard_card(
+                "Moderation",
+                "Configure bad-word filtering, warning thresholds, timeout escalation, and the moderation log channel.",
+                url_for("moderation_page"),
+                "Open Moderation",
             ),
             build_dashboard_card(
                 "Bot Profile",
@@ -7405,6 +7423,62 @@ def create_web_app(
             render_select_input=_render_select_input,
         )
         return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/moderation", methods=["GET", "POST"])
+    @login_required
+    def moderation_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Moderation callbacks are not configured."}
+        )
+        channel_options, _, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        text_channel_options = [
+            option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"
+        ]
+
+        if request.method == "POST":
+            response, messages = process_moderation_submission(
+                form=request.form,
+                on_save_guild_settings=on_save_guild_settings,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                settings_payload = response
+
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            error_text = (
+                str(settings_payload.get("error") or "Unable to load moderation settings.")
+                if isinstance(settings_payload, dict)
+                else "Unable to load moderation settings."
+            )
+            body = (
+                f"<div class='card'><h2>Moderation</h2><p class='muted'>Could not load moderation settings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Moderation", body, user["email"], bool(user.get("is_admin")))
+
+        current_settings = settings_payload.get("settings", {}) or {}
+        effective_settings = settings_payload.get("effective", {}) or {}
+        body = render_moderation_body(
+            guild_name=guild_name,
+            current_settings=current_settings,
+            effective_settings=effective_settings,
+            text_channel_options=text_channel_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Moderation", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/settings", methods=["GET", "POST"])
     @login_required
