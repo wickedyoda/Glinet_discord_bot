@@ -68,6 +68,12 @@ class GuildStateManager:
             "bot_log_channel_id": self.bot_log_channel_id if self.bot_log_channel_id > 0 else 0,
             "mod_log_channel_id": self.mod_log_channel_id if self.mod_log_channel_id > 0 else 0,
             "firmware_notify_channel_id": self.firmware_notify_channel_id if self.firmware_notify_channel_id > 0 else 0,
+            "bad_words_enabled": 0,
+            "bad_words_list_json": "[]",
+            "bad_words_warning_window_hours": 72,
+            "bad_words_warning_threshold": 3,
+            "bad_words_action": "timeout",
+            "bad_words_timeout_minutes": 60,
             "firmware_monitor_enabled": -1,
             "reddit_feed_notify_enabled": -1,
             "youtube_notify_enabled": -1,
@@ -118,6 +124,9 @@ class GuildStateManager:
             row = conn.execute(
                 """
                 SELECT bot_log_channel_id, mod_log_channel_id, firmware_notify_channel_id,
+                       bad_words_enabled, bad_words_list_json,
+                       bad_words_warning_window_hours, bad_words_warning_threshold,
+                       bad_words_action, bad_words_timeout_minutes,
                        firmware_monitor_enabled, reddit_feed_notify_enabled,
                        youtube_notify_enabled, linkedin_notify_enabled, beta_program_notify_enabled,
                        access_role_id, welcome_channel_id, welcome_dm_enabled,
@@ -138,6 +147,12 @@ class GuildStateManager:
                     "bot_log_channel_id": int(row["bot_log_channel_id"] or 0),
                     "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
                     "firmware_notify_channel_id": int(row["firmware_notify_channel_id"] or 0),
+                    "bad_words_enabled": 1 if int(row["bad_words_enabled"] or 0) > 0 else 0,
+                    "bad_words_list_json": str(row["bad_words_list_json"] or "[]"),
+                    "bad_words_warning_window_hours": int(row["bad_words_warning_window_hours"] or 72),
+                    "bad_words_warning_threshold": int(row["bad_words_warning_threshold"] or 3),
+                    "bad_words_action": str(row["bad_words_action"] or "timeout").strip().lower() or "timeout",
+                    "bad_words_timeout_minutes": int(row["bad_words_timeout_minutes"] or 60),
                     "firmware_monitor_enabled": self._normalize_feature_override(row["firmware_monitor_enabled"]),
                     "reddit_feed_notify_enabled": self._normalize_feature_override(row["reddit_feed_notify_enabled"]),
                     "youtube_notify_enabled": self._normalize_feature_override(row["youtube_notify_enabled"]),
@@ -187,6 +202,29 @@ class GuildStateManager:
             "welcome_channel_id",
         ):
             merged[key] = self.parse_int_setting(source.get(key, current.get(key, 0)), 0, minimum=0)
+        merged["bad_words_enabled"] = 1 if str(source.get("bad_words_enabled", current.get("bad_words_enabled", 0))).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        } else 0
+        merged["bad_words_list_json"] = str(source.get("bad_words_list_json", current.get("bad_words_list_json", "[]")) or "[]").strip() or "[]"
+        merged["bad_words_warning_window_hours"] = self.parse_int_setting(
+            source.get("bad_words_warning_window_hours", current.get("bad_words_warning_window_hours", 72)),
+            72,
+            minimum=1,
+        )
+        merged["bad_words_warning_threshold"] = self.parse_int_setting(
+            source.get("bad_words_warning_threshold", current.get("bad_words_warning_threshold", 3)),
+            3,
+            minimum=1,
+        )
+        merged["bad_words_action"] = str(source.get("bad_words_action", current.get("bad_words_action", "timeout")) or "timeout").strip().lower() or "timeout"
+        merged["bad_words_timeout_minutes"] = self.parse_int_setting(
+            source.get("bad_words_timeout_minutes", current.get("bad_words_timeout_minutes", 60)),
+            60,
+            minimum=1,
+        )
         for key in (
             "firmware_monitor_enabled",
             "reddit_feed_notify_enabled",
@@ -242,6 +280,12 @@ class GuildStateManager:
                     bot_log_channel_id,
                     mod_log_channel_id,
                     firmware_notify_channel_id,
+                    bad_words_enabled,
+                    bad_words_list_json,
+                    bad_words_warning_window_hours,
+                    bad_words_warning_threshold,
+                    bad_words_action,
+                    bad_words_timeout_minutes,
                     firmware_monitor_enabled,
                     reddit_feed_notify_enabled,
                     youtube_notify_enabled,
@@ -263,11 +307,17 @@ class GuildStateManager:
                     updated_at,
                     updated_by_email
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     bot_log_channel_id=excluded.bot_log_channel_id,
                     mod_log_channel_id=excluded.mod_log_channel_id,
                     firmware_notify_channel_id=excluded.firmware_notify_channel_id,
+                    bad_words_enabled=excluded.bad_words_enabled,
+                    bad_words_list_json=excluded.bad_words_list_json,
+                    bad_words_warning_window_hours=excluded.bad_words_warning_window_hours,
+                    bad_words_warning_threshold=excluded.bad_words_warning_threshold,
+                    bad_words_action=excluded.bad_words_action,
+                    bad_words_timeout_minutes=excluded.bad_words_timeout_minutes,
                     firmware_monitor_enabled=excluded.firmware_monitor_enabled,
                     reddit_feed_notify_enabled=excluded.reddit_feed_notify_enabled,
                     youtube_notify_enabled=excluded.youtube_notify_enabled,
@@ -294,6 +344,12 @@ class GuildStateManager:
                     merged["bot_log_channel_id"],
                     merged["mod_log_channel_id"],
                     merged["firmware_notify_channel_id"],
+                    merged["bad_words_enabled"],
+                    merged["bad_words_list_json"],
+                    merged["bad_words_warning_window_hours"],
+                    merged["bad_words_warning_threshold"],
+                    merged["bad_words_action"],
+                    merged["bad_words_timeout_minutes"],
                     merged["firmware_monitor_enabled"],
                     merged["reddit_feed_notify_enabled"],
                     merged["youtube_notify_enabled"],
