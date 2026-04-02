@@ -6,6 +6,14 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 
+from app.discourse_integration import (
+    DISCOURSE_DEFAULT_FEATURES,
+    normalize_discourse_base_url,
+    normalize_discourse_override,
+    normalize_discourse_profile_text,
+    serialize_discourse_features,
+)
+
 
 class GuildStateManager:
     def __init__(
@@ -79,6 +87,13 @@ class GuildStateManager:
             "youtube_notify_enabled": -1,
             "linkedin_notify_enabled": -1,
             "beta_program_notify_enabled": -1,
+            "discourse_enabled": -1,
+            "discourse_base_url": "",
+            "discourse_api_key": "",
+            "discourse_api_username": "",
+            "discourse_profile_name": "",
+            "discourse_request_timeout_seconds": 15,
+            "discourse_features_json": serialize_discourse_features(DISCOURSE_DEFAULT_FEATURES),
             "access_role_id": 0,
             "welcome_channel_id": 0,
             "welcome_dm_enabled": 0,
@@ -129,6 +144,9 @@ class GuildStateManager:
                        bad_words_action, bad_words_timeout_minutes,
                        firmware_monitor_enabled, reddit_feed_notify_enabled,
                        youtube_notify_enabled, linkedin_notify_enabled, beta_program_notify_enabled,
+                       discourse_enabled, discourse_base_url, discourse_api_key,
+                       discourse_api_username, discourse_profile_name, discourse_request_timeout_seconds,
+                       discourse_features_json,
                        access_role_id, welcome_channel_id, welcome_dm_enabled,
                        welcome_channel_image_enabled, welcome_dm_image_enabled,
                        welcome_channel_message, welcome_dm_message,
@@ -158,6 +176,13 @@ class GuildStateManager:
                     "youtube_notify_enabled": self._normalize_feature_override(row["youtube_notify_enabled"]),
                     "linkedin_notify_enabled": self._normalize_feature_override(row["linkedin_notify_enabled"]),
                     "beta_program_notify_enabled": self._normalize_feature_override(row["beta_program_notify_enabled"]),
+                    "discourse_enabled": normalize_discourse_override(row["discourse_enabled"]),
+                    "discourse_base_url": normalize_discourse_base_url(str(row["discourse_base_url"] or "")),
+                    "discourse_api_key": str(row["discourse_api_key"] or "").strip(),
+                    "discourse_api_username": normalize_discourse_profile_text(row["discourse_api_username"]),
+                    "discourse_profile_name": normalize_discourse_profile_text(row["discourse_profile_name"]),
+                    "discourse_request_timeout_seconds": int(row["discourse_request_timeout_seconds"] or 15),
+                    "discourse_features_json": serialize_discourse_features(row["discourse_features_json"]),
                     "access_role_id": int(row["access_role_id"] or 0),
                     "welcome_channel_id": int(row["welcome_channel_id"] or 0),
                     "welcome_dm_enabled": 1 if int(row["welcome_dm_enabled"] or 0) > 0 else 0,
@@ -233,6 +258,28 @@ class GuildStateManager:
             "beta_program_notify_enabled",
         ):
             merged[key] = self._normalize_feature_override(source.get(key, current.get(key, -1)))
+        merged["discourse_enabled"] = normalize_discourse_override(source.get("discourse_enabled", current.get("discourse_enabled", -1)))
+        merged["discourse_base_url"] = normalize_discourse_base_url(
+            source.get("discourse_base_url", current.get("discourse_base_url", ""))
+        )
+        if "discourse_api_key" in source:
+            merged["discourse_api_key"] = str(source.get("discourse_api_key") or "").strip()
+        elif str(source.get("discourse_api_key_clear") or "").strip().lower() in {"1", "true", "yes", "on"}:
+            merged["discourse_api_key"] = ""
+        merged["discourse_api_username"] = normalize_discourse_profile_text(
+            source.get("discourse_api_username", current.get("discourse_api_username", ""))
+        )
+        merged["discourse_profile_name"] = normalize_discourse_profile_text(
+            source.get("discourse_profile_name", current.get("discourse_profile_name", ""))
+        )
+        merged["discourse_request_timeout_seconds"] = self.parse_int_setting(
+            source.get("discourse_request_timeout_seconds", current.get("discourse_request_timeout_seconds", 15)),
+            15,
+            minimum=3,
+        )
+        merged["discourse_features_json"] = serialize_discourse_features(
+            source.get("discourse_features_json", current.get("discourse_features_json", DISCOURSE_DEFAULT_FEATURES))
+        )
         merged["welcome_dm_enabled"] = 1 if str(source.get("welcome_dm_enabled", current.get("welcome_dm_enabled", 0))).strip().lower() in {
             "1",
             "true",
@@ -291,6 +338,13 @@ class GuildStateManager:
                     youtube_notify_enabled,
                     linkedin_notify_enabled,
                     beta_program_notify_enabled,
+                    discourse_enabled,
+                    discourse_base_url,
+                    discourse_api_key,
+                    discourse_api_username,
+                    discourse_profile_name,
+                    discourse_request_timeout_seconds,
+                    discourse_features_json,
                     access_role_id,
                     welcome_channel_id,
                     welcome_dm_enabled,
@@ -307,7 +361,7 @@ class GuildStateManager:
                     updated_at,
                     updated_by_email
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     bot_log_channel_id=excluded.bot_log_channel_id,
                     mod_log_channel_id=excluded.mod_log_channel_id,
@@ -323,6 +377,13 @@ class GuildStateManager:
                     youtube_notify_enabled=excluded.youtube_notify_enabled,
                     linkedin_notify_enabled=excluded.linkedin_notify_enabled,
                     beta_program_notify_enabled=excluded.beta_program_notify_enabled,
+                    discourse_enabled=excluded.discourse_enabled,
+                    discourse_base_url=excluded.discourse_base_url,
+                    discourse_api_key=excluded.discourse_api_key,
+                    discourse_api_username=excluded.discourse_api_username,
+                    discourse_profile_name=excluded.discourse_profile_name,
+                    discourse_request_timeout_seconds=excluded.discourse_request_timeout_seconds,
+                    discourse_features_json=excluded.discourse_features_json,
                     access_role_id=excluded.access_role_id,
                     welcome_channel_id=excluded.welcome_channel_id,
                     welcome_dm_enabled=excluded.welcome_dm_enabled,
@@ -355,6 +416,13 @@ class GuildStateManager:
                     merged["youtube_notify_enabled"],
                     merged["linkedin_notify_enabled"],
                     merged["beta_program_notify_enabled"],
+                    merged["discourse_enabled"],
+                    merged["discourse_base_url"],
+                    merged["discourse_api_key"],
+                    merged["discourse_api_username"],
+                    merged["discourse_profile_name"],
+                    merged["discourse_request_timeout_seconds"],
+                    merged["discourse_features_json"],
                     merged["access_role_id"],
                     merged["welcome_channel_id"],
                     merged["welcome_dm_enabled"],

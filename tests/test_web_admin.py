@@ -80,6 +80,14 @@ def _make_app(tmp_path: Path):
         "youtube_notify_enabled": "-1",
         "linkedin_notify_enabled": "-1",
         "beta_program_notify_enabled": "-1",
+        "discourse_enabled": "-1",
+        "discourse_base_url": "",
+        "discourse_api_key": "",
+        "discourse_api_username": "",
+        "discourse_profile_name": "",
+        "discourse_request_timeout_seconds": "15",
+        "discourse_features_json": '[\"search\",\"topic_lookup\",\"categories\"]',
+        "discourse_api_key_configured": "",
         "access_role_id": "",
         "welcome_channel_id": "",
         "welcome_dm_enabled": "",
@@ -121,6 +129,16 @@ def _make_app(tmp_path: Path):
                 "youtube_notify_enabled": str(payload.get("youtube_notify_enabled", guild_settings_state.get("youtube_notify_enabled", "-1"))),
                 "linkedin_notify_enabled": str(payload.get("linkedin_notify_enabled", guild_settings_state.get("linkedin_notify_enabled", "-1"))),
                 "beta_program_notify_enabled": str(payload.get("beta_program_notify_enabled", guild_settings_state.get("beta_program_notify_enabled", "-1"))),
+                "discourse_enabled": str(payload.get("discourse_enabled", guild_settings_state.get("discourse_enabled", "-1"))),
+                "discourse_base_url": str(payload.get("discourse_base_url", guild_settings_state.get("discourse_base_url", ""))).strip(),
+                "discourse_api_username": str(payload.get("discourse_api_username", guild_settings_state.get("discourse_api_username", ""))).strip(),
+                "discourse_profile_name": str(payload.get("discourse_profile_name", guild_settings_state.get("discourse_profile_name", ""))).strip(),
+                "discourse_request_timeout_seconds": str(
+                    payload.get("discourse_request_timeout_seconds", guild_settings_state.get("discourse_request_timeout_seconds", "15"))
+                ).strip(),
+                "discourse_features_json": str(
+                    payload.get("discourse_features_json", guild_settings_state.get("discourse_features_json", '[\"search\",\"topic_lookup\",\"categories\"]'))
+                ).strip(),
                 "access_role_id": str(payload.get("access_role_id") or "").strip(),
                 "welcome_channel_id": str(payload.get("welcome_channel_id") or "").strip(),
                 "welcome_dm_enabled": str(payload.get("welcome_dm_enabled") or "").strip(),
@@ -138,6 +156,11 @@ def _make_app(tmp_path: Path):
                 ),
             }
         )
+        if "discourse_api_key" in payload:
+            guild_settings_state["discourse_api_key"] = str(payload.get("discourse_api_key") or "").strip()
+        elif str(payload.get("discourse_api_key_clear") or "").strip():
+            guild_settings_state["discourse_api_key"] = ""
+        guild_settings_state["discourse_api_key_configured"] = "1" if guild_settings_state.get("discourse_api_key") else ""
         if str(payload.get("welcome_image_remove") or "").strip():
             guild_settings_state["welcome_image_filename"] = ""
             guild_settings_state["welcome_image_media_type"] = ""
@@ -1655,6 +1678,56 @@ def test_moderation_page_renders_controls_and_saves_settings(tmp_path: Path):
     assert b"180 minute(s)" in response.data
 
 
+def test_discourse_page_renders_controls_and_saves_settings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get(
+        "/admin/discourse",
+        base_url="https://docker.example:8443",
+    )
+
+    assert response.status_code == 200
+    assert b"Discourse Integration" in response.data
+    assert b"Forum Base URL" in response.data
+    assert b"API Username / Profile" in response.data
+    assert b"Integration Features" in response.data
+
+    payload = _form_payload(client, "/admin/discourse")
+    payload.update(
+        {
+            "discourse_enabled": "1",
+            "discourse_base_url": "https://forum.gl-inet.com",
+            "discourse_api_key": "secret-key",
+            "discourse_api_username": "forum-bot",
+            "discourse_profile_name": "Guild Forum Bot",
+            "discourse_request_timeout_seconds": "20",
+            "discourse_feature_search": "1",
+            "discourse_feature_topic_lookup": "1",
+            "discourse_feature_categories": "1",
+            "discourse_feature_create_topic": "0",
+            "discourse_feature_reply": "0",
+        }
+    )
+
+    response = client.post(
+        "/admin/discourse",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Guild settings updated by admin@example.com." in response.data
+    assert b"https://forum.gl-inet.com" in response.data
+    assert b"forum-bot" in response.data
+    assert b"Guild Forum Bot" in response.data
+    assert b"20 second(s)" in response.data
+    assert b"Configured for this guild" in response.data
+
+
 def test_admin_can_save_global_settings(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
@@ -2187,6 +2260,27 @@ def test_guild_admin_only_sees_assigned_guilds_and_can_manage_them(tmp_path: Pat
     )
     assert moderation_response.status_code == 200
     assert b"Guild settings updated by guild-admin@example.com." in moderation_response.data
+
+    discourse_response = client.post(
+        "/admin/discourse",
+        data={
+            "discourse_enabled": "1",
+            "discourse_base_url": "https://forum.gl-inet.com",
+            "discourse_api_username": "guild-admin-bot",
+            "discourse_profile_name": "Guild Admin Forum Bot",
+            "discourse_request_timeout_seconds": "15",
+            "discourse_feature_search": "1",
+            "discourse_feature_topic_lookup": "1",
+            "discourse_feature_categories": "1",
+            "discourse_feature_create_topic": "0",
+            "discourse_feature_reply": "0",
+            "csrf_token": _page_csrf_token(client, "/admin/discourse"),
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert discourse_response.status_code == 200
+    assert b"Guild settings updated by guild-admin@example.com." in discourse_response.data
 
     blocked_select_response = client.post(
         "/admin/select-guild",
