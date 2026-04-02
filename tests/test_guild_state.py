@@ -90,6 +90,13 @@ def test_load_guild_settings_uses_global_fallbacks_for_all_guilds_without_rows()
             youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
             linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
             beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            discourse_enabled INTEGER NOT NULL DEFAULT -1,
+            discourse_base_url TEXT NOT NULL DEFAULT '',
+            discourse_api_key TEXT NOT NULL DEFAULT '',
+            discourse_api_username TEXT NOT NULL DEFAULT '',
+            discourse_profile_name TEXT NOT NULL DEFAULT '',
+            discourse_request_timeout_seconds INTEGER NOT NULL DEFAULT 15,
+            discourse_features_json TEXT NOT NULL DEFAULT '["search","topic_lookup","categories"]',
             access_role_id INTEGER NOT NULL DEFAULT 0,
             welcome_channel_id INTEGER NOT NULL DEFAULT 0,
             welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
@@ -138,6 +145,13 @@ def test_save_and_load_guild_settings_persists_welcome_image():
             youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
             linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
             beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            discourse_enabled INTEGER NOT NULL DEFAULT -1,
+            discourse_base_url TEXT NOT NULL DEFAULT '',
+            discourse_api_key TEXT NOT NULL DEFAULT '',
+            discourse_api_username TEXT NOT NULL DEFAULT '',
+            discourse_profile_name TEXT NOT NULL DEFAULT '',
+            discourse_request_timeout_seconds INTEGER NOT NULL DEFAULT 15,
+            discourse_features_json TEXT NOT NULL DEFAULT '["search","topic_lookup","categories"]',
             access_role_id INTEGER NOT NULL DEFAULT 0,
             welcome_channel_id INTEGER NOT NULL DEFAULT 0,
             welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
@@ -219,6 +233,13 @@ def test_effective_guild_feature_enabled_uses_override_or_global():
             youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
             linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
             beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            discourse_enabled INTEGER NOT NULL DEFAULT -1,
+            discourse_base_url TEXT NOT NULL DEFAULT '',
+            discourse_api_key TEXT NOT NULL DEFAULT '',
+            discourse_api_username TEXT NOT NULL DEFAULT '',
+            discourse_profile_name TEXT NOT NULL DEFAULT '',
+            discourse_request_timeout_seconds INTEGER NOT NULL DEFAULT 15,
+            discourse_features_json TEXT NOT NULL DEFAULT '["search","topic_lookup","categories"]',
             access_role_id INTEGER NOT NULL DEFAULT 0,
             welcome_channel_id INTEGER NOT NULL DEFAULT 0,
             welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
@@ -247,3 +268,83 @@ def test_effective_guild_feature_enabled_uses_override_or_global():
 
     manager.save_guild_settings(123, {"youtube_notify_enabled": "0"}, actor_email="admin@example.com")
     assert manager.get_effective_guild_feature_enabled(123, "youtube_notify_enabled", True) is False
+
+
+def test_save_and_load_guild_settings_persists_discourse_configuration():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE guild_settings (
+            guild_id INTEGER PRIMARY KEY,
+            bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
+            mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
+            firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+            bad_words_enabled INTEGER NOT NULL DEFAULT 0,
+            bad_words_list_json TEXT NOT NULL DEFAULT '[]',
+            bad_words_warning_window_hours INTEGER NOT NULL DEFAULT 72,
+            bad_words_warning_threshold INTEGER NOT NULL DEFAULT 3,
+            bad_words_action TEXT NOT NULL DEFAULT 'timeout',
+            bad_words_timeout_minutes INTEGER NOT NULL DEFAULT 60,
+            firmware_monitor_enabled INTEGER NOT NULL DEFAULT -1,
+            reddit_feed_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
+            discourse_enabled INTEGER NOT NULL DEFAULT -1,
+            discourse_base_url TEXT NOT NULL DEFAULT '',
+            discourse_api_key TEXT NOT NULL DEFAULT '',
+            discourse_api_username TEXT NOT NULL DEFAULT '',
+            discourse_profile_name TEXT NOT NULL DEFAULT '',
+            discourse_request_timeout_seconds INTEGER NOT NULL DEFAULT 15,
+            discourse_features_json TEXT NOT NULL DEFAULT '["search","topic_lookup","categories"]',
+            access_role_id INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_id INTEGER NOT NULL DEFAULT 0,
+            welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_image_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_dm_image_enabled INTEGER NOT NULL DEFAULT 0,
+            welcome_channel_message TEXT NOT NULL DEFAULT '',
+            welcome_dm_message TEXT NOT NULL DEFAULT '',
+            welcome_image_filename TEXT NOT NULL DEFAULT '',
+            welcome_image_media_type TEXT NOT NULL DEFAULT '',
+            welcome_image_size_bytes INTEGER NOT NULL DEFAULT 0,
+            welcome_image_width INTEGER NOT NULL DEFAULT 0,
+            welcome_image_height INTEGER NOT NULL DEFAULT 0,
+            welcome_image_base64 TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            updated_by_email TEXT NOT NULL DEFAULT ''
+        )
+        """
+    )
+    kv_state = {}
+    manager = build_manager(
+        get_db_connection=lambda: conn,
+        db_lock=threading.Lock(),
+        db_kv_get=lambda key: kv_state.get(key),
+        db_kv_set=lambda key, value: kv_state.__setitem__(key, value),
+        logger=type("Logger", (), {"exception": lambda *args, **kwargs: None})(),
+    )
+
+    manager.save_guild_settings(
+        123,
+        {
+            "discourse_enabled": "1",
+            "discourse_base_url": "https://forum.gl-inet.com",
+            "discourse_api_key": "secret-key",
+            "discourse_api_username": "forum-bot",
+            "discourse_profile_name": "Guild Forum Bot",
+            "discourse_request_timeout_seconds": "20",
+            "discourse_features_json": '["search","topic_lookup"]',
+        },
+        actor_email="admin@example.com",
+    )
+
+    settings = manager.load_guild_settings(123)
+
+    assert settings["discourse_enabled"] == 1
+    assert settings["discourse_base_url"] == "https://forum.gl-inet.com"
+    assert settings["discourse_api_key"] == "secret-key"
+    assert settings["discourse_api_username"] == "forum-bot"
+    assert settings["discourse_profile_name"] == "Guild Forum Bot"
+    assert settings["discourse_request_timeout_seconds"] == 20
+    assert settings["discourse_features_json"] == '["search","topic_lookup"]'

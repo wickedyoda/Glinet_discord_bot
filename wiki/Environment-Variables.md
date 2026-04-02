@@ -37,6 +37,12 @@ This page lists all supported environment variables, defaults, and accepted opti
 |---|---|---|---|
 | `FORUM_BASE_URL` | `https://forum.gl-inet.com` | URL | Forum search base URL |
 | `FORUM_MAX_RESULTS` | `5` | Integer, `>= 1` | Max forum links returned |
+| `FORUM_REQUEST_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for GL.iNet Discourse search/topic/category requests |
+| `FORUM_API_KEY` | empty | Discourse API key | Optional authenticated GL.iNet forum access for richer structured results and future posting workflows |
+| `FORUM_API_USERNAME` | empty | Discourse username | Username paired with `FORUM_API_KEY` |
+| `OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for OpenWrt Discourse requests |
+| `OPENWRT_FORUM_API_KEY` | empty | Discourse API key | Optional authenticated OpenWrt forum access |
+| `OPENWRT_FORUM_API_USERNAME` | empty | Discourse username | Username paired with `OPENWRT_FORUM_API_KEY` |
 | `REDDIT_SUBREDDIT` | `GlInet` | Subreddit name, URL, or `r/<name>` format | Subreddit used by `/search_reddit` and `!searchreddit` |
 | `REDDIT_FEED_CHECK_SCHEDULE` | `*/30 * * * *` | Valid 5-field cron (UTC) | Poll interval for web-managed Reddit feed subscriptions |
 | `DOCS_MAX_RESULTS_PER_SITE` | `2` | Integer, `>= 1` | Max docs results per docs source |

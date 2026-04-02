@@ -44,6 +44,13 @@ from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
 from app.csv_utils import parse_csv_cells
+from app.discourse_api import DiscourseApiError, DiscourseRateLimitError, search_discourse_topics
+from app.discourse_integration import (
+    DISCOURSE_DEFAULT_FEATURES,
+    DISCOURSE_FEATURE_SEARCH,
+    normalize_discourse_override,
+    parse_discourse_features,
+)
 from app.feed_web_callbacks import FeedWebCallbacks
 from app.guild_archive import GuildArchiveManager
 from app.guild_state import GuildStateManager
@@ -658,8 +665,14 @@ if os.getenv("GENERAL_CHANNEL_ID") and not os.getenv("BOT_LOG_CHANNEL_ID"):
     logger.warning("GENERAL_CHANNEL_ID is deprecated; migrate to BOT_LOG_CHANNEL_ID.")
 FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", "https://forum.gl-inet.com").rstrip("/")
 FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
+FORUM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FORUM_REQUEST_TIMEOUT_SECONDS", "10"))
+FORUM_API_KEY = str(os.getenv("FORUM_API_KEY", "") or "").strip()
+FORUM_API_USERNAME = str(os.getenv("FORUM_API_USERNAME", "") or "").strip()
 OPENWRT_FORUM_BASE_URL = "https://forum.openwrt.org"
 OPENWRT_FORUM_MAX_RESULTS = 10
+OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS", "10"))
+OPENWRT_FORUM_API_KEY = str(os.getenv("OPENWRT_FORUM_API_KEY", "") or "").strip()
+OPENWRT_FORUM_API_USERNAME = str(os.getenv("OPENWRT_FORUM_API_USERNAME", "") or "").strip()
 REDDIT_BASE_URL = "https://www.reddit.com"
 REDDIT_FALLBACK_BASE_URL = "https://old.reddit.com"
 REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(os.getenv("REDDIT_SUBREDDIT", "GlInet"), fallback_value="GlInet")
@@ -1417,6 +1430,13 @@ def ensure_db_schema():
                 youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                discourse_enabled INTEGER NOT NULL DEFAULT -1,
+                discourse_base_url TEXT NOT NULL DEFAULT '',
+                discourse_api_key TEXT NOT NULL DEFAULT '',
+                discourse_api_username TEXT NOT NULL DEFAULT '',
+                discourse_profile_name TEXT NOT NULL DEFAULT '',
+                discourse_request_timeout_seconds INTEGER NOT NULL DEFAULT 15,
+                discourse_features_json TEXT NOT NULL DEFAULT '["search","topic_lookup","categories"]',
                 access_role_id INTEGER NOT NULL DEFAULT 0,
                 welcome_channel_id INTEGER NOT NULL DEFAULT 0,
                 welcome_dm_enabled INTEGER NOT NULL DEFAULT 0,
@@ -1689,6 +1709,22 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE guild_settings ADD COLUMN linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1")
         if "beta_program_notify_enabled" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1")
+        if "discourse_enabled" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN discourse_enabled INTEGER NOT NULL DEFAULT -1")
+        if "discourse_base_url" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN discourse_base_url TEXT NOT NULL DEFAULT ''")
+        if "discourse_api_key" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN discourse_api_key TEXT NOT NULL DEFAULT ''")
+        if "discourse_api_username" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN discourse_api_username TEXT NOT NULL DEFAULT ''")
+        if "discourse_profile_name" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN discourse_profile_name TEXT NOT NULL DEFAULT ''")
+        if "discourse_request_timeout_seconds" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN discourse_request_timeout_seconds INTEGER NOT NULL DEFAULT 15")
+        if "discourse_features_json" not in guild_settings_columns:
+            conn.execute(
+                "ALTER TABLE guild_settings ADD COLUMN discourse_features_json TEXT NOT NULL DEFAULT '[\"search\",\"topic_lookup\",\"categories\"]'"
+            )
         if "welcome_channel_id" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_channel_id INTEGER NOT NULL DEFAULT 0")
         if "welcome_dm_enabled" not in guild_settings_columns:
@@ -5055,6 +5091,7 @@ def run_web_save_tag_responses(mapping: dict, actor_email: str, guild_id: int | 
 def build_guild_settings_web_payload(guild_id: int | str | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
     settings = load_guild_settings(safe_guild_id)
+    effective_discourse_settings = resolve_discourse_forum_settings(safe_guild_id)
     welcome_image_filename = str(settings.get("welcome_image_filename") or "")
     welcome_image_media_type = str(settings.get("welcome_image_media_type") or "")
     welcome_image_size_bytes = int(settings.get("welcome_image_size_bytes") or 0)
@@ -5083,6 +5120,13 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
             "youtube_notify_enabled": int(settings.get("youtube_notify_enabled", -1)),
             "linkedin_notify_enabled": int(settings.get("linkedin_notify_enabled", -1)),
             "beta_program_notify_enabled": int(settings.get("beta_program_notify_enabled", -1)),
+            "discourse_enabled": int(settings.get("discourse_enabled", -1)),
+            "discourse_base_url": str(settings.get("discourse_base_url") or ""),
+            "discourse_api_username": str(settings.get("discourse_api_username") or ""),
+            "discourse_profile_name": str(settings.get("discourse_profile_name") or ""),
+            "discourse_request_timeout_seconds": int(settings.get("discourse_request_timeout_seconds") or 15),
+            "discourse_features_json": str(settings.get("discourse_features_json") or ""),
+            "discourse_api_key_configured": 1 if str(settings.get("discourse_api_key") or "").strip() else 0,
             "access_role_id": int(settings.get("access_role_id") or 0),
             "welcome_channel_id": int(settings.get("welcome_channel_id") or 0),
             "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
@@ -5130,6 +5174,13 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
                 "beta_program_notify_enabled",
                 BETA_PROGRAM_NOTIFY_ENABLED,
             ) else 0,
+            "discourse_enabled": int(effective_discourse_settings.get("enabled", 0)),
+            "discourse_base_url": str(effective_discourse_settings.get("base_url") or ""),
+            "discourse_api_username": str(effective_discourse_settings.get("api_username") or ""),
+            "discourse_profile_name": str(effective_discourse_settings.get("profile_name") or ""),
+            "discourse_request_timeout_seconds": int(effective_discourse_settings.get("timeout_seconds") or 15),
+            "discourse_features_json": str(effective_discourse_settings.get("features_json") or ""),
+            "discourse_api_key_configured": 1 if str(effective_discourse_settings.get("api_key") or "").strip() else 0,
             "access_role_id": get_effective_guild_setting(safe_guild_id, "access_role_id", 0),
             "welcome_channel_id": get_effective_guild_setting(safe_guild_id, "welcome_channel_id", 0),
             "welcome_dm_enabled": 1 if int(settings.get("welcome_dm_enabled") or 0) > 0 else 0,
@@ -5204,6 +5255,38 @@ def validate_manageable_role(actor: discord.Member, role: discord.Role, bot_memb
     if bot_member.top_role <= role:
         return False, "❌ I can only manage roles below my top role."
     return True, None
+
+
+def resolve_discourse_forum_settings(guild_id: int | str | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    settings = load_guild_settings(safe_guild_id)
+    enabled_override = normalize_discourse_override(settings.get("discourse_enabled", -1))
+    configured_base_url = str(settings.get("discourse_base_url") or "").strip()
+    configured_api_key = str(settings.get("discourse_api_key") or "").strip()
+    configured_api_username = str(settings.get("discourse_api_username") or "").strip()
+    configured_profile_name = str(settings.get("discourse_profile_name") or "").strip()
+    configured_timeout = parse_int_setting(settings.get("discourse_request_timeout_seconds"), 15, minimum=3)
+    configured_features_json = str(settings.get("discourse_features_json") or "").strip()
+
+    features = parse_discourse_features(configured_features_json or DISCOURSE_DEFAULT_FEATURES)
+    base_url = configured_base_url or FORUM_BASE_URL
+    api_key = configured_api_key or FORUM_API_KEY
+    api_username = configured_api_username or FORUM_API_USERNAME
+    profile_name = configured_profile_name or api_username
+    timeout_seconds = configured_timeout or FORUM_REQUEST_TIMEOUT_SECONDS
+    enabled = enabled_override != 0 and bool(str(base_url or "").strip())
+
+    return {
+        "guild_id": safe_guild_id,
+        "enabled": 1 if enabled else 0,
+        "base_url": base_url,
+        "api_key": api_key,
+        "api_username": api_username,
+        "profile_name": profile_name,
+        "timeout_seconds": timeout_seconds,
+        "features": features,
+        "features_json": json.dumps(features, ensure_ascii=True, separators=(",", ":")),
+    }
 
 
 def parse_role_color(value: str | None):
@@ -6200,12 +6283,13 @@ async def send_moderation_log(
     outcome: str = "success",
     details: str | None = None,
 ):
+    actor_text = f"{actor} (`{actor.id}`)"
     target_text = f"{target} (`{target.id}`)" if target else "N/A"
     reason_text = reason or "N/A"
     details_text = details or "N/A"
     message = (
         "🛡️ **Moderation Action**\n"
-        f"**Moderator:** {actor.mention} (`{actor.id}`)\n"
+        f"**Moderator:** {actor_text}\n"
         f"**Action:** `{action}`\n"
         f"**Target:** {target_text}\n"
         f"**Outcome:** `{outcome}`\n"
@@ -6228,7 +6312,7 @@ async def send_moderation_log(
         return False
 
     try:
-        await channel.send(message)
+        await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
         return True
     except discord.Forbidden:
         logger.warning("No permission to send moderation logs to channel %s", target_channel_id)
@@ -8532,6 +8616,12 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global BOT_LOG_CHANNEL_ID
     global FORUM_BASE_URL
     global FORUM_MAX_RESULTS
+    global FORUM_REQUEST_TIMEOUT_SECONDS
+    global FORUM_API_KEY
+    global FORUM_API_USERNAME
+    global OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS
+    global OPENWRT_FORUM_API_KEY
+    global OPENWRT_FORUM_API_USERNAME
     global REDDIT_SUBREDDIT
     global DOCS_MAX_RESULTS_PER_SITE
     global DOCS_INDEX_TTL_SECONDS
@@ -8610,6 +8700,20 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     )
     FORUM_BASE_URL = os.getenv("FORUM_BASE_URL", FORUM_BASE_URL).rstrip("/")
     FORUM_MAX_RESULTS = parse_int_setting(os.getenv("FORUM_MAX_RESULTS", FORUM_MAX_RESULTS), FORUM_MAX_RESULTS, minimum=1)
+    FORUM_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("FORUM_REQUEST_TIMEOUT_SECONDS", FORUM_REQUEST_TIMEOUT_SECONDS),
+        FORUM_REQUEST_TIMEOUT_SECONDS,
+        minimum=1,
+    )
+    FORUM_API_KEY = str(os.getenv("FORUM_API_KEY", FORUM_API_KEY) or "").strip()
+    FORUM_API_USERNAME = str(os.getenv("FORUM_API_USERNAME", FORUM_API_USERNAME) or "").strip()
+    OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS = parse_int_setting(
+        os.getenv("OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS", OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS),
+        OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS,
+        minimum=1,
+    )
+    OPENWRT_FORUM_API_KEY = str(os.getenv("OPENWRT_FORUM_API_KEY", OPENWRT_FORUM_API_KEY) or "").strip()
+    OPENWRT_FORUM_API_USERNAME = str(os.getenv("OPENWRT_FORUM_API_USERNAME", OPENWRT_FORUM_API_USERNAME) or "").strip()
     REDDIT_SUBREDDIT = normalize_reddit_subreddit_setting(
         os.getenv("REDDIT_SUBREDDIT", REDDIT_SUBREDDIT),
         fallback_value=REDDIT_SUBREDDIT,
@@ -9143,76 +9247,44 @@ def search_discourse_links(
     query: str,
     max_results: int,
     source_name: str,
+    timeout_seconds: int,
+    api_key: str = "",
+    api_username: str = "",
 ):
-    search_url = f"{base_url.rstrip('/')}/search.json"
-    request_headers = {
-        "Accept": "application/json,text/plain,*/*",
-        "User-Agent": REDDIT_REQUEST_USER_AGENT,
-    }
-
-    def extract_topic_links(payload: dict):
-        links = []
-        seen_topic_ids = set()
-
-        topics = payload.get("topics", [])
-        if not isinstance(topics, list):
-            topics = []
-        for topic in topics:
-            topic_id = topic.get("id")
-            if not topic_id or topic_id in seen_topic_ids:
-                continue
-            slug = topic.get("slug")
-            if slug:
-                links.append(f"{base_url.rstrip('/')}/t/{slug}/{topic_id}")
-            else:
-                links.append(f"{base_url.rstrip('/')}/t/{topic_id}")
-            seen_topic_ids.add(topic_id)
-            if len(links) >= max_results:
-                return links
-
-        # Some responses may include posts but omit topic metadata.
-        posts = payload.get("posts", [])
-        if not isinstance(posts, list):
-            posts = []
-        for post in posts:
-            topic_id = post.get("topic_id")
-            if not topic_id or topic_id in seen_topic_ids:
-                continue
-            links.append(f"{base_url.rstrip('/')}/t/{topic_id}")
-            seen_topic_ids.add(topic_id)
-            if len(links) >= max_results:
-                break
-        return links
-
     try:
-        response = requests.get(search_url, params={"q": query}, timeout=10, headers=request_headers)
-        response.raise_for_status()
-        data = response.json()
-    except requests.HTTPError as exc:
-        status_code = getattr(exc.response, "status_code", None)
-        if status_code == 429:
-            logger.warning("%s search rate limited for query: %s", source_name, query)
-            return [f"❌ {source_name} search is rate-limited right now. Please try again in a minute."]
-        logger.exception("%s search HTTP failure for query: %s", source_name, query)
-        return [f"❌ Failed to fetch {source_name} results."]
-    except requests.RequestException:
-        logger.exception("%s search request failed for query: %s", source_name, query)
-        return [f"❌ Failed to fetch {source_name} results."]
-    except ValueError:
-        logger.exception("%s search returned invalid JSON for query: %s", source_name, query)
-        return [f"❌ {source_name} returned an invalid response."]
-
-    links = extract_topic_links(data)
-
-    return links if links else ["No results found."]
+        topics = search_discourse_topics(
+            base_url=base_url,
+            query=query,
+            max_results=max_results,
+            source_name=source_name,
+            timeout_seconds=timeout_seconds,
+            user_agent=REDDIT_REQUEST_USER_AGENT,
+            api_key=api_key,
+            api_username=api_username,
+        )
+    except DiscourseRateLimitError:
+        logger.warning("%s search rate limited for query: %s", source_name, query)
+        return [], f"❌ {source_name} search is rate-limited right now. Please try again in a minute."
+    except (requests.RequestException, DiscourseApiError):
+        logger.exception("%s search failed for query: %s", source_name, query)
+        return [], f"❌ Failed to fetch {source_name} results."
+    return topics, ""
 
 
-def search_forum_links(query: str):
+def search_forum_links(query: str, guild_id: int | str | None = None):
+    discourse_settings = resolve_discourse_forum_settings(guild_id)
+    if not discourse_settings.get("enabled"):
+        return [], "❌ Forum integration is disabled for this guild."
+    if DISCOURSE_FEATURE_SEARCH not in set(discourse_settings.get("features") or []):
+        return [], "❌ Forum search is disabled for this guild."
     return search_discourse_links(
-        base_url=FORUM_BASE_URL,
+        base_url=str(discourse_settings.get("base_url") or FORUM_BASE_URL),
         query=query,
         max_results=FORUM_MAX_RESULTS,
         source_name="GL.iNet forum",
+        timeout_seconds=int(discourse_settings.get("timeout_seconds") or FORUM_REQUEST_TIMEOUT_SECONDS),
+        api_key=str(discourse_settings.get("api_key") or FORUM_API_KEY),
+        api_username=str(discourse_settings.get("api_username") or FORUM_API_USERNAME),
     )
 
 
@@ -9222,6 +9294,9 @@ def search_openwrt_forum_links(query: str):
         query=query,
         max_results=OPENWRT_FORUM_MAX_RESULTS,
         source_name="OpenWrt forum",
+        timeout_seconds=OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS,
+        api_key=OPENWRT_FORUM_API_KEY,
+        api_username=OPENWRT_FORUM_API_USERNAME,
     )
 
 
@@ -9513,29 +9588,41 @@ def suppress_discord_link_embed(url: str):
     return f"<{text}>"
 
 
-def build_forum_search_message(query: str):
-    forum_results = search_forum_links(query)
+def build_forum_search_message(query: str, guild_id: int | str | None = None):
+    forum_results, error_message = search_forum_links(query, guild_id=guild_id)
     lines = [f"🔎 Forum results for: `{query}`", "", "**Forum**"]
-    forum_links = [item for item in forum_results if item.startswith("http")]
-    if forum_links:
-        lines.extend([f"- {suppress_discord_link_embed(link)}" for link in forum_links])
+    if error_message:
+        lines.append(f"- {error_message}")
+    elif forum_results:
+        for item in forum_results:
+            title = str(item.get("title") or "Untitled topic").strip()
+            link = str(item.get("url") or "").strip()
+            category_name = str(item.get("category_name") or "").strip()
+            prefix = f"[{category_name}] " if category_name else ""
+            lines.append(f"- {prefix}{title}: {suppress_discord_link_embed(link)}")
     else:
-        lines.append(f"- {forum_results[0]}")
+        lines.append("- No results found.")
     return trim_search_message("\n".join(lines))
 
 
 def build_openwrt_forum_search_message(query: str):
-    forum_results = search_openwrt_forum_links(query)
+    forum_results, error_message = search_openwrt_forum_links(query)
     lines = [
         f"🔎 OpenWrt forum results for: `{query}`",
         "",
         f"**Top {OPENWRT_FORUM_MAX_RESULTS} OpenWrt forum results**",
     ]
-    forum_links = [item for item in forum_results if item.startswith("http")]
-    if forum_links:
-        lines.extend([f"- {suppress_discord_link_embed(link)}" for link in forum_links])
+    if error_message:
+        lines.append(f"- {error_message}")
+    elif forum_results:
+        for item in forum_results:
+            title = str(item.get("title") or "Untitled topic").strip()
+            link = str(item.get("url") or "").strip()
+            category_name = str(item.get("category_name") or "").strip()
+            prefix = f"[{category_name}] " if category_name else ""
+            lines.append(f"- {prefix}{title}: {suppress_discord_link_embed(link)}")
     else:
-        lines.append(f"- {forum_results[0]}")
+        lines.append("- No results found.")
     return trim_search_message("\n".join(lines))
 
 
@@ -13301,7 +13388,7 @@ async def search_forum_slash(interaction: discord.Interaction, query: str):
         await interaction.response.send_message("❌ Please provide a search query.", ephemeral=True)
         return
     await interaction.response.defer(thinking=True)
-    message = await asyncio.to_thread(build_forum_search_message, query)
+    message = await asyncio.to_thread(build_forum_search_message, query, interaction.guild_id)
     await interaction.followup.send(message)
 
 
@@ -13315,7 +13402,7 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
         await ctx.send("❌ Please provide a search query.")
         return
     await ctx.send("🔍 Searching forum...")
-    message = await asyncio.to_thread(build_forum_search_message, query)
+    message = await asyncio.to_thread(build_forum_search_message, query, getattr(ctx.guild, "id", None))
     await ctx.send(message)
 
 
