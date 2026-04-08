@@ -9323,16 +9323,28 @@ def search_reddit_posts(query: str):
             logger.warning("Reddit search rate limited for query: %s", query)
             return [], "❌ Reddit search is rate-limited right now. Please try again soon."
         if status_code == 403:
-            logger.warning("Reddit search blocked with HTTP 403 for query: %s", query)
-            return [], "❌ Reddit rejected the request right now. Please try again shortly."
+            logger.warning("Reddit search blocked with HTTP 403 for query: %s; retrying HTML search.", query)
+            try:
+                return fetch_reddit_search_posts_via_html(query), ""
+            except requests.RequestException:
+                logger.exception("Reddit HTML search request failed for query: %s", query)
+                return [], "❌ Reddit rejected the request right now. Please try again shortly."
         logger.exception("Reddit search HTTP failure for query: %s", query)
         return [], "❌ Failed to fetch Reddit results."
     except requests.RequestException:
-        logger.exception("Reddit search request failed for query: %s", query)
-        return [], "❌ Failed to fetch Reddit results."
+        logger.exception("Reddit search request failed for query: %s; retrying HTML search.", query)
+        try:
+            return fetch_reddit_search_posts_via_html(query), ""
+        except requests.RequestException:
+            logger.exception("Reddit HTML search request failed for query: %s", query)
+            return [], "❌ Failed to fetch Reddit results."
     except ValueError:
-        logger.exception("Reddit search returned invalid JSON for query: %s", query)
-        return [], "❌ Reddit returned an invalid response."
+        logger.exception("Reddit search returned invalid JSON for query: %s; retrying HTML search.", query)
+        try:
+            return fetch_reddit_search_posts_via_html(query), ""
+        except requests.RequestException:
+            logger.exception("Reddit HTML search request failed for query: %s", query)
+            return [], "❌ Reddit returned an invalid response."
 
     children = ((data or {}).get("data") or {}).get("children", [])
     if not isinstance(children, list):
@@ -9359,6 +9371,46 @@ def search_reddit_posts(query: str):
             break
 
     return posts, ""
+
+
+def fetch_reddit_search_posts_via_html(query: str):
+    request_headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        "Connection": "close",
+    }
+    response = requests.get(
+        f"{REDDIT_FALLBACK_BASE_URL}/r/{REDDIT_SUBREDDIT}/search/",
+        params={
+            "q": query,
+            "restrict_sr": "on",
+            "sort": "relevance",
+            "t": "all",
+        },
+        timeout=10,
+        headers=request_headers,
+    )
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    posts = []
+    seen_links = set()
+    for container in soup.select("div.search-result.search-result-link"):
+        link_tag = container.select_one("a.search-title")
+        if link_tag is None:
+            continue
+        href = str(link_tag.get("href") or "").strip()
+        if not href:
+            continue
+        resolved_link = urljoin(REDDIT_FALLBACK_BASE_URL, href)
+        if resolved_link in seen_links:
+            continue
+        title = clean_search_text(link_tag.get_text(" ", strip=True)).strip() or "Untitled post"
+        posts.append((make_discord_safe_text(title), resolved_link))
+        seen_links.add(resolved_link)
+        if len(posts) >= REDDIT_MAX_RESULTS:
+            break
+    return posts
 
 
 def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, timeout_seconds: int = 10):
