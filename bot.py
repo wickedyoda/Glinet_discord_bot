@@ -5539,6 +5539,46 @@ def run_web_get_guilds():
         return {"ok": False, "error": "Unexpected error while loading guild list."}
 
 
+def run_web_get_health_status():
+    try:
+        loop = getattr(bot, "loop", None)
+        loop_running = bool(loop is not None and loop.is_running())
+    except Exception:
+        loop_running = False
+    try:
+        closed = bool(bot.is_closed())
+    except Exception:
+        closed = True
+    try:
+        ready = bool(bot.is_ready())
+    except Exception:
+        ready = False
+    current_user = getattr(bot, "user", None)
+    managed_guild_count = 0
+    if ready:
+        try:
+            managed_guild_count = len(get_managed_guilds())
+        except Exception:
+            managed_guild_count = 0
+    latency_ms = None
+    try:
+        latency = float(getattr(bot, "latency", 0.0) or 0.0)
+        if ready and latency >= 0.0:
+            latency_ms = int(latency * 1000)
+    except Exception:
+        latency_ms = None
+    return {
+        "ok": True,
+        "ready": bool(loop_running and not closed and current_user is not None and ready),
+        "discord_logged_in": bool(current_user is not None),
+        "discord_ready": ready,
+        "discord_closed": closed,
+        "loop_running": loop_running,
+        "managed_guild_count": managed_guild_count,
+        "latency_ms": latency_ms,
+    }
+
+
 async def run_web_bulk_role_assignment_async(guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str):
     guild = bot.get_guild(normalize_target_guild_id(guild_id))
     if guild is None:
@@ -9205,6 +9245,7 @@ def start_web_admin_server():
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
+                    on_get_health_status=run_web_get_health_status,
                     on_request_restart=run_web_request_restart,
                     on_leave_guild=run_web_leave_guild,
                     logger=logger,
