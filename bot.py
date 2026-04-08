@@ -9303,7 +9303,10 @@ def search_openwrt_forum_links(query: str):
 def search_reddit_posts(query: str):
     try:
         data = fetch_reddit_json(
-            f"/r/{REDDIT_SUBREDDIT}/search.json",
+            [
+                f"/r/{REDDIT_SUBREDDIT}/search.json",
+                f"/r/{REDDIT_SUBREDDIT}/search/.json",
+            ],
             params={
                 "q": query,
                 "sort": "relevance",
@@ -9319,6 +9322,9 @@ def search_reddit_posts(query: str):
         if status_code == 429:
             logger.warning("Reddit search rate limited for query: %s", query)
             return [], "❌ Reddit search is rate-limited right now. Please try again soon."
+        if status_code == 403:
+            logger.warning("Reddit search blocked with HTTP 403 for query: %s", query)
+            return [], "❌ Reddit rejected the request right now. Please try again shortly."
         logger.exception("Reddit search HTTP failure for query: %s", query)
         return [], "❌ Failed to fetch Reddit results."
     except requests.RequestException:
@@ -9355,37 +9361,73 @@ def search_reddit_posts(query: str):
     return posts, ""
 
 
-def fetch_reddit_json(path: str, *, params: dict, timeout_seconds: int = 10):
-    normalized_path = "/" + str(path or "").lstrip("/")
+def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, timeout_seconds: int = 10):
+    if isinstance(path, (list, tuple)):
+        normalized_paths = []
+        for entry in path:
+            normalized = "/" + str(entry or "").lstrip("/")
+            if normalized and normalized not in normalized_paths:
+                normalized_paths.append(normalized)
+    else:
+        normalized_paths = ["/" + str(path or "").lstrip("/")]
     request_headers = {
         "Accept": "application/json,text/plain,*/*",
         "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        "Connection": "close",
     }
     last_http_error = None
-    for index, base_url in enumerate((REDDIT_BASE_URL, REDDIT_FALLBACK_BASE_URL)):
-        response = requests.get(
-            f"{base_url}{normalized_path}",
-            params=params,
-            timeout=timeout_seconds,
-            headers=request_headers,
-        )
-        try:
-            response.raise_for_status()
-        except requests.HTTPError as exc:
-            status_code = getattr(exc.response, "status_code", None)
-            last_http_error = exc
-            if status_code == 403 and index == 0:
+    last_request_error = None
+    for normalized_path in normalized_paths:
+        for index, base_url in enumerate((REDDIT_BASE_URL, REDDIT_FALLBACK_BASE_URL)):
+            try:
+                response = requests.get(
+                    f"{base_url}{normalized_path}",
+                    params=params,
+                    timeout=timeout_seconds,
+                    headers=request_headers,
+                )
+                response.raise_for_status()
+                return response.json()
+            except requests.HTTPError as exc:
+                status_code = getattr(exc.response, "status_code", None)
+                last_http_error = exc
+                if status_code == 403 and index == 0:
+                    logger.warning(
+                        "Reddit endpoint %s returned HTTP 403 for %s; retrying fallback endpoint.",
+                        base_url,
+                        normalized_path,
+                    )
+                    continue
+                if status_code == 403 and normalized_path != normalized_paths[-1]:
+                    logger.warning(
+                        "Reddit path %s returned HTTP 403 on %s; retrying alternate JSON path.",
+                        normalized_path,
+                        base_url,
+                    )
+                    break
+                raise
+            except (requests.ConnectionError, requests.Timeout) as exc:
+                last_request_error = exc
                 logger.warning(
-                    "Reddit endpoint %s returned HTTP 403 for %s; retrying fallback endpoint.",
+                    "Reddit request failed for %s%s (%s); trying next candidate.",
+                    base_url,
+                    normalized_path,
+                    exc,
+                )
+                continue
+            except ValueError as exc:
+                last_request_error = exc
+                logger.warning(
+                    "Reddit returned invalid JSON for %s%s; trying next candidate.",
                     base_url,
                     normalized_path,
                 )
                 continue
-            raise
-        return response.json()
     if last_http_error is not None:
         raise last_http_error
-    raise RuntimeError(f"Reddit request failed for {normalized_path}.")
+    if last_request_error is not None:
+        raise last_request_error
+    raise RuntimeError(f"Reddit request failed for {normalized_paths[-1]}.")
 
 
 def fetch_reddit_subreddit_new_posts(subreddit: str):
@@ -9393,40 +9435,147 @@ def fetch_reddit_subreddit_new_posts(subreddit: str):
     if not cleaned_subreddit:
         raise LookupError("Invalid subreddit.")
 
-    data = fetch_reddit_json(
-        f"/r/{cleaned_subreddit}/new.json",
-        params={"limit": REDDIT_FEED_FETCH_LIMIT, "raw_json": 1},
-        timeout_seconds=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
-    )
-    children = ((data or {}).get("data") or {}).get("children", [])
-    if not isinstance(children, list):
-        children = []
+    try:
+        data = fetch_reddit_json(
+            [
+                f"/r/{cleaned_subreddit}/new.json",
+                f"/r/{cleaned_subreddit}/new/.json",
+            ],
+            params={"limit": REDDIT_FEED_FETCH_LIMIT, "raw_json": 1},
+            timeout_seconds=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
+        )
+        children = ((data or {}).get("data") or {}).get("children", [])
+        if not isinstance(children, list):
+            children = []
 
+        posts = []
+        seen_ids = set()
+        for item in children:
+            if not isinstance(item, dict):
+                continue
+            payload = item.get("data", {})
+            if not isinstance(payload, dict):
+                continue
+            post_id = str(payload.get("id") or "").strip()
+            permalink = str(payload.get("permalink") or "").strip()
+            if not post_id or not permalink or post_id in seen_ids:
+                continue
+            posts.append(
+                {
+                    "id": post_id,
+                    "title": make_discord_safe_text(clean_search_text(str(payload.get("title") or "")).strip() or "Untitled post"),
+                    "link": urljoin(REDDIT_BASE_URL, permalink),
+                    "author": make_discord_safe_text(clean_search_text(str(payload.get("author") or "unknown")).strip() or "unknown"),
+                    "created_utc": int(float(payload.get("created_utc") or 0.0)),
+                }
+            )
+            seen_ids.add(post_id)
+
+        posts.sort(key=lambda item: (item.get("created_utc") or 0, item.get("id") or ""))
+        return cleaned_subreddit, posts
+    except (requests.HTTPError, requests.RequestException, ValueError) as exc:
+        logger.warning(
+            "Reddit JSON feed fetch failed for r/%s (%s); retrying Atom feed.",
+            cleaned_subreddit,
+            exc,
+        )
+        posts = fetch_reddit_subreddit_new_posts_via_atom(cleaned_subreddit)
+        return cleaned_subreddit, posts
+
+
+def parse_reddit_atom_timestamp(raw_value: str) -> int:
+    text = str(raw_value or "").strip()
+    if not text:
+        return 0
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    else:
+        parsed = parsed.astimezone(UTC)
+    return int(parsed.timestamp())
+
+
+def fetch_reddit_subreddit_new_posts_via_atom(subreddit: str):
+    headers = {
+        "Accept": "application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        "Connection": "close",
+    }
+    last_http_error = None
+    last_request_error = None
+    feed_urls = (
+        f"{REDDIT_BASE_URL}/r/{subreddit}/new.rss",
+        f"{REDDIT_BASE_URL}/r/{subreddit}/new/.rss",
+        f"{REDDIT_FALLBACK_BASE_URL}/r/{subreddit}/new.rss",
+        f"{REDDIT_FALLBACK_BASE_URL}/r/{subreddit}/new/.rss",
+    )
+    for feed_url in feed_urls:
+        try:
+            response = requests.get(
+                feed_url,
+                headers=headers,
+                timeout=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            return parse_reddit_atom_feed(response.text)
+        except requests.HTTPError as exc:
+            last_http_error = exc
+            logger.warning("Reddit Atom feed returned HTTP error for %s: %s", feed_url, exc)
+            continue
+        except (requests.RequestException, ET.ParseError, ValueError) as exc:
+            last_request_error = exc
+            logger.warning("Reddit Atom feed request failed for %s: %s", feed_url, exc)
+            continue
+
+    if last_http_error is not None:
+        raise last_http_error
+    if last_request_error is not None:
+        raise last_request_error
+    raise RuntimeError(f"Reddit Atom feed request failed for r/{subreddit}.")
+
+
+def parse_reddit_atom_feed(feed_text: str):
+    root = ET.fromstring(feed_text)
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
     posts = []
     seen_ids = set()
-    for item in children:
-        if not isinstance(item, dict):
+    for entry in root.findall("atom:entry", namespace):
+        raw_id = entry.findtext("atom:id", default="", namespaces=namespace)
+        post_id = str(raw_id or "").strip().rsplit("/", 1)[-1]
+        if not post_id or post_id in seen_ids:
             continue
-        payload = item.get("data", {})
-        if not isinstance(payload, dict):
-            continue
-        post_id = str(payload.get("id") or "").strip()
-        permalink = str(payload.get("permalink") or "").strip()
-        if not post_id or not permalink or post_id in seen_ids:
-            continue
+        title = clean_search_text(entry.findtext("atom:title", default="", namespaces=namespace)).strip() or "Untitled post"
+        link = ""
+        for link_entry in entry.findall("atom:link", namespace):
+            href = str(link_entry.get("href") or "").strip()
+            if href:
+                link = href
+                break
+        author_name = clean_search_text(
+            entry.findtext("atom:author/atom:name", default="unknown", namespaces=namespace)
+        ).strip() or "unknown"
+        created_utc = parse_reddit_atom_timestamp(
+            entry.findtext("atom:updated", default="", namespaces=namespace)
+            or entry.findtext("atom:published", default="", namespaces=namespace)
+        )
         posts.append(
             {
                 "id": post_id,
-                "title": make_discord_safe_text(clean_search_text(str(payload.get("title") or "")).strip() or "Untitled post"),
-                "link": urljoin(REDDIT_BASE_URL, permalink),
-                "author": make_discord_safe_text(clean_search_text(str(payload.get("author") or "unknown")).strip() or "unknown"),
-                "created_utc": int(float(payload.get("created_utc") or 0.0)),
+                "title": make_discord_safe_text(title),
+                "link": link,
+                "author": make_discord_safe_text(author_name),
+                "created_utc": created_utc,
             }
         )
         seen_ids.add(post_id)
+        if len(posts) >= REDDIT_FEED_FETCH_LIMIT:
+            break
 
     posts.sort(key=lambda item: (item.get("created_utc") or 0, item.get("id") or ""))
-    return cleaned_subreddit, posts
+    return posts
 
 
 def format_reddit_feed_post_message(subreddit: str, post: dict):
