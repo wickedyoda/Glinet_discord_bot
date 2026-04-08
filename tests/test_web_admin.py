@@ -633,6 +633,7 @@ def _make_app(tmp_path: Path):
     )
     app.config["TESTING"] = True
     app.config["BOT_PROFILE_UPDATES"] = bot_profile_updates
+    app.config["GUILD_SETTINGS_STATE"] = guild_settings_state
     return app
 
 
@@ -1721,11 +1722,14 @@ def test_discourse_page_renders_controls_and_saves_settings(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"Guild settings updated by admin@example.com." in response.data
-    assert b"https://forum.gl-inet.com" in response.data
     assert b"forum-bot" in response.data
     assert b"Guild Forum Bot" in response.data
     assert b"20 second(s)" in response.data
     assert b"Configured for this guild" in response.data
+    guild_settings_state = app.config["GUILD_SETTINGS_STATE"]
+    assert guild_settings_state["discourse_base_url"] == "https://forum.gl-inet.com"
+    assert guild_settings_state["discourse_api_username"] == "forum-bot"
+    assert guild_settings_state["discourse_profile_name"] == "Guild Forum Bot"
 
 
 def test_admin_can_save_global_settings(tmp_path: Path):
