@@ -5539,6 +5539,46 @@ def run_web_get_guilds():
         return {"ok": False, "error": "Unexpected error while loading guild list."}
 
 
+def run_web_get_health_status():
+    try:
+        loop = getattr(bot, "loop", None)
+        loop_running = bool(loop is not None and loop.is_running())
+    except Exception:
+        loop_running = False
+    try:
+        closed = bool(bot.is_closed())
+    except Exception:
+        closed = True
+    try:
+        ready = bool(bot.is_ready())
+    except Exception:
+        ready = False
+    current_user = getattr(bot, "user", None)
+    managed_guild_count = 0
+    if ready:
+        try:
+            managed_guild_count = len(get_managed_guilds())
+        except Exception:
+            managed_guild_count = 0
+    latency_ms = None
+    try:
+        latency = float(getattr(bot, "latency", 0.0) or 0.0)
+        if ready and latency >= 0.0:
+            latency_ms = int(latency * 1000)
+    except Exception:
+        latency_ms = None
+    return {
+        "ok": True,
+        "ready": bool(loop_running and not closed and current_user is not None and ready),
+        "discord_logged_in": bool(current_user is not None),
+        "discord_ready": ready,
+        "discord_closed": closed,
+        "loop_running": loop_running,
+        "managed_guild_count": managed_guild_count,
+        "latency_ms": latency_ms,
+    }
+
+
 async def run_web_bulk_role_assignment_async(guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str):
     guild = bot.get_guild(normalize_target_guild_id(guild_id))
     if guild is None:
@@ -9205,6 +9245,7 @@ def start_web_admin_server():
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
+                    on_get_health_status=run_web_get_health_status,
                     on_request_restart=run_web_request_restart,
                     on_leave_guild=run_web_leave_guild,
                     logger=logger,
@@ -9323,16 +9364,28 @@ def search_reddit_posts(query: str):
             logger.warning("Reddit search rate limited for query: %s", query)
             return [], "❌ Reddit search is rate-limited right now. Please try again soon."
         if status_code == 403:
-            logger.warning("Reddit search blocked with HTTP 403 for query: %s", query)
-            return [], "❌ Reddit rejected the request right now. Please try again shortly."
+            logger.warning("Reddit search blocked with HTTP 403 for query: %s; retrying fallback search.", query)
+            try:
+                return fetch_reddit_search_posts_via_fallback(query), ""
+            except (requests.RequestException, ET.ParseError, ValueError):
+                logger.exception("Reddit fallback search failed for query: %s", query)
+                return [], "❌ Reddit rejected the request right now. Please try again shortly."
         logger.exception("Reddit search HTTP failure for query: %s", query)
         return [], "❌ Failed to fetch Reddit results."
     except requests.RequestException:
-        logger.exception("Reddit search request failed for query: %s", query)
-        return [], "❌ Failed to fetch Reddit results."
+        logger.exception("Reddit search request failed for query: %s; retrying fallback search.", query)
+        try:
+            return fetch_reddit_search_posts_via_fallback(query), ""
+        except (requests.RequestException, ET.ParseError, ValueError):
+            logger.exception("Reddit fallback search failed for query: %s", query)
+            return [], "❌ Failed to fetch Reddit results."
     except ValueError:
-        logger.exception("Reddit search returned invalid JSON for query: %s", query)
-        return [], "❌ Reddit returned an invalid response."
+        logger.exception("Reddit search returned invalid JSON for query: %s; retrying fallback search.", query)
+        try:
+            return fetch_reddit_search_posts_via_fallback(query), ""
+        except (requests.RequestException, ET.ParseError, ValueError):
+            logger.exception("Reddit fallback search failed for query: %s", query)
+            return [], "❌ Reddit returned an invalid response."
 
     children = ((data or {}).get("data") or {}).get("children", [])
     if not isinstance(children, list):
@@ -9359,6 +9412,115 @@ def search_reddit_posts(query: str):
             break
 
     return posts, ""
+
+
+def fetch_reddit_search_posts_via_html(query: str):
+    request_headers = {
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        "Connection": "close",
+    }
+    response = requests.get(
+        f"{REDDIT_FALLBACK_BASE_URL}/r/{REDDIT_SUBREDDIT}/search/",
+        params={
+            "q": query,
+            "restrict_sr": "on",
+            "sort": "relevance",
+            "t": "all",
+        },
+        timeout=10,
+        headers=request_headers,
+    )
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+    posts = []
+    seen_links = set()
+    for container in soup.select("div.search-result.search-result-link"):
+        link_tag = container.select_one("a.search-title")
+        if link_tag is None:
+            continue
+        href = str(link_tag.get("href") or "").strip()
+        if not href:
+            continue
+        resolved_link = urljoin(REDDIT_FALLBACK_BASE_URL, href)
+        if resolved_link in seen_links:
+            continue
+        title = clean_search_text(link_tag.get_text(" ", strip=True)).strip() or "Untitled post"
+        posts.append((make_discord_safe_text(title), resolved_link))
+        seen_links.add(resolved_link)
+        if len(posts) >= REDDIT_MAX_RESULTS:
+            break
+    return posts
+
+
+def fetch_reddit_search_posts_via_atom(query: str):
+    headers = {
+        "Accept": "application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        "Connection": "close",
+    }
+    last_http_error = None
+    last_request_error = None
+    feed_urls = (
+        f"{REDDIT_BASE_URL}/r/{REDDIT_SUBREDDIT}/search.rss",
+        f"{REDDIT_FALLBACK_BASE_URL}/r/{REDDIT_SUBREDDIT}/search.rss",
+    )
+    params = {
+        "q": query,
+        "restrict_sr": 1,
+        "sort": "relevance",
+        "t": "all",
+    }
+    for feed_url in feed_urls:
+        try:
+            response = requests.get(
+                feed_url,
+                params=params,
+                headers=headers,
+                timeout=10,
+            )
+            response.raise_for_status()
+            posts = []
+            for item in parse_reddit_atom_feed(response.text):
+                link = str(item.get("link") or "").strip()
+                if not link:
+                    continue
+                title = str(item.get("title") or "").strip() or "Untitled post"
+                posts.append((title, link))
+                if len(posts) >= REDDIT_MAX_RESULTS:
+                    break
+            return posts
+        except requests.HTTPError as exc:
+            last_http_error = exc
+            logger.warning("Reddit Atom search returned HTTP error for %s: %s", feed_url, exc)
+            continue
+        except (requests.RequestException, ET.ParseError, ValueError) as exc:
+            last_request_error = exc
+            logger.warning("Reddit Atom search request failed for %s: %s", feed_url, exc)
+            continue
+
+    if last_http_error is not None:
+        raise last_http_error
+    if last_request_error is not None:
+        raise last_request_error
+    raise RuntimeError(f"Reddit Atom search request failed for query {query!r}.")
+
+
+def fetch_reddit_search_posts_via_fallback(query: str):
+    try:
+        posts = fetch_reddit_search_posts_via_html(query)
+        if posts:
+            return posts
+    except requests.RequestException:
+        logger.exception("Reddit HTML search request failed for query: %s", query)
+    try:
+        posts = fetch_reddit_search_posts_via_atom(query)
+        if posts:
+            return posts
+    except (requests.RequestException, ET.ParseError, ValueError):
+        logger.exception("Reddit Atom search request failed for query: %s", query)
+    return []
 
 
 def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, timeout_seconds: int = 10):

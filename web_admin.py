@@ -113,7 +113,7 @@ POST_FORM_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "select_guild"}
+READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "readyz", "select_guild"}
 WEB_GUI_TITLE_SUFFIX = "GL.iNet UnOfficial Discord Bot Dashboard"
 WEB_GUI_VERSION_PREFIX = "v1.0"
 RECENT_NAV_SESSION_KEY = "recent_admin_pages"
@@ -2902,6 +2902,7 @@ def create_web_app(
     on_update_bot_avatar=None,
     on_request_restart=None,
     on_leave_guild=None,
+    on_get_health_status=None,
     logger=None,
 ):
     app = Flask(__name__)
@@ -3533,7 +3534,7 @@ def create_web_app(
     def enforce_request_security():
         if request.method not in STATE_CHANGING_METHODS:
             return None
-        if request.endpoint == "healthz":
+        if request.endpoint in {"healthz", "readyz"}:
             return None
 
         if enforce_same_origin_posts and not _is_same_origin_request():
@@ -3678,6 +3679,7 @@ def create_web_app(
             "login",
             "logout",
             "healthz",
+            "readyz",
             "favicon",
             "account",
             "guilds_page",
@@ -3805,7 +3807,7 @@ def create_web_app(
         if not _password_change_required(user):
             session.pop("force_password_change_notice_shown", None)
             return None
-        if request.endpoint in {"account", "logout", "login", "healthz"}:
+        if request.endpoint in {"account", "logout", "login", "healthz", "readyz"}:
             return None
         if not session.get("force_password_change_notice_shown"):
             flash(
@@ -3844,9 +3846,43 @@ def create_web_app(
 
         return wrapper
 
+    def _build_health_status_payload():
+        payload = {
+            "ok": True,
+            "ready": True,
+            "service": "discord_invite_bot",
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        if not callable(on_get_health_status):
+            return payload
+        try:
+            result = on_get_health_status()
+        except Exception:
+            if logger:
+                logger.exception("Health status callback failed.")
+            payload.update(
+                {
+                    "ok": False,
+                    "ready": False,
+                    "error": "health callback failed",
+                }
+            )
+            return payload
+        if isinstance(result, dict):
+            payload.update(result)
+        return payload
+
     @app.route("/healthz", methods=["GET"])
     def healthz():
-        return {"ok": True}, 200
+        payload = _build_health_status_payload()
+        status_code = 200 if bool(payload.get("ok", True)) else 503
+        return payload, status_code
+
+    @app.route("/readyz", methods=["GET"])
+    def readyz():
+        payload = _build_health_status_payload()
+        status_code = 200 if bool(payload.get("ready", False)) else 503
+        return payload, status_code
 
     @app.route("/favicon.ico", methods=["GET"])
     def favicon():
@@ -8548,6 +8584,7 @@ def start_web_admin_interface(
     on_update_bot_avatar=None,
     on_request_restart=None,
     on_leave_guild=None,
+    on_get_health_status=None,
     logger=None,
 ):
     app = create_web_app(
@@ -8585,6 +8622,7 @@ def start_web_admin_interface(
         on_update_bot_avatar=on_update_bot_avatar,
         on_request_restart=on_request_restart,
         on_leave_guild=on_leave_guild,
+        on_get_health_status=on_get_health_status,
         logger=logger,
     )
     servers = []
