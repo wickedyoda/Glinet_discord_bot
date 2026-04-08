@@ -284,6 +284,17 @@ def _make_app(tmp_path: Path):
             return get_reddit_feeds(safe_guild_id) | {"message": "Reddit feed deleted."}
         return {"ok": False, "error": "Invalid Reddit feed action."}
 
+    health_state = {
+        "ok": True,
+        "ready": True,
+        "discord_logged_in": True,
+        "discord_ready": True,
+        "discord_closed": False,
+        "loop_running": True,
+        "managed_guild_count": 2,
+        "latency_ms": 123,
+    }
+
     youtube_subscriptions_state = [
         {
             "id": 1,
@@ -544,6 +555,7 @@ def _make_app(tmp_path: Path):
             "content_type": "application/zip",
             "data": b"PK\x05\x06" + (b"\x00" * 18),
         },
+        on_get_health_status=lambda: dict(health_state),
         on_get_reddit_feeds=get_reddit_feeds,
         on_manage_reddit_feeds=manage_reddit_feeds,
         on_get_command_permissions=lambda guild_id: {
@@ -634,6 +646,7 @@ def _make_app(tmp_path: Path):
     app.config["TESTING"] = True
     app.config["BOT_PROFILE_UPDATES"] = bot_profile_updates
     app.config["GUILD_SETTINGS_STATE"] = guild_settings_state
+    app.config["TEST_HEALTH_STATE"] = health_state
     return app
 
 
@@ -715,6 +728,34 @@ def test_healthz_route(tmp_path: Path):
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["ok"] is True
+    assert payload["ready"] is True
+    assert payload["discord_ready"] is True
+
+
+def test_readyz_route(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["ready"] is True
+
+
+def test_readyz_route_returns_503_when_bot_not_ready(tmp_path: Path):
+    app = _make_app(tmp_path)
+    app.config["TEST_HEALTH_STATE"]["ready"] = False
+    app.config["TEST_HEALTH_STATE"]["discord_ready"] = False
+    client = app.test_client()
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    payload = response.get_json()
+    assert payload["ok"] is True
+    assert payload["ready"] is False
 
 
 def test_security_headers_depend_on_https(tmp_path: Path):
@@ -722,7 +763,7 @@ def test_security_headers_depend_on_https(tmp_path: Path):
     client = app.test_client()
 
     insecure_response = client.get("/healthz", base_url="http://docker.example:8080")
-    secure_response = client.get("/healthz", base_url="https://docker.example:8443")
+    secure_response = client.get("/readyz", base_url="https://docker.example:8443")
 
     assert insecure_response.status_code == 200
     assert secure_response.status_code == 200
