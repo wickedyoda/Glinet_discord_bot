@@ -47,6 +47,7 @@ Core capabilities:
   - [Command Reference](Command-Reference.md)
 - I need onboarding/access role setup:
   - [Role Access and Invites](Role-Access-and-Invites.md)
+  - [Join With an Invite Code](Join-With-Invite-Code.md)
 - I need moderation/logging operations:
   - [Moderation and Logs](Moderation-and-Logs.md)
 - I need web GUI administration details:
@@ -63,6 +64,7 @@ Core capabilities:
 ## Feature Pages
 
 - [Role Access and Invites](Role-Access-and-Invites.md)
+- [Join With an Invite Code](Join-With-Invite-Code.md)
 - [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment.md)
 - [Tag Responses](Tag-Responses.md)
 - [Search and Docs](Search-and-Docs.md)
