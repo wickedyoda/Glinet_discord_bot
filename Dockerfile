@@ -31,5 +31,8 @@ COPY . .
 
 EXPOSE 8080 8081
 
+HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
+  CMD python -c "import os, sys, urllib.request; port = int(os.getenv('WEB_PORT', '8080') or '8080'); url = f'http://127.0.0.1:{port}/readyz'; response = urllib.request.urlopen(url, timeout=8); sys.exit(0 if response.status == 200 else 1)"
+
 # Run the bot
 CMD ["python", "-u", "bot.py"]
