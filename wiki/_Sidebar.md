@@ -2,6 +2,7 @@
 
 - [Home](Home.md)
 - [Role Access and Invites](Role-Access-and-Invites.md)
+- [Join With an Invite Code](Join-With-Invite-Code.md)
 - [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment.md)
 - [Tag Responses](Tag-Responses.md)
 - [Search and Docs](Search-and-Docs.md)
