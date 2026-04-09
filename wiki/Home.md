@@ -53,6 +53,7 @@ Core capabilities:
   - [Web Admin Interface](Web-Admin-Interface.md)
 - I need deployment and proxy guidance:
   - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy.md)
+  - [Health Checks and Readiness](Health-Checks-and-Readiness.md)
   - [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
 - I need security baseline and controls:
   - [Security Hardening](Security-Hardening.md)
@@ -74,6 +75,7 @@ Core capabilities:
 
 - [Environment Variables](Environment-Variables.md)
 - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy.md)
+- [Health Checks and Readiness](Health-Checks-and-Readiness.md)
 - [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
 - [Data Files](Data-Files.md)
 - [Security Hardening](Security-Hardening.md)

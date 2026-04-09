@@ -11,6 +11,7 @@
 - [Web Admin Interface](Web-Admin-Interface.md)
 - [Environment Variables](Environment-Variables.md)
 - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy.md)
+- [Health Checks and Readiness](Health-Checks-and-Readiness.md)
 - [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
 - [Data Files](Data-Files.md)
 - [Security Hardening](Security-Hardening.md)
