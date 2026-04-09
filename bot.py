@@ -5257,6 +5257,26 @@ def validate_manageable_role(actor: discord.Member, role: discord.Role, bot_memb
     return True, None
 
 
+def validate_web_moderation_target(target: discord.Member, bot_member: discord.Member):
+    if target.id == target.guild.owner_id:
+        return False, "❌ You cannot moderate the server owner."
+    if target.id == bot_member.id:
+        return False, "❌ You cannot moderate the bot."
+    if bot_member.top_role <= target.top_role:
+        return False, "❌ I can only moderate members below my top role."
+    return True, None
+
+
+def validate_web_manageable_role(role: discord.Role, bot_member: discord.Member):
+    if role == bot_member.guild.default_role:
+        return False, "❌ You cannot manage the @everyone role."
+    if role.managed:
+        return False, "❌ That role is managed by an integration and cannot be changed here."
+    if bot_member.top_role <= role:
+        return False, "❌ I can only manage roles below my top role."
+    return True, None
+
+
 def resolve_discourse_forum_settings(guild_id: int | str | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
     settings = load_guild_settings(safe_guild_id)
@@ -6069,6 +6089,465 @@ def run_web_update_bot_profile(
     except Exception:
         logger.exception("Unexpected failure while updating bot profile")
         return {"ok": False, "error": "Unexpected error while updating bot profile."}
+
+
+async def send_web_moderation_log(
+    guild: discord.Guild,
+    actor_label: str,
+    action: str,
+    *,
+    target: discord.Member | None = None,
+    role: discord.Role | None = None,
+    reason: str | None = None,
+    outcome: str = "success",
+    details: str | None = None,
+):
+    actor_text = str(actor_label or "web admin")
+    target_text = f"{target} (`{target.id}`)" if target else "N/A"
+    reason_text = reason or "N/A"
+    details_parts = []
+    if role is not None:
+        details_parts.append(f"Role: @{role.name} (`{role.id}`)")
+    if details:
+        details_parts.append(str(details))
+    details_text = " | ".join(details_parts) if details_parts else "N/A"
+    message = (
+        "🛡️ **Moderation Action**\n"
+        f"**Moderator:** {actor_text}\n"
+        f"**Action:** `{action}`\n"
+        f"**Target:** {target_text}\n"
+        f"**Outcome:** `{outcome}`\n"
+        f"**Reason:** {reason_text}\n"
+        f"**Details:** {details_text}"
+    )
+    record_action_safe(
+        action=action,
+        status=outcome,
+        moderator=actor_text,
+        target=target_text,
+        reason=truncate_log_text(f"{reason_text} | {details_text}", max_length=500),
+        guild_id=guild.id,
+    )
+    target_channel_id = get_effective_logging_channel_id(guild.id)
+    record_bot_log_channel_message("moderation_action", target_channel_id, message)
+
+    channel = await resolve_mod_log_channel(guild)
+    if channel is None:
+        return False
+
+    try:
+        await channel.send(message, allowed_mentions=discord.AllowedMentions.none())
+        return True
+    except discord.Forbidden:
+        logger.warning("No permission to send moderation logs to channel %s", target_channel_id)
+        return False
+    except discord.HTTPException:
+        logger.exception("Failed to send web moderation log for action %s", action)
+        return False
+
+
+def _format_web_member_timestamp(value: datetime | None):
+    if value is None:
+        return "Unknown"
+    try:
+        return value.astimezone(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    except Exception:
+        return "Unknown"
+
+
+async def fetch_web_members_async(guild_id: int, search_query: str = "", role_id: str = "", page: int = 1):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    guild = bot.get_guild(safe_guild_id)
+    if guild is None:
+        return {"ok": False, "error": "Selected guild is not available in bot cache."}
+
+    try:
+        if not guild.chunked:
+            await guild.chunk(cache=True)
+    except Exception:
+        logger.debug("Failed to chunk guild members for web members page", exc_info=True)
+
+    normalized_query = str(search_query or "").strip().casefold()
+    safe_role_id = str(role_id or "").strip()
+    try:
+        role_filter_id = int(safe_role_id) if safe_role_id else 0
+    except (TypeError, ValueError):
+        role_filter_id = 0
+
+    filtered_members = []
+    for member in list(guild.members):
+        if role_filter_id and all(role.id != role_filter_id for role in member.roles):
+            continue
+        if normalized_query:
+            haystack = " ".join(
+                item
+                for item in {
+                    str(member.id),
+                    str(member),
+                    str(member.name or ""),
+                    str(member.display_name or ""),
+                    str(member.global_name or ""),
+                }
+                if item
+            ).casefold()
+            if normalized_query not in haystack:
+                continue
+        filtered_members.append(member)
+
+    filtered_members.sort(key=lambda item: (item.display_name or item.name or "").casefold())
+    page_size = 50
+    safe_page = max(1, int(page or 1))
+    total_count = len(filtered_members)
+    total_pages = max(1, (total_count + page_size - 1) // page_size)
+    if safe_page > total_pages:
+        safe_page = total_pages
+    start_index = (safe_page - 1) * page_size
+    page_members = filtered_members[start_index : start_index + page_size]
+
+    members = []
+    for member in page_members:
+        role_entries = [
+            {"id": str(role.id), "name": role.name, "label": f"@{role.name}"}
+            for role in sorted(member.roles, key=lambda item: (-item.position, item.name.casefold()))
+            if role != guild.default_role
+        ]
+        role_labels = [entry["label"] for entry in role_entries]
+        roles_label = ", ".join(role_labels[:6])
+        if len(role_labels) > 6:
+            roles_label = f"{roles_label}, +{len(role_labels) - 6} more"
+        members.append(
+            {
+                "id": str(member.id),
+                "name": member.name,
+                "display_name": member.display_name or member.name,
+                "account_name": str(member),
+                "joined_at_label": _format_web_member_timestamp(member.joined_at),
+                "timed_out": bool(member.timed_out_until and member.timed_out_until > discord.utils.utcnow()),
+                "timed_out_until_label": _format_web_member_timestamp(member.timed_out_until),
+                "is_owner": member.id == guild.owner_id,
+                "is_bot": bool(member.bot),
+                "roles_label": roles_label or "No roles",
+                "roles": role_entries,
+            }
+        )
+
+    return {
+        "ok": True,
+        "guild_id": str(guild.id),
+        "guild_name": guild.name,
+        "page": safe_page,
+        "page_size": page_size,
+        "total_count": total_count,
+        "total_pages": total_pages,
+        "start_index": start_index + 1 if total_count else 0,
+        "end_index": min(start_index + page_size, total_count),
+        "has_prev": safe_page > 1,
+        "has_next": start_index + page_size < total_count,
+        "members": members,
+    }
+
+
+async def manage_web_member_async(payload: dict, actor_email: str, guild_id: int):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    guild = bot.get_guild(safe_guild_id)
+    if guild is None:
+        return {"ok": False, "error": "Selected guild is not available in bot cache."}
+
+    action = str((payload or {}).get("action") or "").strip().lower()
+    try:
+        member_id = int(str((payload or {}).get("member_id") or "").strip())
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Member id is invalid."}
+    role_id_raw = str((payload or {}).get("role_id") or "").strip()
+    duration = str((payload or {}).get("duration") or "").strip()
+    reason = str((payload or {}).get("reason") or "").strip()
+
+    bot_user_id = bot.user.id if bot.user else None
+    bot_member = guild.me or (guild.get_member(bot_user_id) if bot_user_id else None)
+    if bot_member is None:
+        return {"ok": False, "error": "Could not resolve the bot member in this guild."}
+
+    member = guild.get_member(member_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(member_id)
+        except discord.HTTPException:
+            member = None
+    if member is None:
+        return {"ok": False, "error": "Selected member could not be resolved in this guild."}
+
+    can_moderate, target_error = validate_web_moderation_target(member, bot_member)
+    if not can_moderate:
+        return {"ok": False, "error": target_error}
+
+    audit_actor = build_web_actor_audit_label(actor_email)
+    actor_text = f"web admin {audit_actor}"
+
+    if action == "kick":
+        if not bot_member.guild_permissions.kick_members:
+            return {"ok": False, "error": "Bot is missing the `Kick Members` permission."}
+        action_reason = reason or f"Kicked by {actor_text}"
+        try:
+            await member.kick(reason=action_reason)
+        except discord.Forbidden:
+            logger.exception("Missing permission to kick member %s via web admin", member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "kick_member",
+                target=member,
+                reason=action_reason,
+                outcome="failed",
+                details="Bot missing `Kick Members` permission or role hierarchy block.",
+            )
+            return {"ok": False, "error": "Bot cannot kick that member. Check permissions and role hierarchy."}
+        except discord.HTTPException:
+            logger.exception("Failed to kick member %s via web admin", member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "kick_member",
+                target=member,
+                reason=action_reason,
+                outcome="failed",
+                details="Discord API error while kicking member.",
+            )
+            return {"ok": False, "error": "Discord failed to kick that member."}
+        await send_web_moderation_log(
+            guild,
+            actor_text,
+            "kick_member",
+            target=member,
+            reason=action_reason,
+            details="Kicked successfully via web admin.",
+        )
+        return {"ok": True, "message": f"Kicked {member}."}
+
+    if action == "timeout":
+        if not bot_member.guild_permissions.moderate_members:
+            return {"ok": False, "error": "Bot is missing the `Moderate Members` permission."}
+        timeout_delta, duration_text, parse_error = parse_timeout_duration(duration)
+        if parse_error:
+            return {"ok": False, "error": parse_error}
+        until = discord.utils.utcnow() + timeout_delta
+        action_reason = reason or f"Timed out by {actor_text}"
+        try:
+            await member.timeout(until, reason=action_reason)
+        except discord.Forbidden:
+            logger.exception("Missing permission to timeout member %s via web admin", member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "timeout_member",
+                target=member,
+                reason=action_reason,
+                outcome="failed",
+                details="Bot missing `Moderate Members` permission or role hierarchy block.",
+            )
+            return {"ok": False, "error": "Bot cannot timeout that member. Check permissions and role hierarchy."}
+        except discord.HTTPException:
+            logger.exception("Failed to timeout member %s via web admin", member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "timeout_member",
+                target=member,
+                reason=action_reason,
+                outcome="failed",
+                details="Discord API error while applying timeout.",
+            )
+            return {"ok": False, "error": "Discord failed to timeout that member."}
+        timestamp = int(until.timestamp())
+        await send_web_moderation_log(
+            guild,
+            actor_text,
+            "timeout_member",
+            target=member,
+            reason=action_reason,
+            details=f"Timed out for {duration_text} until <t:{timestamp}:f> via web admin.",
+        )
+        return {"ok": True, "message": f"Timed out {member} for {duration_text}."}
+
+    if action == "untimeout":
+        if not bot_member.guild_permissions.moderate_members:
+            return {"ok": False, "error": "Bot is missing the `Moderate Members` permission."}
+        timed_out_until = member.timed_out_until
+        if timed_out_until is None or timed_out_until <= discord.utils.utcnow():
+            return {"ok": False, "error": "That member is not currently timed out."}
+        action_reason = reason or f"Timeout removed by {actor_text}"
+        try:
+            await member.timeout(None, reason=action_reason)
+        except discord.Forbidden:
+            logger.exception("Missing permission to remove timeout for member %s via web admin", member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "untimeout_member",
+                target=member,
+                reason=action_reason,
+                outcome="failed",
+                details="Bot missing `Moderate Members` permission or role hierarchy block.",
+            )
+            return {"ok": False, "error": "Bot cannot remove timeout from that member. Check permissions and role hierarchy."}
+        except discord.HTTPException:
+            logger.exception("Failed to remove timeout for member %s via web admin", member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "untimeout_member",
+                target=member,
+                reason=action_reason,
+                outcome="failed",
+                details="Discord API error while removing timeout.",
+            )
+            return {"ok": False, "error": "Discord failed to remove timeout from that member."}
+        await send_web_moderation_log(
+            guild,
+            actor_text,
+            "untimeout_member",
+            target=member,
+            reason=action_reason,
+            details="Timeout removed successfully via web admin.",
+        )
+        return {"ok": True, "message": f"Removed timeout for {member}."}
+
+    if action not in {"add_role", "remove_role"}:
+        return {"ok": False, "error": "Unsupported member action."}
+    if not bot_member.guild_permissions.manage_roles:
+        return {"ok": False, "error": "Bot is missing the `Manage Roles` permission."}
+    try:
+        role_id = int(role_id_raw)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Select a valid role before applying that action."}
+    role = guild.get_role(role_id)
+    if role is None:
+        return {"ok": False, "error": "Selected role no longer exists in this guild."}
+    can_manage_role, role_error = validate_web_manageable_role(role, bot_member)
+    if not can_manage_role:
+        return {"ok": False, "error": role_error}
+
+    if action == "add_role":
+        if role in member.roles:
+            return {"ok": False, "error": f"{member} already has @{role.name}."}
+        action_reason = reason or f"Role assigned by {actor_text}"
+        try:
+            await member.add_roles(role, reason=action_reason)
+        except discord.Forbidden:
+            logger.exception("Missing permission to add role %s to %s via web admin", role, member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "add_role_member",
+                target=member,
+                role=role,
+                reason=action_reason,
+                outcome="failed",
+                details="Bot missing `Manage Roles` permission or role hierarchy block.",
+            )
+            return {"ok": False, "error": "Bot cannot assign that role. Check permissions and role hierarchy."}
+        except discord.HTTPException:
+            logger.exception("Failed to add role %s to %s via web admin", role, member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "add_role_member",
+                target=member,
+                role=role,
+                reason=action_reason,
+                outcome="failed",
+                details="Discord API error while assigning role.",
+            )
+            return {"ok": False, "error": "Discord failed to assign that role."}
+        await send_web_moderation_log(
+            guild,
+            actor_text,
+            "add_role_member",
+            target=member,
+            role=role,
+            reason=action_reason,
+            details="Assigned role via web admin.",
+        )
+        return {"ok": True, "message": f"Assigned @{role.name} to {member}."}
+
+    if role not in member.roles:
+        return {"ok": False, "error": f"{member} does not currently have @{role.name}."}
+    action_reason = reason or f"Role removed by {actor_text}"
+    try:
+        await member.remove_roles(role, reason=action_reason)
+    except discord.Forbidden:
+        logger.exception("Missing permission to remove role %s from %s via web admin", role, member)
+        await send_web_moderation_log(
+            guild,
+            actor_text,
+            "remove_role_member",
+            target=member,
+            role=role,
+            reason=action_reason,
+            outcome="failed",
+            details="Bot missing `Manage Roles` permission or role hierarchy block.",
+        )
+        return {"ok": False, "error": "Bot cannot remove that role. Check permissions and role hierarchy."}
+    except discord.HTTPException:
+        logger.exception("Failed to remove role %s from %s via web admin", role, member)
+        await send_web_moderation_log(
+            guild,
+            actor_text,
+            "remove_role_member",
+            target=member,
+            role=role,
+            reason=action_reason,
+            outcome="failed",
+            details="Discord API error while removing role.",
+        )
+        return {"ok": False, "error": "Discord failed to remove that role."}
+    await send_web_moderation_log(
+        guild,
+        actor_text,
+        "remove_role_member",
+        target=member,
+        role=role,
+        reason=action_reason,
+        details="Removed role via web admin.",
+    )
+    return {"ok": True, "message": f"Removed @{role.name} from {member}."}
+
+
+def run_web_get_members(guild_id: int, search_query: str = "", role_id: str = "", page: int = 1):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = asyncio.run_coroutine_threadsafe(
+        fetch_web_members_async(guild_id, search_query=search_query, role_id=role_id, page=page),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while loading guild members."}
+    except Exception:
+        logger.exception("Unexpected failure while loading web guild members")
+        return {"ok": False, "error": "Unexpected error while loading guild members."}
+
+
+def run_web_manage_member(payload: dict, actor_email: str, guild_id: int):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = asyncio.run_coroutine_threadsafe(
+        manage_web_member_async(payload, actor_email, guild_id),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while applying the member action."}
+    except Exception:
+        logger.exception("Unexpected failure while applying web member action")
+        return {"ok": False, "error": "Unexpected error while applying the member action."}
 
 
 def run_web_update_bot_avatar(payload: bytes, filename: str, actor_email: str):
@@ -9230,6 +9709,8 @@ def start_web_admin_server():
                     on_get_command_permissions=run_web_get_command_permissions,
                     on_save_command_permissions=run_web_update_command_permissions,
                     on_get_actions=run_web_get_actions,
+                    on_get_members=run_web_get_members,
+                    on_manage_member=run_web_manage_member,
                     on_get_member_activity=run_web_get_member_activity,
                     on_export_member_activity=run_web_export_member_activity,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,

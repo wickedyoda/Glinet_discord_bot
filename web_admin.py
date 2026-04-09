@@ -60,6 +60,7 @@ from app.uptime_status import (
 from app.web_audit import should_log_web_audit_event
 from app.web_discourse import process_discourse_submission, render_discourse_body
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
+from app.web_members import process_member_action_submission, render_members_body
 from app.web_moderation import process_moderation_submission, render_moderation_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
@@ -2601,6 +2602,7 @@ def _render_layout(
                 <option value="">Go to page...</option>
                 <option value="{{ url_for('guilds_page') }}">Servers</option>
                 <option value="{{ url_for('account') }}">My Account</option>
+                <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
                 {% if current_role in ("glinet_read_only", "glinet_rw") %}
                 <option value="{{ url_for('dashboard') }}">Dashboard</option>
@@ -2608,6 +2610,7 @@ def _render_layout(
                 <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('moderation_page') }}">Moderation</option>
+                <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
@@ -2624,6 +2627,7 @@ def _render_layout(
                 <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('moderation_page') }}">Moderation</option>
+                <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
@@ -2651,12 +2655,14 @@ def _render_layout(
               <div class="mobile-link-grid">
                 <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
                 <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
                 {% if current_role in ("glinet_read_only", "glinet_rw") %}
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
                 <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
+                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
                 <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
@@ -2665,6 +2671,7 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
+                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
                 <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
@@ -2698,6 +2705,7 @@ def _render_layout(
       <div class="mobile-link-grid">
         <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
         <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+        <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
         <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
         <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
         {% if current_role not in ("glinet_read_only", "glinet_rw") %}
@@ -2724,6 +2732,7 @@ def _render_layout(
             <option value="">Go to page...</option>
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('account') }}">My Account</option>
+            <option value="{{ url_for('members_page') }}">Members</option>
             <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
             {% if current_role in ("glinet_read_only", "glinet_rw") %}
             <option value="{{ url_for('dashboard') }}">Dashboard</option>
@@ -2731,6 +2740,7 @@ def _render_layout(
             <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('moderation_page') }}">Moderation</option>
+            <option value="{{ url_for('members_page') }}">Members</option>
             <option value="{{ url_for('discourse_page') }}">Discourse</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
@@ -2747,6 +2757,7 @@ def _render_layout(
             <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('moderation_page') }}">Moderation</option>
+            <option value="{{ url_for('members_page') }}">Members</option>
             <option value="{{ url_for('discourse_page') }}">Discourse</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
@@ -2885,6 +2896,8 @@ def create_web_app(
     on_get_command_permissions=None,
     on_save_command_permissions=None,
     on_get_actions=None,
+    on_get_members=None,
+    on_manage_member=None,
     on_get_member_activity=None,
     on_export_member_activity=None,
     on_get_reddit_feeds=None,
@@ -3352,6 +3365,7 @@ def create_web_app(
             "dashboard": "Dashboard",
             "guild_settings": "Guild Settings",
             "moderation_page": "Moderation",
+            "members_page": "Members",
             "discourse_page": "Discourse",
             "command_status": "Command Status",
             "command_permissions": "Command Permissions",
@@ -3598,6 +3612,7 @@ def create_web_app(
                 "command_status",
                 "guild_settings",
                 "moderation_page",
+                "members_page",
                 "discourse_page",
                 "command_permissions",
                 "reddit_feeds",
@@ -3622,6 +3637,7 @@ def create_web_app(
                 "command_status",
                 "guild_settings",
                 "moderation_page",
+                "members_page",
                 "discourse_page",
                 "command_permissions",
                 "reddit_feeds",
@@ -3653,6 +3669,7 @@ def create_web_app(
             "command_status",
             "command_permissions",
             "moderation_page",
+            "members_page",
             "discourse_page",
             "reddit_feeds",
             "service_monitors_page",
@@ -3687,6 +3704,7 @@ def create_web_app(
             "dashboard",
             "guild_settings",
             "moderation_page",
+            "members_page",
             "discourse_page",
             "actions_page",
             "member_activity_page",
@@ -4403,6 +4421,12 @@ def create_web_app(
         ]
 
         community_cards = [
+            build_dashboard_card(
+                "Members",
+                "Browse guild members, kick members, and add or remove roles from the selected Discord server.",
+                url_for("members_page"),
+                "Open Members",
+            ),
             build_dashboard_card(
                 "Member Activity",
                 "Review top 20 member activity windows for the selected Discord server.",
@@ -7146,7 +7170,7 @@ def create_web_app(
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
         guild_name = str(selected_guild.get("name") or "Unknown")
-        _channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         payload = (
             on_get_role_access_mappings(selected_guild_id)
@@ -7310,7 +7334,7 @@ def create_web_app(
             if callable(on_get_command_permissions)
             else {"ok": False, "error": "Not configured"}
         )
-        _channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         if request.method == "POST":
             if not callable(on_save_command_permissions):
@@ -7567,6 +7591,59 @@ def create_web_app(
             render_fixed_select_input=_render_fixed_select_input,
         )
         return _render_page("Moderation", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/members", methods=["GET", "POST"])
+    @login_required
+    def members_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        search_query = str(request.values.get("q") or "").strip()
+        role_filter_id = str(request.values.get("role_id") or request.values.get("role_filter_id") or "").strip()
+        try:
+            page = max(1, int(request.values.get("page") or 1))
+        except (TypeError, ValueError):
+            page = 1
+
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        members_payload = (
+            on_get_members(selected_guild_id, search_query, role_filter_id, page)
+            if callable(on_get_members)
+            else {"ok": False, "error": "Member management callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            response, messages = process_member_action_submission(
+                form=request.form,
+                on_manage_member=on_manage_member,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                return redirect(
+                    url_for(
+                        "members_page",
+                        q=search_query,
+                        role_id=role_filter_id,
+                        page=page,
+                    )
+                )
+
+        body = render_members_body(
+            guild_name=guild_name,
+            members_payload=members_payload,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            current_query=search_query,
+            current_role_id=role_filter_id,
+        )
+        return _render_page("Members", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/discourse", methods=["GET", "POST"])
     @login_required
@@ -8567,6 +8644,8 @@ def start_web_admin_interface(
     on_get_command_permissions=None,
     on_save_command_permissions=None,
     on_get_actions=None,
+    on_get_members=None,
+    on_manage_member=None,
     on_get_member_activity=None,
     on_export_member_activity=None,
     on_get_reddit_feeds=None,
@@ -8605,6 +8684,8 @@ def start_web_admin_interface(
         on_get_command_permissions=on_get_command_permissions,
         on_save_command_permissions=on_save_command_permissions,
         on_get_actions=on_get_actions,
+        on_get_members=on_get_members,
+        on_manage_member=on_manage_member,
         on_get_member_activity=on_get_member_activity,
         on_export_member_activity=on_export_member_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
