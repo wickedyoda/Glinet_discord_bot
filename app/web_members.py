@@ -107,6 +107,7 @@ def render_members_body(
         catalog_note = f"<p class='muted'>Could not load Discord role options: {escape(catalog_error)}</p>"
 
     member_rows = []
+    member_cards = []
     for entry in members:
         member_id = str(entry.get("id") or "").strip()
         display_name = str(entry.get("display_name") or entry.get("name") or member_id).strip()
@@ -122,6 +123,27 @@ def render_members_body(
             until_label = str(entry.get("timed_out_until_label") or "").strip()
             state_bits.append(f"Timed out until {until_label}" if until_label else "Timed out")
         status_label = " | ".join(state_bits) if state_bits else "Active"
+        action_form_html = f"""
+        <form method='post' class='members-action-form'>
+          <input type='hidden' name='member_id' value='{escape(member_id, quote=True)}' />
+          <input type='hidden' name='q' value='{escape(current_query, quote=True)}' />
+          <input type='hidden' name='role_filter_id' value='{escape(current_role_id, quote=True)}' />
+          <input type='hidden' name='page' value='{page}' />
+          <input type='text' name='reason' placeholder='Reason (optional)' />
+          <div class='members-action-grid'>
+            <select name='role_id'>{role_action_select_html}</select>
+            <select name='duration'>{duration_select_html}</select>
+          </div>
+          <div class='members-button-grid'>
+            <button class='btn secondary' type='submit' name='action' value='add_role'>Add Role</button>
+            <button class='btn secondary' type='submit' name='action' value='remove_role'>Remove Role</button>
+            <button class='btn secondary' type='submit' name='action' value='timeout'>Timeout</button>
+            <button class='btn secondary' type='submit' name='action' value='untimeout'>Remove Timeout</button>
+            <button class='btn danger' type='submit' name='action' value='kick'
+              onclick="return confirm('Kick this member now?');">Kick</button>
+          </div>
+        </form>
+        """
         member_rows.append(
             f"""
             <tr>
@@ -134,25 +156,28 @@ def render_members_body(
               <td class='muted'>{escape(roles_label)}</td>
               <td class='muted'>{escape(status_label)}</td>
               <td>
-                <form method='post' style='display:grid; gap:8px;'>
-                  <input type='hidden' name='member_id' value='{escape(member_id, quote=True)}' />
-                  <input type='hidden' name='q' value='{escape(current_query, quote=True)}' />
-                  <input type='hidden' name='role_filter_id' value='{escape(current_role_id, quote=True)}' />
-                  <input type='hidden' name='page' value='{page}' />
-                  <input type='text' name='reason' placeholder='Reason (optional)' />
-                  <select name='role_id'>{role_action_select_html}</select>
-                  <select name='duration'>{duration_select_html}</select>
-                  <div style='display:flex; flex-wrap:wrap; gap:8px;'>
-                    <button class='btn secondary' type='submit' name='action' value='add_role'>Add Role</button>
-                    <button class='btn secondary' type='submit' name='action' value='remove_role'>Remove Role</button>
-                    <button class='btn secondary' type='submit' name='action' value='timeout'>Timeout</button>
-                    <button class='btn secondary' type='submit' name='action' value='untimeout'>Remove Timeout</button>
-                    <button class='btn danger' type='submit' name='action' value='kick'
-                      onclick="return confirm('Kick this member now?');">Kick</button>
-                  </div>
-                </form>
+                {action_form_html}
               </td>
             </tr>
+            """
+        )
+        member_cards.append(
+            f"""
+            <article class='card members-mobile-card'>
+              <div class='members-mobile-head'>
+                <div>
+                  <h3>{escape(display_name)}</h3>
+                  <p class='muted'>{escape(account_name or 'Unknown account')}</p>
+                  <p class='muted mono'>{escape(member_id)}</p>
+                </div>
+                <div class='members-mobile-state'>{escape(status_label)}</div>
+              </div>
+              <div class='members-mobile-meta'>
+                <div><strong>Joined</strong><span>{escape(joined_label)}</span></div>
+                <div><strong>Roles</strong><span>{escape(roles_label)}</span></div>
+              </div>
+              {action_form_html}
+            </article>
             """
         )
 
@@ -160,6 +185,7 @@ def render_members_body(
         member_rows.append(
             "<tr><td colspan='5' class='muted'>No members matched the current filters.</td></tr>"
         )
+        member_cards.append("<div class='card members-mobile-card'><p class='muted'>No members matched the current filters.</p></div>")
 
     page_links = []
     page_window_start = max(1, page - 2)
@@ -201,12 +227,12 @@ def render_members_body(
       <p class='muted'>Browse members for <strong>{escape(guild_name)}</strong>, kick members, and add or remove roles without leaving the web admin.</p>
       <p class='muted'>Role actions and kicks still respect the bot's Discord permissions and role hierarchy.</p>
       {catalog_note}
-      <form method='get' style='display:flex; flex-wrap:wrap; gap:12px; align-items:end; margin-bottom:16px;'>
-        <div style='flex:1 1 280px;'>
+      <form method='get' class='members-filter-form'>
+        <div class='members-filter-field'>
           <label for='member-search'><strong>Search Members</strong></label>
           <input id='member-search' type='text' name='q' value='{escape(current_query, quote=True)}' placeholder='Name, username, or member ID' />
         </div>
-        <div style='flex:1 1 220px;'>
+        <div class='members-filter-field'>
           <label for='member-role-filter'><strong>Filter By Role</strong></label>
           <select id='member-role-filter' name='role_id'>{role_filter_select_html}</select>
         </div>
@@ -218,24 +244,30 @@ def render_members_body(
         Showing {start_index}-{end_index} of {total_count} matching members. Page {page} of {total_pages}. Page size: {page_size}.
       </div>
 
-      <table>
-        <thead>
-          <tr><th>Member</th><th>Joined</th><th>Current Roles</th><th>Status</th><th>Actions</th></tr>
-        </thead>
-        <tbody>
-          {''.join(member_rows)}
-        </tbody>
-      </table>
+      <div class='table-scroll members-table-wrap'>
+        <table>
+          <thead>
+            <tr><th>Member</th><th>Joined</th><th>Current Roles</th><th>Status</th><th>Actions</th></tr>
+          </thead>
+          <tbody>
+            {''.join(member_rows)}
+          </tbody>
+        </table>
+      </div>
 
-      <div style='display:flex; gap:8px; margin-top:14px; flex-wrap:wrap; align-items:center;'>
+      <div class='members-mobile-list'>
+        {''.join(member_cards)}
+      </div>
+
+      <div class='members-pagination'>
         {prev_link}
         {''.join(page_links)}
         {next_link}
-        <form method='get' style='display:flex; gap:8px; align-items:center; margin-left:auto;'>
+        <form method='get' class='members-jump-form'>
           <input type='hidden' name='q' value='{escape(current_query, quote=True)}' />
           <input type='hidden' name='role_id' value='{escape(current_role_id, quote=True)}' />
           <label for='members-page-jump' class='muted'><strong>Jump to page</strong></label>
-          <input id='members-page-jump' type='number' name='page' value='{page}' min='1' max='{total_pages}' style='width:90px;' />
+          <input id='members-page-jump' type='number' name='page' value='{page}' min='1' max='{total_pages}' />
           <button class='btn secondary' type='submit'>Go</button>
         </form>
       </div>
