@@ -176,6 +176,35 @@ Tune with:
 - `LOG_RETENTION_DAYS` (default `90`)
 - `LOG_ROTATION_INTERVAL_DAYS` (default `1`)
 
+## Container Healthcheck
+
+Recommended Docker healthcheck:
+
+```yaml
+healthcheck:
+  test:
+    [
+      "CMD",
+      "python",
+      "-c",
+      "import urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=8); sys.exit(0 if r.status == 200 else 1)",
+    ]
+  interval: 30s
+  timeout: 10s
+  retries: 3
+  start_period: 45s
+```
+
+Use `/readyz`, not a generic port probe.
+
+Why:
+
+- `/readyz` returns `200` only when the Discord bot is actually ready
+- it avoids self-signed HTTPS issues on `8081`
+- it checks the internal container port directly
+
+If you override healthchecks in Portainer or Compose, make sure the override matches the bot's health endpoint instead of a generic example from another app.
+
 ## Upgrade and Restart Workflow
 
 1. Pull latest image or code.
@@ -203,5 +232,6 @@ Tune with:
 ## Related Pages
 
 - [Environment Variables](Environment-Variables.md)
+- [Health Checks and Readiness](Health-Checks-and-Readiness.md)
 - [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
 - [Security Hardening](Security-Hardening.md)

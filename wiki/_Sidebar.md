@@ -2,6 +2,7 @@
 
 - [Home](Home.md)
 - [Role Access and Invites](Role-Access-and-Invites.md)
+- [Join With an Invite Code](Join-With-Invite-Code.md)
 - [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment.md)
 - [Tag Responses](Tag-Responses.md)
 - [Search and Docs](Search-and-Docs.md)
@@ -11,6 +12,7 @@
 - [Web Admin Interface](Web-Admin-Interface.md)
 - [Environment Variables](Environment-Variables.md)
 - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy.md)
+- [Health Checks and Readiness](Health-Checks-and-Readiness.md)
 - [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
 - [Data Files](Data-Files.md)
 - [Security Hardening](Security-Hardening.md)

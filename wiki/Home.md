@@ -47,12 +47,14 @@ Core capabilities:
   - [Command Reference](Command-Reference.md)
 - I need onboarding/access role setup:
   - [Role Access and Invites](Role-Access-and-Invites.md)
+  - [Join With an Invite Code](Join-With-Invite-Code.md)
 - I need moderation/logging operations:
   - [Moderation and Logs](Moderation-and-Logs.md)
 - I need web GUI administration details:
   - [Web Admin Interface](Web-Admin-Interface.md)
 - I need deployment and proxy guidance:
   - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy.md)
+  - [Health Checks and Readiness](Health-Checks-and-Readiness.md)
   - [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
 - I need security baseline and controls:
   - [Security Hardening](Security-Hardening.md)
@@ -62,6 +64,7 @@ Core capabilities:
 ## Feature Pages
 
 - [Role Access and Invites](Role-Access-and-Invites.md)
+- [Join With an Invite Code](Join-With-Invite-Code.md)
 - [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment.md)
 - [Tag Responses](Tag-Responses.md)
 - [Search and Docs](Search-and-Docs.md)
@@ -74,6 +77,7 @@ Core capabilities:
 
 - [Environment Variables](Environment-Variables.md)
 - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy.md)
+- [Health Checks and Readiness](Health-Checks-and-Readiness.md)
 - [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
 - [Data Files](Data-Files.md)
 - [Security Hardening](Security-Hardening.md)
