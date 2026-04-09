@@ -25,6 +25,18 @@ Security controls include:
 - Same-origin POST checks
 - Strict cookie settings and browser hardening headers
 
+## Health Endpoints
+
+The web service exposes two unauthenticated runtime endpoints:
+
+- `/healthz`
+  - confirms the web process is alive
+- `/readyz`
+  - confirms the Discord bot runtime is ready
+  - returns HTTP `503` until the bot loop is running and the client is ready
+
+Use `/readyz` for Docker healthchecks and external uptime monitors when you want to know whether the bot is actually usable, not just whether Flask is listening.
+
 ## User and Identity Fields
 
 Each web user includes:

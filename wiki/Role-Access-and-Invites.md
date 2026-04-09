@@ -105,6 +105,7 @@ Import behavior:
 
 ## Related Pages
 
+- [Join With an Invite Code](Join-With-Invite-Code.md)
 - [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment.md)
 - [Command Reference](Command-Reference.md)
 - [Data Files](Data-Files.md)
