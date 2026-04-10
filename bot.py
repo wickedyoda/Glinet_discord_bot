@@ -6323,6 +6323,46 @@ async def manage_web_member_async(payload: dict, actor_email: str, guild_id: int
         )
         return {"ok": True, "message": f"Kicked {member}."}
 
+    if action == "ban":
+        if not bot_member.guild_permissions.ban_members:
+            return {"ok": False, "error": "Bot is missing the `Ban Members` permission."}
+        action_reason = reason or f"Banned by {actor_text}"
+        try:
+            await member.ban(reason=action_reason, delete_message_seconds=0)
+        except discord.Forbidden:
+            logger.exception("Missing permission to ban member %s via web admin", member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "ban_member",
+                target=member,
+                reason=action_reason,
+                outcome="failed",
+                details="Bot missing `Ban Members` permission or role hierarchy block.",
+            )
+            return {"ok": False, "error": "Bot cannot ban that member. Check permissions and role hierarchy."}
+        except discord.HTTPException:
+            logger.exception("Failed to ban member %s via web admin", member)
+            await send_web_moderation_log(
+                guild,
+                actor_text,
+                "ban_member",
+                target=member,
+                reason=action_reason,
+                outcome="failed",
+                details="Discord API error while banning member.",
+            )
+            return {"ok": False, "error": "Discord failed to ban that member."}
+        await send_web_moderation_log(
+            guild,
+            actor_text,
+            "ban_member",
+            target=member,
+            reason=action_reason,
+            details="Banned successfully via web admin.",
+        )
+        return {"ok": True, "message": f"Banned {member}."}
+
     if action == "timeout":
         if not bot_member.guild_permissions.moderate_members:
             return {"ok": False, "error": "Bot is missing the `Moderate Members` permission."}

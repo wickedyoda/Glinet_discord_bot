@@ -331,6 +331,9 @@ def _make_app(tmp_path: Path):
         if action == "kick":
             members_state.remove(entry)
             return {"ok": True, "message": f"Kicked {entry['display_name']}."}
+        if action == "ban":
+            members_state.remove(entry)
+            return {"ok": True, "message": f"Banned {entry['display_name']}."}
         if action == "timeout":
             entry["timed_out"] = True
             entry["timed_out_until_label"] = "2026-03-09 00:00 UTC"
@@ -808,6 +811,17 @@ def _login_as(client, email: str, password: str):
     return response
 
 
+def test_login_page_has_show_password_toggle(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+
+    response = client.get("/login", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Show password" in response.data
+    assert b"document.getElementById('login_password').type=this.checked?'text':'password';" in response.data
+
+
 def _extract_csrf_token(response):
     html = response.get_data(as_text=True)
     match = re.search(r'<meta name="csrf-token" content="([^"]+)"', html)
@@ -1112,6 +1126,7 @@ def test_members_page_lists_members_and_applies_filters(tmp_path: Path):
     assert b"Alpha Tester" in response.data
     assert b"Beta Support" not in response.data
     assert b"Jump to page" in response.data
+    assert b"Ban" in response.data
 
 
 def test_members_page_supports_pagination_controls(tmp_path: Path):
@@ -1175,6 +1190,34 @@ def test_members_page_can_manage_roles_and_kick(tmp_path: Path):
 
     assert kick_response.status_code == 200
     assert b"Kicked Beta Support." in kick_response.data
+    assert all(item["id"] != "5002" for item in app.config["MEMBERS_STATE"])
+
+
+def test_members_page_can_ban_member(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    ban_response = client.post(
+        "/admin/members",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/members"),
+            "member_id": "5002",
+            "role_id": "",
+            "duration": "",
+            "reason": "Escalated",
+            "action": "ban",
+            "q": "",
+            "role_filter_id": "",
+            "page": "1",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert ban_response.status_code == 200
+    assert b"Banned Beta Support." in ban_response.data
     assert all(item["id"] != "5002" for item in app.config["MEMBERS_STATE"])
 
 
@@ -1935,6 +1978,19 @@ def test_guild_settings_page_clarifies_scope_and_sections(tmp_path: Path):
     assert b"Welcome Images" in response.data
     assert b"Save Guild Settings" in response.data
     assert b"Moderation controls now live on /admin/moderation." in response.data
+
+
+def test_dashboard_lists_servers_and_members_cards(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Open Servers" in response.data
+    assert b"Open Members" in response.data
 
 
 def test_moderation_page_renders_controls_and_saves_settings(tmp_path: Path):
