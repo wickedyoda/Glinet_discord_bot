@@ -221,6 +221,142 @@ def _make_app(tmp_path: Path):
             **bot_profile_state,
         }
 
+    members_state = []
+    for index in range(1, 63):
+        member_id = str(5000 + index)
+        if index == 1:
+            members_state.append(
+                {
+                    "id": member_id,
+                    "name": "alpha",
+                    "display_name": "Alpha Tester",
+                    "account_name": "alpha",
+                    "joined_at_label": "2026-03-01 00:00 UTC",
+                    "timed_out": False,
+                    "timed_out_until_label": "",
+                    "is_owner": False,
+                    "is_bot": False,
+                    "roles": [{"id": "111", "name": "Member", "label": "@Member"}],
+                }
+            )
+            continue
+        if index == 2:
+            members_state.append(
+                {
+                    "id": member_id,
+                    "name": "beta",
+                    "display_name": "Beta Support",
+                    "account_name": "beta",
+                    "joined_at_label": "2026-03-02 00:00 UTC",
+                    "timed_out": False,
+                    "timed_out_until_label": "",
+                    "is_owner": False,
+                    "is_bot": False,
+                    "roles": [{"id": "222", "name": "Employee", "label": "@Employee"}],
+                }
+            )
+            continue
+        members_state.append(
+            {
+                "id": member_id,
+                "name": f"user{index:02d}",
+                "display_name": f"User {index:02d}",
+                "account_name": f"user{index:02d}",
+                "joined_at_label": f"2026-03-{(index % 28) + 1:02d} 00:00 UTC",
+                "timed_out": False,
+                "timed_out_until_label": "",
+                "is_owner": False,
+                "is_bot": False,
+                "roles": [{"id": "111", "name": "Member", "label": "@Member"}],
+            }
+        )
+
+    def _member_roles_label(entry):
+        labels = [str(role.get("label") or role.get("name") or "").strip() for role in entry.get("roles", [])]
+        labels = [label for label in labels if label]
+        return ", ".join(labels) if labels else "No roles"
+
+    def get_members(guild_id, search_query="", role_id="", page=1):
+        normalized_query = str(search_query or "").strip().casefold()
+        normalized_role_id = str(role_id or "").strip()
+        filtered = []
+        for entry in members_state:
+            if normalized_role_id and all(str(role.get("id") or "") != normalized_role_id for role in entry.get("roles", [])):
+                continue
+            haystack = " ".join(
+                [
+                    str(entry.get("id") or ""),
+                    str(entry.get("name") or ""),
+                    str(entry.get("display_name") or ""),
+                    str(entry.get("account_name") or ""),
+                ]
+            ).casefold()
+            if normalized_query and normalized_query not in haystack:
+                continue
+            filtered.append({**entry, "roles_label": _member_roles_label(entry)})
+        safe_page = max(1, int(page or 1))
+        page_size = 50
+        total_count = len(filtered)
+        total_pages = max(1, (total_count + page_size - 1) // page_size)
+        if safe_page > total_pages:
+            safe_page = total_pages
+        start_index = (safe_page - 1) * page_size
+        page_members = filtered[start_index : start_index + page_size]
+        return {
+            "ok": True,
+            "guild_id": str(guild_id),
+            "guild_name": "Support Guild" if str(guild_id) == "2222222222" else "Test Guild",
+            "page": safe_page,
+            "page_size": page_size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "start_index": start_index + 1 if total_count else 0,
+            "end_index": min(start_index + page_size, total_count),
+            "has_prev": safe_page > 1,
+            "has_next": start_index + page_size < total_count,
+            "members": page_members,
+        }
+
+    def manage_member(payload, actor_email, guild_id):
+        action = str(payload.get("action") or "").strip().lower()
+        member_id = str(payload.get("member_id") or "").strip()
+        role_id = str(payload.get("role_id") or "").strip()
+        role_map = {
+            "111": {"id": "111", "name": "Member", "label": "@Member"},
+            "222": {"id": "222", "name": "Employee", "label": "@Employee"},
+        }
+        entry = next((item for item in members_state if str(item.get("id") or "") == member_id), None)
+        if entry is None:
+            return {"ok": False, "error": "Selected member could not be resolved in this guild."}
+        if action == "kick":
+            members_state.remove(entry)
+            return {"ok": True, "message": f"Kicked {entry['display_name']}."}
+        if action == "ban":
+            members_state.remove(entry)
+            return {"ok": True, "message": f"Banned {entry['display_name']}."}
+        if action == "timeout":
+            entry["timed_out"] = True
+            entry["timed_out_until_label"] = "2026-03-09 00:00 UTC"
+            return {"ok": True, "message": f"Timed out {entry['display_name']} for {str(payload.get('duration') or '').strip()}."}
+        if action == "untimeout":
+            entry["timed_out"] = False
+            entry["timed_out_until_label"] = ""
+            return {"ok": True, "message": f"Removed timeout for {entry['display_name']}."}
+        if action == "add_role":
+            role = role_map.get(role_id)
+            if role is None:
+                return {"ok": False, "error": "Select a valid role before applying that action."}
+            if all(str(existing_role.get('id') or '') != role_id for existing_role in entry["roles"]):
+                entry["roles"].append(dict(role))
+            return {"ok": True, "message": f"Assigned {role['label']} to {entry['display_name']}."}
+        if action == "remove_role":
+            for existing_role in list(entry["roles"]):
+                if str(existing_role.get("id") or "") == role_id:
+                    entry["roles"].remove(existing_role)
+                    return {"ok": True, "message": f"Removed {existing_role['label']} from {entry['display_name']}."}
+            return {"ok": False, "error": "Selected member does not currently have that role."}
+        return {"ok": False, "error": "Unsupported member action."}
+
     reddit_feeds_state = [
         {
             "id": 1,
@@ -512,6 +648,8 @@ def _make_app(tmp_path: Path):
                 }
             ],
         },
+        on_get_members=get_members,
+        on_manage_member=manage_member,
         on_get_member_activity=lambda guild_id, role_id=None: {
             "ok": True,
             "top_limit": 20,
@@ -645,6 +783,7 @@ def _make_app(tmp_path: Path):
     )
     app.config["TESTING"] = True
     app.config["BOT_PROFILE_UPDATES"] = bot_profile_updates
+    app.config["MEMBERS_STATE"] = members_state
     app.config["GUILD_SETTINGS_STATE"] = guild_settings_state
     app.config["TEST_HEALTH_STATE"] = health_state
     return app
@@ -670,6 +809,17 @@ def _login_as(client, email: str, password: str):
     )
     assert response.status_code == 200
     return response
+
+
+def test_login_page_has_show_password_toggle(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+
+    response = client.get("/login", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Show password" in response.data
+    assert b"document.getElementById('login_password').type=this.checked?'text':'password';" in response.data
 
 
 def _extract_csrf_token(response):
@@ -961,6 +1111,164 @@ def test_admin_can_add_role_access_mapping(tmp_path: Path):
     assert b"Role access mapping saved." in response.data
     assert b"654321" in response.data
     assert b"newInvite123" in response.data
+
+
+def test_members_page_lists_members_and_applies_filters(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/members?q=alpha", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Guild Members" in response.data
+    assert b"Alpha Tester" in response.data
+    assert b"Beta Support" not in response.data
+    assert b"Jump to page" in response.data
+    assert b"Ban" in response.data
+
+
+def test_members_page_supports_pagination_controls(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/members?page=2", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Page 2 of 2" in response.data
+    assert b"Showing 51-62 of 62 matching members." in response.data
+    assert b"Previous" in response.data
+    assert b"Next" in response.data
+
+
+def test_members_page_can_manage_roles_and_kick(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    add_role_response = client.post(
+        "/admin/members",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/members"),
+            "member_id": "5001",
+            "role_id": "222",
+            "reason": "Promoted",
+            "action": "add_role",
+            "q": "",
+            "role_filter_id": "",
+            "page": "1",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert add_role_response.status_code == 200
+    assert b"Assigned @Employee to Alpha Tester." in add_role_response.data
+    members_state = app.config["MEMBERS_STATE"]
+    alpha_entry = next(item for item in members_state if item["id"] == "5001")
+    assert any(role["id"] == "222" for role in alpha_entry["roles"])
+
+    kick_response = client.post(
+        "/admin/members",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/members"),
+            "member_id": "5002",
+            "role_id": "",
+            "reason": "Cleanup",
+            "action": "kick",
+            "q": "",
+            "role_filter_id": "",
+            "page": "1",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert kick_response.status_code == 200
+    assert b"Kicked Beta Support." in kick_response.data
+    assert all(item["id"] != "5002" for item in app.config["MEMBERS_STATE"])
+
+
+def test_members_page_can_ban_member(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    ban_response = client.post(
+        "/admin/members",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/members"),
+            "member_id": "5002",
+            "role_id": "",
+            "duration": "",
+            "reason": "Escalated",
+            "action": "ban",
+            "q": "",
+            "role_filter_id": "",
+            "page": "1",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert ban_response.status_code == 200
+    assert b"Banned Beta Support." in ban_response.data
+    assert all(item["id"] != "5002" for item in app.config["MEMBERS_STATE"])
+
+
+def test_members_page_can_timeout_and_untimeout(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    timeout_response = client.post(
+        "/admin/members",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/members"),
+            "member_id": "5001",
+            "role_id": "",
+            "duration": "1h",
+            "reason": "Cooldown",
+            "action": "timeout",
+            "q": "",
+            "role_filter_id": "",
+            "page": "1",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert timeout_response.status_code == 200
+    assert b"Timed out Alpha Tester for 1h." in timeout_response.data
+    alpha_entry = next(item for item in app.config["MEMBERS_STATE"] if item["id"] == "5001")
+    assert alpha_entry["timed_out"] is True
+
+    untimeout_response = client.post(
+        "/admin/members",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/members"),
+            "member_id": "5001",
+            "role_id": "",
+            "duration": "",
+            "reason": "Resolved",
+            "action": "untimeout",
+            "q": "",
+            "role_filter_id": "",
+            "page": "1",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert untimeout_response.status_code == 200
+    assert b"Removed timeout for Alpha Tester." in untimeout_response.data
+    assert alpha_entry["timed_out"] is False
 
 
 def test_reddit_page_renders_edit_controls(tmp_path: Path):
@@ -1670,6 +1978,19 @@ def test_guild_settings_page_clarifies_scope_and_sections(tmp_path: Path):
     assert b"Welcome Images" in response.data
     assert b"Save Guild Settings" in response.data
     assert b"Moderation controls now live on /admin/moderation." in response.data
+
+
+def test_dashboard_lists_servers_and_members_cards(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Open Servers" in response.data
+    assert b"Open Members" in response.data
 
 
 def test_moderation_page_renders_controls_and_saves_settings(tmp_path: Path):
