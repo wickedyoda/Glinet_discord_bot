@@ -4073,6 +4073,11 @@ def create_web_app(
                 <input id="login_email" type="email" name="email" placeholder="admin@example.com" autocomplete="username" autocapitalize="none" spellcheck="false" required />
                 <label for="login_password" style="margin-top:10px;display:block;">Password</label>
                 <input id="login_password" type="password" name="password" autocomplete="current-password" required />
+                <label style="margin-top:8px;display:block;">
+                  <input type="checkbox"
+                    onchange="document.getElementById('login_password').type=this.checked?'text':'password';" />
+                  Show password
+                </label>
                 <label style="margin-top:10px;display:block;">
                   <input type="checkbox" name="remember_login" value="1" />
                   Keep me signed in for {REMEMBER_LOGIN_DAYS} days on this device
@@ -4518,7 +4523,7 @@ def create_web_app(
         community_cards = [
             build_dashboard_card(
                 "Members",
-                "Browse guild members, kick members, and add or remove roles from the selected Discord server.",
+                "Browse guild members, then kick, ban, timeout, or update roles from the selected Discord server.",
                 url_for("members_page"),
                 "Open Members",
             ),
@@ -4588,6 +4593,12 @@ def create_web_app(
         ]
 
         operations_cards = [
+            build_dashboard_card(
+                "Servers",
+                "Switch the active Discord server context before opening guild-scoped management pages.",
+                url_for("guilds_page"),
+                "Open Servers",
+            ),
             build_dashboard_card(
                 "My Account",
                 "Change your password, update your email, and manage profile display details.",

@@ -139,6 +139,8 @@ def render_members_body(
             <button class='btn secondary' type='submit' name='action' value='remove_role'>Remove Role</button>
             <button class='btn secondary' type='submit' name='action' value='timeout'>Timeout</button>
             <button class='btn secondary' type='submit' name='action' value='untimeout'>Remove Timeout</button>
+            <button class='btn danger' type='submit' name='action' value='ban'
+              onclick="return confirm('Ban this member now?');">Ban</button>
             <button class='btn danger' type='submit' name='action' value='kick'
               onclick="return confirm('Kick this member now?');">Kick</button>
           </div>
@@ -224,8 +226,8 @@ def render_members_body(
     return f"""
     <div class='card'>
       <h2>Guild Members</h2>
-      <p class='muted'>Browse members for <strong>{escape(guild_name)}</strong>, kick members, and add or remove roles without leaving the web admin.</p>
-      <p class='muted'>Role actions and kicks still respect the bot's Discord permissions and role hierarchy.</p>
+      <p class='muted'>Browse members for <strong>{escape(guild_name)}</strong>, then kick, ban, timeout, or update roles without leaving the web admin.</p>
+      <p class='muted'>All moderation and role actions still respect the bot's Discord permissions and role hierarchy.</p>
       {catalog_note}
       <form method='get' class='members-filter-form'>
         <div class='members-filter-field'>
