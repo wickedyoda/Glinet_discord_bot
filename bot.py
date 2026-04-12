@@ -6800,7 +6800,18 @@ async def resolve_mod_log_channel(guild: discord.Guild):
         )
         return None
 
-    channel = guild.get_channel(channel_id)
+    # Never cross-post logs between guilds. If a misconfigured channel id points at another
+    # guild's channel, refuse to send instead of leaking information across servers.
+    def _channel_matches_guild(candidate) -> bool:
+        try:
+            candidate_guild = getattr(candidate, "guild", None)
+            candidate_guild_id = getattr(candidate_guild, "id", None) if candidate_guild is not None else None
+            return candidate_guild_id is None or int(candidate_guild_id) == int(guild.id)
+        except Exception:
+            return False
+
+    get_channel_or_thread = getattr(guild, "get_channel_or_thread", None)
+    channel = get_channel_or_thread(channel_id) if callable(get_channel_or_thread) else guild.get_channel(channel_id)
     if channel is None:
         channel = bot.get_channel(channel_id)
     if channel is None:
@@ -6815,6 +6826,15 @@ async def resolve_mod_log_channel(guild: discord.Guild):
         except discord.HTTPException:
             logger.exception("Failed to fetch bot log channel %s", channel_id)
             return None
+
+    if not _channel_matches_guild(channel):
+        logger.warning(
+            "Bot log channel %s resolved to a different guild (expected_guild=%s resolved_guild=%s); refusing to post.",
+            channel_id,
+            guild.id,
+            getattr(getattr(channel, "guild", None), "id", "unknown"),
+        )
+        return None
 
     if isinstance(channel, (discord.TextChannel, discord.Thread)):
         return channel
