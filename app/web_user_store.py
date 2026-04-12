@@ -98,6 +98,8 @@ def ensure_users_table_columns(conn: sqlite3.Connection) -> None:
         alter_statements.append("ALTER TABLE web_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
     if "password_changed_at" not in columns:
         alter_statements.append("ALTER TABLE web_users ADD COLUMN password_changed_at TEXT NOT NULL DEFAULT ''")
+    if "previous_password_hash" not in columns:
+        alter_statements.append("ALTER TABLE web_users ADD COLUMN previous_password_hash TEXT NOT NULL DEFAULT ''")
     if "email_changed_at" not in columns:
         alter_statements.append("ALTER TABLE web_users ADD COLUMN email_changed_at TEXT NOT NULL DEFAULT ''")
     if "updated_at" not in columns:
@@ -220,6 +222,7 @@ def read_users(
             SELECT
                 email,
                 password_hash,
+                previous_password_hash,
                 is_admin,
                 role,
                 first_name,
@@ -249,6 +252,7 @@ def read_users(
             {
                 "email": email,
                 "password_hash": password_hash,
+                "previous_password_hash": str(row["previous_password_hash"] or "").strip(),
                 "role": role,
                 "is_admin": role == "admin",
                 "first_name": clean_profile_text(str(row["first_name"] or ""), max_length=80),
@@ -284,6 +288,7 @@ def save_users(
             for entry in users:
                 email = normalize_email(entry.get("email", ""))
                 password_hash = str(entry.get("password_hash", "")).strip()
+                previous_password_hash = str(entry.get("previous_password_hash", "")).strip()
                 if not email or not password_hash:
                     continue
                 role = normalize_role(str(entry.get("role", "")), is_admin=bool(entry.get("is_admin", False)))
@@ -300,6 +305,7 @@ def save_users(
                     INSERT INTO web_users (
                         email,
                         password_hash,
+                        previous_password_hash,
                         is_admin,
                         role,
                         first_name,
@@ -311,11 +317,12 @@ def save_users(
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         email,
                         password_hash,
+                        previous_password_hash,
                         is_admin,
                         role,
                         first_name,
@@ -371,6 +378,7 @@ def ensure_default_admin(
                 INSERT OR REPLACE INTO web_users (
                     email,
                     password_hash,
+                    previous_password_hash,
                     is_admin,
                     role,
                     first_name,
@@ -382,11 +390,12 @@ def ensure_default_admin(
                     created_at,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     email,
                     hash_password(password),
+                    "",
                     1,
                     "admin",
                     "",
