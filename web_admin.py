@@ -43,10 +43,12 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
 from app.service_monitor import (
+    annotate_uptime_import_targets,
     build_glinet_domain_monitor_targets,
     merge_service_monitor_targets,
     normalize_service_monitor_targets,
     serialize_service_monitor_targets,
+    summarize_uptime_import_sources,
 )
 from app.uptime_status import (
     build_uptime_instance_urls,
@@ -2710,6 +2712,7 @@ def _render_layout(
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
@@ -2727,6 +2730,7 @@ def _render_layout(
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
@@ -2840,6 +2844,7 @@ def _render_layout(
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+            <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
             <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
@@ -2857,6 +2862,7 @@ def _render_layout(
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+            <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
             <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
             <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
@@ -3462,6 +3468,7 @@ def create_web_app(
             "moderation_page": "Moderation",
             "members_page": "Members",
             "discourse_page": "Discourse",
+            "uptime_kuma_page": "Uptime Kuma",
             "command_status": "Command Status",
             "command_permissions": "Command Permissions",
             "bot_profile": "Bot Profile",
@@ -3712,6 +3719,7 @@ def create_web_app(
                 "command_permissions",
                 "reddit_feeds",
                 "service_monitors_page",
+                "uptime_kuma_page",
                 "youtube_subscriptions",
                 "linkedin_subscriptions",
                 "beta_program_subscriptions",
@@ -3737,6 +3745,7 @@ def create_web_app(
                 "command_permissions",
                 "reddit_feeds",
                 "service_monitors_page",
+                "uptime_kuma_page",
                 "youtube_subscriptions",
                 "linkedin_subscriptions",
                 "beta_program_subscriptions",
@@ -3768,6 +3777,7 @@ def create_web_app(
             "discourse_page",
             "reddit_feeds",
             "service_monitors_page",
+            "uptime_kuma_page",
             "youtube_subscriptions",
             "linkedin_subscriptions",
             "beta_program_subscriptions",
@@ -3808,6 +3818,7 @@ def create_web_app(
             "command_permissions",
             "reddit_feeds",
             "service_monitors_page",
+            "uptime_kuma_page",
             "youtube_subscriptions",
             "linkedin_subscriptions",
             "beta_program_subscriptions",
@@ -4185,12 +4196,16 @@ def create_web_app(
                     validation_errors.extend(_password_policy_errors(new_password))
                 if str(new_password or "") and check_password_hash(entry["password_hash"], new_password):
                     validation_errors.append("New password must be different from the current password.")
+                previous_password_hash = str(entry.get("previous_password_hash") or "").strip()
+                if str(new_password or "") and previous_password_hash and check_password_hash(previous_password_hash, new_password):
+                    validation_errors.append("New password must not match your previous password.")
 
                 if validation_errors:
                     for message in validation_errors:
                         flash(message, "error")
                 else:
                     now_iso = _now_iso()
+                    entry["previous_password_hash"] = str(entry.get("password_hash") or "").strip()
                     entry["password_hash"] = _hash_password(new_password)
                     entry["password_changed_at"] = now_iso
                     _save_users(users_file, users_data)
@@ -4568,9 +4583,15 @@ def create_web_app(
             ),
             build_dashboard_card(
                 "Service Monitors",
-                "Manage direct website and API checks, plus Uptime Kuma-based imports and alerts.",
+                "Manage direct website and API checks for the selected guild.",
                 url_for("service_monitors_page"),
                 "Open Service Monitors",
+            ),
+            build_dashboard_card(
+                "Uptime Kuma",
+                "Configure the watcher, import direct checks, and remove imported Uptime Kuma monitor sets.",
+                url_for("uptime_kuma_page"),
+                "Open Uptime Kuma",
             ),
             build_dashboard_card(
                 "YouTube Subscriptions",
@@ -6662,8 +6683,6 @@ def create_web_app(
                 "add_target",
                 "edit_target",
                 "delete_target",
-                "import_uptime_targets",
-                "import_uptime_instance_targets",
                 "add_tailscale_status",
                 "add_glinet_domain_set",
             }:
@@ -6688,113 +6707,6 @@ def create_web_app(
                             flash("Service monitor deleted.", "success")
                         else:
                             flash(error_text, "error")
-                elif action == "import_uptime_targets":
-                    import_page_url = str(request.form.get("uptime_import_page_url") or page_state["uptime_page_url"] or "").strip()
-                    import_channel_id = str(request.form.get("uptime_import_channel_id") or "").strip()
-                    if not import_channel_id:
-                        import_channel_id = str(page_state["service_default_channel_id"] or "").strip()
-                    valid_text_channel_ids = {
-                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
-                    }
-                    if import_channel_id and valid_text_channel_ids and import_channel_id not in valid_text_channel_ids:
-                        flash("Choose a valid Discord text channel for imported service monitors.", "error")
-                    else:
-                        try:
-                            channel_id_int = int(import_channel_id or 0)
-                            config_payload = fetch_uptime_public_config(
-                                page_url=import_page_url,
-                                fetch_json=lambda url: _fetch_json_url(url, verify_tls=page_state["uptime_verify_tls"]),
-                            )
-                            extracted = extract_service_monitor_targets_from_uptime_config(
-                                config_payload,
-                                guild_id=selected_guild_id_int,
-                                channel_id=channel_id_int,
-                                timeout_seconds=page_state["service_timeout"],
-                            )
-                            merge_result = merge_service_monitor_targets(all_targets, extracted.get("targets", []))
-                            next_targets = merge_result["targets"]
-                            ok, error_text = _persist_monitor_updates(
-                                {
-                                    "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets),
-                                    "UPTIME_STATUS_PAGE_URL": import_page_url,
-                                }
-                            )
-                            if ok:
-                                skipped_count = len(extracted.get("skipped", []) or [])
-                                summary = f"Imported {merge_result['added']} new direct service monitor(s)"
-                                if merge_result["updated"]:
-                                    summary += f", updated {merge_result['updated']}"
-                                if merge_result["deduped"]:
-                                    summary += f", removed {merge_result['deduped']} duplicate(s)"
-                                if skipped_count:
-                                    summary += f", skipped {skipped_count} page-only monitor(s)"
-                                summary += "."
-                                flash(summary, "success")
-                        except (requests.RequestException, ValueError) as exc:
-                            flash(str(exc), "error")
-                elif action == "import_uptime_instance_targets":
-                    import_instance_url = str(
-                        request.form.get("uptime_import_instance_url") or page_state["uptime_instance_url"] or ""
-                    ).strip()
-                    import_channel_id = str(request.form.get("uptime_import_channel_id") or "").strip()
-                    if not import_channel_id:
-                        import_channel_id = str(page_state["service_default_channel_id"] or "").strip()
-                    import_verify_tls = (
-                        str(request.form.get("uptime_import_verify_tls") or "").strip().lower()
-                        in {"1", "true", "yes", "on"}
-                    )
-                    stored_api_key = str(_read_env_value(page_state["file_values"], "UPTIME_STATUS_API_KEY") or "").strip()
-                    if not stored_api_key:
-                        stored_api_key = default_uptime_api_key(import_instance_url)
-                    import_api_key = str(request.form.get("uptime_import_api_key") or "").strip() or stored_api_key
-                    valid_text_channel_ids = {
-                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
-                    }
-                    if import_channel_id and valid_text_channel_ids and import_channel_id not in valid_text_channel_ids:
-                        flash("Choose a valid Discord text channel for imported service monitors.", "error")
-                    else:
-                        try:
-                            channel_id_int = int(import_channel_id or 0)
-                            metrics_text = fetch_uptime_metrics_text(
-                                instance_url=import_instance_url,
-                                api_key=import_api_key,
-                                fetch_text=lambda url, api_key="": _fetch_text_url(
-                                    url,
-                                    api_key=api_key,
-                                    verify_tls=import_verify_tls,
-                                ),
-                            )
-                            extracted = extract_service_monitor_targets_from_uptime_metrics(
-                                metrics_text,
-                                guild_id=selected_guild_id_int,
-                                channel_id=channel_id_int,
-                                timeout_seconds=page_state["service_timeout"],
-                            )
-                            merge_result = merge_service_monitor_targets(all_targets, extracted.get("targets", []))
-                            next_targets = merge_result["targets"]
-                            import_updates = {
-                                "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets),
-                                "UPTIME_STATUS_INSTANCE_URL": import_instance_url,
-                                "UPTIME_STATUS_VERIFY_TLS": "true" if import_verify_tls else "false",
-                            }
-                            if str(request.form.get("uptime_import_api_key") or "").strip():
-                                import_updates["UPTIME_STATUS_API_KEY"] = str(request.form.get("uptime_import_api_key") or "").strip()
-                            ok, error_text = _persist_monitor_updates(import_updates)
-                            if ok:
-                                skipped_count = len(extracted.get("skipped", []) or [])
-                                summary = f"Imported {merge_result['added']} new direct service monitor(s)"
-                                if merge_result["updated"]:
-                                    summary += f", updated {merge_result['updated']}"
-                                if merge_result["deduped"]:
-                                    summary += f", removed {merge_result['deduped']} duplicate(s)"
-                                if skipped_count:
-                                    summary += f", skipped {skipped_count} page-only monitor(s)"
-                                summary += "."
-                                flash(summary, "success")
-                            else:
-                                flash(error_text, "error")
-                        except (requests.RequestException, ValueError) as exc:
-                            flash(str(exc), "error")
                 else:
                     target_id = str(request.form.get("target_id") or "").strip()
                     if action == "add_tailscale_status":
@@ -6912,42 +6824,6 @@ def create_web_app(
                                     flash(error_text, "error")
                         except ValueError as exc:
                             flash(str(exc), "error")
-            elif action == "save_uptime_settings":
-                notify_channel_id = str(request.form.get("uptime_notify_channel_id") or "").strip()
-                valid_text_channel_ids = {
-                    str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
-                }
-                if notify_channel_id and valid_text_channel_ids and notify_channel_id not in valid_text_channel_ids:
-                    flash("Choose a valid Discord text channel for Uptime Kuma alerts.", "error")
-                else:
-                    uptime_api_key_value = str(request.form.get("uptime_status_api_key") or "").strip()
-                    updates = {
-                        "UPTIME_STATUS_ENABLED": "true"
-                        if str(request.form.get("uptime_status_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
-                        else "false",
-                        "UPTIME_STATUS_NOTIFY_ENABLED": "true"
-                        if str(request.form.get("uptime_status_notify_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
-                        else "false",
-                        "UPTIME_STATUS_PAGE_URL": str(request.form.get("uptime_status_page_url") or "").strip(),
-                        "UPTIME_STATUS_INSTANCE_URL": str(request.form.get("uptime_status_instance_url") or "").strip(),
-                        "UPTIME_STATUS_NOTIFY_CHANNEL_ID": notify_channel_id,
-                        "UPTIME_STATUS_CHECK_SCHEDULE": str(request.form.get("uptime_status_schedule") or "*/5 * * * *").strip(),
-                        "UPTIME_STATUS_TIMEOUT_SECONDS": str(
-                            request.form.get("uptime_status_timeout") or page_state["uptime_timeout"] or 15
-                        ).strip(),
-                        "UPTIME_STATUS_VERIFY_TLS": "true"
-                        if str(request.form.get("uptime_status_verify_tls") or "").strip().lower() in {"1", "true", "yes", "on"}
-                        else "false",
-                    }
-                    if uptime_api_key_value:
-                        updates["UPTIME_STATUS_API_KEY"] = uptime_api_key_value
-                    elif str(request.form.get("uptime_status_api_key_clear") or "").strip().lower() in {"1", "true", "yes", "on"}:
-                        updates["UPTIME_STATUS_API_KEY"] = ""
-                    ok, error_text = _persist_monitor_updates(updates)
-                    if ok:
-                        flash("Uptime Kuma watcher settings updated.", "success")
-                    else:
-                        flash(error_text, "error")
             else:
                 flash("Invalid service monitor action.", "error")
             page_state = _load_page_state()
@@ -6983,57 +6859,15 @@ def create_web_app(
             text_channel_options,
             placeholder="Choose the Discord text channel...",
         )
-        import_target_channel_select = _render_select_input(
-            "uptime_import_channel_id",
-            str(page_state["service_default_channel_id"] or ""),
-            text_channel_options,
-            placeholder="Choose the Discord text channel...",
-        )
-        uptime_notify_channel_select = _render_select_input(
-            "uptime_notify_channel_id",
-            str(page_state["uptime_notify_channel_id"] or ""),
-            text_channel_options,
-            placeholder="Choose the Discord text channel...",
-        )
-        uptime_verify_tls_select = _render_fixed_select_input(
-            "uptime_status_verify_tls",
-            "true" if page_state["uptime_verify_tls"] else "false",
-            enabled_options,
-            placeholder="Select state...",
-        )
-        import_verify_tls_select = _render_fixed_select_input(
-            "uptime_import_verify_tls",
-            "true" if page_state["uptime_verify_tls"] else "false",
-            enabled_options,
-            placeholder="Select state...",
-        )
         service_schedule_select = _render_fixed_select_input(
             "service_monitor_schedule",
             page_state["service_schedule"],
             [{"value": value, "label": label} for value, label in MONITOR_RECHECK_SCHEDULE_OPTIONS],
             placeholder="Select recheck interval...",
         )
-        uptime_schedule_select = _render_fixed_select_input(
-            "uptime_status_schedule",
-            page_state["uptime_schedule"],
-            [{"value": value, "label": label} for value, label in MONITOR_RECHECK_SCHEDULE_OPTIONS],
-            placeholder="Select recheck interval...",
-        )
         service_enabled_select = _render_fixed_select_input(
             "service_monitor_enabled",
             "true" if page_state["service_enabled"] else "false",
-            enabled_options,
-            placeholder="Select state...",
-        )
-        uptime_enabled_select = _render_fixed_select_input(
-            "uptime_status_enabled",
-            "true" if page_state["uptime_enabled"] else "false",
-            enabled_options,
-            placeholder="Select state...",
-        )
-        uptime_notify_enabled_select = _render_fixed_select_input(
-            "uptime_status_notify_enabled",
-            "true" if page_state["uptime_notify_enabled"] else "false",
             enabled_options,
             placeholder="Select state...",
         )
@@ -7098,6 +6932,7 @@ def create_web_app(
           <div class="card">
             <h2>Direct Service Monitor Settings</h2>
             <p class="muted">These checks watch websites and API endpoints directly and only alert on state changes. The current page manages the entries scoped to <strong>{escape(guild_name)}</strong>.</p>
+            <p class="muted">Uptime Kuma watcher settings and imports now live on the dedicated <strong>Uptime Kuma</strong> page.</p>
             {channel_catalog_note}
             <form method="post">
               <input type="hidden" name="action" value="save_service_settings" />
@@ -7115,39 +6950,10 @@ def create_web_app(
             </form>
           </div>
           <div class="card">
-            <h2>Import From Uptime Kuma</h2>
-            <p class="muted">Seed direct service checks from either a public Uptime Kuma status page or an authenticated Kuma instance. Only monitors with a public HTTP(S) URL can become direct checks.</p>
-            <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
-              <div class="card" style="margin:0;">
-                <h3 style="margin-top:0;">From Public Page</h3>
-                <form method="post">
-                  <input type="hidden" name="action" value="import_uptime_targets" />
-                  <label>Public status page URL</label>
-                  <input type="text" name="uptime_import_page_url" value="{escape(page_state['uptime_page_url'] or 'https://status.glinet.admon.me/status/default', quote=True)}" placeholder="https://status.example.com/status/default" required{manage_disabled_attr} />
-                  <label style="margin-top:10px;display:block;">Discord channel</label>
-                  {import_target_channel_select}
-                  <div style="margin-top:14px;">
-                    <button class="btn" type="submit"{manage_disabled_attr}>Import Direct Checks</button>
-                  </div>
-                </form>
-              </div>
-              <div class="card" style="margin:0;">
-                <h3 style="margin-top:0;">From Authenticated Instance</h3>
-                <form method="post">
-                  <input type="hidden" name="action" value="import_uptime_instance_targets" />
-                  <label>Authenticated instance URL</label>
-                  <input type="text" name="uptime_import_instance_url" value="{escape(page_state['uptime_instance_url'], quote=True)}" placeholder="https://kuma.example.com/" required{manage_disabled_attr} />
-                  <label>API key</label>
-                  <input type="password" name="uptime_import_api_key" value="" placeholder="{'•••••• (stored key will be used if blank)' if page_state['uptime_api_key_configured'] else 'Paste a Uptime Kuma API key'}"{manage_disabled_attr} />
-                  <label style="margin-top:10px;display:block;">Verify TLS certificates</label>
-                  {import_verify_tls_select}
-                  <label style="margin-top:10px;display:block;">Discord channel</label>
-                  {import_target_channel_select}
-                  <div style="margin-top:14px;">
-                    <button class="btn" type="submit"{manage_disabled_attr}>Import From Instance</button>
-                  </div>
-                </form>
-              </div>
+            <h2>Uptime Kuma</h2>
+            <p class="muted">Use the dedicated Uptime Kuma page to configure the watcher, import direct checks, and remove previously imported monitor sets.</p>
+            <div style="margin-top:14px;">
+              <a class="btn" href="{escape(url_for('uptime_kuma_page'), quote=True)}">Open Uptime Kuma</a>
             </div>
           </div>
         </div>
@@ -7209,9 +7015,435 @@ def create_web_app(
               </div>
             </form>
           </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured Direct Service Monitors</h2>
+          <p class="muted">These checks belong to <strong>{escape(guild_name)}</strong> and use the global direct-monitor interval shown above. Alerts are sent only when a service changes from up to down or recovers from down to up.</p>
+          {f"<p class='muted'>Current target configuration could not be parsed: {escape(page_state['targets_error'])}</p>" if page_state["targets_error"] else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>URL</th>
+                <th>Request</th>
+                <th>Discord Channel</th>
+                <th>Required Text</th>
+                <th>Timeout</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(target_rows) if target_rows else "<tr><td colspan='7' class='muted'>No direct service monitors are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page("Service Monitors", body, user["email"], bool(user.get("is_admin")), str(user.get("display_name") or ""))
+
+    @app.route("/admin/uptime-kuma", methods=["GET", "POST"])
+    @login_required
+    def uptime_kuma_page():
+        user = _current_user()
+        can_manage = _is_admin_user(user) or _is_glinet_rw_user(user) or _is_guild_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "").strip()
+        selected_guild_id_int = int(selected_guild_id) if selected_guild_id.isdigit() else 0
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        fallback_env_file = _env_fallback_file_path(data_dir)
+
+        def _fetch_json_url(url: str, *, verify_tls: bool = True):
+            response = _safe_outbound_get(
+                str(url or "").strip(),
+                timeout=15,
+                verify_tls=verify_tls,
+                headers={
+                    "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                    "Accept": "application/json",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Status page API returned an unexpected payload.")
+            return payload
+
+        def _fetch_text_url(url: str, *, api_key: str = "", verify_tls: bool = True):
+            request_headers = {
+                "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                "Accept": "text/plain, application/openmetrics-text;q=0.9, */*;q=0.8",
+            }
+            normalized_api_key = str(api_key or "").strip()
+            auth_variants = [{}]
+            if normalized_api_key:
+                encoded = base64.b64encode(f":{normalized_api_key}".encode()).decode("ascii")
+                auth_variants = [
+                    {"Authorization": f"Basic {encoded}"},
+                    {"Authorization": f"Bearer {normalized_api_key}"},
+                    {"X-API-Key": normalized_api_key},
+                ]
+            last_response = None
+            for auth_headers in auth_variants:
+                response = _safe_outbound_get(
+                    str(url or "").strip(),
+                    timeout=15,
+                    verify_tls=verify_tls,
+                    headers={**request_headers, **auth_headers},
+                )
+                last_response = response
+                if response.status_code == 401 and normalized_api_key and auth_headers is not auth_variants[-1]:
+                    continue
+                response.raise_for_status()
+                return response.text
+            if last_response is not None:
+                last_response.raise_for_status()
+            raise ValueError("Uptime Kuma instance did not return any response.")
+
+        def _load_page_state():
+            file_values = _load_effective_env_values(env_file, fallback_env_file)
+            raw_default_channel = str(_read_env_value(file_values, "SERVICE_MONITOR_DEFAULT_CHANNEL_ID") or "").strip()
+            try:
+                default_channel_id = int(raw_default_channel or 0)
+            except ValueError:
+                default_channel_id = 0
+            raw_timeout = str(_read_env_value(file_values, "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS") or "10").strip()
+            try:
+                service_timeout = max(3, int(raw_timeout or 10))
+            except ValueError:
+                service_timeout = 10
+            raw_targets = _read_env_value(file_values, "SERVICE_MONITOR_TARGETS_JSON")
+            try:
+                all_targets = normalize_service_monitor_targets(
+                    raw_targets,
+                    default_timeout_seconds=service_timeout,
+                    default_channel_id=default_channel_id,
+                )
+            except ValueError:
+                all_targets = []
+
+            uptime_schedule = str(
+                _read_env_value(file_values, "UPTIME_STATUS_CHECK_SCHEDULE") or "*/5 * * * *"
+            ).strip() or "*/5 * * * *"
+            if not croniter.is_valid(uptime_schedule):
+                uptime_schedule = "*/5 * * * *"
+
+            raw_uptime_timeout = str(_read_env_value(file_values, "UPTIME_STATUS_TIMEOUT_SECONDS") or "15").strip()
+            try:
+                uptime_timeout = max(3, int(raw_uptime_timeout or 15))
+            except ValueError:
+                uptime_timeout = 15
+
+            return {
+                "file_values": file_values,
+                "all_targets": all_targets,
+                "service_default_channel_id": default_channel_id,
+                "service_timeout": service_timeout,
+                "uptime_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "uptime_notify_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "uptime_page_url": str(_read_env_value(file_values, "UPTIME_STATUS_PAGE_URL") or "").strip(),
+                "uptime_instance_url": str(_read_env_value(file_values, "UPTIME_STATUS_INSTANCE_URL") or "").strip(),
+                "uptime_api_key_configured": bool(
+                    str(_read_env_value(file_values, "UPTIME_STATUS_API_KEY") or "").strip()
+                    or default_uptime_api_key(str(_read_env_value(file_values, "UPTIME_STATUS_INSTANCE_URL") or "").strip())
+                ),
+                "uptime_notify_channel_id": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_CHANNEL_ID") or "").strip(),
+                "uptime_schedule": uptime_schedule,
+                "uptime_timeout": uptime_timeout,
+                "uptime_verify_tls": str(_read_env_value(file_values, "UPTIME_STATUS_VERIFY_TLS") or "true").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "imported_sources": summarize_uptime_import_sources(all_targets, guild_id=selected_guild_id_int),
+            }
+
+        def _persist_monitor_updates(applied_updates: dict):
+            merged_values = _load_effective_env_values(env_file, fallback_env_file)
+            for key, value in applied_updates.items():
+                merged_values[str(key)] = "" if value is None else str(value)
+            normalized_values = _normalize_env_updates(merged_values)
+            validation_errors = _validate_env_updates(applied_updates)
+            if validation_errors:
+                return False, validation_errors[0]
+
+            saved, save_error, saved_env_file, _skipped_keys = _try_write_env_file_with_fallback(
+                env_file,
+                fallback_env_file,
+                normalized_values,
+            )
+            if not saved:
+                return False, save_error
+
+            for key, value in applied_updates.items():
+                os.environ[str(key)] = "" if value is None else str(value)
+            os.environ["WEB_ENV_FILE"] = str(saved_env_file)
+            if callable(on_env_settings_saved):
+                on_env_settings_saved({**applied_updates, "WEB_ENV_FILE": str(saved_env_file)})
+            if saved_env_file != env_file:
+                flash(f"Monitor settings saved to fallback env file {saved_env_file}.", "success")
+            return True, ""
+
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
+        page_state = _load_page_state()
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not can_manage:
+                flash("Read-only account: this action is not allowed.", "error")
+            elif action == "save_uptime_settings":
+                notify_channel_id = str(request.form.get("uptime_notify_channel_id") or "").strip()
+                valid_text_channel_ids = {
+                    str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                }
+                if notify_channel_id and valid_text_channel_ids and notify_channel_id not in valid_text_channel_ids:
+                    flash("Choose a valid Discord text channel for Uptime Kuma alerts.", "error")
+                else:
+                    uptime_api_key_value = str(request.form.get("uptime_status_api_key") or "").strip()
+                    updates = {
+                        "UPTIME_STATUS_ENABLED": "true"
+                        if str(request.form.get("uptime_status_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                        "UPTIME_STATUS_NOTIFY_ENABLED": "true"
+                        if str(request.form.get("uptime_status_notify_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                        "UPTIME_STATUS_PAGE_URL": str(request.form.get("uptime_status_page_url") or "").strip(),
+                        "UPTIME_STATUS_INSTANCE_URL": str(request.form.get("uptime_status_instance_url") or "").strip(),
+                        "UPTIME_STATUS_NOTIFY_CHANNEL_ID": notify_channel_id,
+                        "UPTIME_STATUS_CHECK_SCHEDULE": str(request.form.get("uptime_status_schedule") or "*/5 * * * *").strip(),
+                        "UPTIME_STATUS_TIMEOUT_SECONDS": str(request.form.get("uptime_status_timeout") or page_state["uptime_timeout"] or 15).strip(),
+                        "UPTIME_STATUS_VERIFY_TLS": "true"
+                        if str(request.form.get("uptime_status_verify_tls") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                    }
+                    if uptime_api_key_value:
+                        updates["UPTIME_STATUS_API_KEY"] = uptime_api_key_value
+                    elif str(request.form.get("uptime_status_api_key_clear") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                        updates["UPTIME_STATUS_API_KEY"] = ""
+                    ok, error_text = _persist_monitor_updates(updates)
+                    if ok:
+                        flash("Uptime Kuma watcher settings updated.", "success")
+                    else:
+                        flash(error_text, "error")
+            elif action in {"import_uptime_targets", "import_uptime_instance_targets", "remove_imported_uptime_targets"}:
+                all_targets = list(page_state["all_targets"])
+                valid_text_channel_ids = {
+                    str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                }
+                if action == "remove_imported_uptime_targets":
+                    source_type = str(request.form.get("source_type") or "").strip().lower()
+                    source_key = str(request.form.get("source_key") or "").strip()
+                    next_targets = [
+                        target
+                        for target in all_targets
+                        if not (
+                            int(target.get("guild_id") or 0) == selected_guild_id_int
+                            and str(target.get("source_type") or "").strip().lower() == source_type
+                            and str(target.get("source_key") or "").strip() == source_key
+                        )
+                    ]
+                    removed_count = len(all_targets) - len(next_targets)
+                    if removed_count <= 0:
+                        flash("Imported Uptime Kuma monitor set was not found.", "error")
+                    else:
+                        ok, error_text = _persist_monitor_updates(
+                            {"SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets)}
+                        )
+                        if ok:
+                            flash(f"Removed {removed_count} imported direct service monitor(s).", "success")
+                        else:
+                            flash(error_text, "error")
+                elif action == "import_uptime_targets":
+                    import_page_url = str(request.form.get("uptime_import_page_url") or page_state["uptime_page_url"] or "").strip()
+                    import_channel_id = str(request.form.get("uptime_import_channel_id") or "").strip() or str(page_state["service_default_channel_id"] or "").strip()
+                    if import_channel_id and valid_text_channel_ids and import_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel for imported service monitors.", "error")
+                    else:
+                        try:
+                            channel_id_int = int(import_channel_id or 0)
+                            config_payload = fetch_uptime_public_config(
+                                page_url=import_page_url,
+                                fetch_json=lambda url: _fetch_json_url(url, verify_tls=page_state["uptime_verify_tls"]),
+                            )
+                            extracted = extract_service_monitor_targets_from_uptime_config(
+                                config_payload,
+                                guild_id=selected_guild_id_int,
+                                channel_id=channel_id_int,
+                                timeout_seconds=page_state["service_timeout"],
+                            )
+                            imported_targets = annotate_uptime_import_targets(
+                                extracted.get("targets", []),
+                                source_type="uptime_public_page",
+                                source_url=import_page_url,
+                                source_label=f"Public page: {import_page_url}",
+                                guild_id=selected_guild_id_int,
+                            )
+                            merge_result = merge_service_monitor_targets(all_targets, imported_targets)
+                            ok, error_text = _persist_monitor_updates(
+                                {
+                                    "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(merge_result["targets"]),
+                                    "UPTIME_STATUS_PAGE_URL": import_page_url,
+                                }
+                            )
+                            if ok:
+                                skipped_count = len(extracted.get("skipped", []) or [])
+                                summary = f"Imported {merge_result['added']} new direct service monitor(s)"
+                                if merge_result["updated"]:
+                                    summary += f", updated {merge_result['updated']}"
+                                if merge_result["deduped"]:
+                                    summary += f", removed {merge_result['deduped']} duplicate(s)"
+                                if skipped_count:
+                                    summary += f", skipped {skipped_count} page-only monitor(s)"
+                                summary += "."
+                                flash(summary, "success")
+                            else:
+                                flash(error_text, "error")
+                        except (requests.RequestException, ValueError) as exc:
+                            flash(str(exc), "error")
+                else:
+                    import_instance_url = str(request.form.get("uptime_import_instance_url") or page_state["uptime_instance_url"] or "").strip()
+                    import_channel_id = str(request.form.get("uptime_import_channel_id") or "").strip() or str(page_state["service_default_channel_id"] or "").strip()
+                    import_verify_tls = str(request.form.get("uptime_import_verify_tls") or "").strip().lower() in {"1", "true", "yes", "on"}
+                    stored_api_key = str(_read_env_value(page_state["file_values"], "UPTIME_STATUS_API_KEY") or "").strip()
+                    if not stored_api_key:
+                        stored_api_key = default_uptime_api_key(import_instance_url)
+                    import_api_key = str(request.form.get("uptime_import_api_key") or "").strip() or stored_api_key
+                    if import_channel_id and valid_text_channel_ids and import_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel for imported service monitors.", "error")
+                    else:
+                        try:
+                            channel_id_int = int(import_channel_id or 0)
+                            metrics_text = fetch_uptime_metrics_text(
+                                instance_url=import_instance_url,
+                                api_key=import_api_key,
+                                fetch_text=lambda url, api_key="": _fetch_text_url(url, api_key=api_key, verify_tls=import_verify_tls),
+                            )
+                            extracted = extract_service_monitor_targets_from_uptime_metrics(
+                                metrics_text,
+                                guild_id=selected_guild_id_int,
+                                channel_id=channel_id_int,
+                                timeout_seconds=page_state["service_timeout"],
+                            )
+                            imported_targets = annotate_uptime_import_targets(
+                                extracted.get("targets", []),
+                                source_type="uptime_instance",
+                                source_url=import_instance_url,
+                                source_label=f"Instance: {import_instance_url}",
+                                guild_id=selected_guild_id_int,
+                            )
+                            merge_result = merge_service_monitor_targets(all_targets, imported_targets)
+                            updates = {
+                                "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(merge_result["targets"]),
+                                "UPTIME_STATUS_INSTANCE_URL": import_instance_url,
+                                "UPTIME_STATUS_VERIFY_TLS": "true" if import_verify_tls else "false",
+                            }
+                            if str(request.form.get("uptime_import_api_key") or "").strip():
+                                updates["UPTIME_STATUS_API_KEY"] = str(request.form.get("uptime_import_api_key") or "").strip()
+                            ok, error_text = _persist_monitor_updates(updates)
+                            if ok:
+                                skipped_count = len(extracted.get("skipped", []) or [])
+                                summary = f"Imported {merge_result['added']} new direct service monitor(s)"
+                                if merge_result["updated"]:
+                                    summary += f", updated {merge_result['updated']}"
+                                if merge_result["deduped"]:
+                                    summary += f", removed {merge_result['deduped']} duplicate(s)"
+                                if skipped_count:
+                                    summary += f", skipped {skipped_count} page-only monitor(s)"
+                                summary += "."
+                                flash(summary, "success")
+                            else:
+                                flash(error_text, "error")
+                        except (requests.RequestException, ValueError) as exc:
+                            flash(str(exc), "error")
+            else:
+                flash("Invalid Uptime Kuma action.", "error")
+            page_state = _load_page_state()
+
+        enabled_options = [
+            {"value": "true", "label": "Enabled"},
+            {"value": "false", "label": "Disabled"},
+        ]
+        channel_catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord for <strong>{escape(guild_name)}</strong>.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        import_target_channel_select = _render_select_input(
+            "uptime_import_channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        uptime_notify_channel_select = _render_select_input(
+            "uptime_notify_channel_id",
+            str(page_state["uptime_notify_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        uptime_verify_tls_select = _render_fixed_select_input(
+            "uptime_status_verify_tls",
+            "true" if page_state["uptime_verify_tls"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        import_verify_tls_select = _render_fixed_select_input(
+            "uptime_import_verify_tls",
+            "true" if page_state["uptime_verify_tls"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        uptime_schedule_select = _render_fixed_select_input(
+            "uptime_status_schedule",
+            page_state["uptime_schedule"],
+            [{"value": value, "label": label} for value, label in MONITOR_RECHECK_SCHEDULE_OPTIONS],
+            placeholder="Select recheck interval...",
+        )
+        uptime_enabled_select = _render_fixed_select_input(
+            "uptime_status_enabled",
+            "true" if page_state["uptime_enabled"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        uptime_notify_enabled_select = _render_fixed_select_input(
+            "uptime_status_notify_enabled",
+            "true" if page_state["uptime_notify_enabled"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        imported_source_rows = []
+        for source_entry in page_state["imported_sources"]:
+            imported_source_rows.append(
+                f"""
+                <tr>
+                  <td>{escape(str(source_entry.get("source_label") or "Imported source"))}</td>
+                  <td>{escape(str(source_entry.get("source_type") or ""))}</td>
+                  <td>{escape(str(source_entry.get("target_count") or 0))}</td>
+                  <td>
+                    <form method="post" onsubmit="return confirm('Remove all direct service monitors imported from this Uptime Kuma source?');">
+                      <input type="hidden" name="action" value="remove_imported_uptime_targets" />
+                      <input type="hidden" name="source_type" value="{escape(str(source_entry.get('source_type') or ''), quote=True)}" />
+                      <input type="hidden" name="source_key" value="{escape(str(source_entry.get('source_key') or ''), quote=True)}" />
+                      <button class="btn danger" type="submit"{'' if can_manage else ' disabled'}>Remove Imported Set</button>
+                    </form>
+                  </td>
+                </tr>
+                """
+            )
+
+        manage_disabled_attr = "" if can_manage else " disabled"
+        body = f"""
+        <div class="grid">
           <div class="card">
             <h2>Uptime Kuma Watcher</h2>
-            <p class="muted">This watcher can read either a public Uptime Kuma status page or an authenticated Kuma instance. If both are configured, the authenticated instance takes priority and covers all monitors exposed by the instance metrics endpoint.</p>
+            <p class="muted">Configure the guild's Uptime Kuma watcher and Discord alert delivery without mixing those settings into the direct service monitor page.</p>
+            {channel_catalog_note}
             <form method="post">
               <input type="hidden" name="action" value="save_uptime_settings" />
               <label>Watcher enabled</label>
@@ -7241,30 +7473,62 @@ def create_web_app(
               </div>
             </form>
           </div>
+          <div class="card">
+            <h2>Import Direct Checks</h2>
+            <p class="muted">Import monitors from Uptime Kuma into the direct service monitor system. Only public HTTP(S) monitor URLs can be imported as direct checks.</p>
+            <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
+              <div class="card" style="margin:0;">
+                <h3 style="margin-top:0;">From Public Page</h3>
+                <form method="post">
+                  <input type="hidden" name="action" value="import_uptime_targets" />
+                  <label>Public status page URL</label>
+                  <input type="text" name="uptime_import_page_url" value="{escape(page_state['uptime_page_url'] or 'https://status.glinet.admon.me/status/default', quote=True)}" placeholder="https://status.example.com/status/default" required{manage_disabled_attr} />
+                  <label style="margin-top:10px;display:block;">Discord channel</label>
+                  {import_target_channel_select}
+                  <div style="margin-top:14px;">
+                    <button class="btn" type="submit"{manage_disabled_attr}>Import From Public Page</button>
+                  </div>
+                </form>
+              </div>
+              <div class="card" style="margin:0;">
+                <h3 style="margin-top:0;">From Authenticated Instance</h3>
+                <form method="post">
+                  <input type="hidden" name="action" value="import_uptime_instance_targets" />
+                  <label>Authenticated instance URL</label>
+                  <input type="text" name="uptime_import_instance_url" value="{escape(page_state['uptime_instance_url'], quote=True)}" placeholder="https://kuma.example.com/" required{manage_disabled_attr} />
+                  <label>API key</label>
+                  <input type="password" name="uptime_import_api_key" value="" placeholder="{'•••••• (stored key will be used if blank)' if page_state['uptime_api_key_configured'] else 'Paste a Uptime Kuma API key'}"{manage_disabled_attr} />
+                  <label style="margin-top:10px;display:block;">Verify TLS certificates</label>
+                  {import_verify_tls_select}
+                  <label style="margin-top:10px;display:block;">Discord channel</label>
+                  {import_target_channel_select}
+                  <div style="margin-top:14px;">
+                    <button class="btn" type="submit"{manage_disabled_attr}>Import From Instance</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="card" style="margin-top:16px;">
-          <h2>Configured Direct Service Monitors</h2>
-          <p class="muted">These checks belong to <strong>{escape(guild_name)}</strong> and use the global direct-monitor interval shown above. Alerts are sent only when a service changes from up to down or recovers from down to up.</p>
-          {f"<p class='muted'>Current target configuration could not be parsed: {escape(page_state['targets_error'])}</p>" if page_state["targets_error"] else ""}
+          <h2>Imported Monitor Sets</h2>
+          <p class="muted">Each row represents a group of direct service monitors imported from one Uptime Kuma source for <strong>{escape(guild_name)}</strong>.</p>
           <table>
             <thead>
               <tr>
-                <th>Name</th>
-                <th>URL</th>
-                <th>Request</th>
-                <th>Discord Channel</th>
-                <th>Required Text</th>
-                <th>Timeout</th>
+                <th>Source</th>
+                <th>Type</th>
+                <th>Imported Direct Checks</th>
                 <th>Actions</th>
               </tr>
             </thead>
             <tbody>
-              {"".join(target_rows) if target_rows else "<tr><td colspan='7' class='muted'>No direct service monitors are configured yet.</td></tr>"}
+              {"".join(imported_source_rows) if imported_source_rows else "<tr><td colspan='4' class='muted'>No imported Uptime Kuma monitor sets are currently tracked for this guild.</td></tr>"}
             </tbody>
           </table>
         </div>
         """
-        return _render_page("Service Monitors", body, user["email"], bool(user.get("is_admin")), str(user.get("display_name") or ""))
+        return _render_page("Uptime Kuma", body, user["email"], bool(user.get("is_admin")), str(user.get("display_name") or ""))
 
     @app.route("/admin/role-access", methods=["GET", "POST"])
     @login_required
@@ -8404,6 +8668,7 @@ def create_web_app(
                             {
                                 "email": email,
                                 "password_hash": _hash_password(password),
+                                "previous_password_hash": "",
                                 "role": requested_role,
                                 "is_admin": is_admin,
                                 "first_name": first_name,
@@ -8436,19 +8701,45 @@ def create_web_app(
 
             elif action == "password":
                 target_email = _normalize_email(request.form.get("email", ""))
+                current_password = request.form.get("current_password", "")
                 new_password = request.form.get("password", "")
                 confirm_password = request.form.get("confirm_password", "")
-                if new_password != confirm_password:
-                    flash("Password and confirmation must match.", "error")
+                validation_errors = []
+                if not str(current_password or ""):
+                    validation_errors.append("Your current password is required to reset another user's password.")
+                elif not check_password_hash(user["password_hash"], current_password):
+                    validation_errors.append("Your current password is incorrect.")
+                if not str(new_password or ""):
+                    validation_errors.append("New password is required.")
+                if not str(confirm_password or ""):
+                    validation_errors.append("Confirm password is required.")
+                if str(new_password or "") and str(confirm_password or "") and new_password != confirm_password:
+                    validation_errors.append("Password and confirmation must match.")
+                if validation_errors:
+                    for message in validation_errors:
+                        flash(message, "error")
                 else:
                     password_errors = _password_policy_errors(new_password)
                     if password_errors:
                         for message in password_errors:
                             flash(message, "error")
                     else:
+                        found_target = False
                         changed = False
                         for entry in users_data:
                             if entry["email"] == target_email:
+                                found_target = True
+                                current_target_hash = str(entry.get("password_hash") or "").strip()
+                                previous_password_hash = str(entry.get("previous_password_hash") or "").strip()
+                                if current_target_hash and check_password_hash(current_target_hash, new_password):
+                                    flash("New password must be different from the user's current password.", "error")
+                                    changed = False
+                                    break
+                                if previous_password_hash and check_password_hash(previous_password_hash, new_password):
+                                    flash("New password must not match the user's previous password.", "error")
+                                    changed = False
+                                    break
+                                entry["previous_password_hash"] = current_target_hash
                                 entry["password_hash"] = _hash_password(new_password)
                                 entry["password_changed_at"] = _now_iso()
                                 changed = True
@@ -8457,7 +8748,7 @@ def create_web_app(
                             _save_users(users_file, users_data)
                             flash(f"Password updated for {target_email}.", "success")
                             users_data = _read_users(users_file)
-                        else:
+                        elif not found_target:
                             flash("User not found.", "error")
 
             elif action == "edit_user":
@@ -8618,14 +8909,16 @@ def create_web_app(
                           <form method="post">
                             <input type="hidden" name="action" value="password" />
                             <input type="hidden" name="email" value="{escape(email, quote=True)}" />
-                            <label>New Password</label>
+                            <label>Your Current Password</label>
+                            <input id="reset_user_current_password_{escape(email, quote=True)}" type="password" name="current_password" autocomplete="current-password" required />
+                            <label style="margin-top:10px;display:block;">New Password</label>
                             <input id="reset_user_password_{escape(email, quote=True)}" type="password" name="password" autocomplete="new-password" required />
                             <label style="margin-top:10px;display:block;">Confirm Password</label>
                             <input id="reset_user_password_confirm_{escape(email, quote=True)}" type="password" name="confirm_password" autocomplete="new-password" required />
                             <label style="margin-top:8px;display:block;">
                               <input type="checkbox"
-                                onchange="document.getElementById('reset_user_password_{escape(email, quote=True)}').type=this.checked?'text':'password';document.getElementById('reset_user_password_confirm_{escape(email, quote=True)}').type=this.checked?'text':'password';" />
-                              Show password
+                                onchange="document.getElementById('reset_user_current_password_{escape(email, quote=True)}').type=this.checked?'text':'password';document.getElementById('reset_user_password_{escape(email, quote=True)}').type=this.checked?'text':'password';document.getElementById('reset_user_password_confirm_{escape(email, quote=True)}').type=this.checked?'text':'password';" />
+                              Show passwords
                             </label>
                             <button class="btn" type="submit" style="margin-top:14px;">Update Password</button>
                           </form>

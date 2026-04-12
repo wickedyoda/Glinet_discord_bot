@@ -940,6 +940,7 @@ def test_login_and_selected_guild_pages(tmp_path: Path):
         "/admin/member-activity",
         "/admin/command-status",
         "/admin/service-monitors",
+        "/admin/uptime-kuma",
         "/admin/youtube",
         "/admin/linkedin",
         "/admin/beta-programs",
@@ -1028,9 +1029,23 @@ def test_service_monitors_page_renders_forms(tmp_path: Path):
     assert b"Add Direct Service Monitor" in response.data
     assert b"Add GL.iNet Domain Set" in response.data
     assert b"Add Tailscale Status" in response.data
+    assert b"Open Uptime Kuma" in response.data
+    assert b"Uptime Kuma Watcher" not in response.data
+
+
+def test_uptime_kuma_page_renders_forms(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/uptime-kuma", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Uptime Kuma" in response.data
     assert b"Uptime Kuma Watcher" in response.data
-    assert b"Authenticated instance URL" in response.data
-    assert b"API key" in response.data
+    assert b"Import From Public Page" in response.data
+    assert b"Import From Instance" in response.data
 
 
 def test_linkedin_page_renders_form(tmp_path: Path):
@@ -1473,9 +1488,9 @@ def test_admin_can_import_direct_service_monitors_from_uptime_kuma(tmp_path: Pat
     )
 
     response = client.post(
-        "/admin/service-monitors",
+        "/admin/uptime-kuma",
         data={
-            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "csrf_token": _page_csrf_token(client, "/admin/uptime-kuma"),
             "action": "import_uptime_targets",
             "uptime_import_page_url": "https://status.glinet.admon.me/status/default",
             "uptime_import_channel_id": "9999",
@@ -1486,7 +1501,6 @@ def test_admin_can_import_direct_service_monitors_from_uptime_kuma(tmp_path: Pat
 
     assert response.status_code == 200
     assert b"Imported 1 new direct service monitor" in response.data
-    assert b"Websites - GL.iNet Website" in response.data
     env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
     targets = normalize_service_monitor_targets(
         env_values.get("SERVICE_MONITOR_TARGETS_JSON", "[]"),
@@ -1511,9 +1525,9 @@ def test_admin_cannot_import_uptime_targets_from_private_host(tmp_path: Path, mo
     monkeypatch.setattr(web_admin.requests, "get", fail_requests_get)
 
     response = client.post(
-        "/admin/service-monitors",
+        "/admin/uptime-kuma",
         data={
-            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "csrf_token": _page_csrf_token(client, "/admin/uptime-kuma"),
             "action": "import_uptime_targets",
             "uptime_import_page_url": "http://127.0.0.1/status/default",
             "uptime_import_channel_id": "9999",
@@ -1545,9 +1559,9 @@ def test_admin_can_import_direct_service_monitors_from_authenticated_uptime_kuma
     )
 
     response = client.post(
-        "/admin/service-monitors",
+        "/admin/uptime-kuma",
         data={
-            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "csrf_token": _page_csrf_token(client, "/admin/uptime-kuma"),
             "action": "import_uptime_instance_targets",
             "uptime_import_instance_url": "https://kuma.example.com/",
             "uptime_import_api_key": "secret",
@@ -1560,7 +1574,6 @@ def test_admin_can_import_direct_service_monitors_from_authenticated_uptime_kuma
 
     assert response.status_code == 200
     assert b"Imported 1 new direct service monitor" in response.data
-    assert b"Kuma API" in response.data
     env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
     targets = normalize_service_monitor_targets(
         env_values.get("SERVICE_MONITOR_TARGETS_JSON", "[]"),
@@ -1585,9 +1598,9 @@ def test_admin_cannot_import_authenticated_uptime_targets_from_private_host(tmp_
     monkeypatch.setattr(web_admin.requests, "get", fail_requests_get)
 
     response = client.post(
-        "/admin/service-monitors",
+        "/admin/uptime-kuma",
         data={
-            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "csrf_token": _page_csrf_token(client, "/admin/uptime-kuma"),
             "action": "import_uptime_instance_targets",
             "uptime_import_instance_url": "http://127.0.0.1/",
             "uptime_import_api_key": "secret",
@@ -1623,9 +1636,9 @@ def test_admin_can_import_from_testing_uptime_instance_without_typing_api_key(
     monkeypatch.setattr(web_admin, "fetch_uptime_metrics_text", fake_fetch_metrics_text)
 
     response = client.post(
-        "/admin/service-monitors",
+        "/admin/uptime-kuma",
         data={
-            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "csrf_token": _page_csrf_token(client, "/admin/uptime-kuma"),
             "action": "import_uptime_instance_targets",
             "uptime_import_instance_url": "https://randy.wickedyoda.com/",
             "uptime_import_api_key": "",
@@ -1648,9 +1661,9 @@ def test_admin_can_save_authenticated_uptime_kuma_settings(tmp_path: Path):
     _select_guild(client)
 
     response = client.post(
-        "/admin/service-monitors",
+        "/admin/uptime-kuma",
         data={
-            "csrf_token": _page_csrf_token(client, "/admin/service-monitors"),
+            "csrf_token": _page_csrf_token(client, "/admin/uptime-kuma"),
             "action": "save_uptime_settings",
             "uptime_status_enabled": "true",
             "uptime_status_notify_enabled": "true",
@@ -1669,6 +1682,155 @@ def test_admin_can_save_authenticated_uptime_kuma_settings(tmp_path: Path):
     assert b"Uptime Kuma watcher settings updated." in response.data
     env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
     assert env_values.get("UPTIME_STATUS_INSTANCE_URL") == "https://kuma.example.com/"
+
+
+def test_admin_can_remove_imported_uptime_monitor_set(tmp_path: Path, monkeypatch):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    monkeypatch.setattr(
+        web_admin,
+        "fetch_uptime_public_config",
+        lambda *, page_url, fetch_json: {
+            "publicGroupList": [
+                {
+                    "name": "Websites",
+                    "monitorList": [
+                        {"name": "GL.iNet Website", "url": "https://www.gl-inet.com"},
+                    ],
+                }
+            ]
+        },
+    )
+
+    import_response = client.post(
+        "/admin/uptime-kuma",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/uptime-kuma"),
+            "action": "import_uptime_targets",
+            "uptime_import_page_url": "https://status.glinet.admon.me/status/default",
+            "uptime_import_channel_id": "9999",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert import_response.status_code == 200
+
+    targets = normalize_service_monitor_targets(
+        web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env").get("SERVICE_MONITOR_TARGETS_JSON", "[]"),
+        default_timeout_seconds=10,
+        default_channel_id=0,
+    )
+    imported = next(target for target in targets if target["name"] == "Websites - GL.iNet Website")
+
+    remove_response = client.post(
+        "/admin/uptime-kuma",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/uptime-kuma"),
+            "action": "remove_imported_uptime_targets",
+            "source_type": imported["source_type"],
+            "source_key": imported["source_key"],
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert remove_response.status_code == 200
+    assert b"Removed 1 imported direct service monitor" in remove_response.data
+
+
+def test_password_change_rejects_previous_password(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    first_change = client.post(
+        "/admin/account",
+        data={
+            "action": "password",
+            "csrf_token": _page_csrf_token(client, "/admin/account"),
+            "current_password": "Ab!12xy",
+            "new_password": "Cd!34yz",
+            "confirm_password": "Cd!34yz",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert first_change.status_code == 200
+    assert b"Password updated successfully." in first_change.data
+
+    second_change = client.post(
+        "/admin/account",
+        data={
+            "action": "password",
+            "csrf_token": _page_csrf_token(client, "/admin/account"),
+            "current_password": "Cd!34yz",
+            "new_password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert second_change.status_code == 200
+    assert b"New password must not match your previous password." in second_change.data
+
+
+def test_admin_reset_rejects_users_previous_password(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    create_response = client.post(
+        "/admin/users",
+        data={
+            "action": "create",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "first_name": "Target",
+            "last_name": "User",
+            "display_name": "Target User",
+            "email": "target@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+            "role": "read_only",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_response.status_code == 200
+
+    first_reset = client.post(
+        "/admin/users",
+        data={
+            "action": "password",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "email": "target@example.com",
+            "current_password": "Ab!12xy",
+            "password": "Cd!34yz",
+            "confirm_password": "Cd!34yz",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert first_reset.status_code == 200
+    assert b"Password updated for target@example.com." in first_reset.data
+
+    second_reset = client.post(
+        "/admin/users",
+        data={
+            "action": "password",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "email": "target@example.com",
+            "current_password": "Ab!12xy",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert second_reset.status_code == 200
+    assert b"previous password" in second_reset.data
 
 
 def test_admin_can_edit_linkedin_subscription(tmp_path: Path):
@@ -2361,6 +2523,7 @@ def test_admin_can_edit_user_and_reset_password(tmp_path: Path):
             "action": "password",
             "csrf_token": _page_csrf_token(client, "/admin/users"),
             "email": "target-renamed@example.com",
+            "current_password": "Ab!12xy",
             "password": "Ab!12xy",
             "confirm_password": "Ab!12xy",
         },
@@ -2369,6 +2532,47 @@ def test_admin_can_edit_user_and_reset_password(tmp_path: Path):
     )
     assert password_response.status_code == 200
     assert b"target-renamed@example.com" in password_response.data
+
+
+def test_admin_reset_password_requires_current_password(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    create_response = client.post(
+        "/admin/users",
+        data={
+            "action": "create",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "first_name": "Target",
+            "last_name": "User",
+            "display_name": "Target User",
+            "email": "target@example.com",
+            "password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+            "role": "read_only",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert create_response.status_code == 200
+
+    password_response = client.post(
+        "/admin/users",
+        data={
+            "action": "password",
+            "csrf_token": _page_csrf_token(client, "/admin/users"),
+            "email": "target@example.com",
+            "current_password": "Wrong!12",
+            "password": "Cd!34yz",
+            "confirm_password": "Cd!34yz",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert password_response.status_code == 200
+    assert b"Your current password is incorrect." in password_response.data
 
 
 def test_glinet_read_only_role_is_pinned_to_primary_guild(tmp_path: Path):

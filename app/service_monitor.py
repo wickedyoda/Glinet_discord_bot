@@ -94,6 +94,9 @@ def normalize_service_monitor_targets(
                 "contains_text": contains_text,
                 "timeout_seconds": timeout_seconds,
                 "channel_id": channel_id,
+                "source_type": str(item.get("source_type") or "").strip().lower(),
+                "source_key": str(item.get("source_key") or "").strip(),
+                "source_label": str(item.get("source_label") or "").strip(),
             }
         )
     return normalized
@@ -127,6 +130,57 @@ def build_glinet_domain_monitor_targets(*, guild_id: int, channel_id: int, timeo
         default_timeout_seconds=max(3, int(timeout_seconds or 10)),
         default_channel_id=int(channel_id or 0),
     )
+
+
+def build_uptime_import_source_key(*, source_type: str, source_url: str, guild_id: int) -> str:
+    normalized_type = str(source_type or "").strip().lower()
+    normalized_url = str(source_url or "").strip().lower()
+    return hashlib.sha256(f"{normalized_type}\n{normalized_url}\n{int(guild_id or 0)}".encode()).hexdigest()[:24]
+
+
+def annotate_uptime_import_targets(targets, *, source_type: str, source_url: str, source_label: str, guild_id: int):
+    normalized_source_type = str(source_type or "").strip().lower()
+    normalized_source_url = str(source_url or "").strip()
+    normalized_source_label = str(source_label or "").strip()
+    source_key = build_uptime_import_source_key(
+        source_type=normalized_source_type,
+        source_url=normalized_source_url,
+        guild_id=int(guild_id or 0),
+    )
+    annotated = []
+    for target in targets or []:
+        target_copy = dict(target)
+        target_copy["source_type"] = normalized_source_type
+        target_copy["source_key"] = source_key
+        target_copy["source_label"] = normalized_source_label
+        annotated.append(target_copy)
+    return normalize_service_monitor_targets(
+        annotated,
+        default_timeout_seconds=10,
+        default_channel_id=0,
+    )
+
+
+def summarize_uptime_import_sources(targets, *, guild_id: int):
+    grouped: dict[tuple[str, str], dict] = {}
+    for target in targets or []:
+        if int(target.get("guild_id") or 0) != int(guild_id or 0):
+            continue
+        source_type = str(target.get("source_type") or "").strip().lower()
+        source_key = str(target.get("source_key") or "").strip()
+        if not source_type or not source_key:
+            continue
+        entry = grouped.setdefault(
+            (source_type, source_key),
+            {
+                "source_type": source_type,
+                "source_key": source_key,
+                "source_label": str(target.get("source_label") or "").strip() or "Imported source",
+                "target_count": 0,
+            },
+        )
+        entry["target_count"] += 1
+    return sorted(grouped.values(), key=lambda item: (str(item["source_label"]).casefold(), str(item["source_key"])))
 
 
 def merge_service_monitor_targets(existing_targets, incoming_targets):
