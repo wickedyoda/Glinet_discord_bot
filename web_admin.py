@@ -8431,18 +8431,18 @@ def create_web_app(
             if not role_input:
                 flash("Role selection is required.", "error")
             elif uploaded_file is None or not uploaded_file.filename:
-                flash("CSV file is required.", "error")
-            elif not uploaded_file.filename.lower().endswith(".csv"):
-                flash("Uploaded file must be a .csv file.", "error")
+                flash("Spreadsheet file is required.", "error")
+            elif not (uploaded_file.filename.lower().endswith(".csv") or uploaded_file.filename.lower().endswith(".xlsx")):
+                flash("Uploaded file must be a .csv or .xlsx file.", "error")
             elif not callable(on_bulk_assign_role_csv):
-                flash("Bulk CSV assignment is not configured in this runtime.", "error")
+                flash("Bulk spreadsheet assignment is not configured in this runtime.", "error")
             else:
                 payload = uploaded_file.read()
                 if not payload:
-                    flash("Uploaded CSV is empty.", "error")
+                    flash("Uploaded file is empty.", "error")
                 elif len(payload) > max_upload_bytes:
                     flash(
-                        f"CSV file is too large ({len(payload)} bytes). Max allowed is {max_upload_bytes} bytes.",
+                        f"File is too large ({len(payload)} bytes). Max allowed is {max_upload_bytes} bytes.",
                         "error",
                     )
                 else:
@@ -8515,15 +8515,15 @@ def create_web_app(
 
         body = f"""
         <div class="card">
-          <h2>Bulk Assign Role from CSV</h2>
+          <h2>Bulk Assign Role from Spreadsheet</h2>
           <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
-          <p class="muted">Upload a CSV of Discord names (comma-separated or one-per-line), and assign all matched members to the specified role.</p>
+          <p class="muted">Upload a CSV or Excel file with Discord names (comma-separated or one-per-line), and assign all matched members to the specified role.</p>
           <p class="muted">Current upload limit: {max_upload_bytes} bytes. Current per-section display limit: {report_list_limit} entries.</p>
           <form method="post" enctype="multipart/form-data">
             {role_picker_html}
             {"<label>Role ID (or role mention like &lt;@&amp;123&gt;)</label><input type='text' name='role_id' placeholder='123456789012345678' />" if not role_options else ""}
-            <label style="margin-top:10px;display:block;">CSV file</label>
-            <input type="file" name="csv_file" accept=".csv,text/csv" required />
+            <label style="margin-top:10px;display:block;">Spreadsheet file (.csv or .xlsx)</label>
+            <input type="file" name="csv_file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
             <div style="margin-top:14px;">
               <button class="btn" type="submit">Run Bulk Assignment</button>
             </div>
