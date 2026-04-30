@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import io
 
+from openpyxl import load_workbook
+
 _DANGEROUS_SPREADSHEET_PREFIXES = ("=", "+", "-", "@")
 
 
@@ -28,6 +30,33 @@ def parse_csv_cells(data: bytes) -> list[str]:
             if candidate:
                 values.append(candidate)
     return values
+
+
+def parse_xlsx_cells(data: bytes) -> list[str]:
+    """Extract all non-empty cell values from an xlsx file."""
+    try:
+        workbook = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
+        values: list[str] = []
+        for sheet in workbook.sheetnames:
+            worksheet = workbook[sheet]
+            for row in worksheet.iter_rows(values_only=True):
+                for cell in row:
+                    if cell is not None:
+                        candidate = str(cell).strip()
+                        if candidate:
+                            values.append(candidate)
+        workbook.close()
+        return values
+    except Exception:
+        return []
+
+
+def parse_spreadsheet_cells(data: bytes, filename: str) -> list[str]:
+    """Parse cells from either CSV or XLSX file based on filename."""
+    if filename.lower().endswith(".xlsx"):
+        return parse_xlsx_cells(data)
+    else:
+        return parse_csv_cells(data)
 
 
 def sanitize_csv_cell(value: object) -> str:

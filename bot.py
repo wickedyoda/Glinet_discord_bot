@@ -5338,8 +5338,9 @@ def normalize_member_lookup_name(value: str):
     return normalized or None
 
 
-def parse_member_names_from_csv_bytes(data: bytes):
-    return parse_csv_cells(data)
+def parse_member_names_from_csv_bytes(data: bytes, filename: str = ""):
+    from app.csv_utils import parse_spreadsheet_cells
+    return parse_spreadsheet_cells(data, filename)
 
 
 def build_member_name_lookup(guild: discord.Guild):
@@ -5460,8 +5461,9 @@ async def process_bulk_role_assignment_payload(
     payload: bytes,
     requested_by: str,
     reason_actor: str,
+    filename: str = "",
 ):
-    raw_names = parse_member_names_from_csv_bytes(payload)
+    raw_names = parse_member_names_from_csv_bytes(payload, filename)
     unique_names = unique_member_names(raw_names)
     if not unique_names:
         return None, "❌ The uploaded file did not contain any names."
@@ -11071,11 +11073,11 @@ async def restore_code(interaction: discord.Interaction, role: discord.Role, cod
 
 @tree.command(
     name="bulk_assign_role_csv",
-    description="Assign a role to members listed in an uploaded CSV file",
+    description="Assign a role to members listed in an uploaded CSV or XLSX file",
 )
 @app_commands.describe(
     role="Role to assign",
-    csv_file="Upload a .csv containing Discord names (comma-separated or one-per-line)",
+    csv_file="Upload a .csv or .xlsx containing Discord names (comma-separated or one-per-line)",
 )
 async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment):
     logger.info("/bulk_assign_role_csv invoked by %s", interaction.user)
@@ -11114,9 +11116,9 @@ async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.R
         )
         return
 
-    if not csv_file.filename.lower().endswith(".csv"):
+    if not (csv_file.filename.lower().endswith(".csv") or csv_file.filename.lower().endswith(".xlsx")):
         await interaction.response.send_message(
-            "❌ The uploaded file must be a `.csv` file.",
+            "❌ The uploaded file must be a `.csv` or `.xlsx` file.",
             ephemeral=True,
         )
         return
@@ -11136,6 +11138,7 @@ async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.R
         payload=payload,
         requested_by=str(interaction.user),
         reason_actor=f"Bulk CSV role assignment by {interaction.user} ({interaction.user.id})",
+        filename=csv_file.filename,
     )
     if error:
         await interaction.followup.send(error, ephemeral=True)
