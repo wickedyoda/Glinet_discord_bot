@@ -1,6 +1,6 @@
-# Bulk CSV Role Assignment
+# Bulk CSV/XLSX Role Assignment
 
-Bulk-assign an existing role to many members from uploaded CSV input.
+Bulk-assign an existing role to many members from uploaded spreadsheet input (CSV or Excel files).
 
 ## Command and Web Path
 
@@ -11,12 +11,24 @@ Bulk-assign an existing role to many members from uploaded CSV input.
 
 ## Input Formats
 
-Accepted input variations:
+Accepted file formats:
+
+- **CSV (.csv)**: Comma-separated values or one name per line
+- **Excel (.xlsx)**: Excel workbooks with names in cells
+
+Supported CSV input variations:
 
 - Comma-separated names in one or more rows
 - One name per line
 - Mixed whitespace and separators
 - UTF-8, UTF-8 with BOM, and Latin-1 uploads are accepted
+
+Excel (.xlsx) files:
+
+- All non-empty cell values from all sheets are extracted
+- Cells are read in order (top-to-bottom, left-to-right, sheet-by-sheet)
+- Values are normalized to text strings
+- Excel formulas are evaluated if cached in the file
 
 Normalized matching attempts:
 
