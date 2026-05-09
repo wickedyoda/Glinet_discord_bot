@@ -115,6 +115,11 @@ POST_FORM_TAG_PATTERN = re.compile(
     r"(<form\b[^>]*\bmethod\s*=\s*[\"']?post[\"']?[^>]*>)",
     re.IGNORECASE,
 )
+# Defensive: always limit HTML input length before using this regex
+def safe_search_post_form_tag(html: str):
+    if len(html) > 10000:
+        raise ValueError("HTML input too long for form tag search")
+    return POST_FORM_TAG_PATTERN.search(html)
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "readyz", "select_guild"}
 WEB_GUI_TITLE_SUFFIX = "GL.iNet UnOfficial Discord Bot Dashboard"
