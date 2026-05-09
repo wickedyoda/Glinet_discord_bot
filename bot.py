@@ -10330,6 +10330,9 @@ def normalize_search_terms(query: str):
 
 def clean_search_text(value: str):
     no_html = re.sub(r"<[^>]+>", " ", value or "")
+    # Use str.strip() for whitespace trimming instead of regex
+    return unescape(no_html).replace("\n", " ").replace("\r", " ").strip()
+    no_html = re.sub(r"<[^>]+>", " ", value or "")
     return re.sub(r"\s+", " ", unescape(no_html)).strip()
 
 
