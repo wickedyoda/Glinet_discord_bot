@@ -884,7 +884,6 @@ COUNTRY_CODE_PATTERN = re.compile(r"^[A-Za-z]{2}$")
 COUNTRY_LEGACY_SUFFIX_PATTERN = re.compile(r"_[A-Z]{2}$")
 COUNTRY_FLAG_SUFFIX_PATTERN = re.compile(r"\s*-\s*[\U0001F1E6-\U0001F1FF]{2}$")
 COUNTRY_CODE_SUFFIX_PATTERN = re.compile(r"\s*-\s*[A-Z]{2}$")
-TIMEOUT_DURATION_PATTERN = re.compile(r"^\s*(\d+)\s*([mhd]?)\s*$", re.IGNORECASE)
 HEX_COLOR_PATTERN = re.compile(r"^[0-9a-fA-F]{6}$")
 MODERATOR_ROLE_IDS = {
     int(os.getenv("MODERATOR_ROLE_ID", "1294957416294645771")),
@@ -6690,12 +6689,20 @@ def run_web_leave_guild(guild_id: int | str, actor_email: str):
 
 
 def parse_timeout_duration(value: str):
-    match = TIMEOUT_DURATION_PATTERN.fullmatch(value or "")
-    if not match:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
         return None, None, "❌ Invalid duration. Use `30m`, `2h`, or `1d`."
 
-    amount = int(match.group(1))
-    unit = (match.group(2) or "m").lower()
+    compact = "".join(normalized.split())
+    if not compact:
+        return None, None, "❌ Invalid duration. Use `30m`, `2h`, or `1d`."
+
+    unit = compact[-1] if compact[-1].isalpha() else "m"
+    amount_text = compact[:-1] if compact[-1].isalpha() else compact
+    if unit not in {"m", "h", "d"} or not amount_text.isdigit():
+        return None, None, "❌ Invalid duration. Use `30m`, `2h`, or `1d`."
+
+    amount = int(amount_text)
     multiplier = {"m": 1, "h": 60, "d": 1440}
     total_minutes = amount * multiplier[unit]
     if total_minutes < 1:
