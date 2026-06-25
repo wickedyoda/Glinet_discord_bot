@@ -1362,6 +1362,20 @@ def get_managed_guilds():
     return [guild for guild in guilds if guild.id in MANAGED_GUILD_IDS]
 
 
+def get_preferred_managed_guild_for_user(user_id: int | None):
+    if user_id is None:
+        return None
+
+    preferred_guild = bot.get_guild(GUILD_ID) if is_managed_guild_id(GUILD_ID) else None
+    if preferred_guild is not None and preferred_guild.get_member(int(user_id)) is not None:
+        return preferred_guild
+
+    for guild in get_managed_guilds():
+        if guild.get_member(int(user_id)) is not None:
+            return guild
+    return None
+
+
 def get_db_connection():
     global db_connection
     with db_lock:
@@ -10812,22 +10826,25 @@ async def on_bulk_message_delete(messages: list[discord.Message]):
 
 @bot.event
 async def on_user_update(before: discord.User, after: discord.User):
-    for guild in get_managed_guilds():
-        member = guild.get_member(after.id)
-        if member is None:
-            continue
+    guild = get_preferred_managed_guild_for_user(after.id)
+    if guild is None:
+        return
 
-        if before.name != after.name or before.global_name != after.global_name:
-            details = (
-                f"**User:** {member.mention} (`{after.id}`)\n"
-                f"**Username:** {clip_text(before.name)} -> {clip_text(after.name)}\n"
-                f"**Global Name:** {clip_text(before.global_name or 'N/A')} -> {clip_text(after.global_name or 'N/A')}\n"
-            )
-            await send_server_event_log(guild, "user_name_change", details)
+    member = guild.get_member(after.id)
+    if member is None:
+        return
 
-        if before.display_avatar != after.display_avatar:
-            details = f"**User:** {member.mention} (`{after.id}`)\n**New Avatar:** {after.display_avatar.url}\n"
-            await send_server_event_log(guild, "user_avatar_change", details)
+    if before.name != after.name or before.global_name != after.global_name:
+        details = (
+            f"**User:** {member.mention} (`{after.id}`)\n"
+            f"**Username:** {clip_text(before.name)} -> {clip_text(after.name)}\n"
+            f"**Global Name:** {clip_text(before.global_name or 'N/A')} -> {clip_text(after.global_name or 'N/A')}\n"
+        )
+        await send_server_event_log(guild, "user_name_change", details)
+
+    if before.display_avatar != after.display_avatar:
+        details = f"**User:** {member.mention} (`{after.id}`)\n**New Avatar:** {after.display_avatar.url}\n"
+        await send_server_event_log(guild, "user_avatar_change", details)
 
 
 @bot.event
