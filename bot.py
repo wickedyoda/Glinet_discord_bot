@@ -10988,6 +10988,7 @@ async def on_message(message: discord.Message):
         hi_channel_id = get_effective_guild_setting(message.guild.id, "hi_channel_id", 0)
         if hi_channel_id > 0 and getattr(message.channel, "id", 0) == hi_channel_id:
             hi_channel_text = str(load_guild_settings(message.guild.id).get("hi_channel_text") or "Hi :)").strip() or "Hi :)"
+            hi_response_text = f"{message.author.display_name} says {hi_channel_text}"
             try:
                 await message.delete()
             except discord.Forbidden:
@@ -11006,7 +11007,7 @@ async def on_message(message: discord.Message):
                 )
                 return
             try:
-                await message.channel.send(hi_channel_text)
+                await message.channel.send(hi_response_text)
             except discord.Forbidden:
                 logger.warning(
                     "Cannot send hi replacement in channel %s for guild %s",
