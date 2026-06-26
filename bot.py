@@ -990,6 +990,7 @@ COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
 COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
 COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES = "allowed_role_names"
 COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS = "moderator_role_ids"
+COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR = "administrator"
 MODERATOR_ONLY_COMMAND_KEYS = {
     "add_role_member",
     "ban_member",
@@ -1053,6 +1054,8 @@ COMMAND_PERMISSION_DEFAULTS = {
     "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_astrowarp": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "set_hello_channel": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "set_hello_text": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
 }
 for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
     COMMAND_PERMISSION_DEFAULTS[_command_key] = COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
@@ -1217,6 +1220,14 @@ COMMAND_PERMISSION_METADATA = {
         "label": "/logs",
         "description": "View recent container error log entries.",
     },
+    "set_hello_channel": {
+        "label": "/set_hello_channel",
+        "description": "Admin only: set or disable the hello-only channel.",
+    },
+    "set_hello_text": {
+        "label": "/set_hello_text",
+        "description": "Admin only: set the hello-only reply text.",
+    },
     "random_choice": {
         "label": "/random_choice",
         "description": "Randomly pick a non-staff guild member.",
@@ -1254,6 +1265,7 @@ COMMAND_PERMISSION_POLICY_LABELS = {
     COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC: "Public (any member)",
     COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES: "Named roles: Employee/Admin/Gl.iNet Moderator",
     COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS: "Moderator/Admin role IDs (env)",
+    COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR: "Server administrators only",
 }
 
 intents = discord.Intents.default()
@@ -4580,6 +4592,10 @@ def has_moderator_access(member: discord.Member):
     return any(role.id in MODERATOR_ROLE_IDS for role in member.roles)
 
 
+def has_admin_access(member: discord.Member):
+    return bool(getattr(member.guild_permissions, "administrator", False) or member.guild.owner_id == member.id)
+
+
 def is_random_choice_eligible(member: discord.Member):
     if member.bot:
         return False
@@ -4768,6 +4784,8 @@ def can_use_command(
         return isinstance(member, discord.Member) and has_allowed_role(member)
     if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS:
         return isinstance(member, discord.Member) and has_moderator_access(member)
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR:
+        return isinstance(member, discord.Member) and has_admin_access(member)
     return False
 
 
@@ -4793,6 +4811,8 @@ def build_command_permission_denied_message(
         return f"❌ You need one of these roles: `{names}`."
     if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS:
         return "❌ Only moderators can use this command."
+    if default_policy == COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR:
+        return "❌ Only server administrators can use this command."
     return "❌ You do not have permission to use this command."
 
 
@@ -10988,13 +11008,13 @@ async def on_message(message: discord.Message):
         hi_channel_id = get_effective_guild_setting(message.guild.id, "hi_channel_id", 0)
         if hi_channel_id > 0 and getattr(message.channel, "id", 0) == hi_channel_id:
             hi_channel_text = str(load_guild_settings(message.guild.id).get("hi_channel_text") or "Hi :)").strip() or "Hi :)"
-            hi_member_name = (
+            hi_member_name = discord.utils.remove_markdown(
                 str(getattr(message.author, "nick", "") or "").strip()
                 or str(getattr(message.author, "display_name", "") or "").strip()
                 or str(getattr(message.author, "global_name", "") or "").strip()
                 or str(getattr(message.author, "name", "") or "").strip()
                 or "Member"
-            )
+            ).strip() or "Member"
             hi_response_text = f"{hi_member_name} says {hi_channel_text}"
             try:
                 await message.delete()
@@ -14257,6 +14277,79 @@ async def help_slash(interaction: discord.Interaction, command: str | None = Non
     await interaction.response.send_message(
         build_help_message_for_command(command),
         ephemeral=COMMAND_RESPONSES_EPHEMERAL,
+    )
+
+
+@tree.command(
+    name="set_hello_channel",
+    description="Admin only: set or disable the hello-only channel.",
+)
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(channel="Channel to use for hello-only replies. Leave blank to disable.")
+async def set_hello_channel_slash(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
+    logger.info("/set_hello_channel invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "set_hello_channel"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    save_guild_settings(
+        interaction.guild.id,
+        {"hi_channel_id": int(channel.id) if channel is not None else 0},
+        actor_email=f"discord:{interaction.user.id}",
+    )
+    if channel is None:
+        response_text = "✅ Hello-only channel disabled for this server."
+        reason = "disabled"
+    else:
+        response_text = f"✅ Hello-only channel set to {channel.mention}."
+        reason = f"channel={channel.id}"
+    await interaction.response.send_message(response_text, ephemeral=True)
+    await log_interaction(
+        interaction,
+        action="set_hello_channel",
+        reason=reason,
+        success=True,
+    )
+
+
+@tree.command(
+    name="set_hello_text",
+    description="Admin only: set the hello-only reply text.",
+)
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+@app_commands.describe(text="Reply text to append after '<member> says'.")
+async def set_hello_text_slash(interaction: discord.Interaction, text: str):
+    logger.info("/set_hello_text invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "set_hello_text"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    normalized_text = str(text or "").strip()
+    if not normalized_text:
+        await interaction.response.send_message("❌ Hello reply text cannot be blank.", ephemeral=True)
+        return
+    if len(normalized_text) > 200:
+        await interaction.response.send_message("❌ Hello reply text must be 200 characters or fewer.", ephemeral=True)
+        return
+    save_guild_settings(
+        interaction.guild.id,
+        {"hi_channel_text": normalized_text},
+        actor_email=f"discord:{interaction.user.id}",
+    )
+    safe_preview = make_discord_safe_text(clip_text(normalized_text, max_chars=120))
+    await interaction.response.send_message(
+        f"✅ Hello reply text updated to: `{safe_preview}`",
+        ephemeral=True,
+    )
+    await log_interaction(
+        interaction,
+        action="set_hello_text",
+        reason=f"text={clip_text(normalized_text, max_chars=200)}",
+        success=True,
     )
 
 
