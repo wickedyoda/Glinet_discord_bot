@@ -76,6 +76,8 @@ class GuildStateManager:
             "bot_log_channel_id": self.bot_log_channel_id if self.bot_log_channel_id > 0 else 0,
             "mod_log_channel_id": self.mod_log_channel_id if self.mod_log_channel_id > 0 else 0,
             "firmware_notify_channel_id": self.firmware_notify_channel_id if self.firmware_notify_channel_id > 0 else 0,
+            "hi_channel_id": 0,
+            "hi_channel_text": "Hi :)",
             "bad_words_enabled": 0,
             "bad_words_list_json": "[]",
             "bad_words_warning_window_hours": 72,
@@ -126,6 +128,9 @@ class GuildStateManager:
         ).hex()
         return f"web_user:{digest}"
 
+    def _guild_settings_columns(self, conn):
+        return {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
+
     def load_guild_settings(self, guild_id: int | None = None):
         safe_guild_id = self.normalize_target_guild_id(guild_id)
         version = self.db_kv_get(f"guild_settings_updated_at:{safe_guild_id}") or "bootstrap"
@@ -136,24 +141,54 @@ class GuildStateManager:
         settings = self.default_guild_settings()
         conn = self.get_db_connection()
         with self.db_lock:
+            available_columns = self._guild_settings_columns(conn)
+            selected_columns = [
+                column
+                for column in (
+                    "bot_log_channel_id",
+                    "mod_log_channel_id",
+                    "firmware_notify_channel_id",
+                    "hi_channel_id",
+                    "hi_channel_text",
+                    "bad_words_enabled",
+                    "bad_words_list_json",
+                    "bad_words_warning_window_hours",
+                    "bad_words_warning_threshold",
+                    "bad_words_action",
+                    "bad_words_timeout_minutes",
+                    "firmware_monitor_enabled",
+                    "reddit_feed_notify_enabled",
+                    "youtube_notify_enabled",
+                    "linkedin_notify_enabled",
+                    "beta_program_notify_enabled",
+                    "discourse_enabled",
+                    "discourse_base_url",
+                    "discourse_api_key",
+                    "discourse_api_username",
+                    "discourse_profile_name",
+                    "discourse_request_timeout_seconds",
+                    "discourse_features_json",
+                    "access_role_id",
+                    "welcome_channel_id",
+                    "welcome_dm_enabled",
+                    "welcome_channel_image_enabled",
+                    "welcome_dm_image_enabled",
+                    "welcome_channel_message",
+                    "welcome_dm_message",
+                    "welcome_image_filename",
+                    "welcome_image_media_type",
+                    "welcome_image_size_bytes",
+                    "welcome_image_width",
+                    "welcome_image_height",
+                    "welcome_image_base64",
+                    "updated_at",
+                    "updated_by_email",
+                )
+                if column in available_columns
+            ]
             row = conn.execute(
-                """
-                SELECT bot_log_channel_id, mod_log_channel_id, firmware_notify_channel_id,
-                       bad_words_enabled, bad_words_list_json,
-                       bad_words_warning_window_hours, bad_words_warning_threshold,
-                       bad_words_action, bad_words_timeout_minutes,
-                       firmware_monitor_enabled, reddit_feed_notify_enabled,
-                       youtube_notify_enabled, linkedin_notify_enabled, beta_program_notify_enabled,
-                       discourse_enabled, discourse_base_url, discourse_api_key,
-                       discourse_api_username, discourse_profile_name, discourse_request_timeout_seconds,
-                       discourse_features_json,
-                       access_role_id, welcome_channel_id, welcome_dm_enabled,
-                       welcome_channel_image_enabled, welcome_dm_image_enabled,
-                       welcome_channel_message, welcome_dm_message,
-                       welcome_image_filename, welcome_image_media_type,
-                       welcome_image_size_bytes, welcome_image_width, welcome_image_height,
-                       welcome_image_base64,
-                       updated_at, updated_by_email
+                f"""
+                SELECT {", ".join(selected_columns)}
                 FROM guild_settings
                 WHERE guild_id = ?
                 """,
@@ -165,6 +200,10 @@ class GuildStateManager:
                     "bot_log_channel_id": int(row["bot_log_channel_id"] or 0),
                     "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
                     "firmware_notify_channel_id": int(row["firmware_notify_channel_id"] or 0),
+                    "hi_channel_id": int(row["hi_channel_id"] or 0) if "hi_channel_id" in available_columns else 0,
+                    "hi_channel_text": str(row["hi_channel_text"] or "Hi :)")
+                    if "hi_channel_text" in available_columns
+                    else "Hi :)",
                     "bad_words_enabled": 1 if int(row["bad_words_enabled"] or 0) > 0 else 0,
                     "bad_words_list_json": str(row["bad_words_list_json"] or "[]"),
                     "bad_words_warning_window_hours": int(row["bad_words_warning_window_hours"] or 72),
@@ -223,10 +262,14 @@ class GuildStateManager:
             "bot_log_channel_id",
             "mod_log_channel_id",
             "firmware_notify_channel_id",
+            "hi_channel_id",
             "access_role_id",
             "welcome_channel_id",
         ):
             merged[key] = self.parse_int_setting(source.get(key, current.get(key, 0)), 0, minimum=0)
+        merged["hi_channel_text"] = (
+            str(source.get("hi_channel_text", current.get("hi_channel_text", "Hi :)")) or "Hi :)").strip() or "Hi :)"
+        )
         merged["bad_words_enabled"] = 1 if str(source.get("bad_words_enabled", current.get("bad_words_enabled", 0))).strip().lower() in {
             "1",
             "true",
@@ -320,125 +363,108 @@ class GuildStateManager:
 
         conn = self.get_db_connection()
         with self.db_lock:
-            conn.execute(
-                """
-                INSERT INTO guild_settings (
-                    guild_id,
-                    bot_log_channel_id,
-                    mod_log_channel_id,
-                    firmware_notify_channel_id,
-                    bad_words_enabled,
-                    bad_words_list_json,
-                    bad_words_warning_window_hours,
-                    bad_words_warning_threshold,
-                    bad_words_action,
-                    bad_words_timeout_minutes,
-                    firmware_monitor_enabled,
-                    reddit_feed_notify_enabled,
-                    youtube_notify_enabled,
-                    linkedin_notify_enabled,
-                    beta_program_notify_enabled,
-                    discourse_enabled,
-                    discourse_base_url,
-                    discourse_api_key,
-                    discourse_api_username,
-                    discourse_profile_name,
-                    discourse_request_timeout_seconds,
-                    discourse_features_json,
-                    access_role_id,
-                    welcome_channel_id,
-                    welcome_dm_enabled,
-                    welcome_channel_image_enabled,
-                    welcome_dm_image_enabled,
-                    welcome_channel_message,
-                    welcome_dm_message,
-                    welcome_image_filename,
-                    welcome_image_media_type,
-                    welcome_image_size_bytes,
-                    welcome_image_width,
-                    welcome_image_height,
-                    welcome_image_base64,
-                    updated_at,
-                    updated_by_email
+            available_columns = self._guild_settings_columns(conn)
+            persisted_columns = [
+                column
+                for column in (
+                    "guild_id",
+                    "bot_log_channel_id",
+                    "mod_log_channel_id",
+                    "firmware_notify_channel_id",
+                    "hi_channel_id",
+                    "hi_channel_text",
+                    "bad_words_enabled",
+                    "bad_words_list_json",
+                    "bad_words_warning_window_hours",
+                    "bad_words_warning_threshold",
+                    "bad_words_action",
+                    "bad_words_timeout_minutes",
+                    "firmware_monitor_enabled",
+                    "reddit_feed_notify_enabled",
+                    "youtube_notify_enabled",
+                    "linkedin_notify_enabled",
+                    "beta_program_notify_enabled",
+                    "discourse_enabled",
+                    "discourse_base_url",
+                    "discourse_api_key",
+                    "discourse_api_username",
+                    "discourse_profile_name",
+                    "discourse_request_timeout_seconds",
+                    "discourse_features_json",
+                    "access_role_id",
+                    "welcome_channel_id",
+                    "welcome_dm_enabled",
+                    "welcome_channel_image_enabled",
+                    "welcome_dm_image_enabled",
+                    "welcome_channel_message",
+                    "welcome_dm_message",
+                    "welcome_image_filename",
+                    "welcome_image_media_type",
+                    "welcome_image_size_bytes",
+                    "welcome_image_width",
+                    "welcome_image_height",
+                    "welcome_image_base64",
+                    "updated_at",
+                    "updated_by_email",
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                if column == "guild_id" or column in available_columns
+            ]
+            placeholders = ", ".join("?" for _ in persisted_columns)
+            update_columns = [column for column in persisted_columns if column != "guild_id"]
+            update_clause = ",\n                    ".join(
+                f"{column}=excluded.{column}" for column in update_columns
+            )
+            values_by_column = {
+                "guild_id": safe_guild_id,
+                "bot_log_channel_id": merged["bot_log_channel_id"],
+                "mod_log_channel_id": merged["mod_log_channel_id"],
+                "firmware_notify_channel_id": merged["firmware_notify_channel_id"],
+                "hi_channel_id": merged["hi_channel_id"],
+                "hi_channel_text": merged["hi_channel_text"],
+                "bad_words_enabled": merged["bad_words_enabled"],
+                "bad_words_list_json": merged["bad_words_list_json"],
+                "bad_words_warning_window_hours": merged["bad_words_warning_window_hours"],
+                "bad_words_warning_threshold": merged["bad_words_warning_threshold"],
+                "bad_words_action": merged["bad_words_action"],
+                "bad_words_timeout_minutes": merged["bad_words_timeout_minutes"],
+                "firmware_monitor_enabled": merged["firmware_monitor_enabled"],
+                "reddit_feed_notify_enabled": merged["reddit_feed_notify_enabled"],
+                "youtube_notify_enabled": merged["youtube_notify_enabled"],
+                "linkedin_notify_enabled": merged["linkedin_notify_enabled"],
+                "beta_program_notify_enabled": merged["beta_program_notify_enabled"],
+                "discourse_enabled": merged["discourse_enabled"],
+                "discourse_base_url": merged["discourse_base_url"],
+                "discourse_api_key": merged["discourse_api_key"],
+                "discourse_api_username": merged["discourse_api_username"],
+                "discourse_profile_name": merged["discourse_profile_name"],
+                "discourse_request_timeout_seconds": merged["discourse_request_timeout_seconds"],
+                "discourse_features_json": merged["discourse_features_json"],
+                "access_role_id": merged["access_role_id"],
+                "welcome_channel_id": merged["welcome_channel_id"],
+                "welcome_dm_enabled": merged["welcome_dm_enabled"],
+                "welcome_channel_image_enabled": merged["welcome_channel_image_enabled"],
+                "welcome_dm_image_enabled": merged["welcome_dm_image_enabled"],
+                "welcome_channel_message": merged["welcome_channel_message"],
+                "welcome_dm_message": merged["welcome_dm_message"],
+                "welcome_image_filename": merged["welcome_image_filename"],
+                "welcome_image_media_type": merged["welcome_image_media_type"],
+                "welcome_image_size_bytes": merged["welcome_image_size_bytes"],
+                "welcome_image_width": merged["welcome_image_width"],
+                "welcome_image_height": merged["welcome_image_height"],
+                "welcome_image_base64": merged["welcome_image_base64"],
+                "updated_at": updated_at,
+                "updated_by_email": actor_email or "unknown",
+            }
+            conn.execute(
+                f"""
+                INSERT INTO guild_settings (
+                    {", ".join(persisted_columns)}
+                )
+                VALUES ({placeholders})
                 ON CONFLICT(guild_id) DO UPDATE SET
-                    bot_log_channel_id=excluded.bot_log_channel_id,
-                    mod_log_channel_id=excluded.mod_log_channel_id,
-                    firmware_notify_channel_id=excluded.firmware_notify_channel_id,
-                    bad_words_enabled=excluded.bad_words_enabled,
-                    bad_words_list_json=excluded.bad_words_list_json,
-                    bad_words_warning_window_hours=excluded.bad_words_warning_window_hours,
-                    bad_words_warning_threshold=excluded.bad_words_warning_threshold,
-                    bad_words_action=excluded.bad_words_action,
-                    bad_words_timeout_minutes=excluded.bad_words_timeout_minutes,
-                    firmware_monitor_enabled=excluded.firmware_monitor_enabled,
-                    reddit_feed_notify_enabled=excluded.reddit_feed_notify_enabled,
-                    youtube_notify_enabled=excluded.youtube_notify_enabled,
-                    linkedin_notify_enabled=excluded.linkedin_notify_enabled,
-                    beta_program_notify_enabled=excluded.beta_program_notify_enabled,
-                    discourse_enabled=excluded.discourse_enabled,
-                    discourse_base_url=excluded.discourse_base_url,
-                    discourse_api_key=excluded.discourse_api_key,
-                    discourse_api_username=excluded.discourse_api_username,
-                    discourse_profile_name=excluded.discourse_profile_name,
-                    discourse_request_timeout_seconds=excluded.discourse_request_timeout_seconds,
-                    discourse_features_json=excluded.discourse_features_json,
-                    access_role_id=excluded.access_role_id,
-                    welcome_channel_id=excluded.welcome_channel_id,
-                    welcome_dm_enabled=excluded.welcome_dm_enabled,
-                    welcome_channel_image_enabled=excluded.welcome_channel_image_enabled,
-                    welcome_dm_image_enabled=excluded.welcome_dm_image_enabled,
-                    welcome_channel_message=excluded.welcome_channel_message,
-                    welcome_dm_message=excluded.welcome_dm_message,
-                    welcome_image_filename=excluded.welcome_image_filename,
-                    welcome_image_media_type=excluded.welcome_image_media_type,
-                    welcome_image_size_bytes=excluded.welcome_image_size_bytes,
-                    welcome_image_width=excluded.welcome_image_width,
-                    welcome_image_height=excluded.welcome_image_height,
-                    welcome_image_base64=excluded.welcome_image_base64,
-                    updated_at=excluded.updated_at,
-                    updated_by_email=excluded.updated_by_email
+                    {update_clause}
                 """,
-                (
-                    safe_guild_id,
-                    merged["bot_log_channel_id"],
-                    merged["mod_log_channel_id"],
-                    merged["firmware_notify_channel_id"],
-                    merged["bad_words_enabled"],
-                    merged["bad_words_list_json"],
-                    merged["bad_words_warning_window_hours"],
-                    merged["bad_words_warning_threshold"],
-                    merged["bad_words_action"],
-                    merged["bad_words_timeout_minutes"],
-                    merged["firmware_monitor_enabled"],
-                    merged["reddit_feed_notify_enabled"],
-                    merged["youtube_notify_enabled"],
-                    merged["linkedin_notify_enabled"],
-                    merged["beta_program_notify_enabled"],
-                    merged["discourse_enabled"],
-                    merged["discourse_base_url"],
-                    merged["discourse_api_key"],
-                    merged["discourse_api_username"],
-                    merged["discourse_profile_name"],
-                    merged["discourse_request_timeout_seconds"],
-                    merged["discourse_features_json"],
-                    merged["access_role_id"],
-                    merged["welcome_channel_id"],
-                    merged["welcome_dm_enabled"],
-                    merged["welcome_channel_image_enabled"],
-                    merged["welcome_dm_image_enabled"],
-                    merged["welcome_channel_message"],
-                    merged["welcome_dm_message"],
-                    merged["welcome_image_filename"],
-                    merged["welcome_image_media_type"],
-                    merged["welcome_image_size_bytes"],
-                    merged["welcome_image_width"],
-                    merged["welcome_image_height"],
-                    merged["welcome_image_base64"],
-                    updated_at,
-                    actor_email or "unknown",
-                ),
+                tuple(values_by_column[column] for column in persisted_columns),
             )
             conn.commit()
 

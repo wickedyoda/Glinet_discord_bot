@@ -1432,6 +1432,8 @@ def ensure_db_schema():
                 bot_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 mod_log_channel_id INTEGER NOT NULL DEFAULT 0,
                 firmware_notify_channel_id INTEGER NOT NULL DEFAULT 0,
+                hi_channel_id INTEGER NOT NULL DEFAULT 0,
+                hi_channel_text TEXT NOT NULL DEFAULT 'Hi :)',
                 bad_words_enabled INTEGER NOT NULL DEFAULT 0,
                 bad_words_list_json TEXT NOT NULL DEFAULT '[]',
                 bad_words_warning_window_hours INTEGER NOT NULL DEFAULT 72,
@@ -1722,6 +1724,10 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE guild_settings ADD COLUMN linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1")
         if "beta_program_notify_enabled" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1")
+        if "hi_channel_id" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN hi_channel_id INTEGER NOT NULL DEFAULT 0")
+        if "hi_channel_text" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN hi_channel_text TEXT NOT NULL DEFAULT 'Hi :)'")
         if "discourse_enabled" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN discourse_enabled INTEGER NOT NULL DEFAULT -1")
         if "discourse_base_url" not in guild_settings_columns:
@@ -5128,6 +5134,8 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
             "bot_log_channel_id": int(settings.get("bot_log_channel_id") or 0),
             "mod_log_channel_id": int(settings.get("mod_log_channel_id") or 0),
             "firmware_notify_channel_id": int(settings.get("firmware_notify_channel_id") or 0),
+            "hi_channel_id": int(settings.get("hi_channel_id") or 0),
+            "hi_channel_text": str(settings.get("hi_channel_text") or "Hi :)"),
             "firmware_monitor_enabled": int(settings.get("firmware_monitor_enabled", -1)),
             "reddit_feed_notify_enabled": int(settings.get("reddit_feed_notify_enabled", -1)),
             "youtube_notify_enabled": int(settings.get("youtube_notify_enabled", -1)),
@@ -5162,6 +5170,8 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
                 "firmware_notify_channel_id",
                 FIRMWARE_NOTIFY_CHANNEL_ID,
             ),
+            "hi_channel_id": get_effective_guild_setting(safe_guild_id, "hi_channel_id", 0),
+            "hi_channel_text": str(settings.get("hi_channel_text") or "Hi :)"),
             "firmware_monitor_enabled": 1 if get_effective_guild_feature_enabled(
                 safe_guild_id,
                 "firmware_monitor_enabled",
@@ -10974,6 +10984,42 @@ async def on_message(message: discord.Message):
                 getattr(message, "id", "unknown"),
                 getattr(message.guild, "id", "unknown"),
             )
+    if message.guild is not None:
+        hi_channel_id = get_effective_guild_setting(message.guild.id, "hi_channel_id", 0)
+        if hi_channel_id > 0 and getattr(message.channel, "id", 0) == hi_channel_id:
+            hi_channel_text = str(load_guild_settings(message.guild.id).get("hi_channel_text") or "Hi :)").strip() or "Hi :)"
+            try:
+                await message.delete()
+            except discord.Forbidden:
+                logger.warning(
+                    "Cannot delete message %s in hi channel %s for guild %s",
+                    getattr(message, "id", "unknown"),
+                    hi_channel_id,
+                    getattr(message.guild, "id", "unknown"),
+                )
+            except discord.HTTPException:
+                logger.exception(
+                    "Failed deleting message %s in hi channel %s for guild %s",
+                    getattr(message, "id", "unknown"),
+                    hi_channel_id,
+                    getattr(message.guild, "id", "unknown"),
+                )
+                return
+            try:
+                await message.channel.send(hi_channel_text)
+            except discord.Forbidden:
+                logger.warning(
+                    "Cannot send hi replacement in channel %s for guild %s",
+                    hi_channel_id,
+                    getattr(message.guild, "id", "unknown"),
+                )
+            except discord.HTTPException:
+                logger.exception(
+                    "Failed sending hi replacement in channel %s for guild %s",
+                    hi_channel_id,
+                    getattr(message.guild, "id", "unknown"),
+                )
+            return
     if message.content:
         tag = normalize_tag(message.content.strip().split()[0])
         if tag == "!list":
