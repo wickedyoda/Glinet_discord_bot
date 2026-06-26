@@ -11007,7 +11007,10 @@ async def on_message(message: discord.Message):
                 )
                 return
             try:
-                await message.channel.send(hi_response_text)
+                await message.channel.send(
+                    hi_response_text,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
             except discord.Forbidden:
                 logger.warning(
                     "Cannot send hi replacement in channel %s for guild %s",
