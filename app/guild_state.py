@@ -77,6 +77,7 @@ class GuildStateManager:
             "mod_log_channel_id": self.mod_log_channel_id if self.mod_log_channel_id > 0 else 0,
             "firmware_notify_channel_id": self.firmware_notify_channel_id if self.firmware_notify_channel_id > 0 else 0,
             "hi_channel_id": 0,
+            "hi_channel_text": "Hi :)",
             "bad_words_enabled": 0,
             "bad_words_list_json": "[]",
             "bad_words_warning_window_hours": 72,
@@ -140,7 +141,7 @@ class GuildStateManager:
             row = conn.execute(
                 """
                 SELECT bot_log_channel_id, mod_log_channel_id, firmware_notify_channel_id,
-                       hi_channel_id,
+                       hi_channel_id, hi_channel_text,
                        bad_words_enabled, bad_words_list_json,
                        bad_words_warning_window_hours, bad_words_warning_threshold,
                        bad_words_action, bad_words_timeout_minutes,
@@ -168,6 +169,7 @@ class GuildStateManager:
                     "mod_log_channel_id": int(row["mod_log_channel_id"] or 0),
                     "firmware_notify_channel_id": int(row["firmware_notify_channel_id"] or 0),
                     "hi_channel_id": int(row["hi_channel_id"] or 0),
+                    "hi_channel_text": str(row["hi_channel_text"] or "Hi :)"),
                     "bad_words_enabled": 1 if int(row["bad_words_enabled"] or 0) > 0 else 0,
                     "bad_words_list_json": str(row["bad_words_list_json"] or "[]"),
                     "bad_words_warning_window_hours": int(row["bad_words_warning_window_hours"] or 72),
@@ -231,6 +233,7 @@ class GuildStateManager:
             "welcome_channel_id",
         ):
             merged[key] = self.parse_int_setting(source.get(key, current.get(key, 0)), 0, minimum=0)
+        merged["hi_channel_text"] = str(source.get("hi_channel_text", current.get("hi_channel_text", "Hi :)")) or "Hi :)").strip() or "Hi :)"
         merged["bad_words_enabled"] = 1 if str(source.get("bad_words_enabled", current.get("bad_words_enabled", 0))).strip().lower() in {
             "1",
             "true",
@@ -332,6 +335,7 @@ class GuildStateManager:
                     mod_log_channel_id,
                     firmware_notify_channel_id,
                     hi_channel_id,
+                    hi_channel_text,
                     bad_words_enabled,
                     bad_words_list_json,
                     bad_words_warning_window_hours,
@@ -366,12 +370,13 @@ class GuildStateManager:
                     updated_at,
                     updated_by_email
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(guild_id) DO UPDATE SET
                     bot_log_channel_id=excluded.bot_log_channel_id,
                     mod_log_channel_id=excluded.mod_log_channel_id,
                     firmware_notify_channel_id=excluded.firmware_notify_channel_id,
                     hi_channel_id=excluded.hi_channel_id,
+                    hi_channel_text=excluded.hi_channel_text,
                     bad_words_enabled=excluded.bad_words_enabled,
                     bad_words_list_json=excluded.bad_words_list_json,
                     bad_words_warning_window_hours=excluded.bad_words_warning_window_hours,
@@ -412,6 +417,7 @@ class GuildStateManager:
                     merged["mod_log_channel_id"],
                     merged["firmware_notify_channel_id"],
                     merged["hi_channel_id"],
+                    merged["hi_channel_text"],
                     merged["bad_words_enabled"],
                     merged["bad_words_list_json"],
                     merged["bad_words_warning_window_hours"],
