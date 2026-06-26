@@ -58,6 +58,7 @@ def process_guild_settings_submission(
     payload = {
         "bot_log_channel_id": form.get("bot_log_channel_id", ""),
         "firmware_notify_channel_id": form.get("firmware_notify_channel_id", ""),
+        "hi_channel_id": form.get("hi_channel_id", ""),
         "firmware_monitor_enabled": -1 if not form.get("firmware_monitor_enabled__override") else (1 if form.get("firmware_monitor_enabled") else 0),
         "reddit_feed_notify_enabled": -1 if not form.get("reddit_feed_notify_enabled__override") else (1 if form.get("reddit_feed_notify_enabled") else 0),
         "youtube_notify_enabled": -1 if not form.get("youtube_notify_enabled__override") else (1 if form.get("youtube_notify_enabled") else 0),
@@ -175,6 +176,12 @@ def render_guild_settings_body(
         text_channel_options,
         placeholder="Use global fallback",
     )
+    hi_channel_select = render_select_input(
+        "hi_channel_id",
+        str(current_settings.get("hi_channel_id") or ""),
+        text_channel_options,
+        placeholder="Disabled",
+    )
     access_role_select = render_select_input(
         "access_role_id",
         str(current_settings.get("access_role_id") or ""),
@@ -248,6 +255,13 @@ def render_guild_settings_body(
                   <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
                   <td>{access_role_select}</td>
                   <td class="muted mono">{escape(str(effective_settings.get("access_role_id") or "")) or "Disabled"}</td>
+                </tr>
+                """,
+        f"""
+                <tr>
+                  <td><strong>Hi Channel</strong><div class="muted mono">hi_channel_id</div></td>
+                  <td>{hi_channel_select}</td>
+                  <td class="muted mono">{escape(str(effective_settings.get("hi_channel_id") or "")) or "Disabled"}</td>
                 </tr>
                 """,
     ]
