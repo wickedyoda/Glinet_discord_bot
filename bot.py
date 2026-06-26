@@ -10997,7 +10997,6 @@ async def on_message(message: discord.Message):
                     hi_channel_id,
                     getattr(message.guild, "id", "unknown"),
                 )
-                return
             except discord.HTTPException:
                 logger.exception(
                     "Failed deleting message %s in hi channel %s for guild %s",
