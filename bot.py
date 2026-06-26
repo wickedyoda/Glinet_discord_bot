@@ -10988,7 +10988,14 @@ async def on_message(message: discord.Message):
         hi_channel_id = get_effective_guild_setting(message.guild.id, "hi_channel_id", 0)
         if hi_channel_id > 0 and getattr(message.channel, "id", 0) == hi_channel_id:
             hi_channel_text = str(load_guild_settings(message.guild.id).get("hi_channel_text") or "Hi :)").strip() or "Hi :)"
-            hi_response_text = f"{message.author.display_name} says {hi_channel_text}"
+            hi_member_name = (
+                str(getattr(message.author, "nick", "") or "").strip()
+                or str(getattr(message.author, "display_name", "") or "").strip()
+                or str(getattr(message.author, "global_name", "") or "").strip()
+                or str(getattr(message.author, "name", "") or "").strip()
+                or "Member"
+            )
+            hi_response_text = f"{hi_member_name} says {hi_channel_text}"
             try:
                 await message.delete()
             except discord.Forbidden:
