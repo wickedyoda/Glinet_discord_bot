@@ -9280,6 +9280,8 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     global COMMAND_RESPONSES_EPHEMERAL
     global PUPPY_IMAGE_API_URL
     global PUPPY_IMAGE_TIMEOUT_SECONDS
+    global SHORTENER_BASE_URL
+    global SHORTENER_HOST
     global SHORTENER_ENABLED
     global SHORTENER_TIMEOUT_SECONDS
     global YOUTUBE_NOTIFY_ENABLED
@@ -9367,6 +9369,12 @@ def refresh_runtime_settings_from_env(_updated_values=None):
         PUPPY_IMAGE_TIMEOUT_SECONDS,
         minimum=1,
     )
+    SHORTENER_BASE_URL = normalize_http_url_setting(
+        os.getenv("SHORTENER_BASE_URL", SHORTENER_BASE_URL),
+        SHORTENER_BASE_URL,
+        "SHORTENER_BASE_URL",
+    ).rstrip("/")
+    SHORTENER_HOST = urllib.parse.urlparse(SHORTENER_BASE_URL).netloc.lower()
     SHORTENER_ENABLED = is_truthy_env_value(
         os.getenv("SHORTENER_ENABLED", "true" if SHORTENER_ENABLED else "false"),
         default_value=SHORTENER_ENABLED,
