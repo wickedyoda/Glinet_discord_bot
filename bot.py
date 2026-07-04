@@ -55,6 +55,24 @@ from app.feed_web_callbacks import FeedWebCallbacks
 from app.guild_archive import GuildArchiveManager
 from app.guild_state import GuildStateManager
 from app.help_content import build_help_message_for_command as build_help_content_message_for_command
+from app.honeypot import (
+    HONEYPOT_ACTION_BAN,
+    HONEYPOT_ACTION_CHOICES,
+    HONEYPOT_ACTION_ROLE,
+    HONEYPOT_ACTION_SOFTBAN,
+    HONEYPOT_ACTION_TIMEOUT,
+    HONEYPOT_DEFAULT_ACTION,
+    HONEYPOT_DEFAULT_DELETE_MESSAGE_DAYS,
+    HONEYPOT_DEFAULT_JOIN_ACCOUNT_AGE_HOURS,
+    HONEYPOT_DEFAULT_TIMEOUT_HOURS,
+    clamp_honeypot_delete_message_days,
+    clamp_honeypot_join_account_age_hours,
+    clamp_honeypot_timeout_hours,
+    format_honeypot_join_guard_summary,
+    format_honeypot_summary,
+    honeypot_action_label,
+    normalize_honeypot_action,
+)
 from app.image_metadata import (
     detect_image_metadata,
 )
@@ -991,6 +1009,24 @@ COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
 COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES = "allowed_role_names"
 COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS = "moderator_role_ids"
 COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR = "administrator"
+ADMIN_ONLY_COMMAND_KEYS = {
+    "honeypot_create",
+    "honeypot_edit",
+    "honeypot_list",
+    "honeypot_info",
+    "honeypot_delete",
+    "honeypot_delete_all",
+    "honeypot_log_set_channel",
+    "honeypot_log_clear_channel",
+    "honeypot_log_set_role",
+    "honeypot_log_clear_role",
+    "honeypot_log_show",
+    "honeypot_join_guard_set",
+    "honeypot_join_guard_disable",
+    "honeypot_join_guard_show",
+    "set_hello_channel",
+    "set_hello_text",
+}
 MODERATOR_ONLY_COMMAND_KEYS = {
     "add_role_member",
     "ban_member",
@@ -1054,11 +1090,27 @@ COMMAND_PERMISSION_DEFAULTS = {
     "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_astrowarp": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "honeypot_create": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_edit": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_list": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_info": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_delete": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_delete_all": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_log_set_channel": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_log_clear_channel": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_log_set_role": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_log_clear_role": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_log_show": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_join_guard_set": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_join_guard_disable": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "honeypot_join_guard_show": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "set_hello_channel": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "set_hello_text": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
 }
 for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
     COMMAND_PERMISSION_DEFAULTS[_command_key] = COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
+for _command_key in ADMIN_ONLY_COMMAND_KEYS:
+    COMMAND_PERMISSION_DEFAULTS[_command_key] = COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR
 COMMAND_PERMISSION_METADATA = {
     "list": {
         "label": "!list",
@@ -1219,6 +1271,62 @@ COMMAND_PERMISSION_METADATA = {
     "logs": {
         "label": "/logs",
         "description": "View recent container error log entries.",
+    },
+    "honeypot_create": {
+        "label": "/honeypot create",
+        "description": "Admin only: create a honeypot channel rule.",
+    },
+    "honeypot_edit": {
+        "label": "/honeypot edit",
+        "description": "Admin only: edit a honeypot channel rule.",
+    },
+    "honeypot_list": {
+        "label": "/honeypot list",
+        "description": "Admin only: list honeypots configured in this server.",
+    },
+    "honeypot_info": {
+        "label": "/honeypot info",
+        "description": "Admin only: show details for one honeypot.",
+    },
+    "honeypot_delete": {
+        "label": "/honeypot delete",
+        "description": "Admin only: delete one honeypot.",
+    },
+    "honeypot_delete_all": {
+        "label": "/honeypot delete_all",
+        "description": "Admin only: delete all honeypots in this server.",
+    },
+    "honeypot_log_set_channel": {
+        "label": "/honeypot_log set_channel",
+        "description": "Admin only: set the honeypot logging channel.",
+    },
+    "honeypot_log_clear_channel": {
+        "label": "/honeypot_log clear_channel",
+        "description": "Admin only: clear the honeypot logging channel.",
+    },
+    "honeypot_log_set_role": {
+        "label": "/honeypot_log set_role",
+        "description": "Admin only: set the role pinged by honeypot logs.",
+    },
+    "honeypot_log_clear_role": {
+        "label": "/honeypot_log clear_role",
+        "description": "Admin only: clear the role pinged by honeypot logs.",
+    },
+    "honeypot_log_show": {
+        "label": "/honeypot_log show",
+        "description": "Admin only: show honeypot logging settings.",
+    },
+    "honeypot_join_guard_set": {
+        "label": "/honeypot_join_guard set",
+        "description": "Admin only: configure join-time anti-spam screening.",
+    },
+    "honeypot_join_guard_disable": {
+        "label": "/honeypot_join_guard disable",
+        "description": "Admin only: disable join-time anti-spam screening.",
+    },
+    "honeypot_join_guard_show": {
+        "label": "/honeypot_join_guard show",
+        "description": "Admin only: show join-time anti-spam screening settings.",
     },
     "set_hello_channel": {
         "label": "/set_hello_channel",
@@ -1481,6 +1589,42 @@ def ensure_db_schema():
                 updated_by_email TEXT NOT NULL DEFAULT ''
             );
 
+            CREATE TABLE IF NOT EXISTS honeypot_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                channel_id INTEGER NOT NULL,
+                action TEXT NOT NULL DEFAULT 'softban',
+                delete_message_days INTEGER NOT NULL DEFAULT 1,
+                timeout_hours INTEGER NOT NULL DEFAULT 24,
+                role_id INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, channel_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS honeypot_logging_settings (
+                guild_id INTEGER PRIMARY KEY,
+                channel_id INTEGER NOT NULL DEFAULT 0,
+                role_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                updated_by_email TEXT NOT NULL DEFAULT ''
+            );
+
+            CREATE TABLE IF NOT EXISTS honeypot_join_guard_settings (
+                guild_id INTEGER PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 0,
+                min_account_age_hours INTEGER NOT NULL DEFAULT 72,
+                action TEXT NOT NULL DEFAULT 'softban',
+                delete_message_days INTEGER NOT NULL DEFAULT 1,
+                timeout_hours INTEGER NOT NULL DEFAULT 24,
+                role_id INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                updated_by_email TEXT NOT NULL DEFAULT ''
+            );
+
             CREATE TABLE IF NOT EXISTS actions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL DEFAULT 0,
@@ -1662,6 +1806,10 @@ def ensure_db_schema():
             );
 
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
+            CREATE INDEX IF NOT EXISTS idx_honeypot_channels_guild_id
+                ON honeypot_channels(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_honeypot_channels_enabled
+                ON honeypot_channels(enabled);
             CREATE INDEX IF NOT EXISTS idx_moderation_warnings_guild_user_created_at
                 ON moderation_warnings(guild_id, user_id, created_at);
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_subreddit
@@ -5019,6 +5167,394 @@ def run_web_update_command_permissions(payload: dict, actor_email: str, guild_id
     return response
 
 
+def normalize_honeypot_record(raw_entry: dict | sqlite3.Row | None):
+    entry = dict(raw_entry or {})
+    return {
+        "id": int(entry.get("id") or 0),
+        "guild_id": int(entry.get("guild_id") or 0),
+        "channel_id": int(entry.get("channel_id") or 0),
+        "action": normalize_honeypot_action(entry.get("action")),
+        "delete_message_days": clamp_honeypot_delete_message_days(entry.get("delete_message_days")),
+        "timeout_hours": clamp_honeypot_timeout_hours(entry.get("timeout_hours")),
+        "role_id": int(entry.get("role_id") or 0),
+        "enabled": 1 if int(entry.get("enabled") or 0) > 0 else 0,
+        "created_at": str(entry.get("created_at") or ""),
+        "updated_at": str(entry.get("updated_at") or ""),
+        "created_by_email": str(entry.get("created_by_email") or ""),
+        "updated_by_email": str(entry.get("updated_by_email") or ""),
+    }
+
+
+def load_honeypot_entries(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(
+            """
+            SELECT id, guild_id, channel_id, action, delete_message_days, timeout_hours,
+                   role_id, enabled, created_at, updated_at, created_by_email, updated_by_email
+            FROM honeypot_channels
+            WHERE guild_id = ?
+            ORDER BY channel_id ASC
+            """,
+            (safe_guild_id,),
+        ).fetchall()
+    return [normalize_honeypot_record(row) for row in rows]
+
+
+def load_honeypot_entry(guild_id: int | None, channel_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_channel_id = parse_int_setting(channel_id, 0, minimum=1)
+    if safe_channel_id <= 0:
+        return None
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            """
+            SELECT id, guild_id, channel_id, action, delete_message_days, timeout_hours,
+                   role_id, enabled, created_at, updated_at, created_by_email, updated_by_email
+            FROM honeypot_channels
+            WHERE guild_id = ? AND channel_id = ?
+            """,
+            (safe_guild_id, safe_channel_id),
+        ).fetchone()
+    return normalize_honeypot_record(row) if row is not None else None
+
+
+def save_honeypot_entry(guild_id: int | None, payload: dict, actor_email: str = ""):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_channel_id = parse_int_setting((payload or {}).get("channel_id"), 0, minimum=1)
+    if safe_channel_id <= 0:
+        raise ValueError("A valid honeypot channel is required.")
+    action = normalize_honeypot_action((payload or {}).get("action"))
+    delete_message_days = clamp_honeypot_delete_message_days((payload or {}).get("delete_message_days"))
+    timeout_hours = clamp_honeypot_timeout_hours((payload or {}).get("timeout_hours"))
+    role_id = parse_int_setting((payload or {}).get("role_id"), 0, minimum=0)
+    enabled = 1 if str((payload or {}).get("enabled", 1)).strip().lower() not in {"0", "false", "no", "off"} else 0
+    if action == HONEYPOT_ACTION_ROLE and role_id <= 0:
+        raise ValueError("A role honeypot requires a role.")
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        existing = conn.execute(
+            "SELECT created_at, created_by_email FROM honeypot_channels WHERE guild_id = ? AND channel_id = ?",
+            (safe_guild_id, safe_channel_id),
+        ).fetchone()
+        created_at = str(existing["created_at"]) if existing is not None else now_iso
+        created_by_email = str(existing["created_by_email"] or actor_email or "unknown") if existing is not None else (actor_email or "unknown")
+        conn.execute(
+            """
+            INSERT INTO honeypot_channels (
+                guild_id, channel_id, action, delete_message_days, timeout_hours, role_id,
+                enabled, created_at, updated_at, created_by_email, updated_by_email
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id, channel_id) DO UPDATE SET
+                action=excluded.action,
+                delete_message_days=excluded.delete_message_days,
+                timeout_hours=excluded.timeout_hours,
+                role_id=excluded.role_id,
+                enabled=excluded.enabled,
+                updated_at=excluded.updated_at,
+                updated_by_email=excluded.updated_by_email
+            """,
+            (
+                safe_guild_id,
+                safe_channel_id,
+                action,
+                delete_message_days,
+                timeout_hours,
+                role_id,
+                enabled,
+                created_at,
+                now_iso,
+                created_by_email,
+                actor_email or "unknown",
+            ),
+        )
+        conn.commit()
+    return load_honeypot_entry(safe_guild_id, safe_channel_id)
+
+
+def delete_honeypot_entry(guild_id: int | None, channel_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_channel_id = parse_int_setting(channel_id, 0, minimum=1)
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            "DELETE FROM honeypot_channels WHERE guild_id = ? AND channel_id = ?",
+            (safe_guild_id, safe_channel_id),
+        )
+        conn.commit()
+    return cursor.rowcount
+
+
+def delete_all_honeypot_entries(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute("DELETE FROM honeypot_channels WHERE guild_id = ?", (safe_guild_id,))
+        conn.commit()
+    return cursor.rowcount
+
+
+def load_honeypot_logging_settings(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            """
+            SELECT guild_id, channel_id, role_id, updated_at, updated_by_email
+            FROM honeypot_logging_settings
+            WHERE guild_id = ?
+            """,
+            (safe_guild_id,),
+        ).fetchone()
+    if row is None:
+        return {
+            "guild_id": safe_guild_id,
+            "channel_id": 0,
+            "role_id": 0,
+            "updated_at": "",
+            "updated_by_email": "",
+        }
+    return {
+        "guild_id": int(row["guild_id"] or safe_guild_id),
+        "channel_id": int(row["channel_id"] or 0),
+        "role_id": int(row["role_id"] or 0),
+        "updated_at": str(row["updated_at"] or ""),
+        "updated_by_email": str(row["updated_by_email"] or ""),
+    }
+
+
+def save_honeypot_logging_settings(guild_id: int | None, *, channel_id: int | None = None, role_id: int | None = None, actor_email: str = ""):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    current = load_honeypot_logging_settings(safe_guild_id)
+    next_channel_id = current["channel_id"] if channel_id is None else parse_int_setting(channel_id, 0, minimum=0)
+    next_role_id = current["role_id"] if role_id is None else parse_int_setting(role_id, 0, minimum=0)
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO honeypot_logging_settings (guild_id, channel_id, role_id, updated_at, updated_by_email)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                channel_id=excluded.channel_id,
+                role_id=excluded.role_id,
+                updated_at=excluded.updated_at,
+                updated_by_email=excluded.updated_by_email
+            """,
+            (safe_guild_id, next_channel_id, next_role_id, now_iso, actor_email or "unknown"),
+        )
+        conn.commit()
+    return load_honeypot_logging_settings(safe_guild_id)
+
+
+def load_honeypot_join_guard_settings(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        row = conn.execute(
+            """
+            SELECT guild_id, enabled, min_account_age_hours, action, delete_message_days,
+                   timeout_hours, role_id, updated_at, updated_by_email
+            FROM honeypot_join_guard_settings
+            WHERE guild_id = ?
+            """,
+            (safe_guild_id,),
+        ).fetchone()
+    if row is None:
+        return {
+            "guild_id": safe_guild_id,
+            "enabled": 0,
+            "min_account_age_hours": HONEYPOT_DEFAULT_JOIN_ACCOUNT_AGE_HOURS,
+            "action": HONEYPOT_DEFAULT_ACTION,
+            "delete_message_days": HONEYPOT_DEFAULT_DELETE_MESSAGE_DAYS,
+            "timeout_hours": HONEYPOT_DEFAULT_TIMEOUT_HOURS,
+            "role_id": 0,
+            "updated_at": "",
+            "updated_by_email": "",
+        }
+    return {
+        "guild_id": int(row["guild_id"] or safe_guild_id),
+        "enabled": 1 if int(row["enabled"] or 0) > 0 else 0,
+        "min_account_age_hours": clamp_honeypot_join_account_age_hours(row["min_account_age_hours"]),
+        "action": normalize_honeypot_action(row["action"]),
+        "delete_message_days": clamp_honeypot_delete_message_days(row["delete_message_days"]),
+        "timeout_hours": clamp_honeypot_timeout_hours(row["timeout_hours"]),
+        "role_id": int(row["role_id"] or 0),
+        "updated_at": str(row["updated_at"] or ""),
+        "updated_by_email": str(row["updated_by_email"] or ""),
+    }
+
+
+def save_honeypot_join_guard_settings(guild_id: int | None, payload: dict, actor_email: str = ""):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    current = load_honeypot_join_guard_settings(safe_guild_id)
+    source = payload or {}
+    action = normalize_honeypot_action(source.get("action", current.get("action")))
+    role_id = parse_int_setting(source.get("role_id", current.get("role_id", 0)), 0, minimum=0)
+    if action == HONEYPOT_ACTION_ROLE and role_id <= 0:
+        raise ValueError("A role join guard requires a role.")
+    enabled = 1 if str(source.get("enabled", current.get("enabled", 0))).strip().lower() not in {"0", "false", "no", "off"} else 0
+    min_account_age_hours = clamp_honeypot_join_account_age_hours(
+        source.get("min_account_age_hours", current.get("min_account_age_hours", HONEYPOT_DEFAULT_JOIN_ACCOUNT_AGE_HOURS))
+    )
+    delete_message_days = clamp_honeypot_delete_message_days(
+        source.get("delete_message_days", current.get("delete_message_days", HONEYPOT_DEFAULT_DELETE_MESSAGE_DAYS))
+    )
+    timeout_hours = clamp_honeypot_timeout_hours(
+        source.get("timeout_hours", current.get("timeout_hours", HONEYPOT_DEFAULT_TIMEOUT_HOURS))
+    )
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            INSERT INTO honeypot_join_guard_settings (
+                guild_id, enabled, min_account_age_hours, action, delete_message_days,
+                timeout_hours, role_id, updated_at, updated_by_email
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(guild_id) DO UPDATE SET
+                enabled=excluded.enabled,
+                min_account_age_hours=excluded.min_account_age_hours,
+                action=excluded.action,
+                delete_message_days=excluded.delete_message_days,
+                timeout_hours=excluded.timeout_hours,
+                role_id=excluded.role_id,
+                updated_at=excluded.updated_at,
+                updated_by_email=excluded.updated_by_email
+            """,
+            (
+                safe_guild_id,
+                enabled,
+                min_account_age_hours,
+                action,
+                delete_message_days,
+                timeout_hours,
+                role_id,
+                now_iso,
+                actor_email or "unknown",
+            ),
+        )
+        conn.commit()
+    return load_honeypot_join_guard_settings(safe_guild_id)
+
+
+def build_honeypot_web_payload(guild_id: int):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    return {
+        "ok": True,
+        "guild_id": safe_guild_id,
+        "entries": load_honeypot_entries(safe_guild_id),
+        "logging_settings": load_honeypot_logging_settings(safe_guild_id),
+        "join_guard": load_honeypot_join_guard_settings(safe_guild_id),
+    }
+
+
+def run_web_get_honeypot(guild_id: int):
+    try:
+        return build_honeypot_web_payload(guild_id)
+    except Exception:
+        logger.exception("Failed to build honeypot payload for web admin")
+        return {"ok": False, "error": "Unexpected error while loading honeypot settings."}
+
+
+def run_web_manage_honeypot(payload: dict, actor_email: str, guild_id: int):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid honeypot payload."}
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    action = str(payload.get("action") or "").strip()
+    try:
+        if action == "create_entry":
+            entry = save_honeypot_entry(
+                safe_guild_id,
+                {
+                    "channel_id": payload.get("channel_id"),
+                    "action": payload.get("honeypot_action"),
+                    "delete_message_days": payload.get("delete_message_days"),
+                    "timeout_hours": payload.get("timeout_hours"),
+                    "role_id": payload.get("role_id"),
+                    "enabled": payload.get("enabled", "1"),
+                },
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = f"Honeypot created for channel {entry['channel_id']}."
+            return response
+        if action == "update_entry":
+            entry = save_honeypot_entry(
+                safe_guild_id,
+                {
+                    "channel_id": payload.get("channel_id"),
+                    "action": payload.get("honeypot_action"),
+                    "delete_message_days": payload.get("delete_message_days"),
+                    "timeout_hours": payload.get("timeout_hours"),
+                    "role_id": payload.get("role_id"),
+                    "enabled": payload.get("enabled", "1"),
+                },
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = f"Honeypot updated for channel {entry['channel_id']}."
+            return response
+        if action == "delete_entry":
+            deleted = delete_honeypot_entry(safe_guild_id, payload.get("channel_id"))
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = "Honeypot deleted." if deleted > 0 else "No honeypot matched that channel."
+            return response
+        if action == "delete_all":
+            if str(payload.get("confirm") or "").strip().lower() not in {"yes", "true", "1", "confirm"}:
+                return {"ok": False, "error": "Delete-all requires confirmation."}
+            deleted = delete_all_honeypot_entries(safe_guild_id)
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = f"Deleted {deleted} honeypot(s)."
+            return response
+        if action == "save_logging":
+            save_honeypot_logging_settings(
+                safe_guild_id,
+                channel_id=payload.get("log_channel_id"),
+                role_id=payload.get("log_role_id"),
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = "Honeypot logging settings updated."
+            return response
+        if action == "save_join_guard":
+            save_honeypot_join_guard_settings(
+                safe_guild_id,
+                {
+                    "enabled": payload.get("join_guard_enabled", "0"),
+                    "min_account_age_hours": payload.get("join_guard_min_account_age_hours"),
+                    "action": payload.get("join_guard_action"),
+                    "delete_message_days": payload.get("join_guard_delete_message_days"),
+                    "timeout_hours": payload.get("join_guard_timeout_hours"),
+                    "role_id": payload.get("join_guard_role_id"),
+                },
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = "Join guard settings updated."
+            return response
+        if action == "disable_join_guard":
+            save_honeypot_join_guard_settings(
+                safe_guild_id,
+                {"enabled": "0"},
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = "Join guard disabled."
+            return response
+        return {"ok": False, "error": "Unknown honeypot action."}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception:
+        logger.exception("Failed to manage honeypot settings from web admin")
+        return {"ok": False, "error": "Failed to update honeypot settings."}
+
+
 def build_reddit_feeds_web_payload(guild_id: int):
     return get_feed_web_callbacks().build_reddit_feeds_web_payload(guild_id)
 
@@ -6954,6 +7490,58 @@ async def send_moderation_log(
         return False
 
 
+async def send_honeypot_log(
+    guild: discord.Guild,
+    *,
+    target: discord.Member,
+    channel_id: int,
+    action: str,
+    outcome: str,
+    details: str,
+):
+    settings = load_honeypot_logging_settings(guild.id)
+    target_channel_id = int(settings.get("channel_id") or 0)
+    ping_role_id = int(settings.get("role_id") or 0)
+    if target_channel_id <= 0:
+        return False
+    channel = await get_text_channel(bot, target_channel_id)
+    if channel is None:
+        logger.warning("Honeypot logging channel %s is unavailable for guild %s", target_channel_id, guild.id)
+        return False
+
+    prefix = f"<@&{ping_role_id}>\n" if ping_role_id > 0 else ""
+    message = (
+        f"{prefix}"
+        "🍯 **Honeypot Triggered**\n"
+        f"**Member:** {target} (`{target.id}`)\n"
+        f"**Channel:** <#{channel_id}>\n"
+        f"**Action:** `{action}`\n"
+        f"**Outcome:** `{outcome}`\n"
+        f"**Details:** {details}"
+    )
+    record_action_safe(
+        action=f"honeypot_{action}",
+        status=outcome,
+        moderator="system",
+        target=f"{target} ({target.id})",
+        reason=truncate_log_text(details, max_length=500),
+        guild_id=guild.id,
+    )
+    record_bot_log_channel_message("honeypot_action", target_channel_id, message)
+    try:
+        await channel.send(
+            message,
+            allowed_mentions=discord.AllowedMentions(users=False, roles=ping_role_id > 0, everyone=False),
+        )
+        return True
+    except discord.Forbidden:
+        logger.warning("No permission to send honeypot logs to channel %s", target_channel_id)
+        return False
+    except discord.HTTPException:
+        logger.exception("Failed to send honeypot log for guild %s", guild.id)
+        return False
+
+
 def clip_text(value: str, max_chars: int = 250):
     if not value:
         return "N/A"
@@ -6975,6 +7563,195 @@ def truncate_log_text(text: str, max_length: int = 300):
     if len(value) <= max_length:
         return value
     return f"{value[: max_length - 3]}..."
+
+
+async def apply_honeypot_action(message: discord.Message, entry: dict):
+    guild = message.guild
+    member = message.author
+    if guild is None or not isinstance(member, discord.Member):
+        return False
+    if member.bot or has_moderator_access(member) or has_admin_access(member):
+        return False
+
+    action = normalize_honeypot_action(entry.get("action"))
+    channel_id = int(entry.get("channel_id") or 0)
+    delete_message_days = clamp_honeypot_delete_message_days(entry.get("delete_message_days"))
+    timeout_hours = clamp_honeypot_timeout_hours(entry.get("timeout_hours"))
+    role_id = int(entry.get("role_id") or 0)
+    action_reason = f"Honeypot triggered by {member} in #{getattr(message.channel, 'name', channel_id)}"
+
+    try:
+        await message.delete()
+    except discord.Forbidden:
+        logger.warning("Cannot delete honeypot trigger message %s in guild %s", getattr(message, "id", "unknown"), guild.id)
+    except discord.HTTPException:
+        logger.exception("Failed deleting honeypot trigger message %s in guild %s", getattr(message, "id", "unknown"), guild.id)
+
+    try:
+        if action == HONEYPOT_ACTION_SOFTBAN:
+            await guild.ban(member, reason=action_reason, delete_message_seconds=delete_message_days * 86400)
+            await guild.unban(discord.Object(id=member.id), reason=f"Softban release after honeypot trigger for {member}")
+            details = f"Soft banned and immediately unbanned; deleted {delete_message_days} day(s) of messages."
+        elif action == HONEYPOT_ACTION_BAN:
+            await guild.ban(member, reason=action_reason, delete_message_seconds=delete_message_days * 86400)
+            details = f"Banned and deleted {delete_message_days} day(s) of messages."
+        elif action == HONEYPOT_ACTION_TIMEOUT:
+            until = discord.utils.utcnow() + timedelta(hours=timeout_hours)
+            await member.timeout(until, reason=action_reason)
+            details = f"Timed out until <t:{int(until.timestamp())}:f>."
+        elif action == HONEYPOT_ACTION_ROLE:
+            role = guild.get_role(role_id)
+            if role is None:
+                await send_honeypot_log(
+                    guild,
+                    target=member,
+                    channel_id=channel_id,
+                    action=action,
+                    outcome="failed",
+                    details=f"Configured role `{role_id}` was not found.",
+                )
+                return True
+            await member.add_roles(role, reason=action_reason)
+            details = f"Granted role {role.mention} (`{role.id}`)."
+        else:
+            details = "Unsupported honeypot action configuration."
+            await send_honeypot_log(
+                guild,
+                target=member,
+                channel_id=channel_id,
+                action=action,
+                outcome="failed",
+                details=details,
+            )
+            return True
+    except discord.Forbidden:
+        logger.exception("Missing permission while executing honeypot action %s for member %s", action, member)
+        await send_honeypot_log(
+            guild,
+            target=member,
+            channel_id=channel_id,
+            action=action,
+            outcome="failed",
+            details="Bot lacks the Discord permissions or role hierarchy needed for this honeypot action.",
+        )
+        return True
+    except discord.HTTPException:
+        logger.exception("Discord API failure while executing honeypot action %s for member %s", action, member)
+        await send_honeypot_log(
+            guild,
+            target=member,
+            channel_id=channel_id,
+            action=action,
+            outcome="failed",
+            details="Discord API error while applying the honeypot action.",
+        )
+        return True
+
+    await send_honeypot_log(
+        guild,
+        target=member,
+        channel_id=channel_id,
+        action=action,
+        outcome="success",
+        details=details,
+    )
+    return True
+
+
+async def apply_honeypot_join_guard(member: discord.Member):
+    guild = member.guild
+    if member.bot or has_moderator_access(member) or has_admin_access(member):
+        return False
+    settings = load_honeypot_join_guard_settings(guild.id)
+    if int(settings.get("enabled") or 0) <= 0:
+        return False
+
+    created_at = getattr(member, "created_at", None)
+    if created_at is None:
+        return False
+    account_age = discord.utils.utcnow() - created_at
+    min_account_age_hours = clamp_honeypot_join_account_age_hours(settings.get("min_account_age_hours"))
+    if account_age >= timedelta(hours=min_account_age_hours):
+        return False
+
+    action = normalize_honeypot_action(settings.get("action"))
+    delete_message_days = clamp_honeypot_delete_message_days(settings.get("delete_message_days"))
+    timeout_hours = clamp_honeypot_timeout_hours(settings.get("timeout_hours"))
+    role_id = int(settings.get("role_id") or 0)
+    action_reason = f"Join guard triggered for {member}; account age below {min_account_age_hours}h threshold"
+
+    try:
+        if action == HONEYPOT_ACTION_SOFTBAN:
+            await guild.ban(member, reason=action_reason, delete_message_seconds=delete_message_days * 86400)
+            await guild.unban(discord.Object(id=member.id), reason=f"Softban release after join guard trigger for {member}")
+            details = (
+                f"Account age {int(account_age.total_seconds() // 3600)}h below threshold {min_account_age_hours}h; "
+                f"soft banned and deleted {delete_message_days} day(s) of messages."
+            )
+        elif action == HONEYPOT_ACTION_BAN:
+            await guild.ban(member, reason=action_reason, delete_message_seconds=delete_message_days * 86400)
+            details = (
+                f"Account age {int(account_age.total_seconds() // 3600)}h below threshold {min_account_age_hours}h; "
+                f"banned and deleted {delete_message_days} day(s) of messages."
+            )
+        elif action == HONEYPOT_ACTION_TIMEOUT:
+            until = discord.utils.utcnow() + timedelta(hours=timeout_hours)
+            await member.timeout(until, reason=action_reason)
+            details = (
+                f"Account age {int(account_age.total_seconds() // 3600)}h below threshold {min_account_age_hours}h; "
+                f"timed out until <t:{int(until.timestamp())}:f>."
+            )
+        elif action == HONEYPOT_ACTION_ROLE:
+            role = guild.get_role(role_id)
+            if role is None:
+                await send_honeypot_log(
+                    guild,
+                    target=member,
+                    channel_id=0,
+                    action="join_guard_role",
+                    outcome="failed",
+                    details=f"Join guard role `{role_id}` was not found.",
+                )
+                return True
+            await member.add_roles(role, reason=action_reason)
+            details = (
+                f"Account age {int(account_age.total_seconds() // 3600)}h below threshold {min_account_age_hours}h; "
+                f"granted role {role.mention} (`{role.id}`)."
+            )
+        else:
+            return False
+    except discord.Forbidden:
+        logger.exception("Missing permission while applying honeypot join guard for member %s", member)
+        await send_honeypot_log(
+            guild,
+            target=member,
+            channel_id=0,
+            action=f"join_guard_{action}",
+            outcome="failed",
+            details="Bot lacks the Discord permissions or role hierarchy needed for the join guard action.",
+        )
+        return True
+    except discord.HTTPException:
+        logger.exception("Discord API failure while applying honeypot join guard for member %s", member)
+        await send_honeypot_log(
+            guild,
+            target=member,
+            channel_id=0,
+            action=f"join_guard_{action}",
+            outcome="failed",
+            details="Discord API error while applying the join guard action.",
+        )
+        return True
+
+    await send_honeypot_log(
+        guild,
+        target=member,
+        channel_id=0,
+        action=f"join_guard_{action}",
+        outcome="success",
+        details=details,
+    )
+    return True
 
 
 async def apply_bad_word_moderation(message: discord.Message):
@@ -9829,6 +10606,8 @@ def start_web_admin_server():
                     on_get_discord_catalog=run_web_get_discord_catalog,
                     on_get_command_permissions=run_web_get_command_permissions,
                     on_save_command_permissions=run_web_update_command_permissions,
+                    on_get_honeypot=run_web_get_honeypot,
+                    on_manage_honeypot=run_web_manage_honeypot,
                     on_get_actions=run_web_get_actions,
                     on_get_members=run_web_get_members,
                     on_manage_member=run_web_manage_member,
@@ -10789,6 +11568,11 @@ async def on_member_join(member: discord.Member):
     guild = member.guild
     if not is_managed_guild_id(guild.id):
         return
+    try:
+        if await apply_honeypot_join_guard(member):
+            return
+    except Exception:
+        logger.exception("Failed applying honeypot join guard for %s in guild %s", member, guild.id)
     guild_invite_roles = invite_roles_by_guild.get(guild.id) or {}
     guild_invite_uses = invite_uses_by_guild.setdefault(guild.id, {})
     used_invite = None
@@ -10993,6 +11777,18 @@ async def on_message(message: discord.Message):
         return
     if message.guild is not None and not is_managed_guild_id(message.guild.id):
         return
+    if message.guild is not None:
+        honeypot_entry = load_honeypot_entry(message.guild.id, getattr(message.channel, "id", 0))
+        if honeypot_entry is not None and int(honeypot_entry.get("enabled") or 0) > 0:
+            try:
+                if await apply_honeypot_action(message, honeypot_entry):
+                    return
+            except Exception:
+                logger.exception(
+                    "Failed applying honeypot action for message %s in guild %s",
+                    getattr(message, "id", "unknown"),
+                    getattr(message.guild, "id", "unknown"),
+                )
     if message.guild is not None and isinstance(message.author, discord.Member) and not has_moderator_access(message.author):
         try:
             if await apply_bad_word_moderation(message):
@@ -14361,6 +15157,340 @@ async def set_hello_text_slash(interaction: discord.Interaction, text: str):
     )
 
 
+honeypot_group = app_commands.Group(
+    name="honeypot",
+    description="Manage anti-spam honeypot channels.",
+    default_permissions=discord.Permissions(administrator=True),
+    guild_only=True,
+)
+
+
+@honeypot_group.command(name="create", description="Create a honeypot in a specific channel.")
+@app_commands.describe(
+    channel="Channel to act as a spam trap.",
+    action="What happens when someone posts in the honeypot.",
+    delete_messages="Days of messages to delete for ban/softban actions (0-5).",
+    timeout_hours="Timeout duration in hours for timeout actions.",
+    role="Role to grant for role honeypots.",
+)
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="Soft ban", value=HONEYPOT_ACTION_SOFTBAN),
+        app_commands.Choice(name="Ban", value=HONEYPOT_ACTION_BAN),
+        app_commands.Choice(name="Timeout", value=HONEYPOT_ACTION_TIMEOUT),
+        app_commands.Choice(name="Grant role", value=HONEYPOT_ACTION_ROLE),
+    ]
+)
+async def honeypot_create_slash(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    action: str = HONEYPOT_DEFAULT_ACTION,
+    delete_messages: app_commands.Range[int, 0, 5] = HONEYPOT_DEFAULT_DELETE_MESSAGE_DAYS,
+    timeout_hours: app_commands.Range[int, 1, 672] = HONEYPOT_DEFAULT_TIMEOUT_HOURS,
+    role: discord.Role | None = None,
+):
+    logger.info("/honeypot create invoked by %s for channel %s", interaction.user, channel.id)
+    if not await ensure_interaction_command_access(interaction, "honeypot_create"):
+        return
+    try:
+        entry = save_honeypot_entry(
+            interaction.guild.id,
+            {
+                "channel_id": channel.id,
+                "action": action,
+                "delete_message_days": delete_messages,
+                "timeout_hours": timeout_hours,
+                "role_id": role.id if role is not None else 0,
+                "enabled": 1,
+            },
+            actor_email=f"discord:{interaction.user.id}",
+        )
+    except ValueError as exc:
+        await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        f"✅ Honeypot created. {format_honeypot_summary(entry)}",
+        ephemeral=True,
+    )
+    await log_interaction(interaction, "honeypot_create", reason=truncate_log_text(format_honeypot_summary(entry)), success=True)
+
+
+@honeypot_group.command(name="edit", description="Edit an existing honeypot.")
+@app_commands.describe(
+    channel="Existing honeypot channel.",
+    action="Updated action to use.",
+    delete_messages="Days of messages to delete for ban/softban actions (0-5).",
+    timeout_hours="Timeout duration in hours for timeout actions.",
+    role="Role to grant for role honeypots.",
+    enabled="Whether the honeypot is active.",
+)
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="Soft ban", value=HONEYPOT_ACTION_SOFTBAN),
+        app_commands.Choice(name="Ban", value=HONEYPOT_ACTION_BAN),
+        app_commands.Choice(name="Timeout", value=HONEYPOT_ACTION_TIMEOUT),
+        app_commands.Choice(name="Grant role", value=HONEYPOT_ACTION_ROLE),
+    ]
+)
+async def honeypot_edit_slash(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel,
+    action: str = HONEYPOT_DEFAULT_ACTION,
+    delete_messages: app_commands.Range[int, 0, 5] = HONEYPOT_DEFAULT_DELETE_MESSAGE_DAYS,
+    timeout_hours: app_commands.Range[int, 1, 672] = HONEYPOT_DEFAULT_TIMEOUT_HOURS,
+    role: discord.Role | None = None,
+    enabled: bool = True,
+):
+    logger.info("/honeypot edit invoked by %s for channel %s", interaction.user, channel.id)
+    if not await ensure_interaction_command_access(interaction, "honeypot_edit"):
+        return
+    if load_honeypot_entry(interaction.guild.id, channel.id) is None:
+        await interaction.response.send_message("❌ No honeypot exists for that channel.", ephemeral=True)
+        return
+    try:
+        entry = save_honeypot_entry(
+            interaction.guild.id,
+            {
+                "channel_id": channel.id,
+                "action": action,
+                "delete_message_days": delete_messages,
+                "timeout_hours": timeout_hours,
+                "role_id": role.id if role is not None else 0,
+                "enabled": 1 if enabled else 0,
+            },
+            actor_email=f"discord:{interaction.user.id}",
+        )
+    except ValueError as exc:
+        await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        f"✅ Honeypot updated. {format_honeypot_summary(entry)}",
+        ephemeral=True,
+    )
+    await log_interaction(interaction, "honeypot_edit", reason=truncate_log_text(format_honeypot_summary(entry)), success=True)
+
+
+@honeypot_group.command(name="list", description="List all honeypots in this server.")
+async def honeypot_list_slash(interaction: discord.Interaction):
+    logger.info("/honeypot list invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_list"):
+        return
+    entries = load_honeypot_entries(interaction.guild.id)
+    if not entries:
+        await interaction.response.send_message("ℹ️ No honeypots are configured for this server.", ephemeral=True)
+        return
+    lines = ["🍯 **Configured Honeypots**", ""]
+    for entry in entries:
+        lines.append(f"- {format_honeypot_summary(entry)}")
+    await interaction.response.send_message(trim_search_message("\n".join(lines)), ephemeral=True)
+
+
+@honeypot_group.command(name="info", description="Show one honeypot configuration.")
+@app_commands.describe(channel="Channel to inspect.")
+async def honeypot_info_slash(interaction: discord.Interaction, channel: discord.TextChannel):
+    logger.info("/honeypot info invoked by %s for channel %s", interaction.user, channel.id)
+    if not await ensure_interaction_command_access(interaction, "honeypot_info"):
+        return
+    entry = load_honeypot_entry(interaction.guild.id, channel.id)
+    if entry is None:
+        await interaction.response.send_message("❌ No honeypot exists for that channel.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"🍯 {format_honeypot_summary(entry)}", ephemeral=True)
+
+
+@honeypot_group.command(name="delete", description="Delete a honeypot from a channel.")
+@app_commands.describe(channel="Channel whose honeypot should be removed.")
+async def honeypot_delete_slash(interaction: discord.Interaction, channel: discord.TextChannel):
+    logger.info("/honeypot delete invoked by %s for channel %s", interaction.user, channel.id)
+    if not await ensure_interaction_command_access(interaction, "honeypot_delete"):
+        return
+    deleted = delete_honeypot_entry(interaction.guild.id, channel.id)
+    if deleted <= 0:
+        await interaction.response.send_message("❌ No honeypot exists for that channel.", ephemeral=True)
+        return
+    await interaction.response.send_message(f"✅ Honeypot removed from {channel.mention}.", ephemeral=True)
+    await log_interaction(interaction, "honeypot_delete", reason=f"channel={channel.id}", success=True)
+
+
+@honeypot_group.command(name="delete_all", description="Delete all honeypots in this server.")
+@app_commands.describe(confirm="Set to true to confirm deleting every honeypot.")
+async def honeypot_delete_all_slash(interaction: discord.Interaction, confirm: bool = False):
+    logger.info("/honeypot delete_all invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_delete_all"):
+        return
+    if not confirm:
+        await interaction.response.send_message("❌ Set `confirm` to `true` to delete all honeypots.", ephemeral=True)
+        return
+    deleted = delete_all_honeypot_entries(interaction.guild.id)
+    await interaction.response.send_message(f"✅ Removed {deleted} honeypot(s) from this server.", ephemeral=True)
+    await log_interaction(interaction, "honeypot_delete_all", reason=f"deleted={deleted}", success=True)
+
+
+honeypot_log_group = app_commands.Group(
+    name="honeypot_log",
+    description="Configure honeypot logging.",
+    default_permissions=discord.Permissions(administrator=True),
+    guild_only=True,
+)
+
+
+@honeypot_log_group.command(name="set_channel", description="Set the honeypot logging channel.")
+@app_commands.describe(channel="Channel to receive honeypot action logs.")
+async def honeypot_log_set_channel_slash(interaction: discord.Interaction, channel: discord.TextChannel):
+    logger.info("/honeypot_log set_channel invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_log_set_channel"):
+        return
+    settings = save_honeypot_logging_settings(
+        interaction.guild.id,
+        channel_id=channel.id,
+        actor_email=f"discord:{interaction.user.id}",
+    )
+    await interaction.response.send_message(
+        f"✅ Honeypot logs will be sent to {channel.mention}.",
+        ephemeral=True,
+    )
+    await log_interaction(interaction, "honeypot_log_set_channel", reason=f"channel={settings['channel_id']}", success=True)
+
+
+@honeypot_log_group.command(name="clear_channel", description="Clear the honeypot logging channel.")
+async def honeypot_log_clear_channel_slash(interaction: discord.Interaction):
+    logger.info("/honeypot_log clear_channel invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_log_clear_channel"):
+        return
+    save_honeypot_logging_settings(
+        interaction.guild.id,
+        channel_id=0,
+        actor_email=f"discord:{interaction.user.id}",
+    )
+    await interaction.response.send_message("✅ Honeypot logging channel cleared.", ephemeral=True)
+
+
+@honeypot_log_group.command(name="set_role", description="Set the role pinged on honeypot logs.")
+@app_commands.describe(role="Role to ping when a honeypot triggers.")
+async def honeypot_log_set_role_slash(interaction: discord.Interaction, role: discord.Role):
+    logger.info("/honeypot_log set_role invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_log_set_role"):
+        return
+    save_honeypot_logging_settings(
+        interaction.guild.id,
+        role_id=role.id,
+        actor_email=f"discord:{interaction.user.id}",
+    )
+    await interaction.response.send_message(f"✅ Honeypot logs will ping {role.mention}.", ephemeral=True)
+
+
+@honeypot_log_group.command(name="clear_role", description="Clear the role pinged on honeypot logs.")
+async def honeypot_log_clear_role_slash(interaction: discord.Interaction):
+    logger.info("/honeypot_log clear_role invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_log_clear_role"):
+        return
+    save_honeypot_logging_settings(
+        interaction.guild.id,
+        role_id=0,
+        actor_email=f"discord:{interaction.user.id}",
+    )
+    await interaction.response.send_message("✅ Honeypot logging role cleared.", ephemeral=True)
+
+
+@honeypot_log_group.command(name="show", description="Show the current honeypot logging settings.")
+async def honeypot_log_show_slash(interaction: discord.Interaction):
+    logger.info("/honeypot_log show invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_log_show"):
+        return
+    settings = load_honeypot_logging_settings(interaction.guild.id)
+    channel_text = f"<#{settings['channel_id']}>" if int(settings["channel_id"]) > 0 else "Disabled"
+    role_text = f"<@&{settings['role_id']}>" if int(settings["role_id"]) > 0 else "Disabled"
+    await interaction.response.send_message(
+        f"🍯 **Honeypot Logging**\n- Channel: {channel_text}\n- Role Ping: {role_text}",
+        ephemeral=True,
+    )
+
+
+honeypot_join_guard_group = app_commands.Group(
+    name="honeypot_join_guard",
+    description="Configure join-time spam screening.",
+    default_permissions=discord.Permissions(administrator=True),
+    guild_only=True,
+)
+
+
+@honeypot_join_guard_group.command(name="set", description="Configure join-time spam screening.")
+@app_commands.describe(
+    min_account_age_hours="Accounts newer than this many hours will be handled.",
+    action="What happens when the join guard triggers.",
+    delete_messages="Days of messages to delete for ban/softban actions (0-5).",
+    timeout_hours="Timeout duration in hours for timeout actions.",
+    role="Role to grant for role actions.",
+)
+@app_commands.choices(
+    action=[
+        app_commands.Choice(name="Soft ban", value=HONEYPOT_ACTION_SOFTBAN),
+        app_commands.Choice(name="Ban", value=HONEYPOT_ACTION_BAN),
+        app_commands.Choice(name="Timeout", value=HONEYPOT_ACTION_TIMEOUT),
+        app_commands.Choice(name="Grant role", value=HONEYPOT_ACTION_ROLE),
+    ]
+)
+async def honeypot_join_guard_set_slash(
+    interaction: discord.Interaction,
+    min_account_age_hours: app_commands.Range[int, 1, 8760],
+    action: str = HONEYPOT_DEFAULT_ACTION,
+    delete_messages: app_commands.Range[int, 0, 5] = HONEYPOT_DEFAULT_DELETE_MESSAGE_DAYS,
+    timeout_hours: app_commands.Range[int, 1, 672] = HONEYPOT_DEFAULT_TIMEOUT_HOURS,
+    role: discord.Role | None = None,
+):
+    logger.info("/honeypot_join_guard set invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_join_guard_set"):
+        return
+    try:
+        settings = save_honeypot_join_guard_settings(
+            interaction.guild.id,
+            {
+                "enabled": 1,
+                "min_account_age_hours": min_account_age_hours,
+                "action": action,
+                "delete_message_days": delete_messages,
+                "timeout_hours": timeout_hours,
+                "role_id": role.id if role is not None else 0,
+            },
+            actor_email=f"discord:{interaction.user.id}",
+        )
+    except ValueError as exc:
+        await interaction.response.send_message(f"❌ {exc}", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        f"✅ Join guard updated. {format_honeypot_join_guard_summary(settings)}",
+        ephemeral=True,
+    )
+
+
+@honeypot_join_guard_group.command(name="disable", description="Disable join-time spam screening.")
+async def honeypot_join_guard_disable_slash(interaction: discord.Interaction):
+    logger.info("/honeypot_join_guard disable invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_join_guard_disable"):
+        return
+    settings = save_honeypot_join_guard_settings(
+        interaction.guild.id,
+        {"enabled": 0},
+        actor_email=f"discord:{interaction.user.id}",
+    )
+    await interaction.response.send_message(
+        f"✅ Join guard disabled. {format_honeypot_join_guard_summary(settings)}",
+        ephemeral=True,
+    )
+
+
+@honeypot_join_guard_group.command(name="show", description="Show join-time spam screening settings.")
+async def honeypot_join_guard_show_slash(interaction: discord.Interaction):
+    logger.info("/honeypot_join_guard show invoked by %s", interaction.user)
+    if not await ensure_interaction_command_access(interaction, "honeypot_join_guard_show"):
+        return
+    settings = load_honeypot_join_guard_settings(interaction.guild.id)
+    await interaction.response.send_message(
+        f"🍯 **Join Guard**\n- {format_honeypot_join_guard_summary(settings)}",
+        ephemeral=True,
+    )
+
+
 @tree.command(
     name="search_reddit",
     description="Search r/GlInet and return top 5 matching posts",
@@ -14604,6 +15734,11 @@ async def search_astrowarp_prefix(ctx: commands.Context, *, query: str):
     await ctx.send("🔍 Searching AstroWarp docs...")
     message = await asyncio.to_thread(build_docs_site_search_message, query, "astrowarp")
     await ctx.send(message)
+
+
+tree.add_command(honeypot_group)
+tree.add_command(honeypot_log_group)
+tree.add_command(honeypot_join_guard_group)
 
 
 start_web_admin_server()

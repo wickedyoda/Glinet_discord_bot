@@ -62,6 +62,7 @@ from app.uptime_status import (
 from app.web_audit import should_log_web_audit_event
 from app.web_discourse import process_discourse_submission, render_discourse_body
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
+from app.web_honeypot import process_honeypot_submission, render_honeypot_body
 from app.web_members import process_member_action_submission, render_members_body
 from app.web_moderation import process_moderation_submission, render_moderation_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
@@ -2712,6 +2713,7 @@ def _render_layout(
                 <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('moderation_page') }}">Moderation</option>
+                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
@@ -2730,6 +2732,7 @@ def _render_layout(
                 <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('moderation_page') }}">Moderation</option>
+                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
@@ -2766,6 +2769,7 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
+                <a class="btn secondary" href="{{ url_for('honeypot_page') }}">Honeypot</a>
                 <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
@@ -2775,6 +2779,7 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
+                <a class="btn secondary" href="{{ url_for('honeypot_page') }}">Honeypot</a>
                 <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
@@ -2844,6 +2849,7 @@ def _render_layout(
             <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('moderation_page') }}">Moderation</option>
+            <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
             <option value="{{ url_for('members_page') }}">Members</option>
             <option value="{{ url_for('discourse_page') }}">Discourse</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
@@ -2862,6 +2868,7 @@ def _render_layout(
             <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
             <option value="{{ url_for('moderation_page') }}">Moderation</option>
+            <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
             <option value="{{ url_for('members_page') }}">Members</option>
             <option value="{{ url_for('discourse_page') }}">Discourse</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
@@ -3001,6 +3008,8 @@ def create_web_app(
     on_get_discord_catalog=None,
     on_get_command_permissions=None,
     on_save_command_permissions=None,
+    on_get_honeypot=None,
+    on_manage_honeypot=None,
     on_get_actions=None,
     on_get_members=None,
     on_manage_member=None,
@@ -3471,6 +3480,7 @@ def create_web_app(
             "dashboard": "Dashboard",
             "guild_settings": "Guild Settings",
             "moderation_page": "Moderation",
+            "honeypot_page": "Honeypot",
             "members_page": "Members",
             "discourse_page": "Discourse",
             "uptime_kuma_page": "Uptime Kuma",
@@ -4525,6 +4535,12 @@ def create_web_app(
                 "Configure bad-word filtering, warning thresholds, timeout escalation, and the moderation log channel.",
                 url_for("moderation_page"),
                 "Open Moderation",
+            ),
+            build_dashboard_card(
+                "Honeypot",
+                "Catch spam bots with trap channels, honeypot logging, and new-account join screening.",
+                url_for("honeypot_page"),
+                "Open Honeypot",
             ),
             build_dashboard_card(
                 "Discourse",
@@ -7967,6 +7983,60 @@ def create_web_app(
         )
         return _render_page("Moderation", body, user["email"], bool(user.get("is_admin")))
 
+    @app.route("/admin/honeypot", methods=["GET", "POST"])
+    @login_required
+    def honeypot_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        honeypot_payload = (
+            on_get_honeypot(selected_guild_id)
+            if callable(on_get_honeypot)
+            else {"ok": False, "error": "Honeypot callbacks are not configured."}
+        )
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        text_channel_options = [
+            option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"
+        ]
+
+        if request.method == "POST":
+            response, messages = process_honeypot_submission(
+                form=request.form,
+                on_manage_honeypot=on_manage_honeypot,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                honeypot_payload = response
+
+        if not isinstance(honeypot_payload, dict) or not honeypot_payload.get("ok"):
+            error_text = (
+                str(honeypot_payload.get("error") or "Unable to load honeypot settings.")
+                if isinstance(honeypot_payload, dict)
+                else "Unable to load honeypot settings."
+            )
+            body = (
+                f"<div class='card'><h2>Honeypot</h2><p class='muted'>Could not load honeypot settings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Honeypot", body, user["email"], bool(user.get("is_admin")))
+
+        body = render_honeypot_body(
+            guild_name=guild_name,
+            payload=honeypot_payload,
+            text_channel_options=text_channel_options,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Honeypot", body, user["email"], bool(user.get("is_admin")))
+
     @app.route("/admin/members", methods=["GET", "POST"])
     @login_required
     def members_page():
@@ -9047,6 +9117,8 @@ def start_web_admin_interface(
     on_get_discord_catalog=None,
     on_get_command_permissions=None,
     on_save_command_permissions=None,
+    on_get_honeypot=None,
+    on_manage_honeypot=None,
     on_get_actions=None,
     on_get_members=None,
     on_manage_member=None,
@@ -9087,6 +9159,8 @@ def start_web_admin_interface(
         on_get_discord_catalog=on_get_discord_catalog,
         on_get_command_permissions=on_get_command_permissions,
         on_save_command_permissions=on_save_command_permissions,
+        on_get_honeypot=on_get_honeypot,
+        on_manage_honeypot=on_manage_honeypot,
         on_get_actions=on_get_actions,
         on_get_members=on_get_members,
         on_manage_member=on_manage_member,
