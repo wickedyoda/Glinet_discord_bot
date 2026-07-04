@@ -623,6 +623,55 @@ def _make_app(tmp_path: Path):
             return get_role_access_mappings(safe_guild_id) | {"message": "Role access mapping saved."}
         return {"ok": False, "error": "Invalid role access action."}
 
+    honeypot_state = {
+        "entries": [
+            {
+                "channel_id": 222,
+                "action": "softban",
+                "delete_message_days": 1,
+                "timeout_hours": 24,
+                "role_id": 0,
+                "enabled": 1,
+            }
+        ],
+        "logging_settings": {"channel_id": 111, "role_id": 123},
+        "join_guard": {
+            "enabled": 1,
+            "min_account_age_hours": 72,
+            "action": "timeout",
+            "delete_message_days": 1,
+            "timeout_hours": 24,
+            "role_id": 123,
+        },
+    }
+    honeypot_updates = []
+
+    def get_honeypot(guild_id):
+        return {"ok": True, "guild_id": str(guild_id), **honeypot_state}
+
+    def manage_honeypot(payload, actor_email, guild_id):
+        honeypot_updates.append({"payload": dict(payload), "actor_email": actor_email, "guild_id": str(guild_id)})
+        action = str(payload.get("action") or "").strip()
+        if action == "save_logging":
+            honeypot_state["logging_settings"] = {
+                "channel_id": int(str(payload.get("log_channel_id") or "0") or 0),
+                "role_id": int(str(payload.get("log_role_id") or "0") or 0),
+            }
+            return get_honeypot(guild_id) | {"message": "Honeypot logging settings updated."}
+        if action == "create_entry":
+            honeypot_state["entries"].append(
+                {
+                    "channel_id": int(str(payload.get("channel_id") or "0") or 0),
+                    "action": str(payload.get("honeypot_action") or "softban"),
+                    "delete_message_days": int(str(payload.get("delete_message_days") or "1") or 1),
+                    "timeout_hours": int(str(payload.get("timeout_hours") or "24") or 24),
+                    "role_id": int(str(payload.get("role_id") or "0") or 0),
+                    "enabled": int(str(payload.get("enabled") or "1") or 1),
+                }
+            )
+            return get_honeypot(guild_id) | {"message": "Honeypot created."}
+        return get_honeypot(guild_id) | {"message": "Honeypot updated."}
+
     app = create_web_app(
         data_dir=str(tmp_path),
         env_file_path=str(env_file),
@@ -765,6 +814,8 @@ def _make_app(tmp_path: Path):
             "allowed_role_names": ["Employee"],
             "moderator_role_ids": [123],
         },
+        on_get_honeypot=get_honeypot,
+        on_manage_honeypot=manage_honeypot,
         on_get_youtube_subscriptions=get_youtube_subscriptions,
         on_manage_youtube_subscriptions=manage_youtube_subscriptions,
         on_get_linkedin_subscriptions=get_linkedin_subscriptions,
@@ -783,6 +834,7 @@ def _make_app(tmp_path: Path):
     )
     app.config["TESTING"] = True
     app.config["BOT_PROFILE_UPDATES"] = bot_profile_updates
+    app.config["HONEYPOT_UPDATES"] = honeypot_updates
     app.config["MEMBERS_STATE"] = members_state
     app.config["GUILD_SETTINGS_STATE"] = guild_settings_state
     app.config["TEST_HEALTH_STATE"] = health_state
@@ -2201,6 +2253,47 @@ def test_moderation_page_renders_controls_and_saves_settings(tmp_path: Path):
     assert b"4 warning(s)" in response.data
     assert b"Warning only" in response.data
     assert b"180 minute(s)" in response.data
+
+
+def test_honeypot_page_renders_controls_and_saves_settings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get(
+        "/admin/honeypot",
+        base_url="https://docker.example:8443",
+    )
+
+    assert response.status_code == 200
+    assert b"Honeypot" in response.data
+    assert b"Create Honeypot Channel" in response.data
+    assert b"Configured Honeypot Channels" in response.data
+    assert b"Join Guard" in response.data
+
+    payload = _form_payload(client, "/admin/honeypot")
+    payload.update(
+        {
+            "action": "save_logging",
+            "log_channel_id": "222",
+            "log_role_id": "123",
+        }
+    )
+
+    response = client.post(
+        "/admin/honeypot",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Honeypot logging settings updated." in response.data
+    updates = app.config["HONEYPOT_UPDATES"]
+    assert updates
+    assert updates[-1]["guild_id"] == "1234567890"
+    assert updates[-1]["payload"]["action"] == "save_logging"
 
 
 def test_discourse_page_renders_controls_and_saves_settings(tmp_path: Path):
