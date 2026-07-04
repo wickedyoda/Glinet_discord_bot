@@ -44,6 +44,29 @@ HELP_COMMAND_ALIASES = {
     "searchrouter": "search_router",
     "search_astrowarp": "search_astrowarp",
     "searchastrowarp": "search_astrowarp",
+    "honeypot": "honeypot_list",
+    "honeypot_create": "honeypot_create",
+    "honeypotcreate": "honeypot_create",
+    "honeypot_edit": "honeypot_edit",
+    "honeypotedit": "honeypot_edit",
+    "honeypot_list": "honeypot_list",
+    "honeypotlist": "honeypot_list",
+    "honeypot_info": "honeypot_info",
+    "honeypotinfo": "honeypot_info",
+    "honeypot_delete": "honeypot_delete",
+    "honeypotdelete": "honeypot_delete",
+    "honeypot_delete_all": "honeypot_delete_all",
+    "honeypotdeleteall": "honeypot_delete_all",
+    "honeypot_log": "honeypot_log_show",
+    "honeypot_log_show": "honeypot_log_show",
+    "honeypotlogshow": "honeypot_log_show",
+    "honeypot_join_guard": "honeypot_join_guard_show",
+    "honeypot_join_guard_show": "honeypot_join_guard_show",
+    "honeypotjoinguardshow": "honeypot_join_guard_show",
+    "honeypot_join_guard_set": "honeypot_join_guard_set",
+    "honeypotjoinguardset": "honeypot_join_guard_set",
+    "honeypot_join_guard_disable": "honeypot_join_guard_disable",
+    "honeypotjoinguarddisable": "honeypot_join_guard_disable",
     "create_role": "create_role",
     "createrole": "create_role",
     "edit_role": "edit_role",
@@ -105,6 +128,16 @@ HELP_WIKI_PAGE_BY_COMMAND = {
     "modlog_test": ["Moderation-and-Logs.md", "Command-Reference.md"],
     "logs": ["Moderation-and-Logs.md", "Command-Reference.md"],
     "random_choice": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_create": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_edit": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_list": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_info": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_delete": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_delete_all": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_log_show": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_join_guard_set": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_join_guard_disable": ["Moderation-and-Logs.md", "Command-Reference.md"],
+    "honeypot_join_guard_show": ["Moderation-and-Logs.md", "Command-Reference.md"],
 }
 
 
@@ -132,6 +165,8 @@ def command_default_access_label(
     moderator_policy_value: str,
 ):
     default_policy = command_permission_defaults.get(command_key)
+    if default_policy == "administrator":
+        return "Administrator"
     if default_policy == moderator_policy_value:
         return "Moderator"
     return "Member/Public"
@@ -191,6 +226,7 @@ def build_help_message_for_command(
                 "- Utilities (`/ping`, `/sayhi`, `/happy`, `/coin_flip`, `/eight_ball`, `/meme`, `/dad_joke`, `/shorten`, `/expand`, `/uptime`, `/stats`)",
                 "- Country nickname tools (`/country`, `/clear_country`)",
                 "- Moderation and role management (`/ban_member`, `/kick_member`, `/timeout_member`, `/create_role`, `/random_choice`)",
+                "- Honeypots (`/honeypot create`, `/honeypot list`, `/honeypot_log show`, `/honeypot_join_guard show`)",
                 "",
                 "Docs:",
                 f"- Command Reference: {suppress_discord_link_embed(build_wiki_page_url('Command-Reference.md', bot_help_wiki_url=bot_help_wiki_url, bot_help_wiki_root_url=bot_help_wiki_root_url))}",
