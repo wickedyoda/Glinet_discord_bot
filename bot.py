@@ -5443,6 +5443,118 @@ def save_honeypot_join_guard_settings(guild_id: int | None, payload: dict, actor
     return load_honeypot_join_guard_settings(safe_guild_id)
 
 
+def build_honeypot_web_payload(guild_id: int):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    return {
+        "ok": True,
+        "guild_id": safe_guild_id,
+        "entries": load_honeypot_entries(safe_guild_id),
+        "logging_settings": load_honeypot_logging_settings(safe_guild_id),
+        "join_guard": load_honeypot_join_guard_settings(safe_guild_id),
+    }
+
+
+def run_web_get_honeypot(guild_id: int):
+    try:
+        return build_honeypot_web_payload(guild_id)
+    except Exception:
+        logger.exception("Failed to build honeypot payload for web admin")
+        return {"ok": False, "error": "Unexpected error while loading honeypot settings."}
+
+
+def run_web_manage_honeypot(payload: dict, actor_email: str, guild_id: int):
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid honeypot payload."}
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    action = str(payload.get("action") or "").strip()
+    try:
+        if action == "create_entry":
+            entry = save_honeypot_entry(
+                safe_guild_id,
+                {
+                    "channel_id": payload.get("channel_id"),
+                    "action": payload.get("honeypot_action"),
+                    "delete_message_days": payload.get("delete_message_days"),
+                    "timeout_hours": payload.get("timeout_hours"),
+                    "role_id": payload.get("role_id"),
+                    "enabled": payload.get("enabled", "1"),
+                },
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = f"Honeypot created for channel {entry['channel_id']}."
+            return response
+        if action == "update_entry":
+            entry = save_honeypot_entry(
+                safe_guild_id,
+                {
+                    "channel_id": payload.get("channel_id"),
+                    "action": payload.get("honeypot_action"),
+                    "delete_message_days": payload.get("delete_message_days"),
+                    "timeout_hours": payload.get("timeout_hours"),
+                    "role_id": payload.get("role_id"),
+                    "enabled": payload.get("enabled", "1"),
+                },
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = f"Honeypot updated for channel {entry['channel_id']}."
+            return response
+        if action == "delete_entry":
+            deleted = delete_honeypot_entry(safe_guild_id, payload.get("channel_id"))
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = "Honeypot deleted." if deleted > 0 else "No honeypot matched that channel."
+            return response
+        if action == "delete_all":
+            if str(payload.get("confirm") or "").strip().lower() not in {"yes", "true", "1", "confirm"}:
+                return {"ok": False, "error": "Delete-all requires confirmation."}
+            deleted = delete_all_honeypot_entries(safe_guild_id)
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = f"Deleted {deleted} honeypot(s)."
+            return response
+        if action == "save_logging":
+            save_honeypot_logging_settings(
+                safe_guild_id,
+                channel_id=payload.get("log_channel_id"),
+                role_id=payload.get("log_role_id"),
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = "Honeypot logging settings updated."
+            return response
+        if action == "save_join_guard":
+            save_honeypot_join_guard_settings(
+                safe_guild_id,
+                {
+                    "enabled": payload.get("join_guard_enabled", "0"),
+                    "min_account_age_hours": payload.get("join_guard_min_account_age_hours"),
+                    "action": payload.get("join_guard_action"),
+                    "delete_message_days": payload.get("join_guard_delete_message_days"),
+                    "timeout_hours": payload.get("join_guard_timeout_hours"),
+                    "role_id": payload.get("join_guard_role_id"),
+                },
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = "Join guard settings updated."
+            return response
+        if action == "disable_join_guard":
+            save_honeypot_join_guard_settings(
+                safe_guild_id,
+                {"enabled": "0"},
+                actor_email=actor_email,
+            )
+            response = build_honeypot_web_payload(safe_guild_id)
+            response["message"] = "Join guard disabled."
+            return response
+        return {"ok": False, "error": "Unknown honeypot action."}
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    except Exception:
+        logger.exception("Failed to manage honeypot settings from web admin")
+        return {"ok": False, "error": "Failed to update honeypot settings."}
+
+
 def build_reddit_feeds_web_payload(guild_id: int):
     return get_feed_web_callbacks().build_reddit_feeds_web_payload(guild_id)
 
@@ -10494,6 +10606,8 @@ def start_web_admin_server():
                     on_get_discord_catalog=run_web_get_discord_catalog,
                     on_get_command_permissions=run_web_get_command_permissions,
                     on_save_command_permissions=run_web_update_command_permissions,
+                    on_get_honeypot=run_web_get_honeypot,
+                    on_manage_honeypot=run_web_manage_honeypot,
                     on_get_actions=run_web_get_actions,
                     on_get_members=run_web_get_members,
                     on_manage_member=run_web_manage_member,
