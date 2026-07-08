@@ -105,8 +105,22 @@ from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
 )
 from app.moderation_runtime import apply_bad_word_moderation as apply_bad_word_moderation_impl
+from app.reaction_role_web_callbacks import ReactionRolesWebCallbacks
+from app.reaction_roles import (
+    delete_reaction_role_mapping as delete_reaction_role_mapping_impl,
+    find_reaction_role_mapping as find_reaction_role_mapping_impl,
+    list_reaction_role_mappings as list_reaction_role_mappings_impl,
+    load_reaction_roles as load_reaction_roles_impl,
+    normalize_reaction_role_emoji,
+    normalize_reaction_role_message_id,
+    normalize_reaction_role_status,
+    reaction_role_emoji_key_from_payload,
+    save_reaction_role_mapping as save_reaction_role_mapping_impl,
+    set_reaction_role_mapping_status as set_reaction_role_mapping_status_impl,
+)
 from app.role_access_schema import ensure_role_access_schema_locked
 from app.role_access_web_callbacks import RoleAccessWebCallbacks
+from app.reaction_roles_schema import ensure_reaction_roles_schema_locked
 from app.service_monitor import (
     format_service_monitor_transition_message,
     normalize_service_monitor_targets,
@@ -1423,6 +1437,7 @@ uptime_status_monitor_task = None
 member_activity_backfill_task = None
 feed_web_callbacks = None
 role_access_web_callbacks = None
+reaction_roles_web_callbacks = None
 web_admin_thread = None
 web_admin_supervisor_lock = threading.Lock()
 web_admin_restart_events = deque()
@@ -1435,6 +1450,7 @@ web_admin_shutdown_scheduled = False
 discord_catalog_cache = {}
 invite_roles_by_guild = {}
 invite_uses_by_guild = {}
+reaction_roles_by_guild = {}
 BOT_SERVER_NICKNAME_UNSET = object()
 command_permissions_lock = threading.Lock()
 command_permissions_cache = {}
@@ -1563,6 +1579,19 @@ def ensure_db_schema():
                 code TEXT NOT NULL DEFAULT '',
                 status TEXT NOT NULL DEFAULT 'active',
                 PRIMARY KEY (guild_id, invite_code)
+            );
+
+            CREATE TABLE IF NOT EXISTS reaction_roles (
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                channel_id INTEGER NOT NULL,
+                message_id INTEGER NOT NULL,
+                emoji_key TEXT NOT NULL,
+                emoji_text TEXT NOT NULL DEFAULT '',
+                role_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (guild_id, message_id, emoji_key)
             );
 
             CREATE TABLE IF NOT EXISTS tag_responses (
@@ -1876,6 +1905,7 @@ def ensure_db_schema():
         )
         command_permission_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(command_permissions)").fetchall()}
         ensure_role_access_schema_locked(conn)
+        ensure_reaction_roles_schema_locked(conn)
 
         tag_response_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(tag_responses)").fetchall()}
         if "guild_id" not in tag_response_columns:
@@ -2343,6 +2373,10 @@ def ensure_db_schema():
             (GUILD_ID,),
         )
         conn.execute(
+            "UPDATE reaction_roles SET guild_id = ? WHERE guild_id = 0",
+            (GUILD_ID,),
+        )
+        conn.execute(
             "UPDATE tag_responses SET guild_id = ? WHERE guild_id = 0",
             (GUILD_ID,),
         )
@@ -2600,6 +2634,7 @@ guild_state_manager = GuildStateManager(
     audit_hash_secret=os.getenv("WEB_ADMIN_SESSION_SECRET", ""),
     invite_roles_by_guild=invite_roles_by_guild,
     invite_uses_by_guild=invite_uses_by_guild,
+    reaction_roles_by_guild=reaction_roles_by_guild,
     tag_response_cache=tag_response_cache,
     tag_command_names_by_guild=tag_command_names_by_guild,
     guild_settings_cache=guild_settings_cache,
@@ -8377,6 +8412,57 @@ def validate_discord_invite_for_guild(guild_id: int, invite_input: str):
         return {"ok": False, "error": "Unexpected error while validating that invite."}
 
 
+async def validate_reaction_role_message_for_guild_async(guild_id: int, channel_id: int, message_id: int):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    guild = bot.get_guild(safe_guild_id)
+    if guild is None:
+        return {"ok": False, "error": "That Discord server is not available yet."}
+
+    try:
+        safe_channel_id = int(channel_id)
+        safe_message_id = int(message_id)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Channel and message must be valid IDs."}
+
+    channel = guild.get_channel(safe_channel_id)
+    if channel is None or not hasattr(channel, "fetch_message"):
+        return {"ok": False, "error": "Choose a valid text channel."}
+
+    try:
+        message = await channel.fetch_message(safe_message_id)
+    except discord.NotFound:
+        return {"ok": False, "error": "That message could not be found in the selected channel."}
+    except discord.Forbidden:
+        return {"ok": False, "error": "I do not have permission to read that channel."}
+    except discord.HTTPException:
+        logger.exception("Discord message validation failed for guild %s", safe_guild_id)
+        return {"ok": False, "error": "Discord could not validate that message right now. Try again."}
+
+    return {
+        "ok": True,
+        "message_url": str(getattr(message, "jump_url", "")),
+    }
+
+
+def validate_reaction_role_message_for_guild(guild_id: int, channel_id: int, message_id: int):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = asyncio.run_coroutine_threadsafe(
+        validate_reaction_role_message_for_guild_async(normalize_target_guild_id(guild_id), channel_id, message_id),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while validating the Discord message."}
+    except Exception:
+        logger.exception("Unexpected failure while validating Discord message for guild %s", guild_id)
+        return {"ok": False, "error": "Unexpected error while validating that message."}
+
+
 def get_feed_web_callbacks():
     global feed_web_callbacks
     if feed_web_callbacks is None:
@@ -8434,6 +8520,89 @@ def get_role_access_web_callbacks():
             validate_invite_for_guild=validate_discord_invite_for_guild,
         )
     return role_access_web_callbacks
+
+
+def _refresh_reaction_role_cache_for_guild(guild_id: int | None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    reaction_roles_by_guild[safe_guild_id] = load_reaction_roles_impl(get_db_connection, db_lock, guild_id=safe_guild_id).get(safe_guild_id, {})
+
+
+def save_reaction_role_mapping(
+    channel_id,
+    message_id,
+    emoji,
+    role_id,
+    *,
+    guild_id: int | None = None,
+    status: str = "active",
+    created_at: str | None = None,
+    emoji_text: str | None = None,
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    normalized_emoji = normalize_reaction_role_emoji(emoji)
+    if normalized_emoji is None:
+        raise ValueError("Emoji is required.")
+    save_reaction_role_mapping_impl(
+        get_db_connection,
+        db_lock,
+        safe_guild_id,
+        channel_id=int(channel_id),
+        message_id=int(message_id),
+        emoji=emoji,
+        role_id=int(role_id),
+        status=status,
+        created_at=created_at,
+        emoji_text=emoji_text if emoji_text is not None else normalized_emoji["emoji_text"],
+    )
+    _refresh_reaction_role_cache_for_guild(safe_guild_id)
+
+
+def list_reaction_role_mappings(guild_id: int | None = None):
+    return list_reaction_role_mappings_impl(get_db_connection, db_lock, guild_id=guild_id)
+
+
+def set_reaction_role_mapping_status(guild_id: int | None, *, message_id: int, emoji: str, status: str):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    updated = set_reaction_role_mapping_status_impl(get_db_connection, db_lock, safe_guild_id, message_id=message_id, emoji=emoji, status=status)
+    if updated:
+        _refresh_reaction_role_cache_for_guild(safe_guild_id)
+    return updated
+
+
+def delete_reaction_role_mapping(guild_id: int | None, *, message_id: int, emoji: str):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    deleted = delete_reaction_role_mapping_impl(get_db_connection, db_lock, safe_guild_id, message_id=message_id, emoji=emoji)
+    if deleted:
+        _refresh_reaction_role_cache_for_guild(safe_guild_id)
+    return deleted
+
+
+def run_web_get_reaction_roles(guild_id: int):
+    return get_reaction_roles_web_callbacks().run_web_get_reaction_roles(guild_id)
+
+
+def run_web_manage_reaction_roles(payload: dict, actor_email: str, guild_id: int):
+    return get_reaction_roles_web_callbacks().run_web_manage_reaction_roles(payload, actor_email, guild_id)
+
+
+def get_reaction_roles_web_callbacks():
+    global reaction_roles_web_callbacks
+    if reaction_roles_web_callbacks is None:
+        reaction_roles_web_callbacks = ReactionRolesWebCallbacks(
+            normalize_target_guild_id=normalize_target_guild_id,
+            normalize_reaction_role_emoji=normalize_reaction_role_emoji,
+            normalize_reaction_role_message_id=normalize_reaction_role_message_id,
+            list_reaction_role_mappings=list_reaction_role_mappings,
+            save_reaction_role_mapping=save_reaction_role_mapping,
+            set_reaction_role_mapping_status=set_reaction_role_mapping_status,
+            delete_reaction_role_mapping=delete_reaction_role_mapping,
+            build_web_actor_audit_label=build_web_actor_audit_label,
+            record_action_safe=record_action_safe,
+            truncate_log_text=truncate_log_text,
+            logger=logger,
+            validate_reaction_role_message_for_guild=validate_reaction_role_message_for_guild,
+        )
+    return reaction_roles_web_callbacks
 
 
 def uptime_request_json(url: str):
@@ -10832,6 +11001,8 @@ def start_web_admin_server():
                     on_manage_beta_program_subscriptions=run_web_manage_beta_program_subscriptions,
                     on_get_role_access_mappings=run_web_get_role_access_mappings,
                     on_manage_role_access_mappings=run_web_manage_role_access_mappings,
+                    on_get_reaction_roles=run_web_get_reaction_roles,
+                    on_manage_reaction_roles=run_web_manage_reaction_roles,
                     on_get_bot_profile=run_web_get_bot_profile,
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
@@ -11647,6 +11818,8 @@ upgrade_legacy_default_tag_responses(GUILD_ID)
 # Runtime caches for invite tracking
 invite_roles_by_guild.clear()
 invite_roles_by_guild.update(load_invite_roles())
+reaction_roles_by_guild.clear()
+reaction_roles_by_guild.update(load_reaction_roles_impl(get_db_connection, db_lock))
 
 
 @bot.event
@@ -11728,6 +11901,7 @@ async def on_guild_join(guild: discord.Guild):
         )
         return
     invite_roles_by_guild.setdefault(guild.id, {})
+    reaction_roles_by_guild[guild.id] = load_reaction_roles_impl(get_db_connection, db_lock, guild.id).get(guild.id, {})
     await sync_commands_for_guild(guild)
     await refresh_invite_cache_for_guild(guild)
     logger.info("Joined guild %s (%s) and synced commands", guild.name, guild.id)
@@ -11746,6 +11920,7 @@ async def on_guild_remove(guild: discord.Guild):
     except Exception:
         logger.exception("Failed archiving guild data for %s (%s)", guild.name, guild.id)
         clear_guild_runtime_state(guild.id)
+        reaction_roles_by_guild.pop(guild.id, None)
 
 
 @bot.event
@@ -11917,6 +12092,99 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         role = before_role_map[role_id]
         details = f"**Member:** {after.mention} (`{after.id}`)\n**Role Removed:** {role.name} (`{role.id}`)\n"
         await send_server_event_log(guild, "member_role_removed", details)
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    if payload.user_id == (bot.user.id if bot.user else 0):
+        return
+    if payload.guild_id is None:
+        return
+    if not is_managed_guild_id(payload.guild_id):
+        return
+
+    emoji_key = reaction_role_emoji_key_from_payload(payload.emoji)
+    if not emoji_key:
+        return
+
+    guild_id = normalize_target_guild_id(payload.guild_id)
+    message_map = reaction_roles_by_guild.get(guild_id, {}).get(int(payload.message_id), {})
+    role_id = int(message_map.get(emoji_key) or 0)
+    if role_id <= 0:
+        mapping = find_reaction_role_mapping_impl(get_db_connection, db_lock, guild_id, int(payload.message_id), payload.emoji)
+        if mapping is None:
+            return
+        role_id = int(mapping.get("role_id") or 0)
+        if role_id <= 0:
+            return
+
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return
+    role = guild.get_role(role_id)
+    if role is None or role.managed or role == guild.default_role:
+        return
+
+    member = guild.get_member(payload.user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(payload.user_id)
+        except Exception:
+            logger.exception("Failed to resolve member %s for reaction role add in guild %s", payload.user_id, guild_id)
+            return
+
+    bot_member = guild.me or guild.get_member(bot.user.id if bot.user else 0)
+    if bot_member is not None and bot_member.top_role <= role:
+        logger.warning("Cannot assign reaction role %s in guild %s because it is above the bot's top role", role_id, guild_id)
+        return
+
+    try:
+        await member.add_roles(role, reason=f"Reaction role assigned for message {payload.message_id}")
+    except Exception:
+        logger.exception("Failed to assign reaction role %s to member %s in guild %s", role_id, payload.user_id, guild_id)
+
+
+@bot.event
+async def on_raw_reaction_remove(payload: discord.RawReactionActionEvent):
+    if payload.guild_id is None:
+        return
+    if not is_managed_guild_id(payload.guild_id):
+        return
+
+    emoji_key = reaction_role_emoji_key_from_payload(payload.emoji)
+    if not emoji_key:
+        return
+
+    guild_id = normalize_target_guild_id(payload.guild_id)
+    message_map = reaction_roles_by_guild.get(guild_id, {}).get(int(payload.message_id), {})
+    role_id = int(message_map.get(emoji_key) or 0)
+    if role_id <= 0:
+        mapping = find_reaction_role_mapping_impl(get_db_connection, db_lock, guild_id, int(payload.message_id), payload.emoji)
+        if mapping is None:
+            return
+        role_id = int(mapping.get("role_id") or 0)
+        if role_id <= 0:
+            return
+
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return
+    role = guild.get_role(role_id)
+    if role is None or role.managed or role == guild.default_role:
+        return
+
+    member = guild.get_member(payload.user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(payload.user_id)
+        except Exception:
+            logger.exception("Failed to resolve member %s for reaction role removal in guild %s", payload.user_id, guild_id)
+            return
+
+    try:
+        await member.remove_roles(role, reason=f"Reaction role removed for message {payload.message_id}")
+    except Exception:
+        logger.exception("Failed to remove reaction role %s from member %s in guild %s", role_id, payload.user_id, guild_id)
 
 
 @bot.event

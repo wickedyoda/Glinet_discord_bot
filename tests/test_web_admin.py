@@ -623,6 +623,76 @@ def _make_app(tmp_path: Path):
             return get_role_access_mappings(safe_guild_id) | {"message": "Role access mapping saved."}
         return {"ok": False, "error": "Invalid role access action."}
 
+    reaction_role_state = [
+        {
+            "guild_id": 1234567890,
+            "channel_id": 9999,
+            "message_id": 555555555555555555,
+            "emoji_key": "unicode:😀",
+            "emoji_text": "😀",
+            "role_id": 222,
+            "created_at": "2026-03-21T00:00:00+00:00",
+            "updated_at": "2026-03-21T00:00:00+00:00",
+            "status": "active",
+        }
+    ]
+
+    def get_reaction_roles(guild_id):
+        safe_guild_id = int(guild_id)
+        return {"ok": True, "mappings": [dict(item) for item in reaction_role_state if int(item["guild_id"]) == safe_guild_id]}
+
+    def manage_reaction_roles(payload, actor_email, guild_id):
+        safe_guild_id = int(guild_id)
+        action = str(payload.get("action") or "").strip().lower()
+        if action == "set_status":
+            message_id = int(str(payload.get("message_id") or "0") or 0)
+            emoji_text = str(payload.get("emoji") or "").strip()
+            status = str(payload.get("status") or "").strip().lower()
+            for item in reaction_role_state:
+                if int(item["guild_id"]) == safe_guild_id and int(item["message_id"]) == message_id and item["emoji_text"] == emoji_text:
+                    item["status"] = status
+                    return get_reaction_roles(safe_guild_id) | {"message": f"Reaction role mapping marked {status}."}
+            return {"ok": False, "error": "Reaction role mapping was not found."}
+        if action == "save":
+            channel_id = int(str(payload.get("channel_id") or "0") or 0)
+            message_id = int(str(payload.get("message_id") or "0") or 0)
+            emoji_text = str(payload.get("emoji") or "").strip()
+            role_id = int(str(payload.get("role_id") or "0") or 0)
+            status = str(payload.get("status") or "active").strip().lower() or "active"
+            for item in reaction_role_state:
+                if int(item["guild_id"]) == safe_guild_id and int(item["message_id"]) == message_id and item["emoji_text"] == emoji_text:
+                    item.update(
+                        {
+                            "channel_id": channel_id,
+                            "role_id": role_id,
+                            "status": status,
+                        }
+                    )
+                    return get_reaction_roles(safe_guild_id) | {"message": "Reaction role mapping saved."}
+            reaction_role_state.append(
+                {
+                    "guild_id": safe_guild_id,
+                    "channel_id": channel_id,
+                    "message_id": message_id,
+                    "emoji_key": f"unicode:{emoji_text}",
+                    "emoji_text": emoji_text,
+                    "role_id": role_id,
+                    "created_at": "",
+                    "updated_at": "",
+                    "status": status,
+                }
+            )
+            return get_reaction_roles(safe_guild_id) | {"message": "Reaction role mapping saved."}
+        if action == "delete":
+            message_id = int(str(payload.get("message_id") or "0") or 0)
+            emoji_text = str(payload.get("emoji") or "").strip()
+            for item in list(reaction_role_state):
+                if int(item["guild_id"]) == safe_guild_id and int(item["message_id"]) == message_id and item["emoji_text"] == emoji_text:
+                    reaction_role_state.remove(item)
+                    return get_reaction_roles(safe_guild_id) | {"message": "Reaction role mapping deleted."}
+            return {"ok": False, "error": "Reaction role mapping was not found."}
+        return {"ok": False, "error": "Invalid reaction role action."}
+
     honeypot_state = {
         "entries": [
             {
@@ -827,6 +897,8 @@ def _make_app(tmp_path: Path):
         },
         on_get_role_access_mappings=get_role_access_mappings,
         on_manage_role_access_mappings=manage_role_access_mappings,
+        on_get_reaction_roles=get_reaction_roles,
+        on_manage_reaction_roles=manage_reaction_roles,
         on_leave_guild=lambda guild_id, actor_email: {
             "ok": True,
             "message": f"Bot left guild {guild_id} by {actor_email}.",
@@ -1128,6 +1200,48 @@ def test_role_access_page_renders_mappings(tmp_path: Path):
     assert b"Xjkd246SYq" in response.data
     assert b"2026-03-20 00:00:00 UTC" in response.data
     assert b"2026-03-20T00:00:00+00:00" not in response.data
+
+
+def test_reaction_roles_page_renders_mappings(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/reaction-roles", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Reaction Roles" in response.data
+    assert b"555555555555555555" in response.data
+    assert b"\xf0\x9f\x98\x80" in response.data
+    assert b"2026-03-21 00:00:00 UTC" in response.data
+
+
+def test_admin_can_add_reaction_role_mapping(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/reaction-roles",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/reaction-roles"),
+            "action": "save",
+            "channel_id": "9999",
+            "message_id": "666666666666666666",
+            "emoji": "😀",
+            "role_id": "111",
+            "status": "active",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Reaction role mapping saved." in response.data
+    assert b"666666666666666666" in response.data
+    assert b"\xf0\x9f\x98\x80" in response.data
 
 
 def test_admin_can_pause_role_access_mapping(tmp_path: Path):
