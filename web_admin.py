@@ -66,6 +66,7 @@ from app.web_honeypot import process_honeypot_submission, render_honeypot_body
 from app.web_members import process_member_action_submission, render_members_body
 from app.web_moderation import process_moderation_submission, render_moderation_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
+from app.web_reaction_roles import process_reaction_roles_submission, render_reaction_roles_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
 from app.web_user_store import (
     current_time_iso as _store_now_iso,
@@ -2739,6 +2740,7 @@ def _render_layout(
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
                 <option value="{{ url_for('role_access_page') }}">Role Access</option>
+                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
                 <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
                 <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
                 <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
@@ -2758,6 +2760,7 @@ def _render_layout(
                 <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
                 <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
                 <option value="{{ url_for('role_access_page') }}">Role Access</option>
+                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
                 <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
                 <option value="{{ url_for('settings') }}">Global Settings</option>
                 <option value="{{ url_for('public_observability') }}">Observability</option>
@@ -2788,6 +2791,7 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
+                <a class="btn secondary" href="{{ url_for('reaction_roles_page') }}">Reaction Roles</a>
                 <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
                 {% else %}
                 <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
@@ -2798,6 +2802,7 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
+                <a class="btn secondary" href="{{ url_for('reaction_roles_page') }}">Reaction Roles</a>
                 <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
                 {% endif %}
               </div>
@@ -3040,6 +3045,8 @@ def create_web_app(
     on_manage_beta_program_subscriptions=None,
     on_get_role_access_mappings=None,
     on_manage_role_access_mappings=None,
+    on_get_reaction_roles=None,
+    on_manage_reaction_roles=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -3519,6 +3526,7 @@ def create_web_app(
             "public_observability": "Observability",
             "admin_logs": "Logs",
             "users": "Users",
+            "reaction_roles_page": "Reaction Roles",
             "documentation": "Documentation",
             "wiki_proxy": "Wiki",
         }
@@ -7619,6 +7627,58 @@ def create_web_app(
         )
         return _render_page("Role Access", body, user["email"], bool(user.get("is_admin")))
 
+    @app.route("/admin/reaction-roles", methods=["GET", "POST"])
+    @login_required
+    def reaction_roles_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+
+        payload = (
+            on_get_reaction_roles(selected_guild_id)
+            if callable(on_get_reaction_roles)
+            else {"ok": False, "error": "Reaction role callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            response, messages = process_reaction_roles_submission(
+                form=request.form,
+                on_manage_reaction_roles=on_manage_reaction_roles,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                payload = response
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = (
+                str(payload.get("error") or "Unable to load reaction roles.")
+                if isinstance(payload, dict)
+                else "Unable to load reaction roles."
+            )
+            body = (
+                f"<div class='card'><h2>Reaction Roles</h2><p class='muted'>Could not load reaction roles: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Reaction Roles", body, user["email"], bool(user.get("is_admin")))
+
+        body = render_reaction_roles_body(
+            guild_name=guild_name,
+            mappings=payload.get("mappings", []) or [],
+            channel_options=channel_options,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Reaction Roles", body, user["email"], bool(user.get("is_admin")))
+
     @app.route("/admin/command-status", methods=["GET", "POST"])
     @login_required
     def command_status():
@@ -9231,6 +9291,8 @@ def start_web_admin_interface(
     on_manage_beta_program_subscriptions=None,
     on_get_role_access_mappings=None,
     on_manage_role_access_mappings=None,
+    on_get_reaction_roles=None,
+    on_manage_reaction_roles=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
@@ -9275,6 +9337,8 @@ def start_web_admin_interface(
         on_manage_beta_program_subscriptions=on_manage_beta_program_subscriptions,
         on_get_role_access_mappings=on_get_role_access_mappings,
         on_manage_role_access_mappings=on_manage_role_access_mappings,
+                    on_get_reaction_roles=on_get_reaction_roles,
+                    on_manage_reaction_roles=on_manage_reaction_roles,
         on_get_bot_profile=on_get_bot_profile,
         on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,
