@@ -67,3 +67,4 @@ jobs:
       - name: Image digest
         run: |
           echo "Pushed tag: ${{ steps.vars.outputs.IMAGE }}:${{ steps.vars.outputs.DATE_TAG }}-${{ steps.vars.outputs.TIME_TAG }}"
+
