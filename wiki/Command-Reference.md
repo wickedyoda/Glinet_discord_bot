@@ -138,14 +138,6 @@ All ticket search and stats responses are **ephemeral**; only the command user c
 | `/logs` | Slash | Moderator | optional line count | Returns recent container error lines (ephemeral) |
 | `/random_choice` | Slash | Moderator | none | Randomly selects one eligible member, excluding moderator/admin role IDs and named staff roles (`Employee`, `Admin`, `Gl.iNet Moderator`); selected members are ineligible again for 7 days |
 
-## Ticket Commands
-
-| Command | Type | Default Access | Parameters | Notes |
-|---|---|---|---|---|
-| `/ticket` | Slash | Tier 2+ | category | Opens ticket creation modal |
-| `/ticket-search` | Slash | Tier 1+ | query | Search by ticket number or owner email |
-| `/ticket-stats` | Slash | Tier 1+ | none | Shows open/closed counts |
-
 ## Web-Admin-Only Actions (No Discord Command)
 
 These are intentionally restricted to admin web users:
