@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 import json
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -82,7 +83,7 @@ def normalize_service_monitor_targets(
             raise ValueError(f"Service monitor '{name}' guild_id must be an integer.") from exc
         if timeout_seconds < 3:
             timeout_seconds = 3
-        monitor_id = hashlib.sha256(f"{name}\n{url}\n{channel_id}".encode()).hexdigest()[:24]
+        monitor_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{name}\n{url}\n{channel_id}").hex[:24]
         normalized.append(
             {
                 "id": monitor_id,
@@ -135,7 +136,7 @@ def build_glinet_domain_monitor_targets(*, guild_id: int, channel_id: int, timeo
 def build_uptime_import_source_key(*, source_type: str, source_url: str, guild_id: int) -> str:
     normalized_type = str(source_type or "").strip().lower()
     normalized_url = str(source_url or "").strip().lower()
-    return hashlib.sha256(f"{normalized_type}\n{normalized_url}\n{int(guild_id or 0)}".encode()).hexdigest()[:24]
+    return uuid.uuid5(uuid.NAMESPACE_URL, f"{normalized_type}\n{normalized_url}\n{int(guild_id or 0)}").hex[:24]
 
 
 def annotate_uptime_import_targets(targets, *, source_type: str, source_url: str, source_label: str, guild_id: int):
