@@ -4092,6 +4092,12 @@ def migrate_legacy_files_to_db():
 def initialize_storage():
     ensure_db_schema()
     migrate_legacy_files_to_db()
+    try:
+        from app.tickets import TicketStore
+        _ticket_store = TicketStore(get_db_connection())
+        _ticket_store.ensure_schema()
+    except Exception:
+        logger.exception("Failed initializing ticket schema")
 
 
 def tag_to_command_name(tag: str) -> str:
