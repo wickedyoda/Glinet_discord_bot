@@ -1,11 +1,10 @@
 """
 Tickets module — ported from discord-tickets/bot (GPLv3).
-Provides ticket lifecycle: create, claim, close, reopen, transcript.
+Plain functions / views for the existing single-file bot.py decorator pattern.
 """
 
 from __future__ import annotations
 
-import os
 from datetime import UTC, datetime
 from typing import Optional
 
@@ -25,7 +24,7 @@ TICKET_CATEGORIES_DEFAULT = [
 class TicketStore:
     """Thin wrapper around existing guild DB for ticket records."""
 
-    def __init__(self, conn: Connection, guild_id: int | None = None) -> None:
+    def __init__(self, conn: Connection, guild_id: int = 0) -> None:
         self.conn = conn
         self.guild_id = guild_id
 
@@ -60,6 +59,8 @@ class TicketStore:
             "SELECT COALESCE(MAX(number),0) AS n FROM tickets WHERE guild_id=?",
             (guild_id,),
         ).fetchone()
+        if row is None:
+            return 1
         return int(row["n"]) + 1
 
     def create(self, *, channel_id: int, owner_id: int, category_id: str, guild_id: int) -> int:
@@ -73,7 +74,7 @@ class TicketStore:
         self.conn.commit()
         return int(cur.lastrowid)
 
-    def close(self, channel_id: int, *, closer_id: int, note: str | None = None) -> bool:
+    def close(self, channel_id: int, *, closer_id: int, note: Optional[str] = None) -> bool:
         now = datetime.now(UTC).isoformat()
         cur = self.conn.execute(
             "UPDATE tickets SET status='closed', closed_at=?, claimer_id=?, note=? "
@@ -93,6 +94,8 @@ class TicketStore:
         return cur.rowcount > 0
 
     def get_by_channel(self, channel_id: int) -> Optional[dict]:
+        if not channel_id:
+            return None
         row = self.conn.execute(
             "SELECT * FROM tickets WHERE channel_id=? LIMIT 1", (channel_id,)
         ).fetchone()
@@ -105,6 +108,8 @@ class TicketStore:
             "SELECT COUNT(*) AS c FROM tickets WHERE guild_id=? AND status='open'",
             (guild_id,),
         ).fetchone()
+        if row is None:
+            return 0
         return int(row["c"])
 
     def stats(self, guild_id: int) -> dict:
@@ -122,12 +127,6 @@ class TicketStore:
         return by_category
 
 
-def _permission_set(role_ids: list[int]) -> discord.PermissionOverwrite:
-    return discord.PermissionOverwrite(
-        view_channel=True, send_messages=True, read_message_history=True
-    )
-
-
 class TicketCategorySelect(discord.ui.Select):
     def __init__(self, categories: list[dict]) -> None:
         options = [
@@ -141,20 +140,19 @@ class TicketCategorySelect(discord.ui.Select):
         super().__init__(placeholder="Choose a category...", options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        view: TicketFlowView = self.view  # type: ignore[assignment]
+        view: "TicketFlowView" = self.view  # type: ignore[assignment]
         await view.select_category(interaction, self.values[0])
 
 
 class TicketFlowView(discord.ui.View):
     def __init__(
         self,
-        cog: "Tickets",
-        *,
+        store: "TicketStore",
         categories: list[dict],
-        claimer_role_id: int | None = None,
+        claimer_role_id: Optional[int] = None,
     ) -> None:
         super().__init__(timeout=None)
-        self.cog = cog
+        self.store = store
         self.categories = categories
         self.claimer_role_id = claimer_role_id
         self.category_select = TicketCategorySelect(categories)
@@ -196,21 +194,19 @@ class TicketFlowView(discord.ui.View):
                 "That category has no questions configured.", ephemeral=True
             )
             return
-        await interaction.response.send_modal(TicketQuestionsModal(self.cog, category, self))
+        await interaction.response.send_modal(TicketQuestionsModal(self.store, category, self))
 
     async def _on_claim(self, interaction: discord.Interaction) -> None:
-        record = self.cog.store.get_by_channel(interaction.channel_id)
+        if not interaction.guild or not interaction.channel:
+            return
+        record = self.store.get_by_channel(interaction.channel_id or 0)
         if record is None:
             return await interaction.response.send_message("Not a ticket channel.", ephemeral=True)
         if record["status"] != "open":
             return await interaction.response.send_message("Ticket is not open.", ephemeral=True)
-        self.cog.store.close(
-            interaction.channel_id,
-            closer_id=interaction.user.id,
-            note="claimed",
-        )
+        self.store.close(interaction.channel_id or 0, closer_id=interaction.user.id, note="claimed")
         if self.claimer_role_id:
-            role = interaction.guild.get_role(self.claimer_role_id) if interaction.guild else None
+            role = interaction.guild.get_role(self.claimer_role_id)
             if role:
                 try:
                     await interaction.channel.edit(sync_permissions=True)
@@ -222,22 +218,26 @@ class TicketFlowView(discord.ui.View):
         )
 
     async def _on_close(self, interaction: discord.Interaction) -> None:
-        if self.cog.store.close(interaction.channel_id, closer_id=interaction.user.id):
+        if not interaction.channel:
+            return
+        if self.store.close(interaction.channel_id or 0, closer_id=interaction.user.id):
             await interaction.response.send_message("Ticket marked closed.")
         else:
             await interaction.response.send_message("Could not close this ticket.", ephemeral=True)
 
     async def _on_reopen(self, interaction: discord.Interaction) -> None:
-        if self.cog.store.reopen(interaction.channel_id):
+        if not interaction.channel:
+            return
+        if self.store.reopen(interaction.channel_id or 0):
             await interaction.response.send_message("Ticket reopened.")
         else:
             await interaction.response.send_message("Could not reopen.", ephemeral=True)
 
 
 class TicketQuestionsModal(discord.ui.Modal):
-    def __init__(self, cog: "Tickets", category: dict, view: TicketFlowView) -> None:
+    def __init__(self, store: "TicketStore", category: dict, view: TicketFlowView) -> None:
         super().__init__(title=f"{category.get('name', category['id'])} ticket")
-        self.cog = cog
+        self.store = store
         self.category = category
         self.flow_view = view
         for idx, q in enumerate(category.get("questions", [])):
@@ -250,27 +250,25 @@ class TicketQuestionsModal(discord.ui.Modal):
             )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild or not interaction.user:
+            return await interaction.response.send_message("Guild context required.", ephemeral=True)
         answers = "\n".join(f"- {i.value}" for i in self.children if isinstance(i, discord.ui.TextInput))
         overwrites: dict[discord.abc.Snowflake, discord.PermissionOverwrite] = {}
         overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-        everyone = interaction.guild.default_role
-        overwrites[everyone] = discord.PermissionOverwrite(view_channel=False)
-        if interaction.user:
-            overwrites[interaction.user] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True, read_message_history=True
-            )
-        if self.flow_view.claimer_role_id and interaction.guild:
+        overwrites[interaction.user] = discord.PermissionOverwrite(
+            view_channel=True, send_messages=True, read_message_history=True
+        )
+        if self.flow_view.claimer_role_id:
             role = interaction.guild.get_role(self.flow_view.claimer_role_id)
             if role:
                 overwrites[role] = discord.PermissionOverwrite(
                     view_channel=True, send_messages=True
                 )
         category_channel = None
-        if interaction.guild:
-            for cat in interaction.guild.categories:
-                if cat.name.lower() == "tickets":
-                    category_channel = cat
-                    break
+        for cat in interaction.guild.categories:
+            if cat.name.lower() == "tickets":
+                category_channel = cat
+                break
         try:
             channel = await interaction.guild.create_text_channel(
                 name=f"ticket-{self.category['id']}",
@@ -282,9 +280,9 @@ class TicketQuestionsModal(discord.ui.Modal):
             return await interaction.response.send_message(
                 f"Failed to create ticket: {exc}", ephemeral=True
             )
-        record = self.cog.store.create(
+        record = self.store.create(
             channel_id=channel.id,
-            owner_id=interaction.user.id if interaction.user else 0,
+            owner_id=interaction.user.id,
             category_id=self.category["id"],
             guild_id=interaction.guild_id or 0,
         )
@@ -293,50 +291,8 @@ class TicketQuestionsModal(discord.ui.Modal):
             description=answers or "No details provided.",
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text=f"Owner: {interaction.user} ({interaction.user.id})" if interaction.user else "")
+        embed.set_footer(text=f"Owner: {interaction.user} ({interaction.user.id})")
         await channel.send(embed=embed, view=self.flow_view)
         await interaction.response.send_message(
             f"Ticket created: {channel.mention}", ephemeral=True
         )
-
-
-class Tickets(commands.GroupCog, name="tickets"):
-    def __init__(self, bot: commands.Bot, store: TicketStore) -> None:
-        self.bot = bot
-        self.store = store
-        self.categories = TICKET_CATEGORIES_DEFAULT
-        self.claimer_role_id: int | None = None
-
-    @commands.Cog.listener()
-    async def on_ready(self) -> None:
-        self.store.ensure_schema()
-        self.bot.add_view(TicketFlowView(self, categories=self.categories, claimer_role_id=self.claimer_role_id))
-
-    @app_commands.command(name="panel", description="Send the ticket creation panel to a channel.")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    async def panel(self, interaction: discord.Interaction) -> None:
-        embed = discord.Embed(
-            title="Support Tickets",
-            description="Use the dropdown below to open a ticket.",
-            color=discord.Color.blurple(),
-        )
-        await interaction.response.send_message(
-            embed=embed, view=TicketFlowView(self, categories=self.categories, claimer_role_id=self.claimer_role_id)
-        )
-
-    @app_commands.command(name="stats", description="Show ticket stats for this server.")
-    async def stats(self, interaction: discord.Interaction) -> None:
-        data = self.store.stats(interaction.guild_id or 0)
-        lines = []
-        for category, counts in data.items():
-            lines.append(
-                f"- **{category}**: {counts.get('open', 0)} open / {counts.get('closed', 0)} closed"
-            )
-        body = "\n".join(lines) if lines else "No tickets yet."
-        await interaction.response.send_message(body, ephemeral=True)
-
-    @app_commands.command(name="categories", description="List configured ticket categories.")
-    @app_commands.checks.has_permissions(manage_channels=True)
-    async def categories_cmd(self, interaction: discord.Interaction) -> None:
-        lines = [f"- {c['id']}: {c.get('name', c['id'])}" for c in self.categories]
-        await interaction.response.send_message("\n".join(lines), ephemeral=True)
