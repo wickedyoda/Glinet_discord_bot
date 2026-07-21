@@ -58,7 +58,7 @@ jobs:
           tags: |
             ${{ steps.vars.outputs.IMAGE }}:${{ steps.vars.outputs.DATE_TAG }}-${{ steps.vars.outputs.TIME_TAG }}
             ${{ steps.vars.outputs.IMAGE }}:latest-ticket-beta
-            ${{ steps.vars.outputs.IMAGE }}:${{ inputs.image_tag }}
+            ${{ steps.vars.outputs.IMAGE }}:${{ inputs.image_tag && format('{0}', inputs.image_tag) }}
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
