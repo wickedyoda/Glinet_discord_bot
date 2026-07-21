@@ -5,7 +5,7 @@
   <img src="./assets/images/glinet-bot-full.png" alt="GL.iNet Bot Logo (Full)" width="240" />
 </p>
 
-Discord bot for GL.iNet community operations under the public `GL.iNet UnOfficial Discord Bot` name, with invite/code role access, moderation tools, search helpers, firmware/YouTube/LinkedIn/beta-program monitoring, member-activity analytics, utility commands, and a secured multi-guild web admin GUI.
+Discord bot for GL.iNet community operations under the public `GL.iNet UnOfficial Discord Bot` name, with invite/code role access, moderation tools, search helpers, firmware/YouTube/LinkedIn/beta-program monitoring, member-activity analytics, utility commands, role-tier ticket handling, and a secured multi-guild web admin GUI.
 
 - Install / invite link: [Add GL.iNet UnOfficial Discord Bot to your server](https://discord.com/oauth2/authorize?client_id=1390519966050291734)
 
@@ -85,9 +85,10 @@ docker compose build
 - LinkedIn public profile monitor with channel-to-Discord posting
 - GL.iNet beta program page monitor with add/remove notifications into Discord
 - Web-managed Reddit feed posting for new subreddit submissions
-- Member activity tracking with private `/stats` output, web top-20 views for rolling 90/30/7/1-day windows, and ZIP export from the web GUI
+- Member activity tracking with private `/stats` output, rolling 90-day retention, optional startup backfill, and ZIP export from the web GUI
 - Guild-scoped welcome automation with optional channel post, optional DM, and optional uploaded image attachment with validated file type, byte-size limit, and dimension metadata
-- Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, LinkedIn profile subscriptions, GL.iNet beta-program monitoring, per-guild channel/tag settings, and role-access invite/code management
+- Web admin GUI with server selection, guild-scoped management pages, action history, member activity, YouTube subscriptions, LinkedIn profile subscriptions, GL.iNet beta-program monitoring, per-guild channel/tag settings, role-access invite/code management, and ticket safety/configuration management
+- Role-tier ticket commands with web-managed role assignments and safety preflight
 - Optional guild allowlist mode for multi-guild deployments and public invites
 - Guild-scoped data quarantine on bot removal with 14-day restore window on same-ID rejoin before permanent purge
 - SQLite persistence with legacy merge import on startup

@@ -481,6 +481,15 @@ Notes:
 - Assignment execution with timeout protections
 - Structured results with unmatched/ambiguous/failure sections
 
+### `/admin/ticket-settings`
+
+- Scoped to the selected server
+- Ticket role-tier editor with multi-select Discord roles
+- Four configurable tiers: `search`, `create`, `reassign`, `admin`
+- Effective role IDs shown per tier
+- Save persists `ticket_role_map_json` into `guild_settings`
+- Ticket features are disabled until at least one tier has at least one role assigned
+
 ### `/admin/users`
 
 - User and role management (`Admin` / `Read-only` / `Glinet-Read-Only` / `Glinet-RW`)
