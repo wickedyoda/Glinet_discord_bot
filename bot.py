@@ -15742,6 +15742,134 @@ async def search_astrowarp_prefix(ctx: commands.Context, *, query: str):
     await ctx.send(message)
 
 
+def _ticket_store() -> "TicketStore":
+    from app.tickets import TicketStore
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    store = TicketStore(conn)
+    store.ensure_schema()
+    return store
+
+
+class _TicketClaimButton(discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.channel:
+            return await interaction.response.send_message("Guild context required.", ephemeral=True)
+        store = _ticket_store()
+        row = store.get_by_channel(interaction.channel_id or 0)
+        if row is None or row["status"] != "open":
+            return await interaction.response.send_message("Not an open ticket.", ephemeral=True)
+        if store.close(interaction.channel_id or 0, closer_id=interaction.user.id, note="claimed"):
+            await interaction.response.send_message(f"{interaction.user.mention} claimed this ticket.", allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await interaction.response.send_message("Failed to claim.", ephemeral=True)
+
+
+class _TicketCloseButton(discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.channel:
+            return
+        store = _ticket_store()
+        if store.close(interaction.channel_id or 0, closer_id=interaction.user.id):
+            await interaction.response.send_message("Ticket marked closed.")
+        else:
+            await interaction.response.send_message("Could not close.", ephemeral=True)
+
+
+class _TicketReopenButton(discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.channel:
+            return
+        store = _ticket_store()
+        if store.reopen(interaction.channel_id or 0):
+            await interaction.response.send_message("Ticket reopened.")
+        else:
+            await interaction.response.send_message("Could not reopen.", ephemeral=True)
+
+
+class _TicketView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(_TicketClaimButton(label="Claim", style=discord.ButtonStyle.primary, custom_id="tickets:claim"))
+        self.add_item(_TicketCloseButton(label="Close", style=discord.ButtonStyle.danger, custom_id="tickets:close"))
+        self.add_item(_TicketReopenButton(label="Reopen", style=discord.ButtonStyle.success, custom_id="tickets:reopen"))
+
+
+@tree.command(name="ticket", description="Open a support ticket")
+async def ticket_panel(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    categories = [
+        {"id": "support", "name": "Support", "questions": ["Describe your issue."]},
+        {"id": "sales", "name": "Sales", "questions": ["What are you interested in?"]},
+        {"id": "partnership", "name": "Partnership", "questions": ["Describe the partnership idea."]},
+    ]
+    options = [
+        discord.SelectOption(label=c["name"], value=c["id"], description=f"{len(c['questions'])} question(s)")
+        for c in categories
+    ]
+    view = discord.ui.View(timeout=None)
+
+    class _Select(discord.ui.Select):
+        async def callback(inner, interaction: discord.Interaction):
+            category = next((c for c in categories if c["id"] == inner.values[0]), None)
+            if not category:
+                return await interaction.response.send_message("Invalid category.", ephemeral=True)
+            modal = discord.ui.Modal(title=f"{category['name']} ticket")
+
+            class _Q(discord.ui.TextInput):
+                def __init__(self, label: str, required: bool = False):
+                    super().__init__(label=label, style=discord.TextStyle.paragraph, required=required)
+
+            for idx, q in enumerate(category["questions"]):
+                modal.add_item(_Q(q, required=idx == 0))
+
+            async def on_submit(modal_interaction: discord.Interaction):
+                answers = "\n".join(f"- {item.value}" for item in modal.children if isinstance(item, discord.ui.TextInput))
+                overwrites = {}
+                if interaction.guild.default_role:
+                    overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+                overwrites[interaction.user] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                category_channel = None
+                for cat in interaction.guild.categories:
+                    if cat.name.lower() == "tickets":
+                        category_channel = cat
+                        break
+                try:
+                    channel = await interaction.guild.create_text_channel(
+                        name=f"ticket-{category['id']}",
+                        overwrites=overwrites,
+                        category=category_channel,
+                        reason="ticket created",
+                    )
+                except Exception as exc:
+                    return await modal_interaction.response.send_message(f"Failed: {exc}", ephemeral=True)
+                store.create(channel_id=channel.id, owner_id=interaction.user.id, category_id=category["id"], guild_id=interaction.guild_id or 0)
+                await channel.send(embed=discord.Embed(
+                    title=f"Ticket — {category['name']}",
+                    description=answers or "No details.",
+                    color=discord.Color.blurple(),
+                ), view=_TicketView())
+                await modal_interaction.response.send_message(f"Created {channel.mention}", ephemeral=True)
+
+            modal.on_submit = on_submit  # type: ignore[method-assign]
+            await interaction.response.send_modal(modal)
+
+    select = _Select(placeholder="Choose a category...", options=options, min_values=1, max_values=1)
+    view.add_item(select)
+    await interaction.response.send_message("Open a ticket:", view=view, ephemeral=True)
+
+
+@tree.command(name="ticket-stats", description="Show ticket counts")
+async def ticket_stats(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    store = _ticket_store()
+    data = store.stats(interaction.guild_id or 0)
+    lines = [f"- **{k}**: {v.get('open',0)} open / {v.get('closed',0)} closed" for k, v in data.items()]
+    await interaction.response.send_message("\n".join(lines) if lines else "No tickets.", ephemeral=True)
+
+
 tree.add_command(honeypot_group)
 tree.add_command(honeypot_log_group)
 tree.add_command(honeypot_join_guard_group)
