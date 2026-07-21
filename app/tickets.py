@@ -1,10 +1,10 @@
 """
 Tickets module — ported from discord-tickets/bot (GPLv3).
 
-Clean single-responsibility helpers:
+Single-responsibility helpers for bot.py:
 - TicketStore: SQLite-backed ticket state
-- Role tier helpers for ticket permissions
-- Slash command + button wiring imports used by bot.py
+- Role-tier permission helpers
+- UI/render helpers used by slash commands and buttons
 """
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ from discord import app_commands
 from discord.ext import commands
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # Ticket category defaults
@@ -45,10 +44,10 @@ class TicketStore:
         self.conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS tickets (
-                id			 INTEGER PRIMARY KEY AUTOINCREMENT,
-                guild_id	 INTEGER NOT NULL DEFAULT 0,
-                channel_id	 INTEGER NOT NULL,
-                owner_id	 INTEGER NOT NULL,
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id     INTEGER NOT NULL DEFAULT 0,
+                channel_id   INTEGER NOT NULL,
+                owner_id     INTEGER NOT NULL,
                 category_id  TEXT NOT NULL,
                 claimer_id   INTEGER,
                 status       TEXT NOT NULL DEFAULT 'open',
@@ -85,8 +84,10 @@ class TicketStore:
         )
         self.conn.commit()
         ticket_id = int(cur.lastrowid)
-        logger.debug("Created ticket id=%s number=%s category=%s channel=%s owner=%s guild=%s",
-                     ticket_id, number, category_id, channel_id, owner_id, guild_id)
+        logger.debug(
+            "Created ticket id=%s number=%s category=%s channel=%s owner=%s guild=%s",
+            ticket_id, number, category_id, channel_id, owner_id, guild_id,
+        )
         return ticket_id
 
     def close(self, channel_id: int, *, closer_id: int, note: Optional[str] = None) -> bool:
@@ -131,7 +132,7 @@ class TicketStore:
             return None
         return dict(row)
 
-    def get_by_owner_email(self, guild_id: int, email: str) -> list[dict]:
+    def search_by_owner_email(self, guild_id: int, email: str) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM tickets WHERE guild_id=? AND owner_id=? ORDER BY created_at DESC",
             (guild_id, email),
@@ -139,20 +140,9 @@ class TicketStore:
         return [dict(r) for r in rows]
 
     def set_owner_email(self, ticket_id: int, email: str) -> bool:
-        cur = self.conn.execute(
-            "UPDATE tickets SET owner_id=? WHERE id=?",
-            (email, ticket_id),
-        )
+        cur = self.conn.execute("UPDATE tickets SET owner_id=? WHERE id=?", (email, ticket_id))
         self.conn.commit()
         logger.debug("Set owner email ticket=%s email=%s", ticket_id, email)
-        return cur.rowcount > 0
-
-    def add_note(self, ticket_id: int, note: str) -> bool:
-        cur = self.conn.execute(
-            "UPDATE tickets SET note=? WHERE id=?",
-            (note, ticket_id),
-        )
-        self.conn.commit()
         return cur.rowcount > 0
 
     def reassign(self, ticket_id: int, new_assignee_id: int) -> bool:
@@ -164,6 +154,11 @@ class TicketStore:
         updated = cur.rowcount > 0
         logger.debug("Reassigned ticket=%s assignee=%s updated=%s", ticket_id, new_assignee_id, updated)
         return updated
+
+    def set_note(self, ticket_id: int, note: str) -> bool:
+        cur = self.conn.execute("UPDATE tickets SET note=? WHERE id=?", (note, ticket_id))
+        self.conn.commit()
+        return cur.rowcount > 0
 
     def stats(self, guild_id: int) -> dict:
         rows = self.conn.execute(
@@ -203,13 +198,13 @@ def _ticket_store() -> "TicketStore":
 
 
 # ---------------------------------------------------------------------------
-# Role tier helpers  (0=none, 1=search, 2=crud, 3=+reassign, 4=admin)
+# Role-tier helpers  (role titles: search, create, reassign, admin)
 # ---------------------------------------------------------------------------
 def load_ticket_role_map() -> dict[str, list[int]]:
     conn = get_db_connection()
     if not conn:
         logger.debug("DB connection unavailable for ticket role map lookup.")
-        return {}
+        return {"search": [], "create": [], "reassign": [], "admin": []}
     raw = {}
     try:
         columns = {
@@ -217,8 +212,8 @@ def load_ticket_role_map() -> dict[str, list[int]]:
             for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()
         }
         if "ticket_role_map_json" not in columns:
-            logger.debug("ticket_role_map_json column missing; no role restriction yet.")
-            return {}
+            logger.debug("ticket_role_map_json column missing; using empty role map.")
+            return {"search": [], "create": [], "reassign": [], "admin": []}
         row = conn.execute(
             "SELECT ticket_role_map_json FROM guild_settings WHERE guild_id=0 LIMIT 1"
         ).fetchone()
@@ -226,7 +221,7 @@ def load_ticket_role_map() -> dict[str, list[int]]:
         if not isinstance(raw, dict):
             raw = {}
     except Exception:
-        logger.debug("Failed loading ticket role map; defaulting to open access.")
+        logger.debug("Failed loading ticket role map; defaulting to empty map.")
     normalized: dict[str, list[int]] = {}
     for k in ("search", "create", "reassign", "admin"):
         v = raw.get(k) or []
@@ -255,7 +250,7 @@ def save_ticket_role_map(role_map: dict[str, list[int]]) -> None:
 def member_ticket_tier(member: discord.Member | discord.User) -> int:
     role_map = load_ticket_role_map()
     if not any(role_map.values()):
-        return 4
+        return 4  # Unrestricted if no roles configured
     if not hasattr(member, "roles"):
         return 0
     member_ids = {r.id for r in getattr(member, "roles", [])}
@@ -281,19 +276,20 @@ def require_ticket_tier(member: discord.Member | discord.User, min_tier: int = 1
     return tier >= min_tier
 
 
-def ticket_permission_denied_message(guild: Optional[discord.Guild], role_map: dict[str, list[int]], min_tier: int) -> str:
+def ticket_permission_denied_message(guild: Optional[discord.Guild], min_tier: int) -> str:
+    role_map = load_ticket_role_map()
     tier_label = {1: "Search", 2: "Create/Update/Close", 3: "Reassign", 4: "Admin"}.get(min_tier, str(min_tier))
-    if guild:
-        key = {3: "reassign", 2: "create", 1: "search"}.get(min_tier, "admin")
-        role_ids = role_map.get(key) or role_map.get("admin") or []
+    key = {3: "reassign", 2: "create", 1: "search"}.get(min_tier, "admin")
+    role_ids = role_map.get(key) or role_map.get("admin") or []
+    if guild and role_ids:
         mentions = []
         for role_id in role_ids:
             role = guild.get_role(role_id)
             if role:
                 mentions.append(role.mention)
         if mentions:
-            return f"❌ You need the **{tier_label}** tier to use this command: {', '.join(mentions)}."
-    return f"❌ You need the **{tier_label}** tier to use this command."
+            return f"❌ You need the **{tier_label}** tier to use this: {', '.join(mentions)}."
+    return f"❌ You need the **{tier_label}** tier to use this."
 
 
 # ---------------------------------------------------------------------------
@@ -332,14 +328,10 @@ def ticket_view() -> discord.ui.View:
     return view
 
 
-def ticket_embed(category: str, answers: str = "", ticket_id: Optional[int] = None, number: Optional[int] = None) -> discord.Embed:
-    lines = []
-    if number is not None:
-        lines.append(f"**Ticket #{number}**")
-    lines.extend([f"**Category:** {category}", f"**Details:**\n{answers or 'No details.'}"])
+def ticket_embed(title: str, description: str = "") -> discord.Embed:
     return discord.Embed(
-        title="Ticket" + (f" #{number}" if number is not None else ""),
-        description="\n".join(lines),
+        title=title,
+        description=description or "No details.",
         color=discord.Color.blurple(),
     )
 
