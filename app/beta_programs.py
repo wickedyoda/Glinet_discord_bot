@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 import json
 import re
 import urllib.parse
@@ -141,7 +142,7 @@ def _extract_beta_programs_from_select_inputs(soup: BeautifulSoup, source_url: s
             if not raw_value and not title:
                 continue
             apply_url = urllib.parse.urljoin(source_url, raw_value) if raw_value else source_url
-            program_id = hashlib.sha256(f"{title}|{apply_url}".encode()).hexdigest()[:24]
+            program_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{title}|{apply_url}").hex[:24]
             if program_id in seen_program_ids:
                 continue
             seen_program_ids.add(program_id)
@@ -196,7 +197,7 @@ def parse_beta_testing_programs(page_html: str, source_url: str):
         if not title or title.casefold() == _clean_text(heading_tag.get_text(" ", strip=True)).casefold():
             continue
         summary = _clip_text(content_lines[1], max_chars=400) if len(content_lines) > 1 else ""
-        program_id = hashlib.sha256(f"{title}|{apply_url}".encode()).hexdigest()[:24]
+        program_id = uuid.uuid5(uuid.NAMESPACE_URL, f"{title}|{apply_url}").hex[:24]
         if program_id in seen_program_ids:
             continue
         seen_program_ids.add(program_id)
