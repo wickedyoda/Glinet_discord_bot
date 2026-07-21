@@ -1063,6 +1063,8 @@ COMMAND_PERMISSION_DEFAULTS = {
     "uptime": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "stats": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "tag_commands": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "ticket": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "ticket_stats": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "submitrole": COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
     "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "enter_role": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -1167,6 +1169,14 @@ COMMAND_PERMISSION_METADATA = {
     "tag_commands": {
         "label": "/tag",
         "description": "Send a configured slash tag response from persistent storage.",
+    },
+    "ticket": {
+        "label": "/ticket",
+        "description": "Open a support ticket with a role-restricted admin panel.",
+    },
+    "ticket_stats": {
+        "label": "/ticket-stats",
+        "description": "Show per-category ticket counts.",
     },
     "submitrole": {
         "label": "/submitrole",
@@ -1928,6 +1938,8 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_height INTEGER NOT NULL DEFAULT 0")
         if "welcome_image_base64" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_base64 TEXT NOT NULL DEFAULT ''")
+        if "ticket_allowed_role_ids_json" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN ticket_allowed_role_ids_json TEXT NOT NULL DEFAULT '[]'")
 
         action_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
         if "guild_id" not in action_columns:
