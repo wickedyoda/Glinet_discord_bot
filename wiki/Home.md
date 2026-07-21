@@ -33,6 +33,7 @@ Core capabilities:
 - Multi-guild admin model with optional managed-guild allowlist filtering
 - Guild-group scoped web admin model with `Guild Admin` users limited to assigned Discord server groups
 - Guild data archival for 14 days after the bot leaves a server, with automatic restore on same-ID rejoin during that window
+- Role-tier ticket system with Discord commands and a `/admin/ticket-settings` page; ticket features are disabled until at least one role tier is assigned
 - Four web-user roles:
   - `Admin`
   - `Read-only`
@@ -45,6 +46,8 @@ Core capabilities:
 
 - I need full command list and access restrictions:
   - [Command Reference](Command-Reference.md)
+- I need ticket setup and troubleshooting:
+  - [Tickets](Tickets.md)
 - I need onboarding/access role setup:
   - [Role Access and Invites](Role-Access-and-Invites.md)
   - [Join With an Invite Code](Join-With-Invite-Code.md)
