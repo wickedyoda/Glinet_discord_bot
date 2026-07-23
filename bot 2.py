@@ -2221,7 +2221,13 @@ def get_effective_guild_feature_enabled(guild_id: int | None, key: str, fallback
 
 
 def get_effective_logging_channel_id(guild_id: int | None):
-    return guild_state_manager.get_effective_logging_channel_id(guild_id)
+    resolved = guild_state_manager.get_effective_logging_channel_id(guild_id)
+    logger.info(
+        "WEB_AUDIT resolve_log_channel source=get_effective_logging_channel_id guild_id=%s resolved_channel_id=%s",
+        guild_id,
+        resolved,
+    )
+    return resolved
 
 
 def record_action_safe(
@@ -6795,6 +6801,11 @@ async def prune_channel_recent_messages(
 
 async def resolve_mod_log_channel(guild: discord.Guild):
     channel_id = get_effective_logging_channel_id(guild.id)
+    logger.info(
+        "WEB_AUDIT resolve_log_channel source=resolve_mod_log_channel guild_id=%s resolved_channel_id=%s",
+        guild.id,
+        channel_id,
+    )
     if channel_id <= 0:
         logger.warning(
             "No bot log channel configured for guild %s. Set guild settings or BOT_LOG_CHANNEL_ID/MOD_LOG_CHANNEL_ID.",
@@ -7995,14 +8006,29 @@ async def send_server_event_log(guild: discord.Guild, event_name: str, details: 
         guild_id=guild.id,
     )
     target_channel_id = get_effective_logging_channel_id(guild.id)
-    record_bot_log_channel_message("server_event", target_channel_id, message)
-
+    logger.info(
+        "WEB_AUDIT log_dispatch event=server_event expected_guild_id=%s resolved_channel_id=%s",
+        guild.id,
+        target_channel_id,
+    )
     channel = await resolve_mod_log_channel(guild)
     if channel is None:
+        logger.info(
+            "WEB_AUDIT log_dispatch event=server_event expected_guild_id=%s resolved_channel_id=%s actual_channel_guild_id=%s sent=False",
+            guild.id,
+            target_channel_id,
+            "None",
+        )
         return False
 
     try:
         await channel.send(message)
+        logger.info(
+            "WEB_AUDIT log_dispatch event=server_event expected_guild_id=%s resolved_channel_id=%s actual_channel_guild_id=%s sent=True",
+            guild.id,
+            target_channel_id,
+            getattr(getattr(channel, "guild", None), "id", "unknown"),
+        )
         return True
     except discord.Forbidden:
         logger.warning("No permission to send server event logs to channel %s", target_channel_id)
