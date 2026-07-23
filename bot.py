@@ -12742,6 +12742,33 @@ async def edit_role_slash(
 
 
 @tree.command(
+    name="diagnose_log_target",
+    description="Show the effective guild log channel target for this server",
+)
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def diagnose_log_target_slash(interaction: discord.Interaction):
+    if not await ensure_interaction_command_access(interaction, "diagnose_log_target"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    guild_id = interaction.guild.id
+    configured = guild_state_manager.load_guild_settings(guild_id).get("bot_log_channel_id")
+    resolved = get_effective_logging_channel_id(guild_id)
+    channel = bot.get_channel(resolved) if resolved else None
+    actual_guild_id = getattr(getattr(channel, "guild", None), "id", None)
+    await interaction.response.send_message(
+        "✅ Guild log target diagnostic\n"
+        f"- Configured `bot_log_channel_id`: `{configured}`\n"
+        f"- Effective log channel ID: `{resolved}`\n"
+        f"- Resolved channel guild ID: `{actual_guild_id}`\n"
+        f"- Guild match: `{actual_guild_id == guild_id}`\n",
+        ephemeral=True,
+    )
+
+
+@tree.command(
     name="modlog_test",
     description="Send a test moderation log entry",
 )
