@@ -89,6 +89,8 @@ class GuildStateManager:
             "youtube_notify_enabled": -1,
             "linkedin_notify_enabled": -1,
             "beta_program_notify_enabled": -1,
+            "forum_announcements_enabled": -1,
+            "forum_announcements_channel_id": 0,
             "discourse_enabled": -1,
             "discourse_base_url": "",
             "discourse_api_key": "",
@@ -161,6 +163,8 @@ class GuildStateManager:
                     "youtube_notify_enabled",
                     "linkedin_notify_enabled",
                     "beta_program_notify_enabled",
+                    "forum_announcements_enabled",
+                    "forum_announcements_channel_id",
                     "discourse_enabled",
                     "discourse_base_url",
                     "discourse_api_key",
@@ -215,6 +219,8 @@ class GuildStateManager:
                     "youtube_notify_enabled": self._normalize_feature_override(row["youtube_notify_enabled"]),
                     "linkedin_notify_enabled": self._normalize_feature_override(row["linkedin_notify_enabled"]),
                     "beta_program_notify_enabled": self._normalize_feature_override(row["beta_program_notify_enabled"]),
+                    "forum_announcements_enabled": self._normalize_feature_override(row["forum_announcements_enabled"]),
+                    "forum_announcements_channel_id": int(row["forum_announcements_channel_id"] or 0),
                     "discourse_enabled": normalize_discourse_override(row["discourse_enabled"]),
                     "discourse_base_url": normalize_discourse_base_url(str(row["discourse_base_url"] or "")),
                     "discourse_api_key": str(row["discourse_api_key"] or "").strip(),
@@ -299,8 +305,14 @@ class GuildStateManager:
             "youtube_notify_enabled",
             "linkedin_notify_enabled",
             "beta_program_notify_enabled",
+            "forum_announcements_enabled",
         ):
             merged[key] = self._normalize_feature_override(source.get(key, current.get(key, -1)))
+        merged["forum_announcements_channel_id"] = self.parse_int_setting(
+            source.get("forum_announcements_channel_id", current.get("forum_announcements_channel_id", 0)),
+            0,
+            minimum=0,
+        )
         merged["discourse_enabled"] = normalize_discourse_override(source.get("discourse_enabled", current.get("discourse_enabled", -1)))
         merged["discourse_base_url"] = normalize_discourse_base_url(
             source.get("discourse_base_url", current.get("discourse_base_url", ""))
@@ -384,6 +396,8 @@ class GuildStateManager:
                     "youtube_notify_enabled",
                     "linkedin_notify_enabled",
                     "beta_program_notify_enabled",
+                    "forum_announcements_enabled",
+                    "forum_announcements_channel_id",
                     "discourse_enabled",
                     "discourse_base_url",
                     "discourse_api_key",
@@ -432,6 +446,8 @@ class GuildStateManager:
                 "youtube_notify_enabled": merged["youtube_notify_enabled"],
                 "linkedin_notify_enabled": merged["linkedin_notify_enabled"],
                 "beta_program_notify_enabled": merged["beta_program_notify_enabled"],
+                "forum_announcements_enabled": merged["forum_announcements_enabled"],
+                "forum_announcements_channel_id": merged["forum_announcements_channel_id"],
                 "discourse_enabled": merged["discourse_enabled"],
                 "discourse_base_url": merged["discourse_base_url"],
                 "discourse_api_key": merged["discourse_api_key"],

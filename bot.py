@@ -43,6 +43,14 @@ from app.beta_programs import (
 from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
+from app.discourse_announcements import (
+    DEFAULT_FORUM_ANNOUNCEMENT_REQUEST_TIMEOUT,
+    fetch_announcement_category_html,
+    load_announcement_seen_topic_ids,
+    mark_announcement_topic_posted,
+    parse_announcement_topics,
+    resolve_announcement_web_target,
+)
 from app.csv_utils import parse_csv_cells
 from app.discourse_api import DiscourseApiError, DiscourseRateLimitError, search_discourse_topics
 from app.discourse_integration import (
@@ -1391,7 +1399,8 @@ firmware_monitor_task = None
 reddit_feed_monitor_task = None
 youtube_monitor_task = None
 linkedin_monitor_task = None
-beta_program_monitor_task = None
+beta_program_notify_task = None
+forum_announcement_task = None
 service_monitor_task = None
 uptime_status_monitor_task = None
 member_activity_backfill_task = None
@@ -1565,6 +1574,8 @@ def ensure_db_schema():
                 youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                forum_announcements_enabled INTEGER NOT NULL DEFAULT -1,
+                forum_announcements_channel_id INTEGER NOT NULL DEFAULT 0,
                 discourse_enabled INTEGER NOT NULL DEFAULT -1,
                 discourse_base_url TEXT NOT NULL DEFAULT '',
                 discourse_api_key TEXT NOT NULL DEFAULT '',
@@ -1824,6 +1835,14 @@ def ensure_db_schema():
                 ON linkedin_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_beta_program_subscriptions_enabled
                 ON beta_program_subscriptions(enabled);
+            CREATE TABLE IF NOT EXISTS discourse_announcement_seen (
+                topic_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                posted_at TEXT NOT NULL,
+                PRIMARY KEY (topic_id, guild_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_discourse_announcement_seen_guild_id
+                ON discourse_announcement_seen(guild_id);
             CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
                 ON member_activity_summary(last_message_at);
             CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
@@ -5697,6 +5716,8 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
             "youtube_notify_enabled": int(settings.get("youtube_notify_enabled", -1)),
             "linkedin_notify_enabled": int(settings.get("linkedin_notify_enabled", -1)),
             "beta_program_notify_enabled": int(settings.get("beta_program_notify_enabled", -1)),
+            "forum_announcements_enabled": int(settings.get("forum_announcements_enabled", -1)),
+            "forum_announcements_channel_id": int(settings.get("forum_announcements_channel_id", 0)),
             "discourse_enabled": int(settings.get("discourse_enabled", -1)),
             "discourse_base_url": str(settings.get("discourse_base_url") or ""),
             "discourse_api_username": str(settings.get("discourse_api_username") or ""),
@@ -5753,6 +5774,16 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
                 "beta_program_notify_enabled",
                 BETA_PROGRAM_NOTIFY_ENABLED,
             ) else 0,
+            "forum_announcements_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "forum_announcements_enabled",
+                False,
+            ) else 0,
+            "forum_announcements_channel_id": get_effective_guild_setting(
+                safe_guild_id,
+                "forum_announcements_channel_id",
+                0,
+            ),
             "discourse_enabled": int(effective_discourse_settings.get("enabled", 0)),
             "discourse_base_url": str(effective_discourse_settings.get("base_url") or ""),
             "discourse_api_username": str(effective_discourse_settings.get("api_username") or ""),
@@ -5798,6 +5829,7 @@ def run_web_save_guild_settings(payload: dict, actor_email: str, guild_id: int |
         schedule_youtube_monitor_restart()
         schedule_linkedin_monitor_restart()
         schedule_beta_program_monitor_restart()
+        schedule_forum_announcement_monitor_restart()
         return {
             **build_guild_settings_web_payload(safe_guild_id),
             "message": "Guild settings updated.",
@@ -10018,6 +10050,108 @@ def schedule_beta_program_monitor_restart():
     loop.call_soon_threadsafe(restart_beta_program_monitor_task)
 
 
+async def check_forum_announcements_once():
+    if not any(
+        get_effective_guild_feature_enabled(guild.id, "forum_announcements_enabled", False)
+        for guild in bot.guilds
+    ):
+        return
+    try:
+        for guild in bot.guilds:
+            if not get_effective_guild_feature_enabled(guild.id, "forum_announcements_enabled", False):
+                continue
+            channel_id = get_effective_guild_setting(guild.id, "forum_announcements_channel_id", 0)
+            if channel_id <= 0:
+                continue
+            settings = load_guild_settings(guild.id)
+            base_url = str(settings.get("discourse_base_url") or FORUM_BASE_URL).strip()
+            api_key = str(settings.get("discourse_api_key") or "").strip()
+            api_username = str(settings.get("discourse_api_username") or "").strip()
+            try:
+                html, source_url = await asyncio.to_thread(
+                    fetch_announcement_category_html,
+                    base_url=base_url,
+                    api_key=api_key,
+                    api_username=api_username,
+                )
+            except DiscourseRateLimitError:
+                logger.warning("Forum announcements rate limited for guild %s", guild.id)
+                continue
+            except Exception:
+                logger.exception("Failed fetching forum announcements for guild %s", guild.id)
+                continue
+            topics = parse_announcement_topics(html, source_url=source_url)
+            if not topics:
+                continue
+            conn = get_db_connection()
+            with db_lock:
+                seen_ids = load_announcement_seen_topic_ids(conn, guild.id)
+                new_topics = [topic for topic in topics if int(topic.get("id") or 0) not in seen_ids]
+                for topic in new_topics:
+                    mark_announcement_topic_posted(conn, guild.id, int(topic.get("id") or 0))
+                conn.commit()
+            if not new_topics:
+                continue
+            channel = bot.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(channel_id)
+                except Exception:
+                    logger.warning("Announcement channel %s not found for guild %s", channel_id, guild.id)
+                    continue
+            if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+                continue
+            for topic in new_topics:
+                title = str(topic.get("title") or "New Announcement").strip()
+                url = str(topic.get("url") or "").strip()
+                excerpt = str(topic.get("excerpt") or "").strip()
+                description = clip_text(excerpt or "Open the forum post for full details.", max_chars=350)
+                embed = discord.Embed(
+                    title=title,
+                    description=description,
+                    url=url or None,
+                    color=discord.Color.gold(),
+                )
+                embed.set_footer(text="GL.iNet Forum Announcement")
+                try:
+                    await channel.send(embed=embed)
+                except discord.Forbidden:
+                    logger.warning("Missing send permission in announcement channel %s for guild %s", channel_id, guild.id)
+                except discord.HTTPException:
+                    logger.exception("Failed posting announcement to channel %s for guild %s", channel_id, guild.id)
+            logger.info(
+                "Posted %d forum announcement(s) for guild %s into channel %s",
+                len(new_topics),
+                guild.id,
+                channel_id,
+            )
+    except Exception:
+        logger.exception("Unexpected failure while processing forum announcements")
+
+
+async def forum_announcement_monitor_loop():
+    await check_forum_announcements_once()
+    while not bot.is_closed():
+        await asyncio.sleep(60 * 60)
+        await check_forum_announcements_once()
+
+
+def restart_forum_announcement_monitor_task():
+    global forum_announcement_task
+    if forum_announcement_task is not None and not forum_announcement_task.done():
+        forum_announcement_task.cancel()
+    forum_announcement_task = asyncio.create_task(
+        forum_announcement_monitor_loop(), name="forum_announcement_monitor"
+    )
+
+
+def schedule_forum_announcement_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_forum_announcement_monitor_task)
+
+
 def refresh_runtime_settings_from_env(_updated_values=None):
     global LOG_LEVEL
     global CONTAINER_LOG_LEVEL
@@ -11445,6 +11579,7 @@ async def on_ready():
     global youtube_monitor_task
     global linkedin_monitor_task
     global beta_program_monitor_task
+    global forum_announcement_task
     global service_monitor_task
     global uptime_status_monitor_task
     global member_activity_backfill_task
@@ -11478,6 +11613,8 @@ async def on_ready():
         linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
     if beta_program_monitor_task is None or beta_program_monitor_task.done():
         beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
+    if forum_announcement_task is None or forum_announcement_task.done():
+        forum_announcement_task = asyncio.create_task(forum_announcement_monitor_loop(), name="forum_announcement_monitor")
     if service_monitor_task is None or service_monitor_task.done():
         service_monitor_task = asyncio.create_task(service_monitor_loop(), name="service_monitor")
     if uptime_status_monitor_task is None or uptime_status_monitor_task.done():
