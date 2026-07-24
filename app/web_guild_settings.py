@@ -65,6 +65,8 @@ def process_guild_settings_submission(
         "youtube_notify_enabled": -1 if not form.get("youtube_notify_enabled__override") else (1 if form.get("youtube_notify_enabled") else 0),
         "linkedin_notify_enabled": -1 if not form.get("linkedin_notify_enabled__override") else (1 if form.get("linkedin_notify_enabled") else 0),
         "beta_program_notify_enabled": -1 if not form.get("beta_program_notify_enabled__override") else (1 if form.get("beta_program_notify_enabled") else 0),
+        "forum_announcements_enabled": -1 if not form.get("forum_announcements_enabled__override") else (1 if form.get("forum_announcements_enabled") else 0),
+        "forum_announcements_channel_id": form.get("forum_announcements_channel_id", ""),
         "access_role_id": form.get("access_role_id", ""),
         "welcome_channel_id": form.get("welcome_channel_id", ""),
         "welcome_dm_enabled": form.get("welcome_dm_enabled", ""),
@@ -202,6 +204,8 @@ def render_guild_settings_body(
     youtube_notify_override = normalize_override_value(current_settings.get("youtube_notify_enabled"))
     linkedin_notify_override = normalize_override_value(current_settings.get("linkedin_notify_enabled"))
     beta_program_notify_override = normalize_override_value(current_settings.get("beta_program_notify_enabled"))
+    forum_announcements_override = normalize_override_value(current_settings.get("forum_announcements_enabled"))
+    forum_announcements_channel_id = str(current_settings.get("forum_announcements_channel_id") or "")
     welcome_channel_image_enabled = 1 if int(current_settings.get("welcome_channel_image_enabled") or 0) > 0 else 0
     welcome_dm_image_enabled = 1 if int(current_settings.get("welcome_dm_image_enabled") or 0) > 0 else 0
     welcome_channel_message = str(current_settings.get("welcome_channel_message") or "")
@@ -323,6 +327,28 @@ def render_guild_settings_body(
                     <label style="display:block; margin-top:8px;"><input type="checkbox" name="beta_program_notify_enabled" value="1"{' checked' if beta_program_notify_override > 0 else ''} /> Enabled for this guild</label>
                   </td>
                   <td class="muted mono">{'enabled' if int(effective_settings.get("beta_program_notify_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(beta_program_notify_override))}</div></td>
+                </tr>
+                """,
+        f"""
+                <tr>
+                  <td><strong>Forum Announcements</strong><div class="muted mono">forum_announcements_enabled</div></td>
+                  <td>
+                    <label><input type="checkbox" name="forum_announcements_enabled__override" value="1"{' checked' if forum_announcements_override >= 0 else ''} /> Override global setting</label>
+                    <label style="display:block; margin-top:8px;"><input type="checkbox" name="forum_announcements_enabled" value="1"{' checked' if forum_announcements_override > 0 else ''} /> Enabled for this guild</label>
+                  </td>
+                  <td class="muted mono">{'enabled' if int(effective_settings.get("forum_announcements_enabled") or 0) > 0 else 'disabled'}<div class="muted">{escape(format_override_state(forum_announcements_override))}</div></td>
+                </tr>
+                """,
+        f"""
+                <tr>
+                  <td><strong>Forum Announcement Channel</strong><div class="muted mono">forum_announcements_channel_id</div></td>
+                  <td>
+                    <select name="forum_announcements_channel_id">
+                      <option value="">Use global / disabled</option>
+                      {"".join(f"<option value='{escape(str(option.get('id') or ''), quote=True)}'{' selected' if str(option.get('id') or '') == forum_announcements_channel_id else ''}>{escape(str(option.get('name') or option.get('id') or ''))} ({escape(str(option.get('id') or ''))})</option>" for option in text_channel_options)}
+                    </select>
+                  </td>
+                  <td class="muted mono">{escape(forum_announcements_channel_id) or 'Use global / disabled'}</td>
                 </tr>
                 """,
     ]
