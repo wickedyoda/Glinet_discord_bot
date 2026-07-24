@@ -2641,8 +2641,23 @@ def _render_layout(
       .header-toprow { width: 100%; align-items: flex-start; }
       .header-tools { margin-left: 0; width: auto; flex-shrink: 0; }
       .header-right.desktop-nav { display: none; }
-      .mobile-quickbar { display: grid; grid-template-columns: 1fr; gap: 10px; width: 100%; }
+      .mobile-quickbar { display: none; }
       .mobile-nav { display: block; width: 100%; }
+      .mobile-nav[open] .mobile-nav-panel { display: grid; }
+      .mobile-nav:not([open]) .mobile-nav-panel { display: none; }
+      .mobile-nav .mobile-nav-panel {
+        display: none;
+        margin-top: 10px;
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--card);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+        gap: 12px;
+        max-height: 70vh;
+        overflow-y: auto;
+      }
+      .mobile-nav summary { width: 100%; }
       .nav-select { width: 100%; max-width: 100%; min-width: 0; }
       .theme-switch { width: 100%; }
       .header-tools .theme-switch { display: none; }
