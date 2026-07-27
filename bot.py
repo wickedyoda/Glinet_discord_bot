@@ -43,6 +43,14 @@ from app.beta_programs import (
 from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
+from app.discourse_announcements import (
+    DEFAULT_FORUM_ANNOUNCEMENT_REQUEST_TIMEOUT,
+    fetch_announcement_category_html,
+    load_announcement_seen_topic_ids,
+    mark_announcement_topic_posted,
+    parse_announcement_topics,
+    resolve_announcement_web_target,
+)
 from app.csv_utils import parse_csv_cells
 from app.discourse_api import DiscourseApiError, DiscourseRateLimitError, search_discourse_topics
 from app.discourse_integration import (
@@ -1401,7 +1409,8 @@ firmware_monitor_task = None
 reddit_feed_monitor_task = None
 youtube_monitor_task = None
 linkedin_monitor_task = None
-beta_program_monitor_task = None
+beta_program_notify_task = None
+forum_announcement_task = None
 service_monitor_task = None
 uptime_status_monitor_task = None
 member_activity_backfill_task = None
@@ -1575,6 +1584,8 @@ def ensure_db_schema():
                 youtube_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
+                forum_announcements_enabled INTEGER NOT NULL DEFAULT -1,
+                forum_announcements_channel_id INTEGER NOT NULL DEFAULT 0,
                 discourse_enabled INTEGER NOT NULL DEFAULT -1,
                 discourse_base_url TEXT NOT NULL DEFAULT '',
                 discourse_api_key TEXT NOT NULL DEFAULT '',
@@ -1834,6 +1845,14 @@ def ensure_db_schema():
                 ON linkedin_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_beta_program_subscriptions_enabled
                 ON beta_program_subscriptions(enabled);
+            CREATE TABLE IF NOT EXISTS discourse_announcement_seen (
+                topic_id INTEGER NOT NULL,
+                guild_id INTEGER NOT NULL,
+                posted_at TEXT NOT NULL,
+                PRIMARY KEY (topic_id, guild_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_discourse_announcement_seen_guild_id
+                ON discourse_announcement_seen(guild_id);
             CREATE INDEX IF NOT EXISTS idx_member_activity_summary_last_message
                 ON member_activity_summary(last_message_at);
             CREATE INDEX IF NOT EXISTS idx_member_activity_recent_hourly_bucket
@@ -2412,7 +2431,13 @@ def get_effective_guild_feature_enabled(guild_id: int | None, key: str, fallback
 
 
 def get_effective_logging_channel_id(guild_id: int | None):
-    return guild_state_manager.get_effective_logging_channel_id(guild_id)
+    resolved = guild_state_manager.get_effective_logging_channel_id(guild_id)
+    logger.info(
+        "WEB_AUDIT resolve_log_channel source=get_effective_logging_channel_id guild_id=%s resolved_channel_id=%s",
+        guild_id,
+        resolved,
+    )
+    return resolved
 
 
 def record_action_safe(
@@ -5715,6 +5740,8 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
             "youtube_notify_enabled": int(settings.get("youtube_notify_enabled", -1)),
             "linkedin_notify_enabled": int(settings.get("linkedin_notify_enabled", -1)),
             "beta_program_notify_enabled": int(settings.get("beta_program_notify_enabled", -1)),
+            "forum_announcements_enabled": int(settings.get("forum_announcements_enabled", -1)),
+            "forum_announcements_channel_id": int(settings.get("forum_announcements_channel_id", 0)),
             "discourse_enabled": int(settings.get("discourse_enabled", -1)),
             "discourse_base_url": str(settings.get("discourse_base_url") or ""),
             "discourse_api_username": str(settings.get("discourse_api_username") or ""),
@@ -5771,6 +5798,16 @@ def build_guild_settings_web_payload(guild_id: int | str | None = None):
                 "beta_program_notify_enabled",
                 BETA_PROGRAM_NOTIFY_ENABLED,
             ) else 0,
+            "forum_announcements_enabled": 1 if get_effective_guild_feature_enabled(
+                safe_guild_id,
+                "forum_announcements_enabled",
+                False,
+            ) else 0,
+            "forum_announcements_channel_id": get_effective_guild_setting(
+                safe_guild_id,
+                "forum_announcements_channel_id",
+                0,
+            ),
             "discourse_enabled": int(effective_discourse_settings.get("enabled", 0)),
             "discourse_base_url": str(effective_discourse_settings.get("base_url") or ""),
             "discourse_api_username": str(effective_discourse_settings.get("api_username") or ""),
@@ -5816,6 +5853,7 @@ def run_web_save_guild_settings(payload: dict, actor_email: str, guild_id: int |
         schedule_youtube_monitor_restart()
         schedule_linkedin_monitor_restart()
         schedule_beta_program_monitor_restart()
+        schedule_forum_announcement_monitor_restart()
         return {
             **build_guild_settings_web_payload(safe_guild_id),
             "message": "Guild settings updated.",
@@ -7420,6 +7458,11 @@ async def prune_channel_recent_messages(
 
 async def resolve_mod_log_channel(guild: discord.Guild):
     channel_id = get_effective_logging_channel_id(guild.id)
+    logger.info(
+        "WEB_AUDIT resolve_log_channel source=resolve_mod_log_channel guild_id=%s resolved_channel_id=%s",
+        guild.id,
+        channel_id,
+    )
     if channel_id <= 0:
         logger.warning(
             "No bot log channel configured for guild %s. Set guild settings or BOT_LOG_CHANNEL_ID/MOD_LOG_CHANNEL_ID.",
@@ -8862,13 +8905,31 @@ async def send_server_event_log(guild: discord.Guild, event_name: str, details: 
     )
     target_channel_id = get_effective_logging_channel_id(guild.id)
     record_bot_log_channel_message("server_event", target_channel_id, message)
+    logger.info(
+        "WEB_AUDIT log_dispatch event=%s expected_guild_id=%s resolved_channel_id=%s",
+        event_name,
+        guild.id,
+        target_channel_id,
+    )
 
     channel = await resolve_mod_log_channel(guild)
     if channel is None:
+        logger.info(
+            "WEB_AUDIT log_dispatch event=server_event expected_guild_id=%s resolved_channel_id=%s actual_channel_guild_id=%s sent=False",
+            guild.id,
+            target_channel_id,
+            "None",
+        )
         return False
 
     try:
         await channel.send(message)
+        logger.info(
+            "WEB_AUDIT log_dispatch event=server_event expected_guild_id=%s resolved_channel_id=%s actual_channel_guild_id=%s sent=True",
+            guild.id,
+            target_channel_id,
+            getattr(getattr(channel, "guild", None), "id", "unknown"),
+        )
         return True
     except discord.Forbidden:
         logger.warning("No permission to send server event logs to channel %s", target_channel_id)
@@ -10054,6 +10115,109 @@ def schedule_beta_program_monitor_restart():
     if loop is None or not loop.is_running():
         return
     loop.call_soon_threadsafe(restart_beta_program_monitor_task)
+
+
+async def check_forum_announcements_once():
+    if not any(
+        get_effective_guild_feature_enabled(guild.id, "forum_announcements_enabled", False)
+        for guild in bot.guilds
+    ):
+        return
+    try:
+        for guild in bot.guilds:
+            if not get_effective_guild_feature_enabled(guild.id, "forum_announcements_enabled", False):
+                continue
+            channel_id = get_effective_guild_setting(guild.id, "forum_announcements_channel_id", 0)
+            if channel_id <= 0:
+                continue
+            settings = load_guild_settings(guild.id)
+            base_url = str(settings.get("discourse_base_url") or FORUM_BASE_URL).strip()
+            api_key = str(settings.get("discourse_api_key") or "").strip()
+            api_username = str(settings.get("discourse_api_username") or "").strip()
+            try:
+                html, source_url = await asyncio.to_thread(
+                    fetch_announcement_category_html,
+                    base_url=base_url,
+                    api_key=api_key,
+                    api_username=api_username,
+                )
+            except DiscourseRateLimitError:
+                logger.warning("Forum announcements rate limited for guild %s", guild.id)
+                continue
+            except Exception:
+                logger.exception("Failed fetching forum announcements for guild %s", guild.id)
+                continue
+            topics = parse_announcement_topics(html, source_url=source_url)
+            if not topics:
+                continue
+            conn = get_db_connection()
+            with db_lock:
+                seen_ids = load_announcement_seen_topic_ids(conn, guild.id)
+                new_topics = [topic for topic in topics if int(topic.get("id") or 0) not in seen_ids]
+                for topic in new_topics:
+                    mark_announcement_topic_posted(conn, guild.id, int(topic.get("id") or 0))
+                conn.commit()
+            if not new_topics:
+                continue
+            channel = bot.get_channel(channel_id)
+            if channel is None:
+                try:
+                    channel = await bot.fetch_channel(channel_id)
+                except Exception:
+                    logger.warning("Announcement channel %s not found for guild %s", channel_id, guild.id)
+                    continue
+            if not isinstance(channel, (discord.TextChannel, discord.Thread)) or getattr(getattr(channel, "guild", None), "id", None) != guild.id:
+                logger.warning("Refusing to post forum announcements: channel %s is not in guild %s", channel_id, guild.id)
+                continue
+            for topic in new_topics:
+                title = str(topic.get("title") or "New Announcement").strip()
+                url = str(topic.get("url") or "").strip()
+                excerpt = str(topic.get("excerpt") or "").strip()
+                description = clip_text(excerpt or "Open the forum post for full details.", max_chars=350)
+                embed = discord.Embed(
+                    title=title,
+                    description=description,
+                    url=url or None,
+                    color=discord.Color.gold(),
+                )
+                embed.set_footer(text="GL.iNet Forum Announcement")
+                try:
+                    await channel.send(embed=embed)
+                except discord.Forbidden:
+                    logger.warning("Missing send permission in announcement channel %s for guild %s", channel_id, guild.id)
+                except discord.HTTPException:
+                    logger.exception("Failed posting announcement to channel %s for guild %s", channel_id, guild.id)
+            logger.info(
+                "Posted %d forum announcement(s) for guild %s into channel %s",
+                len(new_topics),
+                guild.id,
+                channel_id,
+            )
+    except Exception:
+        logger.exception("Unexpected failure while processing forum announcements")
+
+
+async def forum_announcement_monitor_loop():
+    await check_forum_announcements_once()
+    while not bot.is_closed():
+        await asyncio.sleep(60 * 60)
+        await check_forum_announcements_once()
+
+
+def restart_forum_announcement_monitor_task():
+    global forum_announcement_task
+    if forum_announcement_task is not None and not forum_announcement_task.done():
+        forum_announcement_task.cancel()
+    forum_announcement_task = asyncio.create_task(
+        forum_announcement_monitor_loop(), name="forum_announcement_monitor"
+    )
+
+
+def schedule_forum_announcement_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_forum_announcement_monitor_task)
 
 
 def refresh_runtime_settings_from_env(_updated_values=None):
@@ -11485,6 +11649,7 @@ async def on_ready():
     global youtube_monitor_task
     global linkedin_monitor_task
     global beta_program_monitor_task
+    global forum_announcement_task
     global service_monitor_task
     global uptime_status_monitor_task
     global member_activity_backfill_task
@@ -11518,6 +11683,8 @@ async def on_ready():
         linkedin_monitor_task = asyncio.create_task(linkedin_monitor_loop(), name="linkedin_monitor")
     if beta_program_monitor_task is None or beta_program_monitor_task.done():
         beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
+    if forum_announcement_task is None or forum_announcement_task.done():
+        forum_announcement_task = asyncio.create_task(forum_announcement_monitor_loop(), name="forum_announcement_monitor")
     if service_monitor_task is None or service_monitor_task.done():
         service_monitor_task = asyncio.create_task(service_monitor_loop(), name="service_monitor")
     if uptime_status_monitor_task is None or uptime_status_monitor_task.done():
@@ -12612,6 +12779,33 @@ async def edit_role_slash(
         details=details,
     )
     await interaction.response.send_message(f"✅ {details}", ephemeral=True)
+
+
+@tree.command(
+    name="diagnose_log_target",
+    description="Show the effective guild log channel target for this server",
+)
+@app_commands.guild_only()
+@app_commands.default_permissions(administrator=True)
+async def diagnose_log_target_slash(interaction: discord.Interaction):
+    if not await ensure_interaction_command_access(interaction, "diagnose_log_target"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    guild_id = interaction.guild.id
+    configured = guild_state_manager.load_guild_settings(guild_id).get("bot_log_channel_id")
+    resolved = get_effective_logging_channel_id(guild_id)
+    channel = bot.get_channel(resolved) if resolved else None
+    actual_guild_id = getattr(getattr(channel, "guild", None), "id", None)
+    await interaction.response.send_message(
+        "✅ Guild log target diagnostic\n"
+        f"- Configured `bot_log_channel_id`: `{configured}`\n"
+        f"- Effective log channel ID: `{resolved}`\n"
+        f"- Resolved channel guild ID: `{actual_guild_id}`\n"
+        f"- Guild match: `{actual_guild_id == guild_id}`\n",
+        ephemeral=True,
+    )
 
 
 @tree.command(
