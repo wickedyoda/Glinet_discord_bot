@@ -107,6 +107,7 @@ When Portainer cannot access local `.env` path:
 Example image:
 
 - `ghcr.io/wickedyoda/discord_invite_bot:latest`
+- Ticket-beta image: `ghcr.io/wickedyoda/Glinet_discord_bot-ticket-beta:latest-ticket-beta`
 
 Recommended web settings persistence:
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import binascii
@@ -21,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from html import unescape
 from logging.handlers import TimedRotatingFileHandler
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin
 
 import discord
@@ -33,6 +36,10 @@ from defusedxml import ElementTree as ET
 from discord import app_commands
 from discord.ext import commands
 from dotenv import dotenv_values, load_dotenv
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.tickets import TicketStore
 
 from app.beta_programs import (
     fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
@@ -1071,6 +1078,8 @@ COMMAND_PERMISSION_DEFAULTS = {
     "uptime": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "stats": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "tag_commands": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "ticket": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "ticket_stats": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "submitrole": COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
     "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "enter_role": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -1175,6 +1184,14 @@ COMMAND_PERMISSION_METADATA = {
     "tag_commands": {
         "label": "/tag",
         "description": "Send a configured slash tag response from persistent storage.",
+    },
+    "ticket": {
+        "label": "/ticket",
+        "description": "Open a support ticket with a role-restricted admin panel.",
+    },
+    "ticket_stats": {
+        "label": "/ticket-stats",
+        "description": "Show per-category ticket counts.",
     },
     "submitrole": {
         "label": "/submitrole",
@@ -1947,6 +1964,8 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_height INTEGER NOT NULL DEFAULT 0")
         if "welcome_image_base64" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_base64 TEXT NOT NULL DEFAULT ''")
+        if "ticket_role_map_json" not in guild_settings_columns:
+            conn.execute("ALTER TABLE guild_settings ADD COLUMN ticket_role_map_json TEXT NOT NULL DEFAULT '{}'")
 
         action_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
         if "guild_id" not in action_columns:
@@ -4117,6 +4136,12 @@ def migrate_legacy_files_to_db():
 def initialize_storage():
     ensure_db_schema()
     migrate_legacy_files_to_db()
+    try:
+        from app.tickets import TicketStore
+        _ticket_store = TicketStore(get_db_connection())
+        _ticket_store.ensure_schema()
+    except Exception:
+        logger.exception("Failed initializing ticket schema")
 
 
 def tag_to_command_name(tag: str) -> str:
@@ -6216,6 +6241,26 @@ def run_web_get_health_status():
         "managed_guild_count": managed_guild_count,
         "latency_ms": latency_ms,
     }
+
+
+def run_web_get_ticket_settings(guild_id: int | str | None = None):
+    from app.tickets import load_ticket_role_map
+    return {
+        "ok": True,
+        "guild_id": guild_id,
+        "ticket_role_map": load_ticket_role_map(),
+    }
+
+
+def run_web_save_ticket_settings(payload: dict, actor_email: str, guild_id: int | str | None = None):
+    from app.tickets import save_ticket_role_map
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Payload must be an object."}
+    try:
+        save_ticket_role_map(payload.get("ticket_role_map") or {})
+    except Exception:
+        return {"ok": False, "error": "Failed to save ticket role map."}
+    return run_web_get_ticket_settings(guild_id)
 
 
 async def run_web_bulk_role_assignment_async(guild_id: int, role_input: str, payload: bytes, filename: str, actor_email: str):
@@ -10791,6 +10836,8 @@ def start_web_admin_server():
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
                     on_get_health_status=run_web_get_health_status,
+                    on_get_ticket_settings=run_web_get_ticket_settings,
+                    on_save_ticket_settings=run_web_save_ticket_settings,
                     on_request_restart=run_web_request_restart,
                     on_leave_guild=run_web_leave_guild,
                     logger=logger,
@@ -15928,6 +15975,184 @@ async def search_astrowarp_prefix(ctx: commands.Context, *, query: str):
     await ctx.send("🔍 Searching AstroWarp docs...")
     message = await asyncio.to_thread(build_docs_site_search_message, query, "astrowarp")
     await ctx.send(message)
+
+
+def _ticket_store() -> "TicketStore":
+    from app.tickets import TicketStore
+
+    conn = get_db_connection()
+    conn.row_factory = sqlite3.Row
+    store = TicketStore(conn, guild_id=0)
+    store.ensure_schema()
+    return store
+
+
+def _enforce_ticket_preflight(interaction: discord.Interaction) -> bool:
+    from app.tickets import member_ticket_tier
+    if member_ticket_tier(interaction.user) > 0:
+        return True
+    return False
+
+
+class _TicketClaimButton(discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild or not interaction.channel:
+            return await interaction.response.send_message("Guild context required.", ephemeral=True)
+        store = _ticket_store()
+        row = store.get_by_channel(interaction.channel_id or 0)
+        if row is None or row["status"] != "open":
+            return await interaction.response.send_message("Not an open ticket.", ephemeral=True)
+        if store.close(interaction.channel_id or 0, closer_id=interaction.user.id, note="claimed"):
+            await interaction.response.send_message(f"{interaction.user.mention} claimed this ticket.", allowed_mentions=discord.AllowedMentions.none())
+        else:
+            await interaction.response.send_message("Failed to claim.", ephemeral=True)
+
+
+class _TicketCloseButton(discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.channel:
+            return
+        store = _ticket_store()
+        if store.close(interaction.channel_id or 0, closer_id=interaction.user.id):
+            await interaction.response.send_message("Ticket marked closed.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Could not close.", ephemeral=True)
+
+
+class _TicketReassignButton(discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.guild:
+            return
+        from app.tickets import member_ticket_tier
+        if member_ticket_tier(interaction.user) < 3:
+            return await interaction.response.send_message("Only tier 3+ can reassign tickets.", ephemeral=True)
+        await interaction.response.send_modal(_ReassignModal())
+
+
+class _TicketReopenButton(discord.ui.Button):
+    async def callback(self, interaction: discord.Interaction):
+        if not interaction.channel:
+            return
+        store = _ticket_store()
+        if store.reopen(interaction.channel_id or 0):
+            await interaction.response.send_message("Ticket reopened.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Could not reopen.", ephemeral=True)
+
+
+class _TicketView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        self.add_item(_TicketClaimButton(label="Claim", style=discord.ButtonStyle.primary, custom_id="tickets:claim"))
+        self.add_item(_TicketCloseButton(label="Close", style=discord.ButtonStyle.danger, custom_id="tickets:close"))
+        self.add_item(_TicketReassignButton(label="Reassign", style=discord.ButtonStyle.secondary, custom_id="tickets:reassign"))
+        self.add_item(_TicketReopenButton(label="Reopen", style=discord.ButtonStyle.success, custom_id="tickets:reopen"))
+
+
+class _ReassignModal(discord.ui.Modal, title="Reassign ticket"):
+    user_id = discord.ui.TextInput(label="User ID to reassign to", placeholder="123456789012345678", style=discord.TextStyle.short)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = str(self.user_id.value or "").strip()
+        if not raw.isdigit():
+            return await interaction.response.send_message("Send a numeric Discord user ID.", ephemeral=True)
+        new_id = int(raw)
+        store = _ticket_store()
+        row = store.get_by_channel(interaction.channel_id or 0)
+        if not row:
+            return await interaction.response.send_message("No ticket on this channel.", ephemeral=True)
+        if store.reassign(row["id"], new_assignee_id=new_id):
+            await interaction.response.send_message(f"Reassigned ticket to <@{new_id}>.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Failed to reassign; ticket may be closed.", ephemeral=True)
+
+
+@tree.command(name="ticket", description="Open a support ticket")
+async def ticket_panel(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    if not _enforce_ticket_preflight(interaction):
+        return await interaction.response.send_message("Ticket access roles are not configured yet.", ephemeral=True)
+    from app.tickets import TICKET_CATEGORIES_DEFAULT, build_ticket_select_options, ticket_view
+    categories = TICKET_CATEGORIES_DEFAULT
+    options = build_ticket_select_options(categories)
+    select_view = discord.ui.View(timeout=None)
+
+    class _Select(discord.ui.Select):
+        async def callback(inter, interaction: discord.Interaction):
+            category = next((c for c in categories if c["id"] == inter.values[0]), None)
+            if not category:
+                return await interaction.response.send_message("Invalid category.", ephemeral=True)
+            questions = category.get("questions") or []
+            modal = discord.ui.Modal(title=f"{category['name']} ticket")
+
+            class _Q(discord.ui.TextInput):
+                def __init__(self, label: str, required: bool = False):
+                    super().__init__(label=label, style=discord.TextStyle.paragraph, required=required)
+
+            for q in questions:
+                modal.add_item(_Q(q, required=True))
+
+            async def on_submit(modal_interaction: discord.Interaction):
+                answers = "\n".join(f"- {item.value}" for item in modal.children if isinstance(item, discord.ui.TextInput))
+                overwrites: dict = {}
+                if interaction.guild.default_role:
+                    overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+                overwrites[interaction.user] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+                category_channel = next((cat for cat in interaction.guild.categories if cat.name.lower() == "tickets"), None)
+                try:
+                    channel = await interaction.guild.create_text_channel(
+                        name=f"ticket-{category['id']}",
+                        overwrites=overwrites,
+                        category=category_channel,
+                        reason="ticket created",
+                    )
+                except Exception as exc:
+                    return await modal_interaction.response.send_message(f"Failed: {exc}", ephemeral=True)
+                store = _ticket_store()
+                store.create(channel_id=channel.id, owner_id=interaction.user.id, category_id=category["id"], guild_id=interaction.guild.id)
+                from app.tickets import ticket_embed
+                await channel.send(embed=ticket_embed(f"{category['name']}", answers), view=_TicketView())
+                await modal_interaction.response.send_message(f"Created {channel.mention}", ephemeral=True)
+
+            modal.on_submit = on_submit  # type: ignore[method-assign]
+            await interaction.response.send_modal(modal)
+
+    select = _Select(placeholder="Choose a category...", options=options, min_values=1, max_values=1)
+    select_view.add_item(select)
+    await interaction.response.send_message("Open a ticket:", view=select_view, ephemeral=True)
+
+
+@tree.command(name="ticket-search", description="Search tickets by number or owner email")
+@app_commands.describe(query="Ticket number or owner email")
+async def ticket_search(interaction: discord.Interaction, query: str):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    from app.tickets import member_ticket_tier, ticket_search_result_embed
+    if member_ticket_tier(interaction.user) < 1:
+        return await interaction.response.send_message("You need the **Search** ticket tier to search.", ephemeral=True)
+    store = _ticket_store()
+    text = str(query or "").strip()
+    row = None
+    if text.isdigit():
+        row = store.get_by_number(interaction.guild_id or 0, int(text))
+    if not row and text:
+        rows = store.search_by_owner_email(interaction.guild_id or 0, text)
+        if rows:
+            row = rows[0]
+    if not row:
+        return await interaction.response.send_message("No ticket matched that search.", ephemeral=True)
+    await interaction.response.send_message(embed=ticket_search_result_embed(row), ephemeral=True)
+
+
+@tree.command(name="ticket-stats", description="Show ticket counts")
+async def ticket_stats(interaction: discord.Interaction):
+    if not interaction.guild:
+        return await interaction.response.send_message("Guild only.", ephemeral=True)
+    store = _ticket_store()
+    data = store.stats(interaction.guild_id or 0)
+    lines = [f"- **{k}**: {v.get('open',0)} open / {v.get('closed',0)} closed" for k, v in data.items()]
+    await interaction.response.send_message("\n".join(lines) if lines else "No tickets.", ephemeral=True)
 
 
 tree.add_command(honeypot_group)
