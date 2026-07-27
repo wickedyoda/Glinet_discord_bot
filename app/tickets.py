@@ -191,7 +191,7 @@ def _ticket_store() -> "TicketStore":
     conn = get_db_connection()
     if conn is None:
         raise RuntimeError("Database connection is not available.")
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = Row
     store = TicketStore(conn, guild_id=0)
     store.ensure_schema()
     return store

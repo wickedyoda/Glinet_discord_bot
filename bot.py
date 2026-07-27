@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import base64
 import binascii
@@ -21,6 +23,7 @@ from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
 from html import unescape
 from logging.handlers import TimedRotatingFileHandler
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin
 
 import discord
@@ -33,6 +36,10 @@ from defusedxml import ElementTree as ET
 from discord import app_commands
 from discord.ext import commands
 from dotenv import dotenv_values, load_dotenv
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.tickets import TicketStore
 
 from app.beta_programs import (
     fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
@@ -15972,6 +15979,7 @@ async def search_astrowarp_prefix(ctx: commands.Context, *, query: str):
 
 def _ticket_store() -> "TicketStore":
     from app.tickets import TicketStore
+
     conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     store = TicketStore(conn, guild_id=0)
