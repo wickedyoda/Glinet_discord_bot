@@ -2,6 +2,28 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-07-21] - Ticket System and Ticket-Beta Docker Image
+
+### Added
+- New ticket system with role-tier permissions
+- `/ticket` command with category selection modal
+- `/ticket-search` ephemeral search by ticket number or owner email
+- `/ticket-stats` ephemeral open/closed counts
+- `/admin/ticket-settings` web page for assigning Discord roles to ticket tiers
+- `/admin/ticket-settings` scope: guild-scoped
+- Ticket features are disabled until at least one role tier is assigned
+- GPLv3 attribution for upstream `discord-tickets/bot` in `reference/discord-tickets/NOTICE`
+- GitHub Actions workflow `.github/workflows/docker-publish-ticket-beta.yml`
+  - Publishes `ghcr.io/wickedyoda/Glinet_discord_bot-ticket-beta:YYYYMMDD-HHMMSS`
+  - Publishes `latest-ticket-beta` floating tag
+  - Multi-arch manifest: `linux/amd64`, `linux/arm64`
+
+### Changed
+- Ticket commands enforce role tiers with preflight check
+- Ticket search and stats responses are ephemeral
+- Web admin interface expanded with ticket settings page
+- Documentation updated in wiki and README
+
 ## [2026-03-25] - Web GUI Readability and Log Export
 
 ### Added

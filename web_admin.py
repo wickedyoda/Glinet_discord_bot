@@ -3046,6 +3046,8 @@ def create_web_app(
     on_request_restart=None,
     on_leave_guild=None,
     on_get_health_status=None,
+    on_get_ticket_settings=None,
+    on_save_ticket_settings=None,
     logger=None,
 ):
     app = Flask(__name__)
@@ -7942,6 +7944,86 @@ def create_web_app(
         )
         return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
 
+    @app.route("/admin/ticket-settings", methods=["GET", "POST"])
+    @login_required
+    def ticket_settings():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        payload = (
+            on_get_ticket_settings(selected_guild_id)
+            if callable(on_get_ticket_settings)
+            else {"ok": False, "error": "Ticket settings callbacks are not configured."}
+        )
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+
+        if request.method == "POST" and callable(on_save_ticket_settings):
+            form = request.form
+            role_map = {k: form.getlist(f"ticket_role_map[{k}][]") for k in ("search", "create", "reassign", "admin")}
+            cleaned = {}
+            for key, values in role_map.items():
+                cleaned[key] = [int(v) for v in values if str(v or "").strip().isdigit()]
+            save_payload = {"ticket_role_map": cleaned}
+            response = on_save_ticket_settings(save_payload, user["email"], selected_guild_id)
+            flash(response.get("message") or "Ticket settings saved.", "success" if response.get("ok") else "error")
+            payload = response
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = str(payload.get("error") if isinstance(payload, dict) else payload) or "Unable to load ticket settings."
+            body = f"<div class='card'><h2>Ticket Settings</h2><p class='muted'>Could not load ticket settings: {escape(error_text)}</p></div>"
+            return _render_page("Ticket Settings", body, user["email"], bool(user.get("is_admin")))
+
+        current_role_map = payload.get("ticket_role_map") or {}
+        tier_labels = {
+            "search": "Role 1 — Read-only search",
+            "create": "Role 2 — Create / update / close",
+            "reassign": "Role 3 — + reassign",
+            "admin": "Role 4 — Admin",
+        }
+        select_options = role_options or []
+        rows = []
+        for key, label in tier_labels.items():
+            selected = [str(role_id) for role_id in (current_role_map.get(key) or [])]
+            rows.append(
+                f"""
+                <tr>
+                  <td><strong>{escape(label)}</strong><div class="muted mono">{escape(key)}</div></td>
+                  <td>
+                    <select name='ticket_role_map[{escape(key)}][]' multiple size='6' style='min-width:280px;'>
+                      <option value='' disabled>Select role(s)...</option>
+                      {''.join(
+                          f"<option value='{escape(str(opt.get('id') or ''))}' {'selected' if str(opt.get('id') or '') in selected else ''}>{escape(str(opt.get('name') or opt.get('id') or ''))}</option>"
+                          for opt in select_options
+                      )}
+                    </select>
+                    <div class='muted'>Ctrl/Cmd-click to select multiple.</div>
+                  </td>
+                  <td class='muted mono'>{escape(', '.join(selected)) or 'Disabled'}</td>
+                </tr>
+                """
+            )
+        body = f"""
+          <div class='card'>
+            <h3>Ticket Role Tiers</h3>
+            <p class='muted'>Assign Discord roles to ticket tiers for <strong>{escape(guild_name)}</strong>. Ticket features are disabled until at least one role is assigned.</p>
+            {f"<p class='muted'>Loaded {len(select_options)} roles from Discord.</p>" if select_options else f"<p class='muted'>Could not load Discord roles: {escape(catalog_error)}</p>" if catalog_error else "<p class='muted'>No roles available.</p>"}
+            <form method='post' style='margin-top:14px;'>
+              <table>
+                <thead><tr><th>Tier</th><th>Roles</th><th>Effective</th></tr></thead>
+                <tbody>{''.join(rows)}</tbody>
+              </table>
+              <div style='margin-top:14px;'>
+                <button class='btn' type='submit'>Save Ticket Roles</button>
+              </div>
+            </form>
+          </div>
+        """
+        return _render_page("Ticket Settings", body, user["email"], bool(user.get("is_admin")))
+
     @app.route("/admin/moderation", methods=["GET", "POST"])
     @login_required
     def moderation_page():
@@ -9152,9 +9234,11 @@ def start_web_admin_interface(
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
+    on_get_health_status=None,
     on_request_restart=None,
     on_leave_guild=None,
-    on_get_health_status=None,
+    on_get_ticket_settings=None,
+    on_save_ticket_settings=None,
     logger=None,
 ):
     app = create_web_app(
@@ -9194,9 +9278,11 @@ def start_web_admin_interface(
         on_get_bot_profile=on_get_bot_profile,
         on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,
+        on_get_health_status=on_get_health_status,
+        on_get_ticket_settings=on_get_ticket_settings,
+        on_save_ticket_settings=on_save_ticket_settings,
         on_request_restart=on_request_restart,
         on_leave_guild=on_leave_guild,
-        on_get_health_status=on_get_health_status,
         logger=logger,
     )
     servers = []
