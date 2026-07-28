@@ -1,137 +1,56 @@
 # Security Hardening
 
-This page documents implemented controls and operational practices aligned with Discord bot security expectations.
+This page captures the current security-relevant controls in the bot and its deployment.
 
-## External Reference
+## Web GUI
 
-- Discord Developer Terms of Service:
-  - https://support-dev.discord.com/hc/en-us/articles/8562894815383-Discord-Developer-Terms-of-Service
+- No public signup; web users are created by admins only.
+- Password policy enforced at create and reset time.
+- 90-day password rotation is enforced.
+- CSRF and same-origin POST checks are enabled by default.
+- Strict cookie settings and browser hardening headers are applied.
+- Session cookie `SameSite` defaults to `Lax` and is configurable.
+- Login rate limiting is enforced.
+- Trusted proxy headers are optional; set `WEB_TRUST_PROXY_HEADERS=true` when behind a reverse proxy that sets standard forwarding headers.
 
-## Security Principles Applied
+## Secrets Handling
 
-- Least privilege
-- Defense in depth
-- Secure defaults
-- Explicit admin controls
-- Auditable operations
+- Store secrets outside the image where possible.
+- Prefer `.env` and runtime-mounted files over compiled-in values.
+- Do not log `DISCORD_TOKEN` or other credentials.
 
-## Identity, Authentication, and Account Security
+## Deployment
 
-Implemented:
+- Do not expose container ports directly to the internet.
+- Prefer reverse proxy HTTPS with HSTS and trusted forwarding headers.
+- Restrict published ports with firewall rules or bind controls.
+- Mount `.env` read-only inside the container when the web GUI uses `WEB_ENV_FILE` for mutable settings.
 
-- Web-only account model for GUI administration.
-- No Discord command path for web-user creation.
-- Web user roles:
-  - `Admin` for full configuration and management actions
-  - `Read-only` for view access across admin pages with write actions blocked
-- Password hashing at rest with secure hash method and opportunistic rehash upgrades.
-- Password policy enforcement:
-  - 6 to 16 characters
-  - 2+ numbers
-  - 1+ uppercase letter
-  - 1+ symbol
-- Forced password rotation every 90 days.
-- Self-service account management for existing users:
-  - Change password
-  - Change email
-  - Update first/last/display name
-- Login throttling to reduce brute-force effectiveness.
+## Logs
 
-## Session and Cookie Controls
+- `LOG_HARDEN_FILE_PERMISSIONS=true` enforces restrictive file permissions when supported.
+- Sensitive logs are mirrored under `/logs`; do not publish them publicly.
 
-Implemented:
+## Supply Chain and CI
 
-- Signed server-side session protection
-- `HttpOnly` cookie
-- `SameSite=Strict`
-- Optional `Secure` cookie enforcement for HTTPS
-- Configurable inactivity timeout (5-30 minutes)
-- Optional remember-me duration for 5 days on trusted device
+- Pin GitHub Actions to full commit SHAs when feasible.
+- Avoid script injection patterns by passing untrusted workflow inputs through `env:` before `run:` steps.
+- Review dependency updates before merging. Dependabot and Renovate are supported dependency-update tools.
 
-## Request and Browser Protections
+## Disable Unused Features
 
-Implemented:
-
-- CSRF protection for state-changing actions
-- Same-origin POST policy checks
-- Content Security Policy
-- Frame deny (`X-Frame-Options: DENY`)
-- MIME sniffing disable (`X-Content-Type-Options: nosniff`)
-- Referrer policy (`no-referrer`)
-- HSTS on HTTPS responses
-- Additional cross-origin policy headers where appropriate
-- Cache-control `no-store` on sensitive pages
-
-## Authorization and Access Segmentation
-
-- Admin-only guards on sensitive web routes/actions
-- Per-command access modes (`default`, `public`, `custom_roles`)
-- Moderator/admin role gates for moderation commands
-- Multi-role restriction support via role-name multi-select UI
-
-## Data Security and Storage Controls
-
-- SQLite persistence with WAL and foreign-key enforcement
-- Legacy data imports are merge-only and non-destructive
-- File permission hardening for `.env`, data dir, and DB file
-- Runtime log storage hardening for `/logs` (`0700`) and log files (`0600`)
-- Upload request size limits to reduce abuse surface
-- `/logs` command returns controlled error log excerpts only
-
-## Deployment Hardening Requirements
-
-Recommended production baseline:
-
-- Deploy behind trusted HTTPS reverse proxy
-- Restrict direct app-port exposure
-- Set `WEB_PUBLIC_BASE_URL` to exact public origin
-- Keep `WEB_ENFORCE_CSRF=true`
-- Keep `WEB_ENFORCE_SAME_ORIGIN_POSTS=true`
-- Keep `WEB_SESSION_COOKIE_SECURE=true` when HTTPS is used
-- Keep `LOG_HARDEN_FILE_PERMISSIONS=true`
-- Use strong random `WEB_ADMIN_SESSION_SECRET`
-
-## Large Guild and Scale Considerations
-
-For multi-thousand-member guilds:
-
-- Keep log levels conservative in production (`INFO`/`ERROR`).
-- Enforce strict command permissions for risky moderation actions.
-- Monitor permission drift after role hierarchy changes.
-- Run periodic credential hygiene checks for web users.
-
-## Incident Response Basics
-
-1. Restrict access (proxy/firewall) if compromise suspected.
-2. Rotate Discord token and web session secret.
-3. Reset affected web user credentials.
-4. Review `bot.log`, `bot_log.log`, and `container_errors.log`.
-5. Validate command permission rules and admin roster.
-
-## Known Limits and Compensating Controls
-
-Limit:
-
-- No built-in application-layer database encryption at rest.
-
-Compensating controls:
-
-- Host/platform disk encryption
-- Encrypted offsite backups
-- Restricted filesystem and container runtime access
+- Turn off monitors, feeds, and integrations you do not use.
+- Disabling a monitor stops polling/posting while keeping saved subscriptions and web pages available.
 
 ## Security Checklist
 
-- [ ] HTTPS reverse proxy configured
-- [ ] Public origin configured via `WEB_PUBLIC_BASE_URL`
-- [ ] Strong secrets configured and rotated
-- [ ] CSRF and same-origin checks enabled
-- [ ] Session secure cookies enabled in HTTPS deployments
-- [ ] Admin roster minimized and reviewed
-- [ ] Backups tested and encrypted
+Current implementation status based on live code review:
 
-## Related Pages
-
-- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
-- [Environment Variables](Environment-Variables.md)
-- [Web Admin Interface](Web-Admin-Interface.md)
+- [x] HTTPS reverse proxy recommended; app supports `WEB_PUBLIC_BASE_URL` and proxy headers
+- [x] Public origin configured via `WEB_PUBLIC_BASE_URL`
+- [x] Strong secrets supported; `WEB_ADMIN_SESSION_SECRET` auto-generates at runtime if unset, but set it explicitly for production restart stability
+- [x] CSRF enabled by default (`WEB_ENFORCE_CSRF=true`)
+- [x] Same-origin POST checks enabled by default (`WEB_ENFORCE_SAME_ORIGIN_POSTS=true`)
+- [x] Session secure cookies enabled by default (`WEB_SESSION_COOKIE_SECURE=true`; auto-stripped on plain HTTP)
+- [x] Admin roster managed via web users; no public signup or Discord command user creation
+- [x] Backups recommended; platform/host encryption is a compensating control for DB-at-rest
