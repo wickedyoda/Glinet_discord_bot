@@ -221,8 +221,12 @@ class GuildStateManager:
                     "youtube_notify_enabled": self._normalize_feature_override(row["youtube_notify_enabled"]),
                     "linkedin_notify_enabled": self._normalize_feature_override(row["linkedin_notify_enabled"]),
                     "beta_program_notify_enabled": self._normalize_feature_override(row["beta_program_notify_enabled"]),
-                    "forum_announcements_enabled": self._normalize_feature_override(row["forum_announcements_enabled"]),
-                    "forum_announcements_channel_id": int(row["forum_announcements_channel_id"] or 0),
+                    "forum_announcements_enabled": self._normalize_feature_override(row["forum_announcements_enabled"])
+                    if "forum_announcements_enabled" in available_columns
+                    else -1,
+                    "forum_announcements_channel_id": int(row["forum_announcements_channel_id"] or 0)
+                    if "forum_announcements_channel_id" in available_columns
+                    else 0,
                     "discourse_enabled": normalize_discourse_override(row["discourse_enabled"]),
                     "discourse_base_url": normalize_discourse_base_url(str(row["discourse_base_url"] or "")),
                     "discourse_api_key": str(row["discourse_api_key"] or "").strip(),
