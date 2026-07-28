@@ -1,85 +1,55 @@
 # Tickets
 
-Role-tiered support tickets with Discord slash commands and web admin role mapping.
+The bot includes a role-tier ticket system backed by SQLite and managed through slash commands, button interactions, and the web GUI.
 
-## Concepts
+## Commands
 
-- Ticket tiers are **disabled by default**.
-- Ticket features remain off until at least one tier has at least one Discord role assigned in `/admin/ticket-settings`.
-- Each tier inherits the capabilities of the lower tiers.
-
-## Tier Model
-
-| Tier | Key | Capabilities |
+| Command | Access | Purpose |
 |---|---|---|
-| Role 1 | `search` | Search/view tickets only |
-| Role 2 | `create` | Create, update, and close tickets |
-| Role 3 | `reassign` | Create, update, close, and reassign tickets |
-| Role 4 | `admin` | Full ticket administration |
+| `/ticket` | Tier 2+ | Open a support ticket from configured categories |
+| `/ticket-search` | Tier 1+ | Search tickets by number or owner email |
+| `/ticket-stats` | Tier 1+ | Show ticket counts by category and status |
 
-## Discord Commands
+All ticket search and stats responses are **ephemeral**; only the command user can see them.
 
-| Command | Type | Access | Notes |
-|---|---|---|---|
-| `/ticket` | Slash | Tier 2+ | Opens a ticket creation modal with category selection |
-| `/ticket-search` | Slash | Tier 1+ | Search by ticket number or owner email |
-| `/ticket-stats` | Slash | Tier 1+ | Shows open/closed counts |
+## Role Tiers
 
-All search and stats responses are **ephemeral**; only the command user can see results.
+Tier permissions for ticket access:
 
-### /ticket
+- `search`
+- `create`
+- `reassign`
+- `admin`
 
-Requires ticket categories to be defined. The command posts a category selector, then a question modal. On submit, the bot creates a private text channel under the `Tickets` category and posts the initial ticket embed.
+Higher tiers inherit lower-tier capabilities. Ticket features are disabled until at least one tier has at least one role assigned.
 
-### /ticket-search
+## Web GUI
 
-Accepts a ticket number or owner email. Numeric-only input searches by ticket number; otherwise it searches by owner email. If multiple matches exist, the first match is returned.
+- `/admin/ticket-settings` manages role tiers and effective role IDs.
+- Saved role maps are persisted in `guild_settings.ticket_role_map_json`.
+- Ticket settings are scoped to the selected guild.
 
-### /ticket-stats
+## Buttons
 
-Shows open/closed counts by category.
+Each ticket message supports interactive actions:
 
-## Ticket Buttons
+- `Claim`
+- `Close`
+- `Reassign`
+- `Reopen`
 
-Each ticket channel message can include:
+Tier checks are enforced server-side before role changes are applied.
 
-- Claim
-- Close
-- Reassign
-- Reopen
+## Workflow Notes
 
-Reassign is restricted to tier 3+.
+- Ticket creation uses per-guild categories configured in `app.tickets`.
+- The bot creates a dedicated `Tickets` category when possible.
+- Ticket state is stored in SQLite, with schema created automatically on first ticket use.
+- Off-guild or missing-member cases are handled with explicit error messaging.
+- Legacy web callback hooks remain disabled by default; ticket management is currently slash/button-driven.
 
-## Web Admin: `/admin/ticket-settings`
+## Related Pages
 
-Path: `/admin/ticket-settings`
-
-This page provides:
-
-- Tier label table
-- Discord role multi-selects per tier
-- Effective role IDs display
-- Save action that persists `ticket_role_map_json` to `guild_settings`
-
-Safety check:
-
-- If no roles are assigned, ticket command handlers return a closed failure message instead of creating or modifying tickets.
-
-## Database
-
-Tickets persist in SQLite under the primary bot database.
-
-- Ticket store schema is initialized at bot startup by the existing SQLite migrator.
-- Role map is stored in `guild_settings.ticket_role_map_json` as JSON.
-
-## Deployment Notes
-
-- The `ticket-bot` branch publishes a ticket-specific Docker image to GitHub Packages on push to `ticket-bot`.
-- Image naming pattern: `ghcr.io/<owner>/<repo>-ticket-beta:YYYYMMDD-HHMMSS`
-- Floating tag: `latest-ticket-beta`
-
-## Related
-
-- Command Reference: `wiki/Command-Reference.md`
-- Web Admin Interface: `wiki/Web-Admin-Interface.md`
-- Docker and Portainer Deploy: `wiki/Docker-and-Portainer-Deploy.md`
+- [Command Reference](Command-Reference.md)
+- [Web Admin Interface](Web-Admin-Interface.md)
+- [Environment Variables](Environment-Variables.md)

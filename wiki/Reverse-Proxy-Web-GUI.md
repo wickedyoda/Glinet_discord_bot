@@ -251,7 +251,7 @@ If browser console warns that `Cross-Origin-Opener-Policy` was ignored on login:
 - Login works through proxy.
 - POST actions (save settings, create users, update profile) succeed.
 - No origin-policy errors in logs.
-- Cookies show `HttpOnly`, `Secure`, and `SameSite=Strict`.
+- Cookies show `HttpOnly`, `Secure`, and configurable `SameSite` (`Lax` by default).
 - Direct container port is not publicly reachable.
 
 ## Related Pages
