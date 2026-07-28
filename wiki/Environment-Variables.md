@@ -1,225 +1,164 @@
 # Environment Variables
 
-This page lists all supported environment variables, defaults, and accepted options.
+This page reflects the current environment behavior in bot.py and .env.example.
 
-## Value Conventions
+## Conventions
 
-- Boolean flags: use `true`/`false` (also accepted in web settings: `1/0`, `yes/no`, `on/off`)
-- Channel field `firmware_notification_channel`: numeric channel ID or `<#channel_id>`
-- Cron field `firmware_check_schedule`: valid 5-field cron in UTC
-- URL fields: include scheme (`http://` or `https://`) where noted
+- Boolean values: `true` / `false`
+- Cron values: 5-field UTC cron
+- Channel IDs: integer or `<#channel_id>` text form where noted
+- Path values: container path unless otherwise stated
 
 ## Required
 
-| Variable | Default | Allowed / Options | Notes |
-|---|---|---|---|
-| `DISCORD_TOKEN` | none | Discord bot token string | Required to start bot |
-| `GUILD_ID` | none | Integer guild ID | Required primary/default guild ID used for legacy migration and fallback behavior |
-| `MANAGED_GUILD_IDS` | empty | Comma/space-separated positive guild IDs | Optional allowlist. When set, the bot syncs commands and processes guild events only for listed guilds. |
+| Variable | Default | Notes |
+|---|---|---|
+| `DISCORD_TOKEN` | none | Discord bot token |
+| `GUILD_ID` | none | Primary/default guild ID |
+| `MANAGED_GUILD_IDS` | empty | Optional allowlist of guild IDs |
 
 ## Core
 
-| Variable | Default | Allowed / Options | Notes |
-|---|---|---|---|
-| `BOT_LOG_CHANNEL_ID` | `0` | Integer, `>= 0` | Global default bot log/activity channel ID. Guild settings can override it per server. |
-| `DATA_DIR` | `data` | Path string | Persistent runtime data directory |
-| `LOG_DIR` | `/logs` | Path string | Directory for `bot.log`, `bot_log.log`, `container_errors.log`, and `web_gui_audit.log` |
-| `LOG_HARDEN_FILE_PERMISSIONS` | `true` | Boolean | Best-effort log storage hardening (`LOG_DIR` -> `0700`, log files -> `0600`) |
-| `LOG_RETENTION_DAYS` | `90` | Integer, `>= 1` | Retention window for rotated logs |
-| `LOG_ROTATION_INTERVAL_DAYS` | `1` | Integer, `>= 1` | Rotation interval for runtime logs |
-| `LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Runtime bot/web verbosity |
-| `CONTAINER_LOG_LEVEL` | `ERROR` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Threshold for `${LOG_DIR}/container_errors.log` |
-| `DISCORD_LOG_LEVEL` | `INFO` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | Discord/werkzeug logger verbosity (keep `INFO` or higher to avoid verbose payload logs) |
-
-## Search and Docs
-
-| Variable | Default | Allowed / Options | Notes |
-|---|---|---|---|
-| `FORUM_BASE_URL` | `https://forum.gl-inet.com` | URL | Forum search base URL |
-| `FORUM_MAX_RESULTS` | `5` | Integer, `>= 1` | Max forum links returned |
-| `FORUM_REQUEST_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for GL.iNet Discourse search/topic/category requests |
-| `FORUM_API_KEY` | empty | Discourse API key | Optional authenticated GL.iNet forum access for richer structured results and future posting workflows |
-| `FORUM_API_USERNAME` | empty | Discourse username | Username paired with `FORUM_API_KEY` |
-| `OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for OpenWrt Discourse requests |
-| `OPENWRT_FORUM_API_KEY` | empty | Discourse API key | Optional authenticated OpenWrt forum access |
-| `OPENWRT_FORUM_API_USERNAME` | empty | Discourse username | Username paired with `OPENWRT_FORUM_API_KEY` |
-| `REDDIT_SUBREDDIT` | `GlInet` | Subreddit name, URL, or `r/<name>` format | Subreddit used by `/search_reddit` and `!searchreddit` |
-| `REDDIT_FEED_CHECK_SCHEDULE` | `*/30 * * * *` | Valid 5-field cron (UTC) | Poll interval for web-managed Reddit feed subscriptions |
-| `DOCS_MAX_RESULTS_PER_SITE` | `2` | Integer, `>= 1` | Max docs results per docs source |
-| `DOCS_INDEX_TTL_SECONDS` | `3600` | Integer, `>= 60` | Docs index cache TTL |
-| `SEARCH_RESPONSE_MAX_CHARS` | `1900` | Integer, `>= 200` | Max chars in search response |
-| `BOT_HELP_WIKI_URL` | `https://github.com/wickedyoda/Glinet_discord_bot/wiki/Home` | URL with `http://` or `https://` | Link target shown in `/help` for advanced docs |
-
-## Utility Integrations
-
-Global monitor toggles in this section act as defaults. Selected servers can override them in `/admin/guild-settings`.
-
-| Variable | Default | Allowed / Options | Notes |
-|---|---|---|---|
-| `COMMAND_RESPONSES_EPHEMERAL` | `false` | Boolean | When true, utility slash-command replies default to ephemeral where supported |
-| `ENABLE_MEMBERS_INTENT` | `true` | Boolean | Enables Discord members intent for richer moderation/member flows |
-| `MEMBER_ACTIVITY_BACKFILL_ENABLED` | `false` | Boolean | Run a one-time startup backfill for member activity history |
-| `MEMBER_ACTIVITY_BACKFILL_GUILD_ID` | empty | Integer guild ID | Optional guild to backfill. If blank, falls back to `GUILD_ID` |
-| `MEMBER_ACTIVITY_BACKFILL_SINCE` | empty | `YYYY-MM-DD` or ISO timestamp | Inclusive UTC lower bound for the member activity backfill run |
-| `MEMBER_ACTIVITY_ENCRYPTION_KEY` | empty | Passphrase or Fernet key | Encrypts member-activity identity fields at rest. If blank, the bot creates `${DATA_DIR}/member_activity.key` automatically |
-| `PUPPY_IMAGE_API_URL` | `https://random.dog/woof.json` | URL | Source used by `/happy` |
-| `PUPPY_IMAGE_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for `/happy` image fetch |
-| `SHORTENER_ENABLED` | `false` | Boolean | Enables `/shorten` and `/expand` integration |
-| `SHORTENER_BASE_URL` | empty | URL | Base URL of the shortener service |
-| `SHORTENER_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for shortener API requests |
-| `FIRMWARE_MONITOR_ENABLED` | `true` | Boolean | Enables or disables firmware polling/posting without deleting guild channel settings |
-| `REDDIT_FEED_NOTIFY_ENABLED` | `true` | Boolean | Enables or disables Reddit feed polling/posting without deleting saved feed subscriptions |
-| `YOUTUBE_NOTIFY_ENABLED` | `false` | Boolean | Enables the YouTube subscription monitor and web page |
-| `YOUTUBE_POLL_INTERVAL_SECONDS` | `1800` | Integer, `>= 60` | Poll cadence for YouTube subscriptions |
-| `YOUTUBE_REQUEST_TIMEOUT_SECONDS` | `20` | Integer, `>= 1` | Timeout for YouTube feed/channel requests |
-| `LINKEDIN_NOTIFY_ENABLED` | `true` | Boolean | Enables the LinkedIn profile monitor and web page |
-| `LINKEDIN_POLL_INTERVAL_SECONDS` | `900` | Integer, `>= 60` | Poll cadence for LinkedIn profile checks |
-| `LINKEDIN_REQUEST_TIMEOUT_SECONDS` | `15` | Integer, `>= 5` | Timeout for LinkedIn public profile requests |
-| `BETA_PROGRAM_PAGE_URL` | `https://www.gl-inet.com/beta-testing/#register` | URL | GL.iNet beta testing page monitored for program changes |
-| `BETA_PROGRAM_NOTIFY_ENABLED` | `true` | Boolean | Enables or disables the GL.iNet beta program monitor while keeping the web page and saved monitors |
-| `BETA_PROGRAM_POLL_INTERVAL_SECONDS` | `900` | Integer, `>= 60` | Poll cadence for GL.iNet beta program checks |
-| `BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for GL.iNet beta page requests |
-| `SERVICE_MONITOR_ENABLED` | `false` | Boolean | Enables generic website/API outage monitoring |
-| `SERVICE_MONITOR_DEFAULT_CHANNEL_ID` | empty | Integer channel ID or `<#channel_id>` | Default Discord channel for service outage alerts |
-| `SERVICE_MONITOR_CHECK_SCHEDULE` | `*/5 * * * *` | Valid 5-field cron (UTC) | Poll cadence for service checks |
-| `SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS` | `10` | Integer, `>= 3` | Default timeout for service checks |
-| `SERVICE_MONITOR_TARGETS_JSON` | `[]` | JSON array | List of websites/APIs to check for up/down transitions |
-| `UPTIME_STATUS_ENABLED` | `false` | Boolean | Enables `/uptime` command |
-| `UPTIME_STATUS_NOTIFY_ENABLED` | `false` | Boolean | Enables scheduled outage/recovery alerts from the configured Uptime Kuma source |
-| `UPTIME_STATUS_NOTIFY_CHANNEL_ID` | empty | Integer channel ID or `<#channel_id>` | Discord channel used for Uptime Kuma alerts |
-| `UPTIME_STATUS_CHECK_SCHEDULE` | `*/5 * * * *` | Valid 5-field cron (UTC) | Poll cadence for Uptime Kuma alert checks |
-| `UPTIME_STATUS_PAGE_URL` | `https://status.example.invalid/status/everything` | URL | Optional public status page used for uptime summary lookups |
-| `UPTIME_STATUS_INSTANCE_URL` | empty | URL | Optional authenticated Uptime Kuma base URL such as `https://kuma.example.com/` |
-| `UPTIME_STATUS_API_KEY` | empty | Secret string | Optional Uptime Kuma API key used to read the instance metrics endpoint |
-| `UPTIME_STATUS_TIMEOUT_SECONDS` | `10` | Integer, `>= 1` | Timeout for uptime status fetch |
-| `UPTIME_STATUS_VERIFY_TLS` | `true` | Boolean | Whether Kuma requests should verify TLS certificates |
-
-For normal web-GUI operations, use `/admin/service-monitors` instead of hand-editing these values. That page updates the same environment-backed settings for direct service checks and the Uptime Kuma watcher.
-
-Operational notes:
-
-- If `UPTIME_STATUS_ENABLED=false` or unset, startup will log `Uptime status monitor disabled.`
-- If `SERVICE_MONITOR_ENABLED=false` or unset, startup will log `Service monitor disabled via SERVICE_MONITOR_ENABLED.`
-- You do not need to hand-edit `/app/env.env` if you configure these values in `/admin/service-monitors`; the web GUI writes the same settings to the active env file or the writable fallback env file.
-
-### `SERVICE_MONITOR_TARGETS_JSON` format
-
-```json
-[
-  {
-    "name": "Discord Status",
-    "url": "https://discordstatus.com",
-    "expected_status": 200
-  },
-  {
-    "name": "GL.iNet DDNS",
-    "url": "https://glddns.com",
-    "expected_status": 200,
-    "channel_id": 123456789012345678
-  },
-  {
-    "name": "Tailscale Control",
-    "url": "https://login.tailscale.com",
-    "method": "HEAD",
-    "expected_status": 200,
-    "timeout_seconds": 8
-  }
-]
-```
-
-Supported keys per entry:
-- `name`
-- `url`
-- optional `guild_id`: used by the web GUI to scope an entry to a selected server
-- optional `method`: `GET` or `HEAD`
-- optional `expected_status`: defaults to `200`
-- optional `contains_text`: marks the service down if the response body does not contain this string
-- optional `timeout_seconds`
-- optional `channel_id`: overrides `SERVICE_MONITOR_DEFAULT_CHANNEL_ID`
-
-Web GUI shortcuts on `/admin/service-monitors`:
-- `Add GL.iNet Domain Set`: bulk-adds the standard GL.iNet domain list and removes duplicates by URL within the selected guild
-- `Add Tailscale Status`: quick-adds `https://status.tailscale.com/`
-- `Import From Uptime Kuma`: converts public HTTP(S) monitors from a public status page or authenticated instance into direct checks
-
-## Moderation
-
-Global channel IDs in this section act as defaults. Selected servers can override them in `/admin/guild-settings`.
-
-| Variable | Default | Allowed / Options | Notes |
-|---|---|---|---|
-| `MODERATOR_ROLE_ID` | `1294957416294645771` | Integer role ID | Moderator role gate |
-| `ADMIN_ROLE_ID` | `1138302148292116551` | Integer role ID | Additional role gate |
-| `MOD_LOG_CHANNEL_ID` | `1311820410269995009` | Integer channel ID | Global default moderation/server log channel. Guild settings can override it per server. |
-| `KICK_PRUNE_HOURS` | `72` | Integer, `>= 1` | Prune window for kick actions |
-
-## CSV Role Assignment
-
-| Variable | Default | Allowed / Options | Notes |
-|---|---|---|---|
-| `CSV_ROLE_ASSIGN_MAX_NAMES` | `500` | Integer, `>= 1` | Max unique names accepted |
-| `WEB_BULK_ASSIGN_TIMEOUT_SECONDS` | `300` | Integer, `>= 30` | Timeout for web CSV assignment execution |
-| `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES` | `2097152` | Integer, `>= 1024` | Max CSV upload size in bytes |
-| `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT` | `50` | Integer, `>= 1` | Max items shown per result section |
-
-## Firmware Monitor
-
-Global firmware channel and schedule values in this section act as defaults. Selected servers can override the target channel and on/off state in `/admin/guild-settings`.
-
-| Variable | Default | Allowed / Options | Notes |
-|---|---|---|---|
-| `firmware_notification_channel` | none | Channel ID or `<#channel_id>` | Global default firmware notification channel. Guild settings can override it per server. |
-| `FIRMWARE_FEED_URL` | `https://gl-fw.remotetohome.io/` | URL | Firmware source URL |
-| `firmware_check_schedule` | `*/30 * * * *` | Valid 5-field cron (UTC) | Primary scheduler |
-| `FIRMWARE_REQUEST_TIMEOUT_SECONDS` | `30` | Integer, `>= 5` | HTTP timeout for firmware fetch |
-| `FIRMWARE_RELEASE_NOTES_MAX_CHARS` | `900` | Integer, `>= 200` | Legacy compatibility value (compact firmware notifications no longer send long release note excerpts) |
+| Variable | Default | Notes |
+|---|---|---|
+| `BOT_LOG_CHANNEL_ID` | `0` | Global bot log/activity channel |
+| `DATA_DIR` | `data` | Runtime data directory |
+| `LOG_DIR` | `/logs` | Log file directory |
+| `LOG_HARDEN_FILE_PERMISSIONS` | `true` | Restrictive file permissions for logs |
+| `LOG_RETENTION_DAYS` | `90` | Rotated log retention |
+| `LOG_ROTATION_INTERVAL_DAYS` | `1` | Log rotation interval |
+| `LOG_LEVEL` | `INFO` | Bot/web verbosity |
+| `CONTAINER_LOG_LEVEL` | `ERROR` | `container_errors.log` threshold |
+| `DISCORD_LOG_LEVEL` | `INFO` | Discord/werkzeug verbosity |
 
 ## Web Admin
 
-| Variable | Default | Allowed / Options | Notes |
-|---|---|---|---|
-| `WEB_ENABLED` | `true` | Boolean | Enable/disable web admin interface |
-| `WEB_BIND_HOST` | `127.0.0.1` | Host/IP string | Use `0.0.0.0` in container deployments |
-| `WEB_PORT` | `8080` | Integer port | Internal web service port |
-| `WEB_HTTP_PUBLISH` | `8080` | `HOST_PORT` or `HOST_IP:HOST_PORT` | Optional Docker Compose HTTP publish override. Leave unset to disable explicit host/IP pinning and publish `8080` on all host interfaces. |
-| `WEB_HTTPS_ENABLED` | `true` | Boolean | Enable built-in HTTPS listener |
-| `WEB_HTTPS_PORT` | `8081` | Integer port | Internal HTTPS web service port |
-| `WEB_HTTPS_PUBLISH` | `8081` | `HOST_PORT` or `HOST_IP:HOST_PORT` | Optional Docker Compose HTTPS publish override. Leave unset to disable explicit host/IP pinning and publish `8081` on all host interfaces. |
-| `WEB_SESSION_TIMEOUT_MINUTES` | `60` | `5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, `120` | Inactivity timeout for all users (including remember-login sessions) |
-| `WEB_PUBLIC_BASE_URL` | empty | URL with `http://` or `https://` | External URL used for origin checks behind proxy |
-| `WEB_SSL_DIR` | `${DATA_DIR}/ssl` | Path string | Directory used for HTTPS certificate and key files |
-| `WEB_SSL_CERT_FILE` | `tls.crt` | Filename or absolute path | Certificate file used by built-in HTTPS |
-| `WEB_SSL_KEY_FILE` | `tls.key` | Filename or absolute path | Private key file used by built-in HTTPS |
-| `WEB_SSL_COMMON_NAME` | `localhost` | Hostname string | Subject/Common Name used when generating a self-signed fallback certificate |
-| `WEB_ENV_FILE` | `${DATA_DIR}/web-settings.env` | Path string | Writable env file path used by the web settings editor and loaded again on startup |
-| `WEB_RESTART_ENABLED` | `true` | Boolean | Enables admin restart button |
-| `WEB_GITHUB_WIKI_URL` | `https://github.com/wickedyoda/Glinet_discord_bot/wiki` | URL with `http://` or `https://` | Header docs link |
-| `WEB_ADMIN_DEFAULT_USERNAME` | `admin@example.com` | Valid email | First-boot admin email |
-| `WEB_ADMIN_DEFAULT_PASSWORD` | empty | Must satisfy password policy | Required on first boot when no web users exist |
-| `WEB_ADMIN_SESSION_SECRET` | generated at runtime if unset | Secret string | Session signing secret |
-| `WEB_SESSION_COOKIE_SECURE` | `true` | Boolean | Secure cookie flag (HTTPS recommended) |
-| `WEB_SESSION_COOKIE_SAMESITE` | `Lax` | `Lax`, `Strict`, `None` | Session cookie SameSite policy (`None` requires secure HTTPS) |
-| `WEB_TRUST_PROXY_HEADERS` | `true` | Boolean | Trust forwarded host/proto/IP headers |
-| `WEB_ENFORCE_CSRF` | `true` | Boolean | CSRF checks on state-changing requests |
-| `WEB_ENFORCE_SAME_ORIGIN_POSTS` | `true` | Boolean | Same-origin checks for state-changing requests |
-| `WEB_HARDEN_FILE_PERMISSIONS` | `true` | Boolean | Best-effort file permission hardening |
-| `WEB_DISCORD_CATALOG_TTL_SECONDS` | `120` | Integer, `>= 15` | Cache TTL for Discord channels/roles catalog |
-| `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for Discord catalog fetch |
-| `WEB_BOT_PROFILE_TIMEOUT_SECONDS` | `20` | Integer, `>= 5` | Timeout for bot profile web actions |
-| `WEB_AVATAR_MAX_UPLOAD_BYTES` | `2097152` | Integer, `>= 1024` | Max upload size for bot-profile avatars and guild welcome images |
-
-## Compatibility Aliases
-
-| Variable | Used As | Notes |
+| Variable | Default | Notes |
 |---|---|---|
-| `FIRMWARE_NOTIFICATION_CHANNEL` | Fallback for `firmware_notification_channel` | Uppercase alias for Portainer/stack compatibility |
-| `FIRMWARE_CHECK_SCHEDULE` | Fallback for `firmware_check_schedule` | Uppercase alias for Portainer/stack compatibility |
-| `FIRMWARE_NOTIFY_CHANNEL_ID` | Fallback for `firmware_notification_channel` | Legacy alias |
-| `FIRMWARE_CHECK_INTERVAL_SECONDS` | Legacy fallback scheduler | Used only when `firmware_check_schedule` is empty |
-| `WEB_ADMIN_DEFAULT_EMAIL` | Preferred over `WEB_ADMIN_DEFAULT_USERNAME` when set | Legacy/admin alias |
-| `GENERAL_CHANNEL_ID` | Fallback for `BOT_LOG_CHANNEL_ID` | Legacy alias |
+| `WEB_ENABLED` | `true` | Enable web admin |
+| `WEB_BIND_HOST` | `0.0.0.0` | Web bind host |
+| `WEB_PORT` | `8080` | HTTP port |
+| `WEB_HTTP_PUBLISH` | unset | Optional host:port publish override |
+| `WEB_HTTPS_ENABLED` | `true` | Built-in HTTPS listener |
+| `WEB_HTTPS_PORT` | `8081` | HTTPS port |
+| `WEB_HTTPS_PUBLISH` | unset | Optional HTTPS publish override |
+| `WEB_SESSION_TIMEOUT_MINUTES` | `60` | Allowed values: 5, 10, 15, 20, 30, 45, 60, 90, 120 |
+| `WEB_PUBLIC_BASE_URL` | empty | External URL behind proxy |
+| `WEB_SSL_DIR` | `${DATA_DIR}/ssl` | TLS directory |
+| `WEB_SSL_CERT_FILE` | `tls.crt` | Certificate filename or path |
+| `WEB_SSL_KEY_FILE` | `tls.key` | Key filename or path |
+| `WEB_SSL_COMMON_NAME` | `localhost` | Fallback cert common name |
+| `WEB_ENV_FILE` | `${DATA_DIR}/web-settings.env` | Writable web settings env file |
+| `WEB_RESTART_ENABLED` | `true` | Admin restart button |
+| `WEB_GITHUB_WIKI_URL` | wiki URL | Docs link shown in web GUI |
+| `WEB_ADMIN_DEFAULT_USERNAME` | `admin@example.com` | First-boot admin email |
+| `WEB_ADMIN_DEFAULT_EMAIL` | empty | Alias used before `WEB_ADMIN_DEFAULT_USERNAME` when set |
+| `WEB_ADMIN_DEFAULT_PASSWORD` | empty | Required on first boot until a web user exists |
+| `WEB_SESSION_SECRET` | generated at runtime | Session signing secret |
+| `WEB_SESSION_COOKIE_SECURE` | `true` | Secure cookie flag |
+| `WEB_SESSION_COOKIE_SAMESITE` | `Lax` | SameSite policy; `None` requires HTTPS |
+| `WEB_TRUST_PROXY_HEADERS` | `true` | Trust forwarded host/proto/IP headers |
+| `WEB_ENFORCE_CSRF` | `true` | CSRF enforcement |
+| `WEB_ENFORCE_SAME_ORIGIN_POSTS` | `true` | Same-origin POST checks |
+| `WEB_HARDEN_FILE_PERMISSIONS` | `true` | Best-effort file permission hardening |
+| `WEB_DISCORD_CATALOG_TTL_SECONDS` | `120` | Discord catalog cache TTL |
+| `WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS` | `20` | Discord catalog fetch timeout |
+| `WEB_BULK_ASSIGN_TIMEOUT_SECONDS` | `300` | Bulk CSV assignment timeout |
+| `WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES` | `2097152` | Max CSV upload size |
+| `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT` | `50` | Max report items |
+| `WEB_BOT_PROFILE_TIMEOUT_SECONDS` | `20` | Bot profile action timeout |
+| `WEB_AVATAR_MAX_UPLOAD_BYTES` | `2097152` | Avatar and welcome image upload cap |
 
-## Password Policy (Web Users)
+## Access, Moderation, and CSV
+
+| Variable | Default | Notes |
+|---|---|---|
+| `ENABLE_MEMBERS_INTENT` | `true` | Members intent |
+| `MODERATOR_ROLE_ID` | example ID | Moderator role gate |
+| `ADMIN_ROLE_ID` | example ID | Admin role gate |
+| `MOD_LOG_CHANNEL_ID` | example ID | Default moderation log channel |
+| `KICK_PRUNE_HOURS` | `72` | Kick prune window |
+| `CSV_ROLE_ASSIGN_MAX_NAMES` | `500` | Max unique names in bulk role CSV |
+
+## Member Activity
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MEMBER_ACTIVITY_BACKFILL_ENABLED` | `false` | Startup backfill |
+| `MEMBER_ACTIVITY_BACKFILL_GUILD_ID` | empty | Backfill target guild; defaults to `GUILD_ID` |
+| `MEMBER_ACTIVITY_BACKFILL_SINCE` | empty | UTC lower bound for backfill |
+| `MEMBER_ACTIVITY_ENCRYPTION_KEY` | empty | Enables external key management |
+| `MEMBER_ACTIVITY_RECENT_RETENTION_DAYS` | `200` | Recent activity retention |
+
+## Monitoring and Feeds
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FIRMWARE_MONITOR_ENABLED` | `true` | Firmware monitor toggle |
+| `firmware_notification_channel` | empty | Default firmware notification channel |
+| `FIRMWARE_NOTIFICATION_CHANNEL` | empty | Uppercase alias |
+| `FIRMWARE_NOTIFY_CHANNEL_ID` | empty | Legacy alias |
+| `FIRMWARE_FEED_URL` | `https://gl-fw.remotetohome.io/` | Firmware source |
+| `firmware_check_schedule` | `*/30 * * * *` | Firmware poll cron |
+| `FIRMWARE_CHECK_SCHEDULE` | empty | Uppercase alias |
+| `FIRMWARE_REQUEST_TIMEOUT_SECONDS` | `30` | Firmware fetch timeout |
+| `FIRMWARE_RELEASE_NOTES_MAX_CHARS` | `900` | Release note excerpt cap |
+| `REDDIT_FEED_CHECK_SCHEDULE` | `*/30 * * * *` | Reddit feed poll cron |
+| `REDDIT_FEED_NOTIFY_ENABLED` | `true` | Reddit feed toggle |
+| `REDDIT_SUBREDDIT` | `GlInet` | Subreddit name, URL, or `r/<name>` |
+| `YOUTUBE_NOTIFY_ENABLED` | `false` | YouTube monitor toggle |
+| `YOUTUBE_POLL_INTERVAL_SECONDS` | `300` | YouTube poll cadence |
+| `YOUTUBE_REQUEST_TIMEOUT_SECONDS` | `12` | YouTube fetch timeout |
+| `LINKEDIN_NOTIFY_ENABLED` | `true` | LinkedIn monitor toggle |
+| `LINKEDIN_POLL_INTERVAL_SECONDS` | `900` | LinkedIn poll cadence |
+| `LINKEDIN_REQUEST_TIMEOUT_SECONDS` | `15` | LinkedIn fetch timeout |
+| `BETA_PROGRAM_PAGE_URL` | GL.iNet beta page | Beta program monitor URL |
+| `BETA_PROGRAM_NOTIFY_ENABLED` | `true` | Beta program monitor toggle |
+| `BETA_PROGRAM_POLL_INTERVAL_SECONDS` | `900` | Beta program poll cadence |
+| `BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS` | `20` | Beta program fetch timeout |
+| `SERVICE_MONITOR_ENABLED` | `false` | Direct service checks toggle |
+| `SERVICE_MONITOR_DEFAULT_CHANNEL_ID` | empty | Default service alert channel |
+| `SERVICE_MONITOR_CHECK_SCHEDULE` | `*/5 * * * *` | Service check cron |
+| `SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS` | `10` | Service check timeout |
+| `SERVICE_MONITOR_TARGETS_JSON` | `[]` | Service targets JSON |
+| `UPTIME_STATUS_ENABLED` | `false` | Uptime status toggle |
+| `UPTIME_STATUS_NOTIFY_ENABLED` | `false` | Uptime alert toggle |
+| `UPTIME_STATUS_NOTIFY_CHANNEL_ID` | empty | Uptime alert channel |
+| `UPTIME_STATUS_CHECK_SCHEDULE` | `*/5 * * * *` | Uptime check cron |
+| `UPTIME_STATUS_PAGE_URL` | example status page | Public status page |
+| `UPTIME_STATUS_INSTANCE_URL` | empty | Authenticated Uptime Kuma URL |
+| `UPTIME_STATUS_API_KEY` | empty | Uptime Kuma API key |
+| `UPTIME_STATUS_TIMEOUT_SECONDS` | `10` | Uptime fetch timeout |
+| `UPTIME_STATUS_VERIFY_TLS` | `true` | Uptime TLS verification |
+
+## Search and Docs
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FORUM_BASE_URL` | `https://forum.gl-inet.com` | Forum search base URL |
+| `FORUM_MAX_RESULTS` | `5` | Max forum results |
+| `FORUM_REQUEST_TIMEOUT_SECONDS` | `10` | Forum request timeout |
+| `FORUM_API_KEY` | empty | Optional Discourse API key |
+| `FORUM_API_USERNAME` | empty | Optional Discourse username |
+| `OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS` | `10` | OpenWrt request timeout |
+| `OPENWRT_FORUM_API_KEY` | empty | Optional OpenWrt API key |
+| `OPENWRT_FORUM_API_USERNAME` | empty | Optional OpenWrt username |
+| `DOCS_MAX_RESULTS_PER_SITE` | `2` | Max docs results per site |
+| `DOCS_INDEX_TTL_SECONDS` | `3600` | Docs index cache TTL |
+| `SEARCH_RESPONSE_MAX_CHARS` | `1900` | Search response cap |
+
+## Utilities
+
+| Variable | Default | Notes |
+|---|---|---|
+| `COMMAND_RESPONSES_EPHEMERAL` | `false` | Default ephemeral replies |
+| `PUPPY_IMAGE_API_URL` | `https://dog.ceo/api/breeds/image/random` | `/happy` source |
+| `PUPPY_IMAGE_TIMEOUT_SECONDS` | `8` | `/happy` timeout |
+| `SHORTENER_ENABLED` | `false` | Shortener toggle |
+| `SHORTENER_BASE_URL` | empty | Shortener base URL |
+| `SHORTENER_TIMEOUT_SECONDS` | `10` | Shortener timeout |
+
+## Web Password Policy
 
 - Minimum 6 characters
 - Maximum 16 characters
@@ -227,54 +166,18 @@ Global firmware channel and schedule values in this section act as defaults. Sel
 - At least 1 uppercase letter
 - At least 1 symbol
 
-## Configuration Profiles
+## Compatibility Aliases
 
-### Local Development (No External Proxy)
-
-```env
-WEB_BIND_HOST=0.0.0.0
-WEB_PORT=8080
-WEB_HTTP_PUBLISH=8080
-WEB_HTTPS_ENABLED=true
-WEB_HTTPS_PORT=8081
-WEB_HTTPS_PUBLISH=8081
-WEB_PUBLIC_BASE_URL=http://localhost:8080/
-WEB_SESSION_COOKIE_SECURE=false
-WEB_TRUST_PROXY_HEADERS=false
-WEB_ENFORCE_CSRF=true
-WEB_ENFORCE_SAME_ORIGIN_POSTS=true
-```
-
-### Reverse Proxy Production (Recommended)
-
-```env
-WEB_BIND_HOST=0.0.0.0
-WEB_PORT=8080
-WEB_HTTP_PUBLISH=127.0.0.1:8080
-WEB_HTTPS_ENABLED=true
-WEB_HTTPS_PORT=8081
-WEB_HTTPS_PUBLISH=127.0.0.1:8081
-WEB_PUBLIC_BASE_URL=https://discord-admin.example.com/
-WEB_SESSION_COOKIE_SECURE=true
-WEB_TRUST_PROXY_HEADERS=true
-WEB_ENFORCE_CSRF=true
-WEB_ENFORCE_SAME_ORIGIN_POSTS=true
-```
-
-### Hardened Logging Profile
-
-```env
-LOG_DIR=/logs
-LOG_HARDEN_FILE_PERMISSIONS=true
-LOG_LEVEL=INFO
-CONTAINER_LOG_LEVEL=ERROR
-WEB_HARDEN_FILE_PERMISSIONS=true
-```
+| Variable | Resolved As | Notes |
+|---|---|---|
+| `FIRMWARE_NOTIFICATION_CHANNEL` | fallback for `firmware_notification_channel` | Uppercase alias |
+| `FIRMWARE_CHECK_SCHEDULE` | fallback for `firmware_check_schedule` | Uppercase alias |
+| `FIRMWARE_NOTIFY_CHANNEL_ID` | fallback for `firmware_notification_channel` | Legacy alias |
+| `FIRMWARE_CHECK_INTERVAL_SECONDS` | legacy scheduler | Used when `firmware_check_schedule` is empty |
+| `WEB_ADMIN_DEFAULT_EMAIL` | preferred over `WEB_ADMIN_DEFAULT_USERNAME` when set | Legacy admin alias |
+| `GENERAL_CHANNEL_ID` | fallback for `BOT_LOG_CHANNEL_ID` | Legacy alias |
 
 ## Reference
 
-- Built-in HTTPS creates a self-signed certificate in `${DATA_DIR}/ssl/` when no cert/key files are present.
-- Replace `${DATA_DIR}/ssl/tls.crt` and `${DATA_DIR}/ssl/tls.key` with your own certificate files if you want browsers to trust the HTTPS listener.
-
-- Complete `.env` template: [`.env.example`](../.env.example)
-- Deployment defaults/examples: [`README.md`](../README.md)
+- Complete template: [`.env.example`](../.env.example)
+- Deployment defaults: [`README.md`](../README.md)
