@@ -9,6 +9,7 @@ def build_manager(**overrides):
     state = {
         "invite_roles_by_guild": {},
         "invite_uses_by_guild": {},
+        "reaction_roles_by_guild": {},
         "tag_response_cache": {},
         "tag_command_names_by_guild": {},
         "guild_settings_cache": {},
