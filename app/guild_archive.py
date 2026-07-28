@@ -11,6 +11,7 @@ GUILD_ARCHIVE_KV_PREFIXES = (
 GUILD_ARCHIVE_GUILD_ID_TABLES = {
     "role_codes",
     "invite_roles",
+    "reaction_roles",
     "tag_responses",
     "guild_settings",
     "actions",
@@ -30,6 +31,7 @@ GUILD_ARCHIVE_SELECT_QUERIES = {
     "command_permissions": "SELECT * FROM command_permissions WHERE guild_id = ?",
     "guild_settings": "SELECT * FROM guild_settings WHERE guild_id = ?",
     "invite_roles": "SELECT * FROM invite_roles WHERE guild_id = ?",
+    "reaction_roles": "SELECT * FROM reaction_roles WHERE guild_id = ?",
     "linkedin_subscriptions": "SELECT * FROM linkedin_subscriptions WHERE guild_id = ?",
     "member_activity_recent_hourly": "SELECT * FROM member_activity_recent_hourly WHERE guild_id = ?",
     "member_activity_seen_messages": "SELECT * FROM member_activity_seen_messages WHERE guild_id = ?",
@@ -46,6 +48,7 @@ GUILD_ARCHIVE_DELETE_QUERIES = {
     "command_permissions": "DELETE FROM command_permissions WHERE guild_id = ?",
     "guild_settings": "DELETE FROM guild_settings WHERE guild_id = ?",
     "invite_roles": "DELETE FROM invite_roles WHERE guild_id = ?",
+    "reaction_roles": "DELETE FROM reaction_roles WHERE guild_id = ?",
     "linkedin_subscriptions": "DELETE FROM linkedin_subscriptions WHERE guild_id = ?",
     "member_activity_recent_hourly": "DELETE FROM member_activity_recent_hourly WHERE guild_id = ?",
     "member_activity_seen_messages": "DELETE FROM member_activity_seen_messages WHERE guild_id = ?",
@@ -166,6 +169,7 @@ class GuildArchiveManager:
                 "tables": {
                     "role_codes": self._select_table_rows_locked(conn, "role_codes", safe_guild_id),
                     "invite_roles": self._select_table_rows_locked(conn, "invite_roles", safe_guild_id),
+                    "reaction_roles": self._select_table_rows_locked(conn, "reaction_roles", safe_guild_id),
                     "tag_responses": self._select_table_rows_locked(conn, "tag_responses", safe_guild_id),
                     "guild_settings": self._select_table_rows_locked(conn, "guild_settings", safe_guild_id),
                     "actions": self._select_table_rows_locked(conn, "actions", safe_guild_id),
@@ -240,6 +244,7 @@ class GuildArchiveManager:
             restore_order = (
                 "role_codes",
                 "invite_roles",
+                "reaction_roles",
                 "tag_responses",
                 "guild_settings",
                 "actions",

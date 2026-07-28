@@ -39,6 +39,7 @@ class GuildStateManager:
         audit_hash_secret: str,
         invite_roles_by_guild,
         invite_uses_by_guild,
+        reaction_roles_by_guild,
         tag_response_cache,
         tag_command_names_by_guild,
         guild_settings_cache,
@@ -65,6 +66,7 @@ class GuildStateManager:
         self.audit_hash_secret = str(audit_hash_secret or "").strip()
         self.invite_roles_by_guild = invite_roles_by_guild
         self.invite_uses_by_guild = invite_uses_by_guild
+        self.reaction_roles_by_guild = reaction_roles_by_guild
         self.tag_response_cache = tag_response_cache
         self.tag_command_names_by_guild = tag_command_names_by_guild
         self.guild_settings_cache = guild_settings_cache
@@ -706,6 +708,7 @@ class GuildStateManager:
         safe_guild_id = int(guild_id)
         self.invite_roles_by_guild.pop(safe_guild_id, None)
         self.invite_uses_by_guild.pop(safe_guild_id, None)
+        self.reaction_roles_by_guild.pop(safe_guild_id, None)
         self.tag_response_cache.pop(safe_guild_id, None)
         self.tag_command_names_by_guild.pop(safe_guild_id, None)
         self.guild_settings_cache.pop(safe_guild_id, None)
