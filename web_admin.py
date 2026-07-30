@@ -59,6 +59,14 @@ from app.uptime_status import (
     fetch_uptime_metrics_text,
     fetch_uptime_public_config,
 )
+from app.uptime_kuma_admin import (
+    UptimeKumaAdminError,
+    add_monitor,
+    is_uptime_kuma_admin_gui_enabled,
+    list_monitors,
+    remove_monitor,
+    update_monitor,
+)
 from app.web_audit import should_log_web_audit_event
 from app.web_discourse import process_discourse_submission, render_discourse_body
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
@@ -7203,6 +7211,8 @@ def create_web_app(
                 "uptime_verify_tls": str(_read_env_value(file_values, "UPTIME_STATUS_VERIFY_TLS") or "true").strip().lower()
                 in {"1", "true", "yes", "on"},
                 "imported_sources": summarize_uptime_import_sources(all_targets, guild_id=selected_guild_id_int),
+                "kuma_admin_gui_enabled": is_uptime_kuma_admin_gui_enabled(),
+                "kuma_monitors": [],
             }
 
         def _persist_monitor_updates(applied_updates: dict):
@@ -7404,6 +7414,106 @@ def create_web_app(
                                 flash(error_text, "error")
                         except (requests.RequestException, ValueError) as exc:
                             flash(str(exc), "error")
+            elif is_uptime_kuma_admin_gui_enabled() and action in {
+                "list_kuma_monitors",
+                "add_kuma_monitor",
+                "update_kuma_monitor",
+                "remove_kuma_monitor",
+            }:
+                instance_url = str(page_state["uptime_instance_url"] or "").strip()
+                api_key = str(_read_env_value(page_state["file_values"], "UPTIME_STATUS_API_KEY") or "").strip()
+                if not instance_url or not api_key:
+                    flash("Configure an authenticated Uptime Kuma instance URL and API key to manage monitors.", "error")
+                else:
+                    try:
+                        from app.uptime_kuma_admin import (
+                            UptimeKumaAdminError,
+                            add_monitor,
+                            list_monitors,
+                            remove_monitor,
+                            update_monitor,
+                        )
+                        admin_timeout = int(page_state.get("uptime_timeout") or 15)
+                        admin_verify_tls = bool(page_state.get("uptime_verify_tls"))
+                        if action == "list_kuma_monitors":
+                            page_state["kuma_monitors"] = list_monitors(
+                                instance_url=instance_url,
+                                api_key=api_key,
+                                timeout=admin_timeout,
+                                verify_tls=admin_verify_tls,
+                            )
+                            flash("Refreshed Uptime Kuma monitor list.", "success")
+                        elif action == "add_kuma_monitor":
+                            monitor_payload = {
+                                "name": str(request.form.get("kuma_monitor_name") or "").strip(),
+                                "url": str(request.form.get("kuma_monitor_url") or "").strip(),
+                                "method": str(request.form.get("kuma_monitor_method") or "GET").strip().upper() or "GET",
+                                "expectedStatusCodes": [int(request.form.get("kuma_monitor_expected_status") or 200)],
+                                "interval": int(request.form.get("kuma_monitor_interval") or 60),
+                                "timeout": int(request.form.get("kuma_monitor_timeout") or admin_timeout),
+                                "retry": int(request.form.get("kuma_monitor_retry") or 0),
+                                "resendInterval": int(request.form.get("kuma_monitor_resend_interval") or 0),
+                                "active": str(request.form.get("kuma_monitor_active") or "true").strip().lower() in {"1", "true", "yes", "on"},
+                                "notify": str(request.form.get("kuma_monitor_notify") or "true").strip().lower() in {"1", "true", "yes", "on"},
+                                "keyword": str(request.form.get("kuma_monitor_keyword") or "").strip(),
+                                "path": str(request.form.get("kuma_monitor_path") or "/").strip() or "/",
+                                "ignoreSsl": str(request.form.get("kuma_monitor_ignore_ssl") or "false").strip().lower() in {"1", "true", "yes", "on"},
+                            }
+                            add_monitor(
+                                instance_url=instance_url,
+                                api_key=api_key,
+                                monitor=monitor_payload,
+                                timeout=admin_timeout,
+                                verify_tls=admin_verify_tls,
+                            )
+                            flash("Added monitor to Uptime Kuma instance.", "success")
+                        elif action == "update_kuma_monitor":
+                            monitor_id = str(request.form.get("kuma_monitor_id") or "").strip()
+                            if not monitor_id:
+                                flash("Missing monitor ID for update.", "error")
+                            else:
+                                monitor_payload = {
+                                    "name": str(request.form.get("kuma_monitor_name") or "").strip(),
+                                    "url": str(request.form.get("kuma_monitor_url") or "").strip(),
+                                    "method": str(request.form.get("kuma_monitor_method") or "GET").strip().upper() or "GET",
+                                    "expectedStatusCodes": [int(request.form.get("kuma_monitor_expected_status") or 200)],
+                                    "interval": int(request.form.get("kuma_monitor_interval") or 60),
+                                    "timeout": int(request.form.get("kuma_monitor_timeout") or admin_timeout),
+                                    "retry": int(request.form.get("kuma_monitor_retry") or 0),
+                                    "resendInterval": int(request.form.get("kuma_monitor_resend_interval") or 0),
+                                    "active": str(request.form.get("kuma_monitor_active") or "true").strip().lower() in {"1", "true", "yes", "on"},
+                                    "notify": str(request.form.get("kuma_monitor_notify") or "true").strip().lower() in {"1", "true", "yes", "on"},
+                                    "keyword": str(request.form.get("kuma_monitor_keyword") or "").strip(),
+                                    "path": str(request.form.get("kuma_monitor_path") or "/").strip() or "/",
+                                    "ignoreSsl": str(request.form.get("kuma_monitor_ignore_ssl") or "false").strip().lower() in {"1", "true", "yes", "on"},
+                                }
+                                update_monitor(
+                                    instance_url=instance_url,
+                                    api_key=api_key,
+                                    monitor_id=monitor_id,
+                                    monitor=monitor_payload,
+                                    timeout=admin_timeout,
+                                    verify_tls=admin_verify_tls,
+                                )
+                                flash("Updated Uptime Kuma monitor.", "success")
+                        elif action == "remove_kuma_monitor":
+                            monitor_id = str(request.form.get("kuma_monitor_id") or "").strip()
+                            if not monitor_id:
+                                flash("Missing monitor ID for removal.", "error")
+                            else:
+                                remove_monitor(
+                                    instance_url=instance_url,
+                                    api_key=api_key,
+                                    monitor_id=monitor_id,
+                                    timeout=admin_timeout,
+                                    verify_tls=admin_verify_tls,
+                                )
+                                flash("Removed Uptime Kuma monitor.", "success")
+                    except (UptimeKumaAdminError, requests.RequestException, ValueError) as exc:
+                        flash(str(exc), "error")
+                    page_state = _load_page_state()
+                    if "kuma_monitors" not in page_state:
+                        page_state["kuma_monitors"] = []
             else:
                 flash("Invalid Uptime Kuma action.", "error")
             page_state = _load_page_state()
