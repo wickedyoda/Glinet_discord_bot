@@ -17,7 +17,7 @@ from app.discourse_api import (
 logger = logging.getLogger(__name__)
 
 DEFAULT_FORUM_ANNOUNCEMENT_BASE_URL = "https://forum.gl-inet.com"
-DEFAULT_FORUM_ANNOUNCEMENT_CATEGORY_PATH = "/c/announcement"
+DEFAULT_FORUM_ANNOUNCEMENT_CATEGORY_PATH = "/c/glrouter/5"
 DEFAULT_FORUM_ANNOUNCEMENT_REQUEST_TIMEOUT = 20
 FORUM_ANNOUNCEMENT_REQUEST_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
