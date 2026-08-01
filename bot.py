@@ -11319,7 +11319,7 @@ def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, 
         normalized_paths = ["/" + str(path or "").lstrip("/")]
     request_headers = {
         "Accept": "application/json,text/plain,*/*",
-        "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Connection": "close",
     }
     last_http_error = None
@@ -11339,36 +11339,15 @@ def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, 
                 status_code = getattr(exc.response, "status_code", None)
                 last_http_error = exc
                 if status_code == 403 and index == 0:
-                    logger.warning(
-                        "Reddit endpoint %s returned HTTP 403 for %s; retrying fallback endpoint.",
-                        base_url,
-                        normalized_path,
-                    )
                     continue
                 if status_code == 403 and normalized_path != normalized_paths[-1]:
-                    logger.warning(
-                        "Reddit path %s returned HTTP 403 on %s; retrying alternate JSON path.",
-                        normalized_path,
-                        base_url,
-                    )
-                    break
+                    continue
                 raise
             except (requests.ConnectionError, requests.Timeout) as exc:
                 last_request_error = exc
-                logger.warning(
-                    "Reddit request failed for %s%s (%s); trying next candidate.",
-                    base_url,
-                    normalized_path,
-                    exc,
-                )
                 continue
             except ValueError as exc:
                 last_request_error = exc
-                logger.warning(
-                    "Reddit returned invalid JSON for %s%s; trying next candidate.",
-                    base_url,
-                    normalized_path,
-                )
                 continue
     if last_http_error is not None:
         raise last_http_error
