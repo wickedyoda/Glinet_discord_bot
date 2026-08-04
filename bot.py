@@ -51,6 +51,7 @@ from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
 from app.discourse_announcements import (
+    DEFAULT_FORUM_ANNOUNCEMENT_CATEGORY_PATH,
     DEFAULT_FORUM_ANNOUNCEMENT_REQUEST_TIMEOUT,
     fetch_announcement_category_html,
     load_announcement_seen_topic_ids,
@@ -1621,7 +1622,9 @@ def ensure_db_schema():
                 linkedin_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 beta_program_notify_enabled INTEGER NOT NULL DEFAULT -1,
                 forum_announcements_enabled INTEGER NOT NULL DEFAULT -1,
+                forum_announcements_category_path TEXT NOT NULL DEFAULT '/c/glrouter/5',
                 forum_announcements_channel_id INTEGER NOT NULL DEFAULT 0,
+                forum_announcements_refresh_minutes INTEGER NOT NULL DEFAULT 60,
                 discourse_enabled INTEGER NOT NULL DEFAULT -1,
                 discourse_base_url TEXT NOT NULL DEFAULT '',
                 discourse_api_key TEXT NOT NULL DEFAULT '',
@@ -1996,6 +1999,14 @@ def ensure_db_schema():
             conn.execute("ALTER TABLE guild_settings ADD COLUMN welcome_image_base64 TEXT NOT NULL DEFAULT ''")
         if "ticket_role_map_json" not in guild_settings_columns:
             conn.execute("ALTER TABLE guild_settings ADD COLUMN ticket_role_map_json TEXT NOT NULL DEFAULT '{}'")
+        if "forum_announcements_category_path" not in guild_settings_columns:
+            conn.execute(
+                "ALTER TABLE guild_settings ADD COLUMN forum_announcements_category_path TEXT NOT NULL DEFAULT '/c/glrouter/5'"
+            )
+        if "forum_announcements_refresh_minutes" not in guild_settings_columns:
+            conn.execute(
+                "ALTER TABLE guild_settings ADD COLUMN forum_announcements_refresh_minutes INTEGER NOT NULL DEFAULT 60"
+            )
 
         action_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(actions)").fetchall()}
         if "guild_id" not in action_columns:
@@ -10310,10 +10321,13 @@ async def check_forum_announcements_once():
             base_url = str(settings.get("discourse_base_url") or FORUM_BASE_URL).strip()
             api_key = str(settings.get("discourse_api_key") or "").strip()
             api_username = str(settings.get("discourse_api_username") or "").strip()
+            category_path = str(settings.get("forum_announcements_category_path") or "").strip() or DEFAULT_FORUM_ANNOUNCEMENT_CATEGORY_PATH
+            refresh_minutes = max(1, int(settings.get("forum_announcements_refresh_minutes") or 60))
             try:
                 html, source_url = await asyncio.to_thread(
                     fetch_announcement_category_html,
                     base_url=base_url,
+                    category_path=category_path,
                     api_key=api_key,
                     api_username=api_username,
                 )
@@ -10376,7 +10390,15 @@ async def check_forum_announcements_once():
 async def forum_announcement_monitor_loop():
     await check_forum_announcements_once()
     while not bot.is_closed():
-        await asyncio.sleep(60 * 60)
+        refresh_minutes = 60
+        try:
+            for guild in bot.guilds:
+                if get_effective_guild_feature_enabled(guild.id, "forum_announcements_enabled", False):
+                    settings = load_guild_settings(guild.id)
+                    refresh_minutes = min(refresh_minutes, max(1, int(settings.get("forum_announcements_refresh_minutes") or 60)))
+        except Exception:
+            logger.exception("Failed resolving forum announcement refresh interval")
+        await asyncio.sleep(refresh_minutes * 60)
         await check_forum_announcements_once()
 
 
@@ -11297,7 +11319,7 @@ def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, 
         normalized_paths = ["/" + str(path or "").lstrip("/")]
     request_headers = {
         "Accept": "application/json,text/plain,*/*",
-        "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Connection": "close",
     }
     last_http_error = None
@@ -11317,36 +11339,15 @@ def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, 
                 status_code = getattr(exc.response, "status_code", None)
                 last_http_error = exc
                 if status_code == 403 and index == 0:
-                    logger.warning(
-                        "Reddit endpoint %s returned HTTP 403 for %s; retrying fallback endpoint.",
-                        base_url,
-                        normalized_path,
-                    )
                     continue
                 if status_code == 403 and normalized_path != normalized_paths[-1]:
-                    logger.warning(
-                        "Reddit path %s returned HTTP 403 on %s; retrying alternate JSON path.",
-                        normalized_path,
-                        base_url,
-                    )
-                    break
+                    continue
                 raise
             except (requests.ConnectionError, requests.Timeout) as exc:
                 last_request_error = exc
-                logger.warning(
-                    "Reddit request failed for %s%s (%s); trying next candidate.",
-                    base_url,
-                    normalized_path,
-                    exc,
-                )
                 continue
             except ValueError as exc:
                 last_request_error = exc
-                logger.warning(
-                    "Reddit returned invalid JSON for %s%s; trying next candidate.",
-                    base_url,
-                    normalized_path,
-                )
                 continue
     if last_http_error is not None:
         raise last_http_error
