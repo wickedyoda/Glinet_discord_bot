@@ -1,20 +1,27 @@
+import base64
+import hashlib
+import http.client
+import ipaddress
 import json
 import os
 import re
 import secrets
-import sqlite3
+import shutil
+import socket
 import ssl
-import time
+import subprocess  # nosec B404
 import threading
-import hashlib
-import ipaddress
+import time
+import zipfile
 from collections import deque
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from html import escape
+from io import BytesIO
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
+import requests
 from croniter import croniter
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -32,24 +39,110 @@ from flask import (
     url_for,
 )
 from werkzeug.middleware.proxy_fix import ProxyFix
-from werkzeug.serving import make_server
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.serving import make_server
+
+from app.service_monitor import (
+    annotate_uptime_import_targets,
+    build_glinet_domain_monitor_targets,
+    merge_service_monitor_targets,
+    normalize_service_monitor_targets,
+    serialize_service_monitor_targets,
+    summarize_uptime_import_sources,
+)
+from app.uptime_status import (
+    build_uptime_instance_urls,
+    build_uptime_source_config,
+    default_uptime_api_key,
+    extract_service_monitor_targets_from_uptime_config,
+    extract_service_monitor_targets_from_uptime_metrics,
+    fetch_uptime_metrics_text,
+    fetch_uptime_public_config,
+)
+from app.uptime_kuma_admin import (
+    UptimeKumaAdminError,
+    add_monitor,
+    is_uptime_kuma_admin_gui_enabled,
+    list_monitors,
+    remove_monitor,
+    update_monitor,
+)
+from app.web_audit import should_log_web_audit_event
+from app.web_discourse import process_discourse_submission, render_discourse_body
+from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
+from app.web_honeypot import process_honeypot_submission, render_honeypot_body
+from app.web_members import process_member_action_submission, render_members_body
+from app.web_moderation import process_moderation_submission, render_moderation_body
+from app.web_role_access import process_role_access_submission, render_role_access_body
+from app.web_reaction_roles import process_reaction_roles_submission, render_reaction_roles_body
+from app.web_time import format_timestamp_display, parse_iso_datetime_utc
+from app.web_user_store import (
+    current_time_iso as _store_now_iso,
+)
+from app.web_user_store import (
+    ensure_default_admin as _store_ensure_default_admin,
+)
+from app.web_user_store import (
+    normalize_guild_group_name as _store_normalize_guild_group_name,
+)
+from app.web_user_store import (
+    normalize_id_string_list as _normalize_id_string_list,
+)
+from app.web_user_store import (
+    normalize_string_id_list as _normalize_string_id_list,
+)
+from app.web_user_store import (
+    read_guild_groups as _store_read_guild_groups,
+)
+from app.web_user_store import (
+    read_users as _store_read_users,
+)
+from app.web_user_store import (
+    save_guild_groups as _store_save_guild_groups,
+)
+from app.web_user_store import (
+    save_users as _store_save_users,
+)
+
+
+def ensure_process_utc_timezone():
+    os.environ["TZ"] = "UTC"
+    if hasattr(time, "tzset"):
+        time.tzset()
+
+
+ensure_process_utc_timezone()
 
 CHANNEL_ID_PATTERN = re.compile(r"^\d+$|^<#\d+>$")
 PASSWORD_MAX_AGE_DAYS = 90
 REMEMBER_LOGIN_DAYS = 5
 AUTH_MODE_STANDARD = "standard"
 AUTH_MODE_REMEMBER = "remember"
-PASSWORD_HASH_METHOD = "pbkdf2:sha256:600000"
-SESSION_TIMEOUT_MINUTE_OPTIONS = (60,)
+PASSWORD_HASH_METHOD = "pbkdf2:sha256:600000"  # nosec B105
+SESSION_TIMEOUT_MINUTE_OPTIONS = (5, 10, 15, 20, 30, 45, 60, 90, 120)
 WEB_INACTIVITY_TIMEOUT_MINUTES = 60
 POST_FORM_TAG_PATTERN = re.compile(
     r"(<form\b[^>]*\bmethod\s*=\s*[\"']?post[\"']?[^>]*>)",
     re.IGNORECASE,
 )
+# Defensive: always limit HTML input length before using this regex
+def safe_search_post_form_tag(html: str):
+    if len(html) > 10000:
+        raise ValueError("HTML input too long for form tag search")
+    return POST_FORM_TAG_PATTERN.search(html)
 STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "select_guild"}
-WEB_GUI_TITLE_SUFFIX = "WickedYoda'sLittleHelper Dashboard"
+READ_ONLY_WRITE_EXEMPT_ENDPOINTS = {"login", "logout", "account", "healthz", "readyz", "select_guild"}
+WEB_GUI_TITLE_SUFFIX = "GL.iNet UnOfficial Discord Bot Dashboard"
+WEB_GUI_VERSION_PREFIX = "v1.0"
+RECENT_NAV_SESSION_KEY = "recent_admin_pages"
+RECENT_NAV_LIMIT = 6
+THEME_OPTIONS = (
+    {"value": "light", "label": "Light"},
+    {"value": "black", "label": "Black"},
+    {"value": "forest", "label": "Forest"},
+    {"value": "ember", "label": "Ember"},
+    {"value": "ice", "label": "Ice"},
+)
 OBSERVABILITY_LOG_LINE_LIMIT = 500
 OBSERVABILITY_LOG_OPTIONS = (
     ("bot.log", "Bot Runtime Log"),
@@ -66,14 +159,13 @@ REDDIT_FEED_SCHEDULE_OPTIONS = (
     ("0 * * * *", "Every hour"),
     ("0 */2 * * *", "Every 2 hours"),
 )
+MONITOR_RECHECK_SCHEDULE_OPTIONS = REDDIT_FEED_SCHEDULE_OPTIONS
 OBSERVABILITY_HISTORY_RETENTION_HOURS = 24
 OBSERVABILITY_HISTORY_SAMPLE_SECONDS = 60
-LOG_EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b"
-)
-LOG_SECRET_PATTERN = re.compile(
-    r"(?i)\b(discord_token|token|password|authorization|cookie|secret)\b\s*[:=]\s*([^\s,;]+)"
-)
+LOG_EXPORT_RETENTION_HOURS = 24
+LOG_EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b")
+LOG_SECRET_PATTERN = re.compile(r"(?i)\b(discord_token|token|password|authorization|cookie|secret)\b\s*[:=]\s*([^\s,;]+)")
+SAFE_OUTBOUND_MAX_REDIRECTS = 3
 INT_KEYS = {
     "GUILD_ID",
     "BOT_LOG_CHANNEL_ID",
@@ -88,10 +180,15 @@ INT_KEYS = {
     "CSV_ROLE_ASSIGN_MAX_NAMES",
     "FIRMWARE_REQUEST_TIMEOUT_SECONDS",
     "FIRMWARE_RELEASE_NOTES_MAX_CHARS",
+    "PUPPY_IMAGE_TIMEOUT_SECONDS",
+    "SHORTENER_TIMEOUT_SECONDS",
+    "YOUTUBE_POLL_INTERVAL_SECONDS",
+    "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
+    "LINKEDIN_POLL_INTERVAL_SECONDS",
+    "LINKEDIN_REQUEST_TIMEOUT_SECONDS",
+    "UPTIME_STATUS_TIMEOUT_SECONDS",
     "WEB_PORT",
-    "WEB_HOST_PORT",
     "WEB_HTTPS_PORT",
-    "WEB_HTTPS_HOST_PORT",
     "WEB_DISCORD_CATALOG_TTL_SECONDS",
     "WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS",
     "WEB_BULK_ASSIGN_TIMEOUT_SECONDS",
@@ -107,14 +204,71 @@ SENSITIVE_KEYS = {
     "DISCORD_TOKEN",
     "WEB_ADMIN_DEFAULT_PASSWORD",
     "WEB_ADMIN_SESSION_SECRET",
+    "UPTIME_STATUS_API_KEY",
 }
+FALLBACK_PROTECTED_ENV_KEYS = SENSITIVE_KEYS | {"WEB_ENV_FILE"}
+
+
+def _resolve_web_gui_version_label() -> str:
+    explicit = str(os.getenv("WEB_GUI_VERSION", "")).strip()
+    if explicit:
+        return explicit
+
+    repo_root = Path(__file__).resolve().parent
+    if (repo_root / ".git").exists():
+        git_executable = shutil.which("git")
+        if git_executable:
+            try:
+                completed = subprocess.run(
+                    [
+                        git_executable,
+                        "log",
+                        "-1",
+                        "--date=format-local:%Y%m%d.%H%M%S",
+                        "--format=%cd",
+                    ],
+                    cwd=repo_root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )  # nosec B603
+                stamp = completed.stdout.strip()
+                if stamp:
+                    return f"{WEB_GUI_VERSION_PREFIX}-{stamp}"
+            except (OSError, subprocess.SubprocessError, ValueError):
+                pass
+
+    try:
+        modified_stamp = datetime.fromtimestamp(Path(__file__).stat().st_mtime, tz=UTC).strftime("%Y%m%d.%H%M%S")
+        return f"{WEB_GUI_VERSION_PREFIX}-{modified_stamp}"
+    except Exception:
+        return f"{WEB_GUI_VERSION_PREFIX}-unknown"
+
+
+WEB_GUI_VERSION_LABEL = _resolve_web_gui_version_label()
+
+
+def _clip_text(value: str, max_chars: int = 120):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    return f"{text[: max_chars - 3]}..."
+
+
 ENV_FIELDS = [
     ("DISCORD_TOKEN", "Discord Token", "Bot token for Discord authentication."),
     ("GUILD_ID", "Guild ID", "Primary guild (server) ID."),
     (
+        "MANAGED_GUILD_IDS",
+        "Managed Guild IDs",
+        "Optional comma-separated guild IDs this bot should actively manage and sync.",
+    ),
+    (
         "BOT_LOG_CHANNEL_ID",
         "Bot Log Channel ID",
-        "Primary bot log/activity channel (legacy alias: GENERAL_CHANNEL_ID).",
+        "Global default bot log/activity channel. Guild settings override this per server.",
     ),
     ("LOG_LEVEL", "Log Level", "Bot log level (DEBUG, INFO, WARNING, ERROR)."),
     (
@@ -173,19 +327,19 @@ ENV_FIELDS = [
     ),
     ("ADMIN_ROLE_ID", "Admin Role ID", "Additional role ID allowed to moderate."),
     (
-        "MOD_LOG_CHANNEL_ID",
-        "Mod Log Channel ID",
-        "Channel ID for moderation/server logs.",
-    ),
-    (
         "CSV_ROLE_ASSIGN_MAX_NAMES",
         "CSV Role Max Names",
         "Max unique names accepted per CSV bulk-assign.",
     ),
     (
+        "MOD_LOG_CHANNEL_ID",
+        "Mod Log Channel ID",
+        "Global default moderation/server log channel. Guild settings override this per server.",
+    ),
+    (
         "firmware_notification_channel",
         "Firmware Notify Channel",
-        "Channel ID or <#channel> mention for firmware alerts.",
+        "Global default firmware notify channel. Guild settings override this per server.",
     ),
     (
         "FIRMWARE_FEED_URL",
@@ -213,6 +367,166 @@ ENV_FIELDS = [
         "5-field cron schedule in UTC for Reddit feed polling.",
     ),
     (
+        "ENABLE_MEMBERS_INTENT",
+        "Enable Members Intent",
+        "Request Discord privileged members intent for join/member tracking features.",
+    ),
+    (
+        "COMMAND_RESPONSES_EPHEMERAL",
+        "Command Responses Ephemeral",
+        "Default visibility for utility/help slash command responses.",
+    ),
+    (
+        "PUPPY_IMAGE_API_URL",
+        "Puppy Image API URL",
+        "JSON endpoint used by /happy for a random puppy image.",
+    ),
+    (
+        "PUPPY_IMAGE_TIMEOUT_SECONDS",
+        "Puppy API Timeout",
+        "Timeout in seconds for the puppy API request.",
+    ),
+    (
+        "SHORTENER_ENABLED",
+        "Shortener Enabled",
+        "Enable /shorten and /expand.",
+    ),
+    (
+        "SHORTENER_BASE_URL",
+        "Shortener Base URL",
+        "Base URL of the shortener service.",
+    ),
+    (
+        "SHORTENER_TIMEOUT_SECONDS",
+        "Shortener Timeout",
+        "Timeout in seconds for shortener requests.",
+    ),
+    (
+        "FIRMWARE_MONITOR_ENABLED",
+        "Firmware Monitor Enabled",
+        "Enable or disable firmware polling and posting without removing saved guild channel settings.",
+    ),
+    (
+        "REDDIT_FEED_NOTIFY_ENABLED",
+        "Reddit Feed Monitor Enabled",
+        "Enable or disable Reddit feed polling and posting without removing saved feed subscriptions.",
+    ),
+    (
+        "YOUTUBE_NOTIFY_ENABLED",
+        "YouTube Notify Enabled",
+        "Enable YouTube upload polling and posting.",
+    ),
+    (
+        "YOUTUBE_POLL_INTERVAL_SECONDS",
+        "YouTube Poll Interval",
+        "Seconds between YouTube feed checks.",
+    ),
+    (
+        "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
+        "YouTube Request Timeout",
+        "Timeout in seconds for YouTube page/feed requests.",
+    ),
+    (
+        "LINKEDIN_NOTIFY_ENABLED",
+        "LinkedIn Notify Enabled",
+        "Enable LinkedIn public-profile polling and posting.",
+    ),
+    (
+        "LINKEDIN_POLL_INTERVAL_SECONDS",
+        "LinkedIn Poll Interval",
+        "Seconds between LinkedIn profile checks.",
+    ),
+    (
+        "LINKEDIN_REQUEST_TIMEOUT_SECONDS",
+        "LinkedIn Request Timeout",
+        "Timeout in seconds for LinkedIn public-profile requests.",
+    ),
+    (
+        "BETA_PROGRAM_NOTIFY_ENABLED",
+        "Beta Program Monitor Enabled",
+        "Enable or disable GL.iNet beta program polling and posting without removing saved monitors.",
+    ),
+    (
+        "BETA_PROGRAM_POLL_INTERVAL_SECONDS",
+        "Beta Program Poll Interval",
+        "Seconds between GL.iNet beta program checks.",
+    ),
+    (
+        "BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS",
+        "Beta Program Request Timeout",
+        "Timeout in seconds for GL.iNet beta program requests.",
+    ),
+    (
+        "SERVICE_MONITOR_ENABLED",
+        "Service Monitor Enabled",
+        "Enable or disable generic website/API outage checks.",
+    ),
+    (
+        "SERVICE_MONITOR_DEFAULT_CHANNEL_ID",
+        "Service Monitor Default Channel",
+        "Discord text channel used for service outage alerts when a target does not specify its own channel_id.",
+    ),
+    (
+        "SERVICE_MONITOR_CHECK_SCHEDULE",
+        "Service Monitor Schedule",
+        "5-field cron schedule in UTC for website/API checks.",
+    ),
+    (
+        "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS",
+        "Service Monitor Timeout",
+        "Default HTTP timeout in seconds for service checks.",
+    ),
+    (
+        "SERVICE_MONITOR_TARGETS_JSON",
+        "Service Monitor Targets JSON",
+        "JSON array of service checks. Each item supports name, url, optional method, expected_status, contains_text, timeout_seconds, and channel_id.",
+    ),
+    (
+        "UPTIME_STATUS_ENABLED",
+        "Uptime Status Enabled",
+        "Enable /uptime integration against either a public Uptime Kuma page or an authenticated Uptime Kuma instance.",
+    ),
+    (
+        "UPTIME_STATUS_NOTIFY_ENABLED",
+        "Uptime Status Alerting",
+        "Enable scheduled outage/recovery notifications from the configured Uptime Kuma source.",
+    ),
+    (
+        "UPTIME_STATUS_NOTIFY_CHANNEL_ID",
+        "Uptime Status Notify Channel",
+        "Discord text channel that receives Uptime Kuma outage and recovery alerts.",
+    ),
+    (
+        "UPTIME_STATUS_CHECK_SCHEDULE",
+        "Uptime Status Check Schedule",
+        "5-field cron schedule in UTC for Uptime Kuma alert checks.",
+    ),
+    (
+        "UPTIME_STATUS_PAGE_URL",
+        "Uptime Status Page URL",
+        "Optional public uptime page URL in /status/<slug> format.",
+    ),
+    (
+        "UPTIME_STATUS_INSTANCE_URL",
+        "Uptime Kuma Instance URL",
+        "Optional authenticated Uptime Kuma base URL such as https://kuma.example.com/.",
+    ),
+    (
+        "UPTIME_STATUS_API_KEY",
+        "Uptime Kuma API Key",
+        "Optional API key used to read the authenticated instance metrics endpoint.",
+    ),
+    (
+        "UPTIME_STATUS_VERIFY_TLS",
+        "Uptime Kuma Verify TLS",
+        "Set to true/false to enforce or skip TLS certificate verification for Kuma requests.",
+    ),
+    (
+        "UPTIME_STATUS_TIMEOUT_SECONDS",
+        "Uptime Status Timeout",
+        "Timeout in seconds for uptime status requests.",
+    ),
+    (
         "WEB_ENABLED",
         "Web UI Enabled",
         "Set to true/false to enable or disable the web admin UI.",
@@ -229,19 +543,19 @@ ENV_FIELDS = [
         "Internal HTTPS port in the container (default 8081).",
     ),
     (
-        "WEB_HOST_PORT",
-        "Web Host Port",
-        "Host port mapped to WEB_PORT in Docker compose.",
+        "WEB_HTTP_PUBLISH",
+        "Web HTTP Publish",
+        "Optional Docker Compose HTTP publish override, e.g. 8080 or 127.0.0.1:8080.",
     ),
     (
-        "WEB_HTTPS_HOST_PORT",
-        "Web HTTPS Host Port",
-        "Host port mapped to WEB_HTTPS_PORT in Docker compose.",
+        "WEB_HTTPS_PUBLISH",
+        "Web HTTPS Publish",
+        "Optional Docker Compose HTTPS publish override, e.g. 8081 or 127.0.0.1:8081.",
     ),
     (
         "WEB_SESSION_TIMEOUT_MINUTES",
         "Web Auto Logout (Minutes)",
-        "Session inactivity timeout in minutes (fixed at 60).",
+        "Session inactivity timeout in minutes (allowed: 5, 10, 15, 20, 30, 45, 60, 90, 120).",
     ),
     (
         "WEB_DISCORD_CATALOG_TTL_SECONDS",
@@ -368,6 +682,135 @@ ENV_FIELDS = [
 ENV_KEY_ALIASES = {
     "BOT_LOG_CHANNEL_ID": ("GENERAL_CHANNEL_ID",),
 }
+ENV_FIELD_SECTIONS = (
+    (
+        "Bot Identity And Scope",
+        "Core Discord identity, guild scope, and command access defaults.",
+        (
+            "DISCORD_TOKEN",
+            "GUILD_ID",
+            "MANAGED_GUILD_IDS",
+            "MODERATOR_ROLE_ID",
+            "ADMIN_ROLE_ID",
+            "ENABLE_MEMBERS_INTENT",
+            "COMMAND_RESPONSES_EPHEMERAL",
+        ),
+    ),
+    (
+        "Logging And Storage",
+        "Runtime log levels, log rotation, and persistent storage paths.",
+        (
+            "BOT_LOG_CHANNEL_ID",
+            "MOD_LOG_CHANNEL_ID",
+            "LOG_LEVEL",
+            "CONTAINER_LOG_LEVEL",
+            "DISCORD_LOG_LEVEL",
+            "DATA_DIR",
+            "LOG_DIR",
+            "LOG_HARDEN_FILE_PERMISSIONS",
+            "LOG_RETENTION_DAYS",
+            "LOG_ROTATION_INTERVAL_DAYS",
+        ),
+    ),
+    (
+        "Search, Moderation, And Utilities",
+        "Forum/docs search limits and utility command tuning.",
+        (
+            "FORUM_BASE_URL",
+            "FORUM_MAX_RESULTS",
+            "DOCS_MAX_RESULTS_PER_SITE",
+            "DOCS_INDEX_TTL_SECONDS",
+            "SEARCH_RESPONSE_MAX_CHARS",
+            "KICK_PRUNE_HOURS",
+            "CSV_ROLE_ASSIGN_MAX_NAMES",
+            "PUPPY_IMAGE_API_URL",
+            "PUPPY_IMAGE_TIMEOUT_SECONDS",
+            "SHORTENER_ENABLED",
+            "SHORTENER_BASE_URL",
+            "SHORTENER_TIMEOUT_SECONDS",
+        ),
+    ),
+    (
+        "Feed And Status Monitors",
+        "Global defaults for feed polling, notification delivery, and uptime integrations. Guild settings can override the on/off state and some channels per server.",
+        (
+            "firmware_notification_channel",
+            "FIRMWARE_FEED_URL",
+            "firmware_check_schedule",
+            "FIRMWARE_REQUEST_TIMEOUT_SECONDS",
+            "FIRMWARE_RELEASE_NOTES_MAX_CHARS",
+            "FIRMWARE_MONITOR_ENABLED",
+            "REDDIT_FEED_CHECK_SCHEDULE",
+            "REDDIT_FEED_NOTIFY_ENABLED",
+            "YOUTUBE_NOTIFY_ENABLED",
+            "YOUTUBE_POLL_INTERVAL_SECONDS",
+            "YOUTUBE_REQUEST_TIMEOUT_SECONDS",
+            "LINKEDIN_NOTIFY_ENABLED",
+            "LINKEDIN_POLL_INTERVAL_SECONDS",
+            "LINKEDIN_REQUEST_TIMEOUT_SECONDS",
+            "BETA_PROGRAM_NOTIFY_ENABLED",
+            "BETA_PROGRAM_POLL_INTERVAL_SECONDS",
+            "BETA_PROGRAM_REQUEST_TIMEOUT_SECONDS",
+            "SERVICE_MONITOR_ENABLED",
+            "SERVICE_MONITOR_DEFAULT_CHANNEL_ID",
+            "SERVICE_MONITOR_CHECK_SCHEDULE",
+            "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS",
+            "SERVICE_MONITOR_TARGETS_JSON",
+            "UPTIME_STATUS_ENABLED",
+            "UPTIME_STATUS_NOTIFY_ENABLED",
+            "UPTIME_STATUS_NOTIFY_CHANNEL_ID",
+            "UPTIME_STATUS_CHECK_SCHEDULE",
+            "UPTIME_STATUS_PAGE_URL",
+            "UPTIME_STATUS_INSTANCE_URL",
+            "UPTIME_STATUS_API_KEY",
+            "UPTIME_STATUS_TIMEOUT_SECONDS",
+            "UPTIME_STATUS_VERIFY_TLS",
+        ),
+    ),
+    (
+        "Web UI Runtime And Security",
+        "Ports, publish bindings, session policy, proxy behavior, TLS files, and web-admin bootstrap settings.",
+        (
+            "WEB_ENABLED",
+            "WEB_BIND_HOST",
+            "WEB_PORT",
+            "WEB_HTTPS_PORT",
+            "WEB_HTTP_PUBLISH",
+            "WEB_HTTPS_PUBLISH",
+            "WEB_SESSION_TIMEOUT_MINUTES",
+            "WEB_DISCORD_CATALOG_TTL_SECONDS",
+            "WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS",
+            "WEB_BULK_ASSIGN_TIMEOUT_SECONDS",
+            "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES",
+            "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT",
+            "WEB_BOT_PROFILE_TIMEOUT_SECONDS",
+            "WEB_AVATAR_MAX_UPLOAD_BYTES",
+            "WEB_RESTART_ENABLED",
+            "WEB_PUBLIC_BASE_URL",
+            "WEB_HTTPS_ENABLED",
+            "WEB_SSL_DIR",
+            "WEB_SSL_CERT_FILE",
+            "WEB_SSL_KEY_FILE",
+            "WEB_SSL_COMMON_NAME",
+            "WEB_GITHUB_WIKI_URL",
+            "WEB_ENV_FILE",
+            "WEB_ADMIN_DEFAULT_USERNAME",
+            "WEB_ADMIN_DEFAULT_PASSWORD",
+            "WEB_ADMIN_SESSION_SECRET",
+            "WEB_SESSION_COOKIE_SECURE",
+            "WEB_SESSION_COOKIE_SAMESITE",
+            "WEB_TRUST_PROXY_HEADERS",
+            "WEB_ENFORCE_CSRF",
+            "WEB_ENFORCE_SAME_ORIGIN_POSTS",
+            "WEB_HARDEN_FILE_PERMISSIONS",
+        ),
+    ),
+)
+ENV_FIELD_SECTION_LOOKUP = {
+    field_key: (section_title, section_description)
+    for section_title, section_description, field_keys in ENV_FIELD_SECTIONS
+    for field_key in field_keys
+}
 
 
 def _normalize_email(email: str) -> str:
@@ -399,9 +842,7 @@ def _is_valid_email(email: str) -> bool:
     for label in labels:
         if not label or label.startswith("-") or label.endswith("-"):
             return False
-        if any(
-            not (char.isascii() and (char.isalnum() or char == "-")) for char in label
-        ):
+        if any(not (char.isascii() and (char.isalnum() or char == "-")) for char in label):
             return False
     if len(labels[-1]) < 2:
         return False
@@ -472,18 +913,61 @@ def _default_display_name(email: str) -> str:
 
 
 def _is_admin_user(user: dict | None) -> bool:
-    return bool(user and user.get("is_admin"))
+    return _normalize_web_user_role((user or {}).get("role", "")) == "admin"
 
 
-def _user_role_label_from_is_admin(is_admin: bool) -> str:
-    return "Admin" if bool(is_admin) else "Read-only"
+def _normalize_web_user_role(value: str | None, *, is_admin: bool = False) -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "glinet":
+        return "glinet_read_only"
+    if raw in {"admin", "read_only", "glinet_read_only", "glinet_rw", "guild_admin"}:
+        return raw
+    return "admin" if bool(is_admin) else "read_only"
+
+
+def _is_glinet_read_only_user(user: dict | None) -> bool:
+    return _normalize_web_user_role((user or {}).get("role", "")) == "glinet_read_only"
+
+
+def _is_glinet_rw_user(user: dict | None) -> bool:
+    return _normalize_web_user_role((user or {}).get("role", "")) == "glinet_rw"
+
+
+def _is_guild_admin_user(user: dict | None) -> bool:
+    return _normalize_web_user_role((user or {}).get("role", "")) == "guild_admin"
+
+
+def _is_glinet_scoped_user(user: dict | None) -> bool:
+    normalized = _normalize_web_user_role((user or {}).get("role", ""))
+    return normalized in {"glinet_read_only", "glinet_rw"}
+
+
+def _user_role_label(role_value: str | None = None, *, is_admin: bool = False) -> str:
+    normalized = _normalize_web_user_role(role_value, is_admin=is_admin)
+    if normalized == "admin":
+        return "Admin"
+    if normalized == "guild_admin":
+        return "Guild Admin"
+    if normalized == "glinet_rw":
+        return "Glinet-RW"
+    if normalized == "glinet_read_only":
+        return "Glinet-Read-Only"
+    return "Read-only"
 
 
 def _audit_user_label_from_email(email: str) -> str:
     normalized_email = _normalize_email(email)
     if not normalized_email:
         return "anonymous"
-    digest = hashlib.sha256(normalized_email.encode("utf-8")).hexdigest()[:12]
+    salt = (os.getenv("WEB_ADMIN_SESSION_SECRET", "") or "glinet-web-audit-label").encode("utf-8")
+    digest = hashlib.scrypt(
+        normalized_email.encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=12,
+    ).hex()
     return f"user_{digest}"
 
 
@@ -676,11 +1160,7 @@ def _read_cgroup_cpu_seconds_total():
 
 
 def _format_rate(delta_bytes: float, delta_seconds: float):
-    if (
-        delta_bytes is None
-        or delta_seconds is None
-        or delta_seconds <= 0
-    ):
+    if delta_bytes is None or delta_seconds is None or delta_seconds <= 0:
         return "n/a"
     return f"{_format_bytes(int(max(0, delta_bytes / delta_seconds)))}/s"
 
@@ -737,9 +1217,7 @@ def _build_observability_history_summary(history_items: list[dict], current_snap
                     value_type,
                 ),
                 "min": _format_observability_stat_value(min(numeric_values), value_type),
-                "avg": _format_observability_stat_value(
-                    sum(numeric_values) / len(numeric_values), value_type
-                ),
+                "avg": _format_observability_stat_value(sum(numeric_values) / len(numeric_values), value_type),
                 "max": _format_observability_stat_value(max(numeric_values), value_type),
             }
         )
@@ -762,41 +1240,23 @@ def _collect_observability_snapshot(state: dict, started_monotonic: float):
     delta_wall = (now_mono - prev_wall) if isinstance(prev_wall, float) else None
 
     process_cpu_percent = None
-    if (
-        delta_wall is not None
-        and delta_wall > 0
-        and isinstance(prev_proc_cpu, float)
-    ):
-        process_cpu_percent = max(
-            0.0, ((process_cpu_total - prev_proc_cpu) / delta_wall) * 100.0
-        )
+    if delta_wall is not None and delta_wall > 0 and isinstance(prev_proc_cpu, float):
+        process_cpu_percent = max(0.0, ((process_cpu_total - prev_proc_cpu) / delta_wall) * 100.0)
 
     io_read_rate = None
     io_write_rate = None
     if delta_wall is not None and delta_wall > 0:
-        if (
-            isinstance(io_bytes.get("read_bytes"), int)
-            and isinstance(prev_io.get("read_bytes"), int)
-        ):
+        if isinstance(io_bytes.get("read_bytes"), int) and isinstance(prev_io.get("read_bytes"), int):
             io_read_rate = io_bytes["read_bytes"] - prev_io["read_bytes"]
-        if (
-            isinstance(io_bytes.get("write_bytes"), int)
-            and isinstance(prev_io.get("write_bytes"), int)
-        ):
+        if isinstance(io_bytes.get("write_bytes"), int) and isinstance(prev_io.get("write_bytes"), int):
             io_write_rate = io_bytes["write_bytes"] - prev_io["write_bytes"]
 
     net_rx_rate = None
     net_tx_rate = None
     if delta_wall is not None and delta_wall > 0:
-        if (
-            isinstance(net_bytes.get("rx_bytes"), int)
-            and isinstance(prev_net.get("rx_bytes"), int)
-        ):
+        if isinstance(net_bytes.get("rx_bytes"), int) and isinstance(prev_net.get("rx_bytes"), int):
             net_rx_rate = net_bytes["rx_bytes"] - prev_net["rx_bytes"]
-        if (
-            isinstance(net_bytes.get("tx_bytes"), int)
-            and isinstance(prev_net.get("tx_bytes"), int)
-        ):
+        if isinstance(net_bytes.get("tx_bytes"), int) and isinstance(prev_net.get("tx_bytes"), int):
             net_tx_rate = net_bytes["tx_bytes"] - prev_net["tx_bytes"]
 
     io_read_rate_bps = None
@@ -846,24 +1306,13 @@ def _collect_observability_snapshot(state: dict, started_monotonic: float):
         "uptime_seconds": max(0.0, now_mono - float(started_monotonic or now_mono)),
         "cgroup_cpu_seconds": cgroup_cpu_total,
         "sample_interval_seconds": delta_wall,
-        "sampled_at": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC"),
+        "sampled_at": datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
         "sampled_at_epoch": time.time(),
     }
 
 
 def _parse_iso_datetime(raw_value: str):
-    text = str(raw_value or "").strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+    return parse_iso_datetime_utc(raw_value)
 
 
 def _password_change_required(user: dict) -> bool:
@@ -874,7 +1323,7 @@ def _password_change_required(user: dict) -> bool:
     )
     if baseline is None:
         return True
-    return datetime.now(timezone.utc) >= (baseline + timedelta(days=PASSWORD_MAX_AGE_DAYS))
+    return datetime.now(UTC) >= (baseline + timedelta(days=PASSWORD_MAX_AGE_DAYS))
 
 
 def _password_age_days(user: dict) -> int:
@@ -885,290 +1334,59 @@ def _password_age_days(user: dict) -> int:
     )
     if baseline is None:
         return PASSWORD_MAX_AGE_DAYS
-    delta = datetime.now(timezone.utc) - baseline
+    delta = datetime.now(UTC) - baseline
     return max(0, delta.days)
 
 
 def _now_iso():
-    return datetime.now(timezone.utc).isoformat()
+    return _store_now_iso()
 
 
-def _ensure_users_table_columns(conn):
-    rows = conn.execute("PRAGMA table_info(web_users)").fetchall()
-    columns = {str(row["name"]) for row in rows}
-    alter_statements = []
-    if "first_name" not in columns:
-        alter_statements.append(
-            "ALTER TABLE web_users ADD COLUMN first_name TEXT NOT NULL DEFAULT ''"
-        )
-    if "last_name" not in columns:
-        alter_statements.append(
-            "ALTER TABLE web_users ADD COLUMN last_name TEXT NOT NULL DEFAULT ''"
-        )
-    if "display_name" not in columns:
-        alter_statements.append(
-            "ALTER TABLE web_users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''"
-        )
-    if "password_changed_at" not in columns:
-        alter_statements.append(
-            "ALTER TABLE web_users ADD COLUMN password_changed_at TEXT NOT NULL DEFAULT ''"
-        )
-    if "email_changed_at" not in columns:
-        alter_statements.append(
-            "ALTER TABLE web_users ADD COLUMN email_changed_at TEXT NOT NULL DEFAULT ''"
-        )
-    if "updated_at" not in columns:
-        alter_statements.append(
-            "ALTER TABLE web_users ADD COLUMN updated_at TEXT NOT NULL DEFAULT ''"
-        )
-    if "created_at" not in columns:
-        alter_statements.append(
-            "ALTER TABLE web_users ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
-        )
-    for statement in alter_statements:
-        conn.execute(statement)
-
-    now_iso = _now_iso()
-    conn.execute(
-        """
-        UPDATE web_users
-        SET created_at = COALESCE(NULLIF(TRIM(created_at), ''), ?)
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET updated_at = COALESCE(NULLIF(TRIM(updated_at), ''), created_at, ?)
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET password_changed_at = COALESCE(
-            NULLIF(TRIM(password_changed_at), ''),
-            NULLIF(TRIM(updated_at), ''),
-            NULLIF(TRIM(created_at), ''),
-            ?
-        )
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET email_changed_at = COALESCE(
-            NULLIF(TRIM(email_changed_at), ''),
-            NULLIF(TRIM(updated_at), ''),
-            NULLIF(TRIM(created_at), ''),
-            ?
-        )
-        """,
-        (now_iso,),
-    )
-    conn.execute(
-        """
-        UPDATE web_users
-        SET first_name = COALESCE(first_name, ''),
-            last_name = COALESCE(last_name, ''),
-            display_name = COALESCE(display_name, '')
-        """
-    )
-    conn.commit()
-
-
-def _open_users_db(users_db_file: Path):
-    conn = sqlite3.connect(str(users_db_file), timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA foreign_keys=ON;")
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS web_users (
-            email TEXT PRIMARY KEY,
-            password_hash TEXT NOT NULL,
-            is_admin INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        )
-        """
-    )
-    _ensure_users_table_columns(conn)
-    try:
-        os.chmod(users_db_file, 0o600)
-    except (PermissionError, OSError):
-        pass
-    return conn
+def _normalize_guild_group_name(value: str):
+    return _store_normalize_guild_group_name(value, clean_profile_text=_clean_profile_text)
 
 
 def _read_users(users_db_file: Path):
-    conn = _open_users_db(users_db_file)
-    try:
-        rows = conn.execute(
-            """
-            SELECT
-                email,
-                password_hash,
-                is_admin,
-                first_name,
-                last_name,
-                display_name,
-                password_changed_at,
-                email_changed_at,
-                created_at,
-                updated_at
-            FROM web_users
-            ORDER BY created_at ASC, email ASC
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-
-    return [
-        {
-            "email": str(row["email"]).strip().lower(),
-            "password_hash": str(row["password_hash"]),
-            "is_admin": bool(row["is_admin"]),
-            "first_name": _clean_profile_text(str(row["first_name"] or ""), max_length=80),
-            "last_name": _clean_profile_text(str(row["last_name"] or ""), max_length=80),
-            "display_name": _clean_profile_text(
-                str(row["display_name"] or "") or _default_display_name(str(row["email"] or "")),
-                max_length=80,
-            ),
-            "password_changed_at": str(
-                row["password_changed_at"] or row["updated_at"] or row["created_at"] or _now_iso()
-            ),
-            "email_changed_at": str(
-                row["email_changed_at"] or row["updated_at"] or row["created_at"] or _now_iso()
-            ),
-            "created_at": str(row["created_at"] or _now_iso()),
-            "updated_at": str(row["updated_at"] or row["created_at"] or _now_iso()),
-        }
-        for row in rows
-        if str(row["email"]).strip() and str(row["password_hash"]).strip()
-    ]
+    return _store_read_users(
+        users_db_file,
+        normalize_role=_normalize_web_user_role,
+        clean_profile_text=_clean_profile_text,
+        default_display_name=_default_display_name,
+    )
 
 
 def _save_users(users_db_file: Path, users):
-    now_iso = _now_iso()
-    conn = _open_users_db(users_db_file)
-    try:
-        with conn:
-            conn.execute("DELETE FROM web_users")
-            for entry in users:
-                email = _normalize_email(entry.get("email", ""))
-                password_hash = str(entry.get("password_hash", "")).strip()
-                if not email or not password_hash:
-                    continue
-                is_admin = 1 if bool(entry.get("is_admin", False)) else 0
-                first_name = _clean_profile_text(
-                    str(entry.get("first_name", "")), max_length=80
-                )
-                last_name = _clean_profile_text(
-                    str(entry.get("last_name", "")), max_length=80
-                )
-                display_name = _clean_profile_text(
-                    str(entry.get("display_name", "")), max_length=80
-                ) or _default_display_name(email)
-                created_at = str(entry.get("created_at") or now_iso)
-                password_changed_at = str(
-                    entry.get("password_changed_at") or created_at or now_iso
-                )
-                email_changed_at = str(entry.get("email_changed_at") or created_at or now_iso)
-                conn.execute(
-                    """
-                    INSERT INTO web_users (
-                        email,
-                        password_hash,
-                        is_admin,
-                        first_name,
-                        last_name,
-                        display_name,
-                        password_changed_at,
-                        email_changed_at,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        email,
-                        password_hash,
-                        is_admin,
-                        first_name,
-                        last_name,
-                        display_name,
-                        password_changed_at,
-                        email_changed_at,
-                        created_at,
-                        now_iso,
-                    ),
-                )
-    finally:
-        conn.close()
+    _store_save_users(
+        users_db_file,
+        users,
+        normalize_email=_normalize_email,
+        normalize_role=_normalize_web_user_role,
+        clean_profile_text=_clean_profile_text,
+        default_display_name=_default_display_name,
+    )
 
 
-def _ensure_default_admin(
-    users_db_file: Path, default_email: str, default_password: str, logger
-):
-    users = _read_users(users_db_file)
-    if users:
-        return
+def _ensure_default_admin(users_db_file: Path, default_email: str, default_password: str, logger):
+    _store_ensure_default_admin(
+        users_db_file,
+        default_email,
+        default_password,
+        logger,
+        read_users_func=_read_users,
+        normalize_email=_normalize_email,
+        is_valid_email=_is_valid_email,
+        password_policy_errors=_password_policy_errors,
+        hash_password=_hash_password,
+        default_display_name=_default_display_name,
+    )
 
-    email = _normalize_email(default_email) or "admin@example.com"
-    if not _is_valid_email(email):
-        email = "admin@example.com"
 
-    password = default_password or ""
-    if _password_policy_errors(password):
-        message = (
-            "WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet password policy. "
-            "Set a strong password before first boot so the initial admin user can be created securely."
-        )
-        if logger:
-            logger.error(message)
-        raise ValueError(message)
+def _read_guild_groups(users_db_file: Path):
+    return _store_read_guild_groups(users_db_file, clean_profile_text=_clean_profile_text)
 
-    now_iso = _now_iso()
-    display_name = _default_display_name(email)
-    conn = _open_users_db(users_db_file)
-    try:
-        with conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO web_users (
-                    email,
-                    password_hash,
-                    is_admin,
-                    first_name,
-                    last_name,
-                    display_name,
-                    password_changed_at,
-                    email_changed_at,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    email,
-                    _hash_password(password),
-                    1,
-                    "",
-                    "",
-                    display_name,
-                    now_iso,
-                    now_iso,
-                    now_iso,
-                    now_iso,
-                ),
-            )
-    finally:
-        conn.close()
-    if logger:
-        logger.info("Created default web admin user.")
+
+def _save_guild_groups(users_db_file: Path, groups):
+    _store_save_guild_groups(users_db_file, groups, clean_profile_text=_clean_profile_text)
 
 
 def _parse_env_file(env_file: Path):
@@ -1212,6 +1430,67 @@ def _write_env_file(env_file: Path, values: dict):
         os.chmod(env_file, 0o600)
     except (PermissionError, OSError):
         pass
+
+
+def _format_env_write_error(env_file: Path, exc: OSError) -> str:
+    errno_value = getattr(exc, "errno", None)
+    if isinstance(exc, PermissionError) or errno_value in {1, 13, 30}:
+        return (
+            f"Could not save settings to {env_file}. That path is read-only or not writable in this container. "
+            "Set WEB_ENV_FILE to a writable file such as /app/data/web-settings.env."
+        )
+    return f"Could not save settings to {env_file}: {exc}"
+
+
+def _try_write_env_file(env_file: Path, values: dict) -> tuple[bool, str]:
+    try:
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        _write_env_file(env_file, values)
+    except OSError as exc:
+        return False, _format_env_write_error(env_file, exc)
+    return True, ""
+
+
+def _env_fallback_file_path(data_dir: str) -> Path:
+    return Path(data_dir) / "web-settings.env"
+
+
+def _filter_fallback_env_values(values: dict) -> tuple[dict, tuple[str, ...]]:
+    filtered = {}
+    skipped = []
+    for key, value in values.items():
+        if key in FALLBACK_PROTECTED_ENV_KEYS:
+            skipped.append(str(key))
+            continue
+        filtered[key] = value
+    return filtered, tuple(sorted(skipped))
+
+
+def _load_effective_env_values(primary_env_file: Path, fallback_env_file: Path) -> dict:
+    values = _parse_env_file(primary_env_file)
+    if fallback_env_file != primary_env_file and fallback_env_file.exists():
+        fallback_values, _ = _filter_fallback_env_values(_parse_env_file(fallback_env_file))
+        if fallback_values:
+            values.update(fallback_values)
+    return values
+
+
+def _try_write_env_file_with_fallback(
+    primary_env_file: Path,
+    fallback_env_file: Path,
+    values: dict,
+) -> tuple[bool, str, Path, tuple[str, ...]]:
+    saved, save_error = _try_write_env_file(primary_env_file, values)
+    if saved:
+        return True, "", primary_env_file, ()
+    if fallback_env_file == primary_env_file:
+        return False, save_error, primary_env_file, ()
+
+    fallback_values, skipped_keys = _filter_fallback_env_values(values)
+    fallback_saved, fallback_error = _try_write_env_file(fallback_env_file, fallback_values)
+    if fallback_saved:
+        return True, "", fallback_env_file, skipped_keys
+    return False, fallback_error or save_error, fallback_env_file, ()
 
 
 def _normalize_url_env_value(value: str):
@@ -1298,8 +1577,8 @@ def _build_self_signed_certificate(cert_path: Path, key_path: Path, common_name:
         .issuer_name(issuer)
         .public_key(key.public_key())
         .serial_number(x509.random_serial_number())
-        .not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=5))
-        .not_valid_after(datetime.now(timezone.utc) + timedelta(days=825))
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=5))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=825))
         .add_extension(x509.SubjectAlternativeName(san_entries), critical=False)
         .sign(key, hashes.SHA256())
     )
@@ -1317,12 +1596,8 @@ def _build_self_signed_certificate(cert_path: Path, key_path: Path, common_name:
 def _ensure_https_ssl_context(data_dir: str, harden_file_permissions: bool, logger=None):
     ssl_dir = _get_web_ssl_dir(data_dir)
     ssl_dir.mkdir(parents=True, exist_ok=True)
-    cert_path = _resolve_ssl_file_path(
-        ssl_dir, os.getenv("WEB_SSL_CERT_FILE", ""), "tls.crt"
-    )
-    key_path = _resolve_ssl_file_path(
-        ssl_dir, os.getenv("WEB_SSL_KEY_FILE", ""), "tls.key"
-    )
+    cert_path = _resolve_ssl_file_path(ssl_dir, os.getenv("WEB_SSL_CERT_FILE", ""), "tls.crt")
+    key_path = _resolve_ssl_file_path(ssl_dir, os.getenv("WEB_SSL_KEY_FILE", ""), "tls.key")
     cert_path.parent.mkdir(parents=True, exist_ok=True)
     key_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1330,9 +1605,7 @@ def _ensure_https_ssl_context(data_dir: str, harden_file_permissions: bool, logg
     key_exists = key_path.exists()
     generated = False
     if cert_exists != key_exists:
-        raise ValueError(
-            f"Both TLS files must exist together. cert={cert_path} key={key_path}"
-        )
+        raise ValueError(f"Both TLS files must exist together. cert={cert_path} key={key_path}")
     if not cert_exists and not key_exists:
         common_name = (
             str(os.getenv("WEB_SSL_COMMON_NAME", "")).strip()
@@ -1382,70 +1655,76 @@ def _validate_env_updates(updated_values: dict):
             except ValueError:
                 errors.append(f"{key} must be an integer.")
         if key == "firmware_check_schedule" and value and not croniter.is_valid(value):
-            errors.append(
-                "firmware_check_schedule must be a valid 5-field cron expression."
-            )
+            errors.append("firmware_check_schedule must be a valid 5-field cron expression.")
         if key == "REDDIT_FEED_CHECK_SCHEDULE" and value and not croniter.is_valid(value):
-            errors.append(
-                "REDDIT_FEED_CHECK_SCHEDULE must be a valid 5-field cron expression."
-            )
-        if (
-            key == "firmware_notification_channel"
-            and value
-            and not CHANNEL_ID_PATTERN.fullmatch(value)
-        ):
-            errors.append(
-                "firmware_notification_channel must be numeric ID or <#channel> format."
-            )
+            errors.append("REDDIT_FEED_CHECK_SCHEDULE must be a valid 5-field cron expression.")
+        if key == "SERVICE_MONITOR_CHECK_SCHEDULE" and value and not croniter.is_valid(value):
+            errors.append("SERVICE_MONITOR_CHECK_SCHEDULE must be a valid 5-field cron expression.")
+        if key == "UPTIME_STATUS_CHECK_SCHEDULE" and value and not croniter.is_valid(value):
+            errors.append("UPTIME_STATUS_CHECK_SCHEDULE must be a valid 5-field cron expression.")
+        if key == "firmware_notification_channel" and value and not CHANNEL_ID_PATTERN.fullmatch(value):
+            errors.append("firmware_notification_channel must be numeric ID or <#channel> format.")
+        if key == "SERVICE_MONITOR_DEFAULT_CHANNEL_ID" and value and not CHANNEL_ID_PATTERN.fullmatch(value):
+            errors.append("SERVICE_MONITOR_DEFAULT_CHANNEL_ID must be numeric ID or <#channel> format.")
+        if key == "UPTIME_STATUS_NOTIFY_CHANNEL_ID" and value and not CHANNEL_ID_PATTERN.fullmatch(value):
+            errors.append("UPTIME_STATUS_NOTIFY_CHANNEL_ID must be numeric ID or <#channel> format.")
+        if key == "UPTIME_STATUS_PAGE_URL" and value:
+            try:
+                _validate_http_url = build_uptime_source_config(page_url=value)
+                _ = _validate_http_url
+            except ValueError as exc:
+                errors.append(str(exc))
+        if key == "UPTIME_STATUS_INSTANCE_URL" and value:
+            try:
+                build_uptime_instance_urls(value)
+            except ValueError as exc:
+                errors.append(str(exc))
+        if key == "SERVICE_MONITOR_TARGETS_JSON" and value:
+            try:
+                normalize_service_monitor_targets(
+                    value,
+                    default_timeout_seconds=10,
+                    default_channel_id=0,
+                )
+            except ValueError as exc:
+                errors.append(str(exc))
         if key == "WEB_ADMIN_DEFAULT_USERNAME" and value and not _is_valid_email(value):
             errors.append("WEB_ADMIN_DEFAULT_USERNAME must be a valid email.")
         if key == "WEB_ADMIN_DEFAULT_PASSWORD" and value:
             errors.extend(_password_policy_errors(value))
         if key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL", "DISCORD_LOG_LEVEL"}:
             if value.upper() not in valid_log_levels:
-                errors.append(
-                    f"{key} must be one of: DEBUG, INFO, WARNING, ERROR, CRITICAL."
-                )
+                errors.append(f"{key} must be one of: DEBUG, INFO, WARNING, ERROR, CRITICAL.")
         if key == "WEB_SESSION_COOKIE_SAMESITE":
             normalized = _normalize_session_cookie_samesite(value, default_value="")
             if normalized not in {"Lax", "Strict", "None"}:
                 errors.append("WEB_SESSION_COOKIE_SAMESITE must be Lax, Strict, or None.")
         if key == "WEB_RESTART_ENABLED" and value.lower() not in truthy_values:
-            errors.append(
-                "WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off)."
-            )
-        if key in {
-            "WEB_SESSION_COOKIE_SECURE",
-            "WEB_TRUST_PROXY_HEADERS",
-            "WEB_ENFORCE_CSRF",
-            "WEB_ENFORCE_SAME_ORIGIN_POSTS",
-            "WEB_HARDEN_FILE_PERMISSIONS",
-            "WEB_HTTPS_ENABLED",
-        } and value.lower() not in truthy_values:
-            errors.append(
-                f"{key} must be true/false (or 1/0, yes/no, on/off)."
-            )
+            errors.append("WEB_RESTART_ENABLED must be true/false (or 1/0, yes/no, on/off).")
+        if key == "UPTIME_STATUS_VERIFY_TLS" and value.lower() not in truthy_values:
+            errors.append("UPTIME_STATUS_VERIFY_TLS must be true/false (or 1/0, yes/no, on/off).")
+        if (
+            key
+            in {
+                "WEB_SESSION_COOKIE_SECURE",
+                "WEB_TRUST_PROXY_HEADERS",
+                "WEB_ENFORCE_CSRF",
+                "WEB_ENFORCE_SAME_ORIGIN_POSTS",
+                "WEB_HARDEN_FILE_PERMISSIONS",
+                "WEB_HTTPS_ENABLED",
+            }
+            and value.lower() not in truthy_values
+        ):
+            errors.append(f"{key} must be true/false (or 1/0, yes/no, on/off).")
         if key == "WEB_SESSION_TIMEOUT_MINUTES":
             parsed = _normalize_session_timeout_minutes(value, default_value=-1)
             if parsed == -1:
-                errors.append("WEB_SESSION_TIMEOUT_MINUTES must be 60.")
-        if (
-            key == "WEB_GITHUB_WIKI_URL"
-            and value
-            and not value.startswith(("http://", "https://"))
-        ):
+                errors.append("WEB_SESSION_TIMEOUT_MINUTES must be one of: 5, 10, 15, 20, 30, 45, 60, 90, 120.")
+        if key == "WEB_GITHUB_WIKI_URL" and value and not value.startswith(("http://", "https://")):
             errors.append("WEB_GITHUB_WIKI_URL must start with http:// or https://.")
-        if (
-            key == "WEB_PUBLIC_BASE_URL"
-            and value
-            and not value.startswith(("http://", "https://"))
-        ):
+        if key == "WEB_PUBLIC_BASE_URL" and value and not value.startswith(("http://", "https://")):
             errors.append("WEB_PUBLIC_BASE_URL must start with http:// or https://.")
-        if (
-            key == "FIRMWARE_FEED_URL"
-            and value
-            and not value.startswith(("http://", "https://"))
-        ):
+        if key == "FIRMWARE_FEED_URL" and value and not value.startswith(("http://", "https://")):
             errors.append("FIRMWARE_FEED_URL must start with http:// or https://.")
     return errors
 
@@ -1474,9 +1753,7 @@ def _normalize_select_value(value: str):
     return selected
 
 
-def _render_select_input(
-    name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."
-):
+def _render_select_input(name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."):
     selected = _normalize_select_value(selected_value)
     rows = [f"<option value=''>{escape(placeholder)}</option>"]
     seen = set()
@@ -1487,21 +1764,13 @@ def _render_select_input(
         seen.add(option_id)
         label = str(option.get("label") or option.get("name") or option_id)
         selected_attr = " selected" if option_id == selected else ""
-        rows.append(
-            f"<option value='{escape(option_id, quote=True)}'{selected_attr}>"
-            f"{escape(label)} ({escape(option_id)})</option>"
-        )
+        rows.append(f"<option value='{escape(option_id, quote=True)}'{selected_attr}>{escape(label)} ({escape(option_id)})</option>")
     if selected and selected not in seen:
-        rows.append(
-            f"<option value='{escape(selected, quote=True)}' selected>"
-            f"Current value (not found): {escape(selected)}</option>"
-        )
+        rows.append(f"<option value='{escape(selected, quote=True)}' selected>Current value (not found): {escape(selected)}</option>")
     return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
 
 
-def _render_fixed_select_input(
-    name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."
-):
+def _render_fixed_select_input(name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."):
     selected = str(selected_value or "").strip()
     rows = [f"<option value=''>{escape(placeholder)}</option>"]
     seen = set()
@@ -1512,21 +1781,233 @@ def _render_fixed_select_input(
         seen.add(option_value)
         label = str(option.get("label") or option_value)
         selected_attr = " selected" if option_value == selected else ""
-        rows.append(
-            f"<option value='{escape(option_value, quote=True)}'{selected_attr}>"
-            f"{escape(label)}</option>"
-        )
+        rows.append(f"<option value='{escape(option_value, quote=True)}'{selected_attr}>{escape(label)}</option>")
     if selected and selected not in seen:
-        rows.append(
-            f"<option value='{escape(selected, quote=True)}' selected>"
-            f"Current value: {escape(selected)}</option>"
-        )
+        rows.append(f"<option value='{escape(selected, quote=True)}' selected>Current value: {escape(selected)}</option>")
     return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
 
 
-def _render_multi_select_input(
-    name: str, selected_values, options: list[dict], size: int = 8
-):
+def _extract_hostname_from_value(value: str):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urlparse(text if "://" in text else f"//{text}")
+    return str(parsed.hostname or "").strip().lower()
+
+
+def _is_private_or_local_ip(raw_value: str):
+    ip_value = ipaddress.ip_address(str(raw_value or "").strip())
+    return (
+        ip_value.is_loopback
+        or ip_value.is_private
+        or ip_value.is_link_local
+        or ip_value.is_multicast
+        or ip_value.is_reserved
+        or ip_value.is_unspecified
+    )
+
+
+def _validate_safe_outbound_url(url: str, *, field_name: str = "URL"):
+    normalized = str(url or "").strip()
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{field_name} must start with http:// or https://.")
+
+    hostname = _extract_hostname_from_value(normalized)
+    if not hostname:
+        raise ValueError(f"{field_name} is missing a hostname.")
+    if hostname == "localhost" or hostname.endswith(".local") or "." not in hostname:
+        raise ValueError(f"{field_name} must not target localhost or a private host.")
+
+    try:
+        if _is_private_or_local_ip(hostname):
+            raise ValueError(f"{field_name} must not resolve to a private or local address.")
+        return normalized
+    except ValueError as err:
+        try:
+            address_info = socket.getaddrinfo(hostname, parsed.port or None, type=socket.SOCK_STREAM)
+        except socket.gaierror as exc:
+            raise ValueError(f"{field_name} hostname could not be resolved.") from exc
+
+        resolved_ips = set()
+        for entry in address_info:
+            sockaddr = entry[4]
+            if not sockaddr:
+                continue
+            ip_text = str(sockaddr[0] or "").strip()
+            if not ip_text:
+                continue
+            resolved_ips.add(ip_text)
+        if not resolved_ips:
+            raise ValueError(f"{field_name} hostname could not be resolved.") from err
+        if any(_is_private_or_local_ip(ip_text) for ip_text in resolved_ips):
+            raise ValueError(f"{field_name} must not resolve to a private or local address.") from err
+        return normalized
+
+
+def _resolve_public_ip_for_hostname(hostname: str, port: int | None):
+    try:
+        address_info = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("Outbound URL hostname could not be resolved.") from exc
+
+    public_ip = ""
+    for entry in address_info:
+        sockaddr = entry[4]
+        if not sockaddr:
+            continue
+        ip_text = str(sockaddr[0] or "").strip()
+        if not ip_text:
+            continue
+        if _is_private_or_local_ip(ip_text):
+            raise ValueError("Outbound URL must not resolve to a private or local address.")
+        if not public_ip:
+            public_ip = ip_text
+    if not public_ip:
+        raise ValueError("Outbound URL hostname could not be resolved.")
+    return public_ip
+
+
+class _FixedHostHTTPConnection(http.client.HTTPConnection):
+    def __init__(self, connect_host: str, request_host: str, **kwargs):
+        self._connect_host = connect_host
+        super().__init__(request_host, **kwargs)
+
+    def connect(self):
+        self.sock = self._create_connection(
+            (self._connect_host, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _FixedHostHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(self, connect_host: str, request_host: str, **kwargs):
+        self._connect_host = connect_host
+        self._request_host = request_host
+        super().__init__(request_host, **kwargs)
+
+    def connect(self):
+        sock = self._create_connection(
+            (self._connect_host, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        self.sock = self._context.wrap_socket(sock, server_hostname=self._request_host)
+
+
+class _SafeOutboundResponse:
+    def __init__(self, *, url: str, status_code: int, reason: str, headers: dict[str, str], body: bytes):
+        self.url = url
+        self.status_code = int(status_code)
+        self.reason = str(reason or "")
+        self.headers = headers
+        self._body = body
+
+    @property
+    def text(self):
+        return self._body.decode("utf-8", errors="replace")
+
+    def json(self):
+        return json.loads(self.text)
+
+    @property
+    def is_redirect(self):
+        return self.status_code in {301, 302, 303, 307, 308}
+
+    @property
+    def is_permanent_redirect(self):
+        return self.status_code in {301, 308}
+
+    def raise_for_status(self):
+        if 400 <= self.status_code:
+            raise requests.HTTPError(
+                f"{self.status_code} {self.reason}".strip(),
+                response=self,
+            )
+
+
+def _perform_safe_outbound_get(url: str, *, headers: dict[str, str], timeout: int, verify_tls: bool = True):
+    parsed = urlparse(url)
+    hostname = str(parsed.hostname or "").strip()
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if not hostname:
+        raise ValueError("Outbound URL is missing a hostname.")
+
+    connect_ip = _resolve_public_ip_for_hostname(hostname, port)
+    request_target = parsed.path or "/"
+    if parsed.query:
+        request_target += f"?{parsed.query}"
+
+    request_headers = dict(headers)
+    request_headers["Host"] = parsed.netloc
+
+    connection_kwargs = {"timeout": timeout}
+    if parsed.scheme == "https":
+        # This branch preserves the existing admin-controlled "verify TLS" toggle.
+        ssl_context = ssl.create_default_context() if verify_tls else ssl._create_unverified_context()  # nosec B323
+        connection = _FixedHostHTTPSConnection(
+            connect_ip,
+            hostname,
+            port=port,
+            context=ssl_context,
+            **connection_kwargs,
+        )
+    else:
+        connection = _FixedHostHTTPConnection(
+            connect_ip,
+            hostname,
+            port=port,
+            **connection_kwargs,
+        )
+
+    try:
+        connection.request("GET", request_target, headers=request_headers)
+        raw_response = connection.getresponse()
+        body = raw_response.read()
+    except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+        raise requests.RequestException(f"Outbound request failed: {exc}") from exc
+    finally:
+        connection.close()
+
+    return _SafeOutboundResponse(
+        url=url,
+        status_code=raw_response.status,
+        reason=raw_response.reason,
+        headers={str(key): str(value) for key, value in raw_response.headers.items()},
+        body=body,
+    )
+
+
+def _safe_outbound_get(url: str, *, headers: dict[str, str], timeout: int, verify_tls: bool = True):
+    current_url = _validate_safe_outbound_url(url, field_name="Outbound URL")
+    for _redirect_count in range(SAFE_OUTBOUND_MAX_REDIRECTS + 1):
+        response = _perform_safe_outbound_get(
+            current_url,
+            timeout=timeout,
+            verify_tls=verify_tls,
+            headers=headers,
+        )
+        if response.is_redirect or response.is_permanent_redirect:
+            location = str(response.headers.get("Location") or "").strip()
+            if not location:
+                return response
+            current_url = _validate_safe_outbound_url(
+                urljoin(current_url, location),
+                field_name="Redirect URL",
+            )
+            continue
+        return response
+    raise ValueError("Outbound request exceeded the maximum redirect limit.")
+
+
+def _render_multi_select_input(name: str, selected_values, options: list[dict], size: int = 8):
     selected_set = set()
     if isinstance(selected_values, str):
         selected_values = [selected_values]
@@ -1546,31 +2027,48 @@ def _render_multi_select_input(
         seen.add(option_id)
         label = str(option.get("label") or option.get("name") or option_id)
         selected_attr = " selected" if option_id in selected_set else ""
-        rows.append(
-            f"<option value='{escape(option_id, quote=True)}'{selected_attr}>"
-            f"{escape(label)} ({escape(option_id)})</option>"
-        )
+        rows.append(f"<option value='{escape(option_id, quote=True)}'{selected_attr}>{escape(label)} ({escape(option_id)})</option>")
 
     for missing_value in sorted(selected_set - seen):
         rows.append(
-            f"<option value='{escape(missing_value, quote=True)}' selected>"
-            f"Current value (not found): {escape(missing_value)}</option>"
+            f"<option value='{escape(missing_value, quote=True)}' selected>Current value (not found): {escape(missing_value)}</option>"
         )
 
-    return (
-        f"<select name='{escape(name, quote=True)}' multiple size='{max(4, int(size))}'>"
-        + "".join(rows)
-        + "</select>"
-    )
+    return f"<select name='{escape(name, quote=True)}' multiple size='{max(4, int(size))}'>" + "".join(rows) + "</select>"
+
+
+def _dashboard_command_access_label(command_entry: dict):
+    if not isinstance(command_entry, dict):
+        return "Unknown"
+    mode = str(command_entry.get("mode") or "default").strip().lower()
+    default_policy = str(command_entry.get("default_policy") or "").strip().lower()
+    role_ids = command_entry.get("role_ids", []) or []
+
+    if mode == "disabled":
+        return "Disabled"
+    if mode == "public":
+        return "Public"
+    if mode == "custom_roles":
+        return f"Custom Roles ({len(role_ids)})" if role_ids else "Custom Roles"
+    if default_policy == "moderator_role_ids":
+        return "Mod Only"
+    if default_policy == "allowed_role_names":
+        return "Named Roles"
+    return "Public"
+
+
+def _dashboard_command_enabled_label(command_entry: dict):
+    if not isinstance(command_entry, dict):
+        return "Unknown"
+    mode = str(command_entry.get("mode") or "default").strip().lower()
+    return "Disabled" if mode == "disabled" else "Enabled"
 
 
 def _inject_csrf_token_inputs(body_html: str, csrf_token: str) -> str:
     token = str(csrf_token or "").strip()
     if not token:
         return body_html
-    hidden_input = (
-        f"<input type='hidden' name='csrf_token' value='{escape(token, quote=True)}' />"
-    )
+    hidden_input = f"<input type='hidden' name='csrf_token' value='{escape(token, quote=True)}' />"
     return POST_FORM_TAG_PATTERN.sub(
         lambda match: match.group(1) + hidden_input,
         str(body_html or ""),
@@ -1584,10 +2082,13 @@ def _render_layout(
     current_display_name: str,
     csrf_token: str,
     is_admin: bool,
+    current_role_label: str = "Read-only",
+    current_role: str = "read_only",
     current_guild_name: str = "",
     github_wiki_url: str = "",
     restart_enabled: bool = False,
 ):
+    theme_values = [str(option.get("value") or "").strip() for option in THEME_OPTIONS if str(option.get("value") or "").strip()]
     return render_template_string(
         """
 <!doctype html>
@@ -1642,6 +2143,66 @@ def _render_layout(
       --input-bg: #ffffff;
       --input-fg: #1e293b;
     }
+    body[data-theme="forest"] {
+      --bg: #0b1511;
+      --bg-grad-a: #102018;
+      --bg-grad-b: #183329;
+      --fg: #ecfdf5;
+      --muted: #9ec7b2;
+      --card: #11211a;
+      --border: #24503d;
+      --header: #09110d;
+      --link: #86efac;
+      --btn-bg: #15803d;
+      --btn-secondary: #365346;
+      --btn-danger: #b91c1c;
+      --flash-err-bg: #3f1717;
+      --flash-err-fg: #fecaca;
+      --flash-ok-bg: #103522;
+      --flash-ok-fg: #bbf7d0;
+      --input-bg: #0f1a15;
+      --input-fg: #ecfdf5;
+    }
+    body[data-theme="ember"] {
+      --bg: #1a1010;
+      --bg-grad-a: #241414;
+      --bg-grad-b: #48221a;
+      --fg: #fff4ec;
+      --muted: #e4b8a0;
+      --card: #241616;
+      --border: #5c342b;
+      --header: #140b0b;
+      --link: #fdba74;
+      --btn-bg: #ea580c;
+      --btn-secondary: #6b463f;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #491b1b;
+      --flash-err-fg: #fecaca;
+      --flash-ok-bg: #3a2411;
+      --flash-ok-fg: #fde68a;
+      --input-bg: #1d1111;
+      --input-fg: #fff4ec;
+    }
+    body[data-theme="ice"] {
+      --bg: #eef6fb;
+      --bg-grad-a: #eef6fb;
+      --bg-grad-b: #dbeafe;
+      --fg: #102132;
+      --muted: #4b6b84;
+      --card: #f9fcff;
+      --border: #bfd5e8;
+      --header: #e9f4fb;
+      --link: #0369a1;
+      --btn-bg: #0284c7;
+      --btn-secondary: #5b7a90;
+      --btn-danger: #dc2626;
+      --flash-err-bg: #fee2e2;
+      --flash-err-fg: #991b1b;
+      --flash-ok-bg: #d1fae5;
+      --flash-ok-fg: #065f46;
+      --input-bg: #ffffff;
+      --input-fg: #102132;
+    }
     body {
       font-family: "Trebuchet MS", "Lucida Sans", "Segoe UI", sans-serif;
       margin: 0;
@@ -1658,19 +2219,50 @@ def _render_layout(
       color: var(--fg);
       padding: 12px 18px;
       display: flex;
-      justify-content: space-between;
-      align-items: center;
+      flex-direction: column;
+      align-items: stretch;
       gap: 14px;
       position: sticky;
       top: 0;
       z-index: 10;
     }
+    .header-toprow { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
     .header-brand { min-width: 170px; }
-    .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; flex: 1; }
+    .header-brand strong { display: block; }
+    .header-version {
+      display: inline-block;
+      margin-top: 4px;
+      font-size: 0.82rem;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .header-tools { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+    .header-right { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center; }
+    .desktop-nav { display: flex; }
+    .mobile-quickbar { display: none; }
     .nav-controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: center; }
     .nav-controls a { text-decoration: none; }
     .current-user { color: var(--muted); font-size: 0.95rem; }
     .current-user-email { color: var(--muted); font-size: 0.85rem; }
+    .header-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 7px 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--fg);
+      font-size: 0.88rem;
+      line-height: 1.2;
+    }
+    .header-chip strong {
+      font-size: 0.78rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
     .wrap { max-width: 1200px; margin: 22px auto; padding: 0 16px; }
     .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
     .flash { padding: 10px 12px; border-radius: 8px; margin-bottom: 10px; border: 1px solid var(--border); }
@@ -1725,6 +2317,61 @@ def _render_layout(
       min-width: 190px;
       padding: 7px 9px;
     }
+    .mobile-nav { display: none; position: relative; }
+    .mobile-nav summary {
+      list-style: none;
+      cursor: pointer;
+      user-select: none;
+      min-height: 44px;
+      padding: 10px 14px;
+      border-radius: 10px;
+      background: var(--btn-bg);
+      color: #fff;
+      font-weight: 700;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      border: 0;
+    }
+    .mobile-nav summary::-webkit-details-marker { display: none; }
+    .mobile-nav-panel {
+      margin-top: 10px;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+      display: grid;
+      gap: 12px;
+    }
+    .mobile-user-block {
+      display: grid;
+      gap: 4px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .mobile-link-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .mobile-panel-section { display: grid; gap: 8px; }
+    .mobile-panel-title {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .mobile-link-grid .btn,
+    .mobile-nav-panel .btn,
+    .mobile-nav-panel .inline-form,
+    .mobile-nav-panel .inline-form .btn,
+    .mobile-nav-panel .nav-select {
+      width: 100%;
+    }
     .sr-only {
       position: absolute;
       width: 1px;
@@ -1737,9 +2384,140 @@ def _render_layout(
       border: 0;
     }
     .dash-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
-    .dash-card h3 { margin-top: 0; margin-bottom: 8px; }
-    .dash-card p { margin-top: 0; min-height: 50px; }
-    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    .dashboard-shell { display: grid; gap: 18px; }
+    .dashboard-hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.7fr) minmax(280px, 1fr);
+      gap: 16px;
+      align-items: stretch;
+    }
+    .dashboard-hero-main,
+    .dashboard-hero-side,
+    .dashboard-section,
+    .dash-card {
+      position: relative;
+      overflow: hidden;
+    }
+    .dashboard-hero-main::before,
+    .dashboard-hero-side::before,
+    .dash-card::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto auto 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--btn-bg), transparent 78%);
+      opacity: 0.75;
+      pointer-events: none;
+    }
+    .dashboard-hero-main h2,
+    .dashboard-hero-side h3,
+    .dashboard-section-head h3,
+    .dash-card h3 {
+      margin-top: 0;
+    }
+    .dashboard-hero-main p,
+    .dashboard-hero-side p,
+    .dash-card p {
+      margin-top: 0;
+    }
+    .dashboard-hero-main {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding-top: 20px;
+    }
+    .dashboard-hero-lead {
+      font-size: 1.02rem;
+      line-height: 1.55;
+      max-width: 58ch;
+    }
+    .dashboard-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .dashboard-pill {
+      display: grid;
+      gap: 2px;
+      min-width: 132px;
+      padding: 11px 13px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .dashboard-pill strong {
+      font-size: 0.74rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .dashboard-pill span {
+      font-size: 0.96rem;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+    .dashboard-hero-side {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      padding-top: 20px;
+    }
+    .dashboard-list {
+      display: grid;
+      gap: 10px;
+    }
+    .dashboard-list-item {
+      display: grid;
+      gap: 4px;
+      padding: 11px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .dashboard-list-item strong {
+      font-size: 0.9rem;
+    }
+    .dashboard-section {
+      display: grid;
+      gap: 12px;
+      padding-top: 18px;
+    }
+    .dashboard-section-head {
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .dashboard-section-head p {
+      margin: 0;
+      max-width: 70ch;
+    }
+    .dashboard-section-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 14px;
+    }
+    .dash-card {
+      display: grid;
+      gap: 12px;
+      align-content: start;
+      min-height: 100%;
+      padding-top: 20px;
+    }
+    .dash-card h3 { margin-bottom: 2px; }
+    .dash-card p { min-height: 0; line-height: 1.5; }
+    .dash-card.primary {
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), transparent 48%), var(--card);
+    }
+    .dash-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: auto; }
+    .dash-actions .btn { min-width: 0; }
+    .dashboard-note {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+      line-height: 1.45;
+    }
     .metric-card h3 { margin: 0 0 14px; }
     .metric-card .table-scroll { border-radius: 10px; }
     .metric-card .table-scroll > table {
@@ -1776,79 +2554,372 @@ def _render_layout(
       min-width: 760px;
       margin: 0;
     }
+    .members-filter-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 16px;
+    }
+    .members-filter-field {
+      flex: 1 1 260px;
+      display: grid;
+      gap: 6px;
+    }
+    .members-table-wrap > table { min-width: 980px; }
+    .members-action-form {
+      display: grid;
+      gap: 8px;
+      min-width: 280px;
+    }
+    .members-action-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .members-button-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .members-mobile-list { display: none; }
+    .members-mobile-card {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .members-mobile-card h3 {
+      margin: 0 0 4px;
+    }
+    .members-mobile-card p {
+      margin: 0;
+    }
+    .members-mobile-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+    }
+    .members-mobile-state {
+      color: var(--muted);
+      font-size: 0.88rem;
+      text-align: right;
+      max-width: 40%;
+    }
+    .members-mobile-meta {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: 1fr 1fr;
+    }
+    .members-mobile-meta div {
+      display: grid;
+      gap: 4px;
+    }
+    .members-mobile-meta strong {
+      font-size: 0.78rem;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .members-pagination {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .members-jump-form {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-left: auto;
+    }
+    .members-jump-form input[type=number] { width: 90px; }
+    @media (max-width: 1180px) {
+      .dashboard-hero { grid-template-columns: 1fr; }
+    }
     @media (max-width: 1080px) { .dash-grid { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 900px) {
       .grid { grid-template-columns: 1fr; }
       .dash-grid { grid-template-columns: 1fr; }
+      .dashboard-section-head { align-items: start; flex-direction: column; }
+      .dashboard-section-grid { grid-template-columns: 1fr 1fr; }
       header { padding: 10px 12px; align-items: center; }
       .wrap { margin: 14px auto; padding: 0 10px; }
       .card { padding: 14px; }
-      .header-right { width: 100%; justify-content: center; }
-      .nav-controls { width: 100%; display: grid; grid-template-columns: 1fr; }
+      .header-toprow { width: 100%; align-items: flex-start; }
+      .header-tools { margin-left: 0; width: auto; flex-shrink: 0; }
+      .header-right.desktop-nav { display: none; }
+      .mobile-quickbar { display: none; }
+      .mobile-nav { display: block; width: 100%; }
+      .mobile-nav[open] .mobile-nav-panel { display: grid; }
+      .mobile-nav:not([open]) .mobile-nav-panel { display: none; }
+      .mobile-nav .mobile-nav-panel {
+        display: none;
+        margin-top: 10px;
+        padding: 14px;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--card);
+        box-shadow: 0 16px 40px rgba(0, 0, 0, 0.2);
+        gap: 12px;
+        max-height: 70vh;
+        overflow-y: auto;
+      }
+      .mobile-nav summary { width: 100%; }
       .nav-select { width: 100%; max-width: 100%; min-width: 0; }
-      .nav-controls .btn { width: 100%; }
-      .inline-form { width: 100%; }
-      .inline-form .btn { width: 100%; }
       .theme-switch { width: 100%; }
+      .header-tools .theme-switch { display: none; }
       .theme-btn { flex: 1; min-height: 42px; }
       .current-user-email { display: block; }
       .dash-actions .btn { width: 100%; }
+      .dashboard-pill { min-width: 0; flex: 1 1 180px; }
       th, td { padding: 8px; }
       .table-scroll > table { min-width: 680px; }
+      .members-table-wrap > table { min-width: 860px; }
+      .members-button-grid { grid-template-columns: 1fr 1fr; }
     }
     @media (max-width: 600px) {
       .card { border-radius: 10px; }
       .table-scroll > table { min-width: 620px; }
+      .header-toprow { flex-direction: column; align-items: stretch; }
+      .header-tools { width: 100%; flex-direction: column; align-items: stretch; }
+      .dashboard-section-grid { grid-template-columns: 1fr; }
+      .dashboard-pill-row { display: grid; grid-template-columns: 1fr 1fr; }
+      .dashboard-pill { min-width: 0; }
+      .mobile-link-grid { grid-template-columns: 1fr; }
+      .members-table-wrap { display: none; }
+      .members-mobile-list { display: block; }
+      .members-mobile-meta { grid-template-columns: 1fr; }
+      .members-action-grid { grid-template-columns: 1fr; }
+      .members-button-grid { grid-template-columns: 1fr; }
+      .members-jump-form {
+        margin-left: 0;
+        width: 100%;
+        display: grid;
+        grid-template-columns: 1fr;
+      }
+      .members-jump-form input[type=number] { width: 100%; }
     }
   </style>
 </head>
 <body data-theme="black">
   <header>
-    <div class="header-brand"><strong>Discord Bot Admin</strong></div>
-    <div class="header-right">
-      <div class="theme-switch" aria-label="Theme selector">
-        <button type="button" class="theme-btn" data-theme-choice="light">Light</button>
-        <button type="button" class="theme-btn" data-theme-choice="black">Black</button>
+    <div class="header-toprow">
+      <div class="header-brand">
+        <strong>Discord Bot Admin</strong>
+        <span class="header-version">{{ web_gui_version }}</span>
       </div>
+      <div class="header-tools">
+        {% if current_email %}
+        <details class="mobile-nav">
+          <summary>Menu</summary>
+          <div class="mobile-nav-panel">
+            <div class="mobile-user-block">
+              <span class="current-user">{{ current_display_name or current_email }} ({{ current_role_label }})</span>
+              {% if current_display_name and current_display_name != current_email %}
+                <span class="current-user-email">{{ current_email }}</span>
+              {% endif %}
+              {% if current_guild_name %}<span class="current-user">Server: {{ current_guild_name }}</span>{% endif %}
+            </div>
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Quick Jump</p>
+              <label class="sr-only" for="mobile-nav-page-select">Open page</label>
+              <select id="mobile-nav-page-select" class="nav-select nav-page-select">
+                <option value="">Go to page...</option>
+                <option value="{{ url_for('guilds_page') }}">Servers</option>
+                <option value="{{ url_for('account') }}">My Account</option>
+                <option value="{{ url_for('members_page') }}">Members</option>
+                <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+                {% if current_role in ("glinet_read_only", "glinet_rw") %}
+                <option value="{{ url_for('dashboard') }}">Dashboard</option>
+                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('command_status') }}">Command Status</option>
+                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('moderation_page') }}">Moderation</option>
+                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
+                <option value="{{ url_for('members_page') }}">Members</option>
+                <option value="{{ url_for('discourse_page') }}">Discourse</option>
+                <option value="{{ url_for('actions_page') }}">Action History</option>
+                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
+                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+                <option value="{{ url_for('role_access_page') }}">Role Access</option>
+                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
+                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+                {% else %}
+                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('command_status') }}">Command Status</option>
+                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('moderation_page') }}">Moderation</option>
+                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
+                <option value="{{ url_for('members_page') }}">Members</option>
+                <option value="{{ url_for('discourse_page') }}">Discourse</option>
+                <option value="{{ url_for('actions_page') }}">Action History</option>
+                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
+                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+                <option value="{{ url_for('role_access_page') }}">Role Access</option>
+                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
+                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+                <option value="{{ url_for('settings') }}">Global Settings</option>
+                <option value="{{ url_for('public_observability') }}">Observability</option>
+                <option value="{{ url_for('admin_logs') }}">Logs</option>
+                <option value="{{ url_for('documentation') }}">Documentation</option>
+                <option value="{{ url_for('documentation') }}">Wiki Viewer</option>
+                {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
+                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+                <option value="{{ url_for('users') }}">Users</option>
+                {% endif %}
+                <option value="{{ url_for('logout') }}">Logout</option>
+              </select>
+            </div>
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Primary Actions</p>
+              <div class="mobile-link-grid">
+                <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+                <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
+                <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+                {% if current_role in ("glinet_read_only", "glinet_rw") %}
+                <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+                <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
+                <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
+                <a class="btn secondary" href="{{ url_for('honeypot_page') }}">Honeypot</a>
+                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
+                <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
+                <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
+                <a class="btn secondary" href="{{ url_for('reaction_roles_page') }}">Reaction Roles</a>
+                <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
+                {% else %}
+                <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+                <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
+                <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
+                <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
+                <a class="btn secondary" href="{{ url_for('honeypot_page') }}">Honeypot</a>
+                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
+                <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
+                <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
+                <a class="btn secondary" href="{{ url_for('reaction_roles_page') }}">Reaction Roles</a>
+                <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
+                {% endif %}
+              </div>
+            </div>
+            <div class="mobile-panel-section">
+              <p class="mobile-panel-title">Theme</p>
+              <div class="theme-switch" aria-label="Theme selector">
+                {% for theme_option in theme_options %}
+                <button type="button" class="theme-btn" data-theme-choice="{{ theme_option.value }}">{{ theme_option.label }}</button>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </details>
+        {% endif %}
+        <div class="theme-switch" aria-label="Theme selector">
+          {% for theme_option in theme_options %}
+          <button type="button" class="theme-btn" data-theme-choice="{{ theme_option.value }}">{{ theme_option.label }}</button>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    {% if current_email %}
+    <div class="mobile-quickbar">
+      <div class="header-chip">
+        <strong>Server</strong>
+        <span>{{ current_guild_name or "No server selected" }}</span>
+      </div>
+      <div class="mobile-link-grid">
+        <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
+        <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
+        <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
+        <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
+        <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
+        {% if current_role not in ("glinet_read_only", "glinet_rw") %}
+        <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    <div class="header-right desktop-nav">
       {% if current_email %}
         <nav class="nav-controls">
-          <span class="current-user">{{ current_display_name or current_email }} ({{ "Admin" if is_admin else "Read-only" }})</span>
+          <span class="current-user">{{ current_display_name or current_email }} ({{ current_role_label }})</span>
           {% if current_display_name and current_display_name != current_email %}
             <span class="current-user-email">({{ current_email }})</span>
           {% endif %}
           {% if current_guild_name %}<span class="current-user">Server: {{ current_guild_name }}</span>{% endif %}
+          {% if current_role not in ("glinet_read_only", "glinet_rw") %}
           <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
           <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-          <label class="sr-only" for="nav-page-select">Open page</label>
-          <select id="nav-page-select" class="nav-select">
+          {% endif %}
+          <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
+          <label class="sr-only" for="desktop-nav-page-select">Open page</label>
+          <select id="desktop-nav-page-select" class="nav-select nav-page-select">
             <option value="">Go to page...</option>
             <option value="{{ url_for('guilds_page') }}">Servers</option>
             <option value="{{ url_for('account') }}">My Account</option>
+            <option value="{{ url_for('members_page') }}">Members</option>
+            <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+            {% if current_role in ("glinet_read_only", "glinet_rw") %}
+            <option value="{{ url_for('dashboard') }}">Dashboard</option>
             <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+            <option value="{{ url_for('command_status') }}">Command Status</option>
             <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+            <option value="{{ url_for('moderation_page') }}">Moderation</option>
+            <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
+            <option value="{{ url_for('members_page') }}">Members</option>
+            <option value="{{ url_for('discourse_page') }}">Discourse</option>
+            <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+            <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+            <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
+            <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+            <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+            <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+            <option value="{{ url_for('role_access_page') }}">Role Access</option>
+            <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+            <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+            <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+            {% else %}
+            <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+            <option value="{{ url_for('command_status') }}">Command Status</option>
+            <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+            <option value="{{ url_for('moderation_page') }}">Moderation</option>
+            <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
+            <option value="{{ url_for('members_page') }}">Members</option>
+            <option value="{{ url_for('discourse_page') }}">Discourse</option>
+            <option value="{{ url_for('actions_page') }}">Action History</option>
+            <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+            <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+            <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
+            <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
+            <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+            <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+            <option value="{{ url_for('role_access_page') }}">Role Access</option>
             <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
             <option value="{{ url_for('settings') }}">Global Settings</option>
             <option value="{{ url_for('public_observability') }}">Observability</option>
             <option value="{{ url_for('admin_logs') }}">Logs</option>
             <option value="{{ url_for('documentation') }}">Documentation</option>
+            <option value="{{ url_for('documentation') }}">Wiki Viewer</option>
             {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
             <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
             <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
             <option value="{{ url_for('users') }}">Users</option>
+            {% endif %}
             <option value="{{ url_for('logout') }}">Logout</option>
           </select>
-          {% if restart_enabled %}
-            {% if is_admin %}
-            <form method="post" action="{{ url_for('restart_service') }}" class="inline-form" onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
-              <input type="hidden" name="confirm" value="yes" />
-              <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
-              <button class="btn danger" type="submit" title="Warning: restarts the running container process">Restart Container</button>
-            </form>
-            {% else %}
-            <button class="btn danger" type="button" disabled title="Read-only users cannot restart the container">Restart Container</button>
-            {% endif %}
-          {% endif %}
         </nav>
       {% endif %}
     </div>
@@ -1859,8 +2930,12 @@ def _render_layout(
         <div class="flash {{ category }}">{{ message }}</div>
       {% endfor %}
     {% endwith %}
-    {% if current_email and not is_admin %}
+    {% if current_email and current_role == "read_only" %}
       <div class="flash">Read-only account: you can view all pages, but configuration and management changes are blocked.</div>
+    {% elif current_email and current_role == "glinet_read_only" %}
+      <div class="flash">Glinet-Read-Only account: access is pinned to the primary GL.iNet Community Discord server and limited to view-only access there.</div>
+    {% elif current_email and current_role == "glinet_rw" %}
+      <div class="flash">Glinet-RW account: access is pinned to the primary GL.iNet Community Discord server and limited to guild-scoped changes there.</div>
     {% endif %}
     {{ body_html | safe }}
   </div>
@@ -1868,7 +2943,8 @@ def _render_layout(
     (function () {
       const storageKey = "web_theme_choice";
       const fallbackTheme = "black";
-      const allowed = { light: true, black: true };
+      const allowedChoices = {{ theme_values_json | safe }};
+      const allowed = Object.fromEntries(allowedChoices.map((themeName) => [themeName, true]));
 
       function setTheme(theme) {
         const selected = allowed[theme] ? theme : fallbackTheme;
@@ -1893,8 +2969,7 @@ def _render_layout(
         });
       });
 
-      const navPageSelect = document.getElementById("nav-page-select");
-      if (navPageSelect) {
+      document.querySelectorAll(".nav-page-select").forEach((navPageSelect) => {
         navPageSelect.addEventListener("change", function () {
           const option = navPageSelect.options[navPageSelect.selectedIndex];
           const target = option ? option.value : "";
@@ -1909,7 +2984,7 @@ def _render_layout(
           }
           navPageSelect.value = "";
         });
-      }
+      });
 
       document.querySelectorAll(".wrap table").forEach((table) => {
         const parent = table.parentElement;
@@ -1933,9 +3008,14 @@ def _render_layout(
         current_display_name=current_display_name,
         csrf_token=csrf_token,
         is_admin=is_admin,
+        current_role_label=current_role_label,
+        current_role=current_role,
         current_guild_name=current_guild_name,
         github_wiki_url=github_wiki_url,
         restart_enabled=restart_enabled,
+        web_gui_version=WEB_GUI_VERSION_LABEL,
+        theme_options=THEME_OPTIONS,
+        theme_values_json=json.dumps(theme_values),
     )
 
 
@@ -1956,42 +3036,51 @@ def create_web_app(
     on_get_discord_catalog=None,
     on_get_command_permissions=None,
     on_save_command_permissions=None,
+    on_get_honeypot=None,
+    on_manage_honeypot=None,
+    on_get_actions=None,
+    on_get_members=None,
+    on_manage_member=None,
+    on_get_member_activity=None,
+    on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
+    on_get_youtube_subscriptions=None,
+    on_manage_youtube_subscriptions=None,
+    on_get_linkedin_subscriptions=None,
+    on_manage_linkedin_subscriptions=None,
+    on_get_beta_program_subscriptions=None,
+    on_manage_beta_program_subscriptions=None,
+    on_get_role_access_mappings=None,
+    on_manage_role_access_mappings=None,
+    on_get_reaction_roles=None,
+    on_manage_reaction_roles=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
     on_request_restart=None,
+    on_leave_guild=None,
+    on_get_health_status=None,
+    on_get_ticket_settings=None,
+    on_save_ticket_settings=None,
     logger=None,
 ):
     app = Flask(__name__)
-    trust_proxy_headers = _is_truthy_env_value(
-        os.getenv("WEB_TRUST_PROXY_HEADERS", "true")
-    )
+    trust_proxy_headers = _is_truthy_env_value(os.getenv("WEB_TRUST_PROXY_HEADERS", "true"))
     if trust_proxy_headers:
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
     app.secret_key = os.getenv("WEB_ADMIN_SESSION_SECRET", "") or secrets.token_hex(32)
-    max_bulk_upload = _get_int_env(
-        "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
-    )
-    max_avatar_upload = _get_int_env(
-        "WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
-    )
-    secure_session_cookie = _is_truthy_env_value(
-        os.getenv("WEB_SESSION_COOKIE_SECURE", "true")
-    )
+    max_bulk_upload = _get_int_env("WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
+    max_avatar_upload = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
+    secure_session_cookie = _is_truthy_env_value(os.getenv("WEB_SESSION_COOKIE_SECURE", "true"))
     session_cookie_samesite = _normalize_session_cookie_samesite(
         os.getenv("WEB_SESSION_COOKIE_SAMESITE", "Lax"),
         default_value="Lax",
     )
     enforce_csrf = _is_truthy_env_value(os.getenv("WEB_ENFORCE_CSRF", "true"))
-    enforce_same_origin_posts = _is_truthy_env_value(
-        os.getenv("WEB_ENFORCE_SAME_ORIGIN_POSTS", "true")
-    )
-    harden_file_permissions = _is_truthy_env_value(
-        os.getenv("WEB_HARDEN_FILE_PERMISSIONS", "true")
-    )
+    enforce_same_origin_posts = _is_truthy_env_value(os.getenv("WEB_ENFORCE_SAME_ORIGIN_POSTS", "true"))
+    harden_file_permissions = _is_truthy_env_value(os.getenv("WEB_HARDEN_FILE_PERMISSIONS", "true"))
     web_session_timeout_minutes = _normalize_session_timeout_minutes(
         os.getenv("WEB_SESSION_TIMEOUT_MINUTES", str(WEB_INACTIVITY_TIMEOUT_MINUTES)),
         default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
@@ -2013,9 +3102,7 @@ def create_web_app(
     observability_started_monotonic = time.monotonic()
     observability_lock = threading.Lock()
     observability_history = deque()
-    observability_history_retention_seconds = (
-        OBSERVABILITY_HISTORY_RETENTION_HOURS * 60 * 60
-    )
+    observability_history_retention_seconds = OBSERVABILITY_HISTORY_RETENTION_HOURS * 60 * 60
     observability_history_sample_seconds = OBSERVABILITY_HISTORY_SAMPLE_SECONDS
 
     def _collect_and_store_observability_snapshot():
@@ -2028,9 +3115,7 @@ def create_web_app(
             cutoff_epoch = now_epoch - float(observability_history_retention_seconds)
             observability_history.append(snapshot)
             while observability_history:
-                oldest_epoch = float(
-                    observability_history[0].get("sampled_at_epoch") or 0.0
-                )
+                oldest_epoch = float(observability_history[0].get("sampled_at_epoch") or 0.0)
                 if oldest_epoch >= cutoff_epoch:
                     break
                 observability_history.popleft()
@@ -2058,6 +3143,8 @@ def create_web_app(
 
     @app.after_request
     def apply_security_headers(response):
+        g.response_status_code = int(getattr(response, "status_code", 0) or 0)
+        _remember_navigation_entry()
         request_host = _extract_hostname(str(request.host or ""))
         is_local_request = False
         if request_host:
@@ -2071,11 +3158,7 @@ def create_web_app(
             else:
                 try:
                     ip_value = ipaddress.ip_address(request_host)
-                    is_local_request = (
-                        ip_value.is_loopback
-                        or ip_value.is_private
-                        or ip_value.is_link_local
-                    )
+                    is_local_request = ip_value.is_loopback or ip_value.is_private or ip_value.is_link_local
                 except ValueError:
                     is_local_request = False
         forwarded_proto = str(request.headers.get("X-Forwarded-Proto", "")).strip().lower()
@@ -2091,9 +3174,7 @@ def create_web_app(
             response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
         else:
             response.headers.pop("Cross-Origin-Opener-Policy", None)
-        response.headers.setdefault(
-            "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
-        )
+        response.headers.setdefault("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
         response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("Pragma", "no-cache")
@@ -2140,7 +3221,12 @@ def create_web_app(
                             str(request.headers.get("X-Forwarded-Proto", "") or ""),
                             _client_ip(),
                         )
-        if logger and request.endpoint != "healthz":
+        authenticated = bool(session.get("auth_email"))
+        if logger and should_log_web_audit_event(
+            endpoint=request.endpoint,
+            status_code=int(getattr(response, "status_code", 0) or 0),
+            authenticated=authenticated,
+        ):
             started = getattr(g, "request_started_monotonic", None)
             if started is None:
                 duration_ms = -1
@@ -2161,6 +3247,7 @@ def create_web_app(
     users_file = Path(data_dir) / "bot_data.db"
     users_file.parent.mkdir(parents=True, exist_ok=True)
     env_file = Path(env_file_path)
+    fallback_env_file = _env_fallback_file_path(data_dir)
     if harden_file_permissions:
         try:
             os.chmod(users_file.parent, 0o700)
@@ -2174,10 +3261,13 @@ def create_web_app(
                 os.chmod(env_file, 0o600)
             except (PermissionError, OSError):
                 pass
+        if fallback_env_file.exists():
+            try:
+                os.chmod(fallback_env_file, 0o600)
+            except (PermissionError, OSError):
+                pass
 
-    _ensure_default_admin(
-        users_file, default_admin_email, default_admin_password, logger
-    )
+    _ensure_default_admin(users_file, default_admin_email, default_admin_password, logger)
     favicon_file = Path(__file__).resolve().parent / "assets" / "images" / "glinet-bot-round.png"
     wiki_dir = Path(__file__).resolve().parent / "wiki"
     wiki_dir_resolved = wiki_dir.resolve()
@@ -2213,7 +3303,40 @@ def create_web_app(
                 return user
         return None
 
-    def _load_available_guilds():
+    def _guild_groups_by_id():
+        return {
+            str(entry.get("id") or "").strip(): entry
+            for entry in _read_guild_groups(users_file)
+            if str(entry.get("id") or "").strip()
+        }
+
+    def _allowed_guild_ids_for_user(user: dict | None):
+        if not _is_guild_admin_user(user):
+            return None
+        allowed_ids = []
+        seen = set()
+        for group_id in _normalize_string_id_list((user or {}).get("guild_group_ids", [])):
+            group_entry = _guild_groups_by_id().get(group_id)
+            if not isinstance(group_entry, dict):
+                continue
+            for guild_id in _normalize_id_string_list(group_entry.get("guild_ids", [])):
+                if guild_id in seen:
+                    continue
+                allowed_ids.append(guild_id)
+                seen.add(guild_id)
+        return allowed_ids
+
+    def _filter_guilds_for_user(guilds: list[dict], user: dict | None):
+        if _is_glinet_scoped_user(user):
+            preferred = _preferred_glinet_guild()
+            return [preferred] if isinstance(preferred, dict) else []
+        allowed_guild_ids = _allowed_guild_ids_for_user(user)
+        if allowed_guild_ids is None:
+            return list(guilds)
+        allowed_set = set(allowed_guild_ids)
+        return [entry for entry in guilds if str(entry.get("id") or "").strip() in allowed_set]
+
+    def _load_all_guilds():
         payload = on_get_guilds() if callable(on_get_guilds) else None
         if not isinstance(payload, dict) or not payload.get("ok"):
             return [], str(payload.get("error") or "") if isinstance(payload, dict) else ""
@@ -2238,7 +3361,22 @@ def create_web_app(
         normalized.sort(key=lambda item: item["name"].casefold())
         return normalized, ""
 
+    def _load_available_guilds():
+        guilds, error_text = _load_all_guilds()
+        return _filter_guilds_for_user(guilds, _current_user()), error_text
+
     def _selected_guild_id():
+        user = _current_user()
+        if _is_glinet_scoped_user(user):
+            preferred = _preferred_glinet_guild()
+            if preferred is not None:
+                preferred_id = str(preferred.get("id") or "").strip()
+                if preferred_id:
+                    session["selected_guild_id"] = preferred_id
+                    return preferred_id
+            session.pop("selected_guild_id", None)
+            return ""
+
         selected = str(session.get("selected_guild_id", "")).strip()
         guilds, _error_text = _load_available_guilds()
         valid_ids = {str(entry.get("id") or "").strip() for entry in guilds}
@@ -2246,6 +3384,11 @@ def create_web_app(
             return selected
         if selected and selected not in valid_ids:
             session.pop("selected_guild_id", None)
+        if _is_guild_admin_user(user) and guilds:
+            selected = str(guilds[0].get("id") or "").strip()
+            if selected:
+                session["selected_guild_id"] = selected
+                return selected
         return ""
 
     def _selected_guild():
@@ -2260,6 +3403,17 @@ def create_web_app(
 
     def _set_selected_guild_id(guild_id: str):
         selected = str(guild_id or "").strip()
+        user = _current_user()
+        if _is_glinet_scoped_user(user):
+            preferred = _preferred_glinet_guild()
+            if preferred is not None:
+                preferred_id = str(preferred.get("id") or "").strip()
+                if preferred_id:
+                    session["selected_guild_id"] = preferred_id
+                    return True
+            session.pop("selected_guild_id", None)
+            return False
+
         guilds, _error_text = _load_available_guilds()
         valid_ids = {str(entry.get("id") or "").strip() for entry in guilds}
         if selected and selected in valid_ids:
@@ -2267,6 +3421,21 @@ def create_web_app(
             return True
         session.pop("selected_guild_id", None)
         return False
+
+    def _preferred_glinet_guild():
+        guilds, _error_text = _load_all_guilds()
+        if not guilds:
+            return None
+        for entry in guilds:
+            if bool(entry.get("is_primary")):
+                return entry
+        for entry in guilds:
+            guild_name = str(entry.get("name") or "").casefold()
+            if "gl.i.net community" in guild_name or "glinet community" in guild_name:
+                return entry
+        if len(guilds) == 1:
+            return guilds[0]
+        return None
 
     def _require_selected_guild_redirect():
         if _selected_guild() is not None:
@@ -2297,9 +3466,7 @@ def create_web_app(
     def _client_ip():
         x_forwarded_for = str(request.headers.get("X-Forwarded-For", "")).strip()
         if trust_proxy_headers and x_forwarded_for:
-            parts = [
-                part.strip() for part in x_forwarded_for.split(",") if part.strip()
-            ]
+            parts = [part.strip() for part in x_forwarded_for.split(",") if part.strip()]
             if parts:
                 return parts[0]
         return str(request.remote_addr or "unknown")
@@ -2322,18 +3489,14 @@ def create_web_app(
         session.pop("selected_guild_id", None)
 
     def _set_auth_session(email: str, remember_login: bool):
-        now_dt = datetime.now(timezone.utc)
+        now_dt = datetime.now(UTC)
         now_iso = now_dt.isoformat()
         session["auth_email"] = _normalize_email(email)
-        session["auth_mode"] = (
-            AUTH_MODE_REMEMBER if remember_login else AUTH_MODE_STANDARD
-        )
+        session["auth_mode"] = AUTH_MODE_REMEMBER if remember_login else AUTH_MODE_STANDARD
         session["auth_issued_at"] = now_iso
         session["auth_last_seen"] = now_iso
         if remember_login:
-            session["auth_remember_until"] = (
-                now_dt + timedelta(days=REMEMBER_LOGIN_DAYS)
-            ).isoformat()
+            session["auth_remember_until"] = (now_dt + timedelta(days=REMEMBER_LOGIN_DAYS)).isoformat()
         else:
             session.pop("auth_remember_until", None)
         session.permanent = True
@@ -2344,12 +3507,84 @@ def create_web_app(
             default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
         )
 
+    def _navigation_label_for_endpoint(endpoint: str) -> str:
+        labels = {
+            "dashboard": "Dashboard",
+            "guild_settings": "Guild Settings",
+            "moderation_page": "Moderation",
+            "honeypot_page": "Honeypot",
+            "members_page": "Members",
+            "discourse_page": "Discourse",
+            "uptime_kuma_page": "Uptime Kuma",
+            "command_status": "Command Status",
+            "command_permissions": "Command Permissions",
+            "bot_profile": "Bot Profile",
+            "member_activity_page": "Member Activity",
+            "role_access_page": "Role Access",
+            "tag_responses": "Tag Responses",
+            "actions_page": "Action History",
+            "bulk_role_csv": "Bulk Role CSV",
+            "reddit_feeds": "Reddit Feeds",
+            "service_monitors_page": "Service Monitors",
+            "youtube_subscriptions": "YouTube",
+            "linkedin_subscriptions": "LinkedIn",
+            "beta_program_subscriptions": "Beta Programs",
+            "account": "My Account",
+            "settings": "Global Settings",
+            "public_observability": "Observability",
+            "admin_logs": "Logs",
+            "users": "Users",
+            "reaction_roles_page": "Reaction Roles",
+            "documentation": "Documentation",
+            "wiki_proxy": "Wiki",
+        }
+        return labels.get(str(endpoint or "").strip(), "")
+
+    def _recent_navigation_entries() -> list[dict]:
+        entries = session.get(RECENT_NAV_SESSION_KEY, [])
+        if not isinstance(entries, list):
+            return []
+        normalized = []
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            href = str(item.get("href") or "").strip()
+            if not label or not href:
+                continue
+            normalized.append({"label": label, "href": href})
+        return normalized[:RECENT_NAV_LIMIT]
+
+    def _remember_navigation_entry() -> None:
+        if request.method != "GET":
+            return
+        if int(getattr(g, "response_status_code", 0) or 0) >= 400:
+            return
+        if not _normalize_email(session.get("auth_email", "")):
+            return
+        endpoint = str(request.endpoint or "").strip()
+        label = _navigation_label_for_endpoint(endpoint)
+        if not label or endpoint == "dashboard":
+            return
+        href = str(request.full_path or request.path or "").strip()
+        if href.endswith("?"):
+            href = href[:-1]
+        if not href.startswith("/"):
+            href = str(request.path or "").strip()
+        current_entries = _recent_navigation_entries()
+        updated_entries = [{"label": label, "href": href}]
+        for item in current_entries:
+            if str(item.get("href") or "").strip() == href:
+                continue
+            updated_entries.append(item)
+        session[RECENT_NAV_SESSION_KEY] = updated_entries[:RECENT_NAV_LIMIT]
+
     def _is_active_auth_session():
         email = _normalize_email(session.get("auth_email", ""))
         if not email:
             return False
 
-        now_dt = datetime.now(timezone.utc)
+        now_dt = datetime.now(UTC)
         mode = str(session.get("auth_mode", AUTH_MODE_STANDARD)).strip().lower()
         if mode not in {AUTH_MODE_STANDARD, AUTH_MODE_REMEMBER}:
             mode = AUTH_MODE_STANDARD
@@ -2411,9 +3646,7 @@ def create_web_app(
                     forwarded_header,
                 )
                 if forwarded_match:
-                    forwarded_token = (
-                        str(forwarded_match.group(1) or "").strip().strip('"')
-                    )
+                    forwarded_token = str(forwarded_match.group(1) or "").strip().strip('"')
                     forwarded_name = _extract_hostname(forwarded_token)
                     if forwarded_name:
                         allowed_hosts.add(forwarded_name)
@@ -2465,7 +3698,7 @@ def create_web_app(
     def enforce_request_security():
         if request.method not in STATE_CHANGING_METHODS:
             return None
-        if request.endpoint == "healthz":
+        if request.endpoint in {"healthz", "readyz"}:
             return None
 
         if enforce_same_origin_posts and not _is_same_origin_request():
@@ -2489,23 +3722,13 @@ def create_web_app(
 
         if enforce_csrf:
             expected = str(session.get("csrf_token", "")).strip()
-            submitted = str(
-                request.form.get("csrf_token", "")
-                or request.headers.get("X-CSRF-Token", "")
-            ).strip()
+            submitted = str(request.form.get("csrf_token", "") or request.headers.get("X-CSRF-Token", "")).strip()
             # Recover login form flow when a prior session token is absent but the
             # submitted form token is present (for example after cookie loss).
-            if (
-                request.endpoint == "login"
-                and request.method == "POST"
-                and not expected
-                and submitted
-            ):
+            if request.endpoint == "login" and request.method == "POST" and not expected and submitted:
                 session["csrf_token"] = submitted
                 expected = submitted
-            if not expected or not submitted or not secrets.compare_digest(
-                expected, submitted
-            ):
+            if not expected or not submitted or not secrets.compare_digest(expected, submitted):
                 if logger:
                     logger.warning(
                         "Blocked request due to CSRF validation: endpoint=%s method=%s ip=%s has_expected=%s has_submitted=%s",
@@ -2533,6 +3756,58 @@ def create_web_app(
             return None
         if _is_admin_user(user):
             return None
+        if _is_glinet_rw_user(user):
+            glinet_rw_write_endpoints = {
+                "account",
+                "command_status",
+                "guild_settings",
+                "moderation_page",
+                "members_page",
+                "discourse_page",
+                "command_permissions",
+                "reddit_feeds",
+                "service_monitors_page",
+                "uptime_kuma_page",
+                "youtube_subscriptions",
+                "linkedin_subscriptions",
+                "beta_program_subscriptions",
+                "role_access_page",
+                "tag_responses",
+                "bot_profile",
+            }
+            if request.endpoint in glinet_rw_write_endpoints:
+                if request.endpoint == "bot_profile":
+                    action = str(request.form.get("action", "") or "").strip().lower()
+                    if action not in {"nickname"}:
+                        flash("Glinet-RW can only edit the bot nickname for the GL.iNet Community Discord.", "error")
+                        return redirect(url_for("bot_profile"))
+                return None
+        if _is_guild_admin_user(user):
+            guild_admin_write_endpoints = {
+                "account",
+                "command_status",
+                "guild_settings",
+                "moderation_page",
+                "members_page",
+                "discourse_page",
+                "command_permissions",
+                "reddit_feeds",
+                "service_monitors_page",
+                "uptime_kuma_page",
+                "youtube_subscriptions",
+                "linkedin_subscriptions",
+                "beta_program_subscriptions",
+                "role_access_page",
+                "tag_responses",
+                "bot_profile",
+            }
+            if request.endpoint in guild_admin_write_endpoints:
+                if request.endpoint == "bot_profile":
+                    action = str(request.form.get("action", "") or "").strip().lower()
+                    if action not in {"nickname"}:
+                        flash("Guild Admin can only edit the bot nickname inside allowed servers.", "error")
+                        return redirect(url_for("bot_profile"))
+                return None
         if logger:
             logger.warning(
                 "Blocked write request for read-only user: endpoint=%s method=%s ip=%s",
@@ -2543,8 +3818,18 @@ def create_web_app(
         flash("Read-only account: this action is not allowed.", "error")
         safe_view_endpoints = {
             "bot_profile",
+            "command_status",
             "command_permissions",
+            "moderation_page",
+            "members_page",
+            "discourse_page",
             "reddit_feeds",
+            "service_monitors_page",
+            "uptime_kuma_page",
+            "youtube_subscriptions",
+            "linkedin_subscriptions",
+            "beta_program_subscriptions",
+            "role_access_page",
             "settings",
             "tag_responses",
             "bulk_role_csv",
@@ -2553,6 +3838,52 @@ def create_web_app(
         if request.endpoint in safe_view_endpoints:
             return redirect(url_for(str(request.endpoint)))
         return redirect(url_for("dashboard"))
+
+    @app.before_request
+    def enforce_glinet_role_route_restrictions():
+        user = _current_user()
+        if user is None or (not _is_glinet_scoped_user(user) and not _is_guild_admin_user(user)):
+            return None
+        allowed_endpoints = {
+            "index",
+            "login",
+            "logout",
+            "healthz",
+            "readyz",
+            "favicon",
+            "account",
+            "guilds_page",
+            "select_guild",
+            "dashboard",
+            "guild_settings",
+            "moderation_page",
+            "members_page",
+            "discourse_page",
+            "actions_page",
+            "member_activity_page",
+            "member_activity_export",
+            "command_status",
+            "command_permissions",
+            "reddit_feeds",
+            "service_monitors_page",
+            "uptime_kuma_page",
+            "youtube_subscriptions",
+            "linkedin_subscriptions",
+            "beta_program_subscriptions",
+            "role_access_page",
+            "tag_responses",
+            "bulk_role_csv",
+            "bot_profile",
+        }
+        if request.endpoint in allowed_endpoints:
+            return None
+        if _is_guild_admin_user(user):
+            flash("Guild Admin access is limited to assigned Discord server groups.", "error")
+        else:
+            flash("GL.iNet-scoped access is limited to the primary GL.iNet Community Discord server.", "error")
+        if _selected_guild():
+            return redirect(url_for("dashboard"))
+        return redirect(url_for("guilds_page"))
 
     def _prune_login_attempts(client_ip: str):
         now_ts = time.time()
@@ -2592,12 +3923,17 @@ def create_web_app(
         csrf_token = _ensure_csrf_token()
         resolved_display_name = _clean_profile_text(current_display_name, max_length=80)
         normalized_email = _normalize_email(current_email)
+        current_role = _normalize_web_user_role("", is_admin=is_admin)
         if not resolved_display_name and normalized_email:
             for account in _read_users(users_file):
                 if account.get("email") == normalized_email:
                     resolved_display_name = _clean_profile_text(
                         str(account.get("display_name", "")),
                         max_length=80,
+                    )
+                    current_role = _normalize_web_user_role(
+                        str(account.get("role", "")),
+                        is_admin=bool(account.get("is_admin")),
                     )
                     break
         if not resolved_display_name and normalized_email:
@@ -2610,12 +3946,32 @@ def create_web_app(
             resolved_display_name,
             csrf_token,
             is_admin,
-            current_guild_name=(
-                str(current_guild.get("name") or "") if isinstance(current_guild, dict) else ""
-            ),
+            current_role_label=_user_role_label(current_role, is_admin=is_admin),
+            current_role=current_role,
+            current_guild_name=(str(current_guild.get("name") or "") if isinstance(current_guild, dict) else ""),
             github_wiki_url=_github_wiki_url(),
             restart_enabled=_restart_enabled(),
         )
+
+    def _load_discord_catalog_options(selected_guild_id: str, *, channel_type: str | None = None):
+        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) and selected_guild_id else None
+        channel_options = []
+        role_options = []
+        catalog_error = ""
+        if isinstance(discord_catalog, dict):
+            if discord_catalog.get("ok"):
+                channel_options = discord_catalog.get("channels", []) or []
+                role_options = discord_catalog.get("roles", []) or []
+            else:
+                catalog_error = str(discord_catalog.get("error") or "")
+        if channel_type is not None:
+            expected_type = str(channel_type or "").strip().lower()
+            channel_options = [
+                option
+                for option in channel_options
+                if str(option.get("type") or "").strip().lower() == expected_type
+            ]
+        return channel_options, role_options, catalog_error
 
     def _redirect_for_password_rotation(user: dict):
         if not user:
@@ -2623,7 +3979,7 @@ def create_web_app(
         if not _password_change_required(user):
             session.pop("force_password_change_notice_shown", None)
             return None
-        if request.endpoint in {"account", "logout", "login", "healthz"}:
+        if request.endpoint in {"account", "logout", "login", "healthz", "readyz"}:
             return None
         if not session.get("force_password_change_notice_shown"):
             flash(
@@ -2662,9 +4018,43 @@ def create_web_app(
 
         return wrapper
 
+    def _build_health_status_payload():
+        payload = {
+            "ok": True,
+            "ready": True,
+            "service": "discord_invite_bot",
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        if not callable(on_get_health_status):
+            return payload
+        try:
+            result = on_get_health_status()
+        except Exception:
+            if logger:
+                logger.exception("Health status callback failed.")
+            payload.update(
+                {
+                    "ok": False,
+                    "ready": False,
+                    "error": "health callback failed",
+                }
+            )
+            return payload
+        if isinstance(result, dict):
+            payload.update(result)
+        return payload
+
     @app.route("/healthz", methods=["GET"])
     def healthz():
-        return {"ok": True}, 200
+        payload = _build_health_status_payload()
+        status_code = 200 if bool(payload.get("ok", True)) else 503
+        return payload, status_code
+
+    @app.route("/readyz", methods=["GET"])
+    def readyz():
+        payload = _build_health_status_payload()
+        status_code = 200 if bool(payload.get("ready", False)) else 503
+        return payload, status_code
 
     @app.route("/favicon.ico", methods=["GET"])
     def favicon():
@@ -2742,6 +4132,11 @@ def create_web_app(
                 <input id="login_email" type="email" name="email" placeholder="admin@example.com" autocomplete="username" autocapitalize="none" spellcheck="false" required />
                 <label for="login_password" style="margin-top:10px;display:block;">Password</label>
                 <input id="login_password" type="password" name="password" autocomplete="current-password" required />
+                <label style="margin-top:8px;display:block;">
+                  <input type="checkbox"
+                    onchange="document.getElementById('login_password').type=this.checked?'text':'password';" />
+                  Show password
+                </label>
                 <label style="margin-top:10px;display:block;">
                   <input type="checkbox" name="remember_login" value="1" />
                   Keep me signed in for {REMEMBER_LOGIN_DAYS} days on this device
@@ -2775,11 +4170,7 @@ def create_web_app(
             action = str(request.form.get("action", "")).strip().lower()
             users_data = _read_users(users_file)
             user_index = next(
-                (
-                    idx
-                    for idx, entry in enumerate(users_data)
-                    if entry.get("email") == user.get("email")
-                ),
+                (idx for idx, entry in enumerate(users_data) if entry.get("email") == user.get("email")),
                 -1,
             )
             if user_index < 0:
@@ -2797,15 +4188,9 @@ def create_web_app(
                         "error",
                     )
                 else:
-                    first_name = _clean_profile_text(
-                        request.form.get("first_name", ""), max_length=80
-                    )
-                    last_name = _clean_profile_text(
-                        request.form.get("last_name", ""), max_length=80
-                    )
-                    display_name = _clean_profile_text(
-                        request.form.get("display_name", ""), max_length=80
-                    )
+                    first_name = _clean_profile_text(request.form.get("first_name", ""), max_length=80)
+                    last_name = _clean_profile_text(request.form.get("last_name", ""), max_length=80)
+                    display_name = _clean_profile_text(request.form.get("display_name", ""), max_length=80)
                     next_email = _normalize_email(request.form.get("email", ""))
                     current_password = request.form.get("current_password", "")
 
@@ -2818,18 +4203,10 @@ def create_web_app(
                         validation_errors.append("Display name is required.")
                     if not _is_valid_email(next_email):
                         validation_errors.append("Enter a valid email.")
-                    if any(
-                        row.get("email") == next_email
-                        and row.get("email") != entry.get("email")
-                        for row in users_data
-                    ):
-                        validation_errors.append(
-                            "Another account already uses that email."
-                        )
+                    if any(row.get("email") == next_email and row.get("email") != entry.get("email") for row in users_data):
+                        validation_errors.append("Another account already uses that email.")
                     if not check_password_hash(entry["password_hash"], current_password):
-                        validation_errors.append(
-                            "Current password is required to update account details."
-                        )
+                        validation_errors.append("Current password is required to update account details.")
 
                     if validation_errors:
                         for message in validation_errors:
@@ -2861,26 +4238,22 @@ def create_web_app(
                     validation_errors.append("New password is required.")
                 if not str(confirm_password or ""):
                     validation_errors.append("Confirm new password is required.")
-                if (
-                    str(new_password or "")
-                    and str(confirm_password or "")
-                    and new_password != confirm_password
-                ):
+                if str(new_password or "") and str(confirm_password or "") and new_password != confirm_password:
                     validation_errors.append("New password and confirmation must match.")
                 if str(new_password or ""):
                     validation_errors.extend(_password_policy_errors(new_password))
-                if str(new_password or "") and check_password_hash(
-                    entry["password_hash"], new_password
-                ):
-                    validation_errors.append(
-                        "New password must be different from the current password."
-                    )
+                if str(new_password or "") and check_password_hash(entry["password_hash"], new_password):
+                    validation_errors.append("New password must be different from the current password.")
+                previous_password_hash = str(entry.get("previous_password_hash") or "").strip()
+                if str(new_password or "") and previous_password_hash and check_password_hash(previous_password_hash, new_password):
+                    validation_errors.append("New password must not match your previous password.")
 
                 if validation_errors:
                     for message in validation_errors:
                         flash(message, "error")
                 else:
                     now_iso = _now_iso()
+                    entry["previous_password_hash"] = str(entry.get("password_hash") or "").strip()
                     entry["password_hash"] = _hash_password(new_password)
                     entry["password_changed_at"] = now_iso
                     _save_users(users_file, users_data)
@@ -2900,10 +4273,7 @@ def create_web_app(
             f"<p class='muted'>Password is expired (older than {PASSWORD_MAX_AGE_DAYS} days). "
             "Update your password to unlock profile/email changes.</p>"
             if password_expired
-            else (
-                f"<p class='muted'>Password age: {password_age_days} day(s). "
-                f"Days remaining before forced reset: {days_remaining}.</p>"
-            )
+            else (f"<p class='muted'>Password age: {password_age_days} day(s). Days remaining before forced reset: {days_remaining}.</p>")
         )
 
         body = f"""
@@ -2991,6 +4361,12 @@ def create_web_app(
         selected_guild_id = _selected_guild_id()
         selected_guild = _selected_guild()
 
+        if _is_glinet_scoped_user(user):
+            if selected_guild is not None:
+                return redirect(url_for("dashboard"))
+            flash("No primary Discord server is available for the GL.iNet-scoped role.", "error")
+            return redirect(url_for("account"))
+
         cards = []
         for guild in guilds:
             guild_id = str(guild.get("id") or "")
@@ -2998,11 +4374,7 @@ def create_web_app(
             member_count = int(guild.get("member_count") or 0)
             icon_url = str(guild.get("icon_url") or "").strip()
             is_selected = guild_id == selected_guild_id
-            primary_note = (
-                "<p class='muted'>Primary configured guild</p>"
-                if guild.get("is_primary")
-                else ""
-            )
+            primary_note = "<p class='muted'>Primary configured guild</p>" if guild.get("is_primary") else ""
             icon_html = (
                 f"<img src='{escape(icon_url, quote=True)}' alt='{escape(guild_name)} icon' "
                 "style='width:56px;height:56px;border-radius:14px;border:1px solid var(--border);object-fit:cover;' />"
@@ -3023,24 +4395,31 @@ def create_web_app(
                   {primary_note}
                   <form method="post" action="{escape(url_for("select_guild"), quote=True)}">
                     <input type="hidden" name="guild_id" value="{escape(guild_id, quote=True)}" />
-                    <button class="btn" type="submit"{' disabled' if is_selected else ''}>{'Currently Selected' if is_selected else 'Manage This Server'}</button>
+                    <button class="btn" type="submit"{" disabled" if is_selected else ""}>{"Currently Selected" if is_selected else "Manage This Server"}</button>
                   </form>
+                  {""
+                    if not is_admin else
+                    f'''
+                    <form method="post" action="{escape(url_for("leave_guild"), quote=True)}" style="margin-top:10px;" onsubmit="return confirm('Remove the bot from {escape(guild_name)}? This cannot be undone from the web GUI and will immediately disconnect the bot from that server.');">
+                      <input type="hidden" name="guild_id" value="{escape(guild_id, quote=True)}" />
+                      <input type="hidden" name="confirm" value="yes" />
+                      <button class="btn danger" type="submit">Remove Bot</button>
+                    </form>
+                    '''
+                  }
                 </div>
                 """
             )
 
         selected_note = ""
         if isinstance(selected_guild, dict):
+            selected_target = url_for("dashboard")
             selected_note = (
                 f"<p>Current server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong> "
                 f"(<span class='mono'>{escape(str(selected_guild.get('id') or ''))}</span>). "
-                f"<a href='{escape(url_for('dashboard'), quote=True)}'>Open dashboard</a>.</p>"
+                f"<a href='{escape(selected_target, quote=True)}'>Open dashboard</a>.</p>"
             )
-        error_html = (
-            f"<p class='muted'>Could not load guild list: {escape(guild_error)}</p>"
-            if guild_error
-            else ""
-        )
+        error_html = f"<p class='muted'>Could not load guild list: {escape(guild_error)}</p>" if guild_error else ""
         body = f"""
         <div class="card">
           <h2>Discord Servers</h2>
@@ -3057,6 +4436,13 @@ def create_web_app(
     @app.route("/admin/select-guild", methods=["POST"])
     @login_required
     def select_guild():
+        user = _current_user()
+        if _is_glinet_scoped_user(user):
+            if not _set_selected_guild_id(""):
+                flash("No primary Discord server is available for the GL.iNet-scoped role.", "error")
+                return redirect(url_for("account"))
+            return redirect(url_for("dashboard"))
+
         guild_id = str(request.form.get("guild_id", "")).strip()
         if not guild_id:
             flash("Choose a Discord server first.", "error")
@@ -3065,7 +4451,39 @@ def create_web_app(
             flash("That Discord server is no longer available to the bot.", "error")
             return redirect(url_for("guilds_page"))
         flash("Discord server context updated.", "success")
+        if _is_glinet_scoped_user(user):
+            return redirect(url_for("dashboard"))
         return redirect(url_for("dashboard"))
+
+    @app.route("/admin/leave-guild", methods=["POST"])
+    @admin_required
+    def leave_guild():
+        user = _current_user()
+        guild_id = str(request.form.get("guild_id", "")).strip()
+        if request.form.get("confirm", "").strip().lower() != "yes":
+            flash("Leave-server confirmation is required.", "error")
+            return redirect(url_for("guilds_page"))
+        if not guild_id:
+            flash("A Discord server must be selected.", "error")
+            return redirect(url_for("guilds_page"))
+        if not callable(on_leave_guild):
+            flash("Leave-server callback is not configured in this runtime.", "error")
+            return redirect(url_for("guilds_page"))
+
+        response = on_leave_guild(guild_id, user["email"])
+        if not isinstance(response, dict):
+            flash("Invalid response from leave-server handler.", "error")
+        elif response.get("ok"):
+            flash(
+                response.get(
+                    "message",
+                    "The bot has left the selected Discord server.",
+                ),
+                "success",
+            )
+        else:
+            flash(response.get("error", "Failed to remove the bot from that Discord server."), "error")
+        return redirect(url_for("guilds_page"))
 
     @app.route("/admin/dashboard", methods=["GET"])
     @login_required
@@ -3078,153 +4496,337 @@ def create_web_app(
         selected_guild = _selected_guild()
         selected_guild_name = str(selected_guild.get("name") or "selected server")
 
-        cards = []
+        role_key = str(user.get("role") or "").strip().lower()
+        role_label = _user_role_label(role_key, is_admin=is_admin)
+        wiki_url = _github_wiki_url()
+        restart_enabled = _restart_enabled()
 
-        def add_dashboard_card(
+        def build_dashboard_card(
             title: str,
             description: str,
             href: str,
             button_label: str,
+            *,
             external: bool = False,
-        ):
-            link_target = (
-                " target='_blank' rel='noopener noreferrer'" if external else ""
-            )
-            cards.append(
-                f"""
-                <div class="card dash-card">
+            primary: bool = False,
+            extra_html: str = "",
+        ) -> str:
+            link_target = " target='_blank' rel='noopener noreferrer'" if external else ""
+            classes = "card dash-card"
+            if primary:
+                classes += " primary"
+            return f"""
+            <div class="{classes}">
+              <h3>{escape(title)}</h3>
+              <p class="muted">{escape(description)}</p>
+              {extra_html}
+              <div class="dash-actions">
+                <a class="btn secondary" href="{escape(href, quote=True)}"{link_target}>{escape(button_label)}</a>
+              </div>
+            </div>
+            """
+
+        def render_dashboard_section(title: str, description: str, section_cards: list[str]) -> str:
+            return f"""
+            <section class="card dashboard-section">
+              <div class="dashboard-section-head">
+                <div>
                   <h3>{escape(title)}</h3>
                   <p class="muted">{escape(description)}</p>
-                  <div class="dash-actions">
-                    <a class="btn secondary" href="{escape(href, quote=True)}"{link_target}>{escape(button_label)}</a>
-                  </div>
                 </div>
-                """
-            )
+              </div>
+              <div class="dashboard-section-grid">
+                {"".join(section_cards)}
+              </div>
+            </section>
+            """
 
-        add_dashboard_card(
-            "My Account",
-            "Change your password, update your email, and manage profile display details.",
-            url_for("account"),
-            "Open My Account",
-        )
+        core_cards = [
+            build_dashboard_card(
+                "Guild Settings",
+                "Set server-specific channels, welcome behavior, and override global defaults for this guild.",
+                url_for("guild_settings"),
+                "Open Guild Settings",
+                primary=True,
+                extra_html="<p class='dashboard-note'>Use this first when a server needs channels, feeds, or feature toggles that differ from the global defaults.</p>",
+            ),
+            build_dashboard_card(
+                "Command Status",
+                "Quickly enable or disable commands for the selected Discord server.",
+                url_for("command_status"),
+                "Open Command Status",
+                primary=True,
+            ),
+            build_dashboard_card(
+                "Command Permissions",
+                "Set access mode per command and pick restricted roles from Discord role lists.",
+                url_for("command_permissions"),
+                "Open Permissions",
+            ),
+            build_dashboard_card(
+                "Moderation",
+                "Configure bad-word filtering, warning thresholds, timeout escalation, and the moderation log channel.",
+                url_for("moderation_page"),
+                "Open Moderation",
+            ),
+            build_dashboard_card(
+                "Honeypot",
+                "Catch spam bots with trap channels, honeypot logging, and new-account join screening.",
+                url_for("honeypot_page"),
+                "Open Honeypot",
+            ),
+            build_dashboard_card(
+                "Discourse",
+                "Control the forum URL, API key usage, profile identity, and guild-scoped Discourse feature toggles.",
+                url_for("discourse_page"),
+                "Open Discourse",
+            ),
+            build_dashboard_card(
+                "Bot Profile",
+                "Rename the bot, update the server nickname, and upload avatar assets.",
+                url_for("bot_profile"),
+                "Open Bot Profile",
+            ),
+        ]
 
-        add_dashboard_card(
-            "Bot Profile",
-            "Rename the bot, update server nickname, and upload avatar.",
-            url_for("bot_profile"),
-            "Open Bot Profile",
-        )
-        add_dashboard_card(
-            "Command Permissions",
-            "Set access mode per command and pick restricted roles from Discord role lists.",
-            url_for("command_permissions"),
-            "Open Permissions",
-        )
-        add_dashboard_card(
-            "Reddit Feeds",
-            "Map subreddit feeds to Discord channels and schedule automatic post checks.",
-            url_for("reddit_feeds"),
-            "Open Reddit Feeds",
-        )
-        add_dashboard_card(
-            "Guild Settings",
-            "Set server-specific channels and role-based defaults for the selected Discord server.",
-            url_for("guild_settings"),
-            "Open Guild Settings",
-        )
-        add_dashboard_card(
-            "Settings",
-            "Edit global runtime environment settings shared across all Discord servers.",
-            url_for("settings"),
-            "Open Global Settings",
-        )
-        add_dashboard_card(
-            "Observability",
-            "View container runtime metrics and tail recent log entries.",
-            url_for("public_observability"),
-            "Open Observability",
-        )
-        add_dashboard_card(
-            "Logs",
-            "View recent runtime logs (latest 500 lines) with log file selection.",
-            url_for("admin_logs"),
-            "Open Logs",
-        )
-        add_dashboard_card(
-            "Tag Responses",
-            "Manage dynamic tag-response mappings and refresh runtime commands.",
-            url_for("tag_responses"),
-            "Open Tag Responses",
-        )
-        add_dashboard_card(
-            "Bulk Role CSV",
-            "Upload a CSV of names and assign a role with a detailed result report.",
-            url_for("bulk_role_csv"),
-            "Open Bulk CSV",
-        )
-        add_dashboard_card(
-            "Users",
-            "Create web users, assign Admin/Read-only roles, and reset passwords.",
-            url_for("users"),
-            "Open Users",
-        )
+        community_cards = [
+            build_dashboard_card(
+                "Members",
+                "Browse guild members, then kick, ban, timeout, or update roles from the selected Discord server.",
+                url_for("members_page"),
+                "Open Members",
+            ),
+            build_dashboard_card(
+                "Member Activity",
+                "Review top 20 member activity windows for the selected Discord server.",
+                url_for("member_activity_page"),
+                "Open Member Activity",
+            ),
+            build_dashboard_card(
+                "Role Access",
+                "Review and control invite links with their paired 6-digit access codes for the selected Discord server.",
+                url_for("role_access_page"),
+                "Open Role Access",
+            ),
+            build_dashboard_card(
+                "Tag Responses",
+                "Manage dynamic tag-response mappings and keep quick answers organized.",
+                url_for("tag_responses"),
+                "Open Tag Responses",
+            ),
+            build_dashboard_card(
+                "Action History",
+                "Review recent guild-scoped bot actions and utility activity.",
+                url_for("actions_page"),
+                "Open Actions",
+            ),
+            build_dashboard_card(
+                "Bulk Role CSV",
+                "Upload a CSV of names and assign a role with a detailed result report.",
+                url_for("bulk_role_csv"),
+                "Open Bulk CSV",
+            ),
+        ]
 
-        add_dashboard_card(
-            "Documentation",
-            "Browse embedded docs for commands, deployment, and operations.",
-            url_for("documentation"),
-            "Open Docs",
-        )
+        feed_cards = [
+            build_dashboard_card(
+                "Reddit Feeds",
+                "Map subreddit feeds to Discord channels and schedule automatic post checks.",
+                url_for("reddit_feeds"),
+                "Open Reddit Feeds",
+            ),
+            build_dashboard_card(
+                "Service Monitors",
+                "Manage direct website and API checks for the selected guild.",
+                url_for("service_monitors_page"),
+                "Open Service Monitors",
+            ),
+            build_dashboard_card(
+                "Uptime Kuma",
+                "Configure the watcher, import direct checks, and remove imported Uptime Kuma monitor sets.",
+                url_for("uptime_kuma_page"),
+                "Open Uptime Kuma",
+            ),
+            build_dashboard_card(
+                "YouTube Subscriptions",
+                "Map YouTube channels to Discord channels and post new uploads automatically.",
+                url_for("youtube_subscriptions"),
+                "Open YouTube",
+            ),
+            build_dashboard_card(
+                "LinkedIn Profiles",
+                "Map public LinkedIn profiles to Discord channels and post new profile activity automatically.",
+                url_for("linkedin_subscriptions"),
+                "Open LinkedIn",
+            ),
+            build_dashboard_card(
+                "GL.iNet Beta Programs",
+                "Monitor the GL.iNet beta testing page and notify a Discord channel when programs are added or removed.",
+                url_for("beta_program_subscriptions"),
+                "Open Beta Programs",
+            ),
+        ]
 
-        wiki_url = _github_wiki_url()
+        operations_cards = [
+            build_dashboard_card(
+                "Servers",
+                "Switch the active Discord server context before opening guild-scoped management pages.",
+                url_for("guilds_page"),
+                "Open Servers",
+            ),
+            build_dashboard_card(
+                "My Account",
+                "Change your password, update your email, and manage profile display details.",
+                url_for("account"),
+                "Open My Account",
+            ),
+            build_dashboard_card(
+                "Settings",
+                "Edit global runtime environment settings shared across all Discord servers.",
+                url_for("settings"),
+                "Open Global Settings",
+            ),
+            build_dashboard_card(
+                "Observability",
+                "View container runtime metrics and tail recent log entries.",
+                url_for("public_observability"),
+                "Open Observability",
+            ),
+            build_dashboard_card(
+                "Logs",
+                "View recent runtime logs with log file selection and audit context.",
+                url_for("admin_logs"),
+                "Open Logs",
+            ),
+            build_dashboard_card(
+                "Users",
+                "Create web users, scope access, and reset credentials.",
+                url_for("users"),
+                "Open Users",
+            ),
+            build_dashboard_card(
+                "Documentation",
+                "Browse embedded docs for commands, deployment, and operations.",
+                url_for("documentation"),
+                "Open Docs",
+            ),
+        ]
+
         if wiki_url:
-            add_dashboard_card(
-                "GitHub Wiki",
-                "Open the external project wiki in a new tab.",
-                wiki_url,
-                "Open GitHub Wiki",
-                external=True,
+            operations_cards.append(
+                build_dashboard_card(
+                    "GitHub Wiki",
+                    "Open the external project wiki in a new tab.",
+                    wiki_url,
+                    "Open GitHub Wiki",
+                    external=True,
+                )
             )
 
-        restart_card = ""
-        if _restart_enabled():
+        if restart_enabled:
             if is_admin:
-                restart_card = f"""
-            <div class="card dash-card">
-              <h3>Restart Container</h3>
-              <p class="muted">Apply runtime-level changes that require a process restart.</p>
-              <form method="post" action="{escape(url_for("restart_service"), quote=True)}"
-                onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
-                <input type="hidden" name="confirm" value="yes" />
-                <button class="btn danger" type="submit">Restart Container</button>
-              </form>
-            </div>
-            """
+                operations_cards.append(
+                    f"""
+                    <div class="card dash-card">
+                      <h3>Restart Container</h3>
+                      <p class="muted">Apply runtime-level changes that require a process restart.</p>
+                      <p class="dashboard-note">Use this after changes that affect startup-time settings, Discord sync, or container-bound runtime behavior.</p>
+                      <form method="post" action="{escape(url_for("restart_service"), quote=True)}"
+                        onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
+                        <input type="hidden" name="confirm" value="yes" />
+                        <button class="btn danger" type="submit">Restart Container</button>
+                      </form>
+                    </div>
+                    """
+                )
             else:
-                restart_card = """
-            <div class="card dash-card">
-              <h3>Restart Container</h3>
-              <p class="muted">Read-only accounts can view this option but cannot restart the container.</p>
-              <button class="btn danger" type="button" disabled>Restart Container</button>
-            </div>
-            """
+                operations_cards.append(
+                    """
+                    <div class="card dash-card">
+                      <h3>Restart Container</h3>
+                      <p class="muted">Read-only accounts can view this option but cannot restart the container.</p>
+                      <button class="btn danger" type="button" disabled>Restart Container</button>
+                    </div>
+                    """
+                )
 
-        admin_note = (
-            "<p class='muted'>Some Discord metadata changes may still require a restart after saving.</p>"
-            if is_admin
-            else "<p class='muted'>This account has limited access. Contact an admin for management actions.</p>"
+        role_scope_text = (
+            "Pinned to the primary GL.iNet Community Discord server."
+            if role_key in {"glinet_read_only", "glinet_rw"}
+            else "Can switch between managed Discord servers."
         )
+        management_text = (
+            "This account can apply configuration changes directly from the dashboard links."
+            if is_admin or role_key == "glinet_rw"
+            else "This account can review configuration safely. Write actions remain restricted."
+        )
+        startup_note = (
+            "Some Discord metadata changes still require a container restart after saving."
+            if is_admin
+            else "Use the grouped sections below to reach the areas this account is allowed to manage."
+        )
+        recent_navigation_html = "".join(
+            f"<div><a href='{escape(str(item.get('href') or ''), quote=True)}'>{escape(str(item.get('label') or 'Open page'))}</a></div>"
+            for item in _recent_navigation_entries()
+        ) or "No recent pages yet."
 
         body = f"""
-        <div class="card">
-          <h2>Dashboard</h2>
-          <p>Quick actions for the selected server: <strong>{escape(selected_guild_name)}</strong>.</p>
-          {admin_note}
-        </div>
-        <div class="dash-grid">
-          {"".join(cards)}
-          {restart_card}
+        <div class="dashboard-shell">
+          <section class="dashboard-hero">
+            <div class="card dashboard-hero-main">
+              <div>
+                <h2>Dashboard</h2>
+                <p class="dashboard-hero-lead">Operational control for <strong>{escape(selected_guild_name)}</strong>. The sections below separate guild controls, community tools, feed automations, and runtime operations so the most-used actions are easier to reach on desktop, tablet, and mobile.</p>
+              </div>
+              <div class="dashboard-pill-row">
+                <div class="dashboard-pill">
+                  <strong>Server</strong>
+                  <span>{escape(selected_guild_name)}</span>
+                </div>
+                <div class="dashboard-pill">
+                  <strong>Access</strong>
+                  <span>{escape(role_label)}</span>
+                </div>
+                <div class="dashboard-pill">
+                  <strong>Scope</strong>
+                  <span>{escape(role_scope_text)}</span>
+                </div>
+                <div class="dashboard-pill">
+                  <strong>Restart</strong>
+                  <span>{'Enabled' if restart_enabled else 'Disabled'}</span>
+                </div>
+              </div>
+              <p class="dashboard-note">{escape(startup_note)}</p>
+            </div>
+            <div class="card dashboard-hero-side">
+              <div>
+                <h3>Quick Notes</h3>
+                <p class="muted">Use the grouped cards below instead of hunting through one long grid.</p>
+              </div>
+              <div class="dashboard-list">
+                <div class="dashboard-list-item">
+                  <strong>Configuration</strong>
+                  <div class="muted">{escape(management_text)}</div>
+                </div>
+                <div class="dashboard-list-item">
+                  <strong>Most common path</strong>
+                  <div class="muted"><a href="{escape(url_for('guild_settings'), quote=True)}">Guild Settings</a>, then <a href="{escape(url_for('command_status'), quote=True)}">Command Status</a>, then feed pages for channel routing.</div>
+                </div>
+                <div class="dashboard-list-item">
+                  <strong>Recent pages</strong>
+                  <div class="muted">{recent_navigation_html}</div>
+                </div>
+                <div class="dashboard-list-item">
+                  <strong>Documentation</strong>
+                  <div class="muted">{'GitHub Wiki is linked here as an external reference.' if wiki_url else 'Embedded docs remain available from this dashboard.'}</div>
+                </div>
+              </div>
+            </div>
+          </section>
+          {render_dashboard_section("Core Controls", "Primary guild-level configuration and command access controls.", core_cards)}
+          {render_dashboard_section("Community Tools", "Member-facing utilities, access workflows, and guild operational history.", community_cards)}
+          {render_dashboard_section("Notification Feeds", "External monitors and feed-to-channel routing for the selected guild.", feed_cards)}
+          {render_dashboard_section("Runtime And Administration", "Account, logging, environment, and maintenance controls.", operations_cards)}
         </div>
         """
 
@@ -3281,23 +4883,13 @@ def create_web_app(
         )
         refresh_options_html = []
         for refresh_seconds in AUTO_REFRESH_INTERVAL_OPTIONS:
-            label = (
-                "Manual (off)"
-                if refresh_seconds == 0
-                else f"{refresh_seconds} second{'s' if refresh_seconds != 1 else ''}"
-            )
-            selected_attr = (
-                " selected" if refresh_seconds == selected_refresh_seconds else ""
-            )
-            refresh_options_html.append(
-                f"<option value='{refresh_seconds}'{selected_attr}>{escape(label)}</option>"
-            )
+            label = "Manual (off)" if refresh_seconds == 0 else f"{refresh_seconds} second{'s' if refresh_seconds != 1 else ''}"
+            selected_attr = " selected" if refresh_seconds == selected_refresh_seconds else ""
+            refresh_options_html.append(f"<option value='{refresh_seconds}'{selected_attr}>{escape(label)}</option>")
 
         process_cpu_pct = metrics.get("process_cpu_percent")
         process_cpu_pct_text = (
-            f"{float(process_cpu_pct):.2f}%"
-            if isinstance(process_cpu_pct, (int, float))
-            else "n/a (refresh again for delta sample)"
+            f"{float(process_cpu_pct):.2f}%" if isinstance(process_cpu_pct, (int, float)) else "n/a (refresh again for delta sample)"
         )
 
         memory_usage_bytes = metrics.get("memory_usage_bytes")
@@ -3305,21 +4897,12 @@ def create_web_app(
         memory_pct = metrics.get("memory_percent")
         memory_usage_text = _format_bytes(memory_usage_bytes)
         memory_limit_text = _format_bytes(memory_limit_bytes)
-        memory_pct_text = (
-            f"{float(memory_pct):.2f}%"
-            if isinstance(memory_pct, (int, float))
-            else "n/a"
-        )
+        memory_pct_text = f"{float(memory_pct):.2f}%" if isinstance(memory_pct, (int, float)) else "n/a"
 
         sample_interval = metrics.get("sample_interval_seconds")
-        sample_interval_text = (
-            f"{float(sample_interval):.2f}s"
-            if isinstance(sample_interval, (int, float))
-            else "first sample"
-        )
+        sample_interval_text = f"{float(sample_interval):.2f}s" if isinstance(sample_interval, (int, float)) else "first sample"
         auto_refresh_note = (
-            f"Auto refresh enabled every {selected_refresh_seconds} second"
-            f"{'s' if selected_refresh_seconds != 1 else ''}."
+            f"Auto refresh enabled every {selected_refresh_seconds} second{'s' if selected_refresh_seconds != 1 else ''}."
             if selected_refresh_seconds > 0
             else "Auto refresh is disabled."
         )
@@ -3380,7 +4963,7 @@ def create_web_app(
               <tbody>
                 <tr><td>Process CPU (delta)</td><td class="mono">{escape(process_cpu_pct_text)}</td></tr>
                 <tr><td>Process CPU time (total)</td><td class="mono">{escape(f"{float(metrics.get('process_cpu_total') or 0.0):.2f}s")}</td></tr>
-                <tr><td>Container CPU time (cgroup)</td><td class="mono">{escape(f"{float(metrics.get('cgroup_cpu_seconds') or 0.0):.2f}s" if metrics.get('cgroup_cpu_seconds') is not None else "n/a")}</td></tr>
+                <tr><td>Container CPU time (cgroup)</td><td class="mono">{escape(f"{float(metrics.get('cgroup_cpu_seconds') or 0.0):.2f}s" if metrics.get("cgroup_cpu_seconds") is not None else "n/a")}</td></tr>
               </tbody>
             </table>
           </div>
@@ -3444,15 +5027,9 @@ def create_web_app(
             "web_gui_audit": "web_gui_audit.log",
         }
         label_by_filename = {name: label for name, label in OBSERVABILITY_LOG_OPTIONS}
-        valid_selection_map = {
-            key: filename
-            for key, filename in log_selection_map.items()
-            if filename in allowed_log_paths
-        }
+        valid_selection_map = {key: filename for key, filename in log_selection_map.items() if filename in allowed_log_paths}
 
-        requested_selection = str(
-            request.args.get("log", "container_errors") or "container_errors"
-        ).strip()
+        requested_selection = str(request.args.get("log", "container_errors") or "container_errors").strip()
         # Backward compatibility for older links that still pass filename.
         if requested_selection in label_by_filename:
             reverse_map = {value: key for key, value in log_selection_map.items()}
@@ -3484,20 +5061,11 @@ def create_web_app(
             )
         refresh_options_html = []
         for refresh_seconds in AUTO_REFRESH_INTERVAL_OPTIONS:
-            label = (
-                "Manual (off)"
-                if refresh_seconds == 0
-                else f"{refresh_seconds} second{'s' if refresh_seconds != 1 else ''}"
-            )
-            selected_attr = (
-                " selected" if refresh_seconds == selected_refresh_seconds else ""
-            )
-            refresh_options_html.append(
-                f"<option value='{refresh_seconds}'{selected_attr}>{escape(label)}</option>"
-            )
+            label = "Manual (off)" if refresh_seconds == 0 else f"{refresh_seconds} second{'s' if refresh_seconds != 1 else ''}"
+            selected_attr = " selected" if refresh_seconds == selected_refresh_seconds else ""
+            refresh_options_html.append(f"<option value='{refresh_seconds}'{selected_attr}>{escape(label)}</option>")
         auto_refresh_note = (
-            f"Auto refresh enabled every {selected_refresh_seconds} second"
-            f"{'s' if selected_refresh_seconds != 1 else ''}."
+            f"Auto refresh enabled every {selected_refresh_seconds} second{'s' if selected_refresh_seconds != 1 else ''}."
             if selected_refresh_seconds > 0
             else "Auto refresh is disabled."
         )
@@ -3518,6 +5086,7 @@ def create_web_app(
             if selected_refresh_seconds > 0
             else ""
         )
+        export_logs_href = url_for("admin_logs_export")
 
         return f"""
         <div class="card">
@@ -3538,6 +5107,9 @@ def create_web_app(
             </div>
           </form>
           <p class="muted">{escape(auto_refresh_note)}</p>
+          <div class="dash-actions" style="margin-top:14px;">
+            <a class="btn secondary" href="{escape(export_logs_href, quote=True)}">Export All Logs</a>
+          </div>
           <div style="margin-top:14px;">
             <textarea readonly style="min-height:520px;">{escape(log_preview)}</textarea>
           </div>
@@ -3545,7 +5117,80 @@ def create_web_app(
         {auto_refresh_script}
         """
 
-    @app.route("/staus", methods=["GET"])
+    def _prune_expired_log_exports(log_dir: Path):
+        export_dir = log_dir / "exports"
+        cutoff_timestamp = time.time() - (LOG_EXPORT_RETENTION_HOURS * 3600)
+        if not export_dir.exists():
+            return export_dir
+        for export_path in export_dir.glob("discord_bot_logs_*.zip"):
+            try:
+                if export_path.is_file() and export_path.stat().st_mtime < cutoff_timestamp:
+                    export_path.unlink()
+            except OSError:
+                continue
+        return export_dir
+
+    def _schedule_log_export_cleanup(archive_path: Path):
+        def _cleanup():
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        cleanup_timer = threading.Timer(LOG_EXPORT_RETENTION_HOURS * 3600, _cleanup)
+        cleanup_timer.daemon = True
+        cleanup_timer.start()
+
+    def _build_logs_export_payload():
+        log_dir = Path(str(os.getenv("LOG_DIR", "/logs")).strip() or "/logs")
+        allowed_log_paths = _resolve_observability_log_paths(log_dir)
+        if not allowed_log_paths:
+            return None
+        export_dir = _prune_expired_log_exports(log_dir)
+        export_dir.mkdir(parents=True, exist_ok=True)
+        _chmod_if_possible(export_dir, 0o700)
+
+        exported_count = 0
+        generated_at = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        archive_path = export_dir / f"discord_bot_logs_{generated_at}.zip"
+        with zipfile.ZipFile(archive_path, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for filename, _label in OBSERVABILITY_LOG_OPTIONS:
+                log_path = allowed_log_paths.get(filename)
+                if log_path is None or not log_path.exists() or not log_path.is_file():
+                    continue
+                try:
+                    archive.write(log_path, arcname=filename)
+                except OSError:
+                    continue
+                exported_count += 1
+            archive.writestr(
+                "manifest.txt",
+                "\n".join(
+                    [
+                        "GL.iNet UnOfficial Discord Bot log export",
+                        f"generated_at_utc={generated_at}",
+                        f"log_dir={log_dir}",
+                        f"exported_files={exported_count}",
+                    ]
+                )
+                + "\n",
+            )
+
+        if exported_count <= 0:
+            try:
+                archive_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        _chmod_if_possible(archive_path, 0o600)
+        _schedule_log_export_cleanup(archive_path)
+        return {
+            "filename": archive_path.name,
+            "content_type": "application/zip",
+            "path": str(archive_path),
+        }
+
+    @app.route("/status", methods=["GET"])
     def public_observability():
         body = _render_observability_view(
             page_title="Status Observability",
@@ -3558,8 +5203,12 @@ def create_web_app(
             "",
         )
 
-    @app.route("/status", methods=["GET"])
+    @app.route("/staus", methods=["GET"])
     def public_observability_alias():
+        return redirect(url_for("public_observability", **request.args.to_dict(flat=True)))
+
+    @app.route("/status/everything", methods=["GET"])
+    def public_observability_everything():
         return redirect(url_for("public_observability", **request.args.to_dict(flat=True)))
 
     @app.route("/admin/observability", methods=["GET"])
@@ -3570,6 +5219,7 @@ def create_web_app(
     @login_required
     def admin_logs():
         user = _current_user()
+        _prune_expired_log_exports(Path(str(os.getenv("LOG_DIR", "/logs")).strip() or "/logs"))
         body = _render_log_view()
         return _render_page(
             "Log Viewer",
@@ -3577,6 +5227,230 @@ def create_web_app(
             user["email"],
             bool(user.get("is_admin")),
             str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/logs/export", methods=["GET"])
+    @login_required
+    def admin_logs_export():
+        payload = _build_logs_export_payload()
+        if not payload:
+            flash("No runtime log files are available to export.", "error")
+            return redirect(url_for("admin_logs"))
+        return send_file(
+            str(payload["path"]),
+            mimetype=str(payload.get("content_type") or "application/octet-stream"),
+            as_attachment=True,
+            download_name=str(payload.get("filename") or "logs.zip"),
+        )
+
+    @app.route("/admin/actions", methods=["GET"])
+    @login_required
+    def actions_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        payload = (
+            on_get_actions(selected_guild_id)
+            if callable(on_get_actions)
+            else {"ok": False, "error": "Action history callback is not configured."}
+        )
+        actions = payload.get("actions", []) if isinstance(payload, dict) else []
+        actions_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        rows = []
+        for item in actions:
+            rows.append(
+                "<tr>"
+                f"<td class='mono'>{escape(format_timestamp_display(item.get('created_at'), blank=''))}</td>"
+                f"<td>{escape(str(item.get('action') or ''))}</td>"
+                f"<td>{escape(str(item.get('status') or ''))}</td>"
+                f"<td>{escape(str(item.get('moderator') or ''))}</td>"
+                f"<td>{escape(str(item.get('target') or ''))}</td>"
+                f"<td>{escape(str(item.get('reason') or ''))}</td>"
+                "</tr>"
+            )
+        body = f"""
+        <div class="card">
+          <h2>Action History</h2>
+          <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+          <p class="muted">Recent bot actions recorded for this server.</p>
+          {"<p class='muted'>" + escape(actions_error) + "</p>" if actions_error else ""}
+        </div>
+        <div class="card">
+          <table class="history-table">
+            <thead><tr><th>Created</th><th>Action</th><th>Status</th><th>Actor</th><th>Target</th><th>Reason</th></tr></thead>
+            <tbody>{"".join(rows) if rows else "<tr><td colspan='6' class='muted'>No action history recorded yet.</td></tr>"}</tbody>
+          </table>
+        </div>
+        """
+        return _render_page(
+            "Action History",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/member-activity", methods=["GET"])
+    @login_required
+    def member_activity_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        selected_role_id = str(request.args.get("role_id", "") or "").strip()
+        payload = (
+            on_get_member_activity(selected_guild_id, selected_role_id)
+            if callable(on_get_member_activity)
+            else {"ok": False, "error": "Member activity callback is not configured."}
+        )
+        discord_catalog = on_get_discord_catalog(selected_guild_id) if callable(on_get_discord_catalog) else None
+        windows = payload.get("windows", []) if isinstance(payload, dict) else []
+        activity_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        top_limit = int(payload.get("top_limit") or 20) if isinstance(payload, dict) else 20
+        excluded_role_ids = {
+            str(item)
+            for item in (payload.get("excluded_role_ids", []) if isinstance(payload, dict) else [])
+            if str(item).strip()
+        }
+        excluded_role_names = {
+            str(item).strip().casefold()
+            for item in (payload.get("excluded_role_names", []) if isinstance(payload, dict) else [])
+            if str(item).strip()
+        }
+        role_options = [{"value": "", "label": "All eligible members"}]
+        if isinstance(discord_catalog, dict) and discord_catalog.get("ok"):
+            for role in discord_catalog.get("roles", []) or []:
+                role_id_value = str(role.get("id") or "").strip()
+                role_name = str(role.get("name") or "").strip()
+                if not role_id_value or not role_name:
+                    continue
+                if role_id_value in excluded_role_ids or role_name.casefold() in excluded_role_names:
+                    continue
+                role_options.append({"value": role_id_value, "label": f"@{role_name}"})
+        selected_role_label = "All eligible members"
+        for option in role_options:
+            if option["value"] == selected_role_id:
+                selected_role_label = option["label"]
+                break
+        role_filter_select = _render_fixed_select_input(
+            "role_id",
+            selected_role_id,
+            role_options,
+            placeholder="All eligible members",
+        )
+        export_html = ""
+        if callable(on_export_member_activity):
+            export_url = url_for("member_activity_export")
+            if selected_role_id:
+                export_url = url_for("member_activity_export", role_id=selected_role_id)
+            export_html = (
+                f"<div class='card'>"
+                f"<h3>Export Activity Data</h3>"
+                f"<p class='muted'>Download the selected server's member activity as a compressed ZIP archive.</p>"
+                f"<a class='btn secondary' href='{escape(export_url, quote=True)}'>Download Activity Export</a>"
+                f"</div>"
+            )
+
+        window_cards = []
+        for window in windows:
+            members = window.get("members", []) if isinstance(window, dict) else []
+            rows = []
+            for member in members:
+                display_name = str(member.get("display_name") or member.get("username") or member.get("user_id") or "Unknown")
+                username = str(member.get("username") or "")
+                secondary_name = f"<div class='muted mono'>{escape(username)}</div>" if username and username != display_name else ""
+                rows.append(
+                    "<tr>"
+                    f"<td>{escape(str(member.get('rank') or ''))}</td>"
+                    f"<td><strong>{escape(display_name)}</strong>{secondary_name}</td>"
+                    f"<td>{escape(str(member.get('message_count') or 0))}</td>"
+                    f"<td>{escape(str(member.get('active_days') or 0))}</td>"
+                    f"<td class='mono'>{escape(format_timestamp_display(member.get('last_message_at')))}</td>"
+                    "</tr>"
+                )
+            window_cards.append(
+                f"""
+                <div class="card table-scroll">
+                  <h3>{escape(str(window.get("label") or "Activity Window"))}</h3>
+                  <table class="history-table">
+                    <thead>
+                      <tr>
+                        <th>Rank</th>
+                        <th>Member</th>
+                        <th>Messages</th>
+                        <th>Active Days</th>
+                        <th>Last Seen</th>
+                      </tr>
+                    </thead>
+                    <tbody>{"".join(rows) if rows else "<tr><td colspan='5' class='muted'>No member activity recorded in this window yet.</td></tr>"}</tbody>
+                  </table>
+                </div>
+                """
+            )
+
+        body = f"""
+        <div class="card">
+          <h2>Member Activity</h2>
+          <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+          <form method="get" style="margin:14px 0;">
+            <div style="display:grid; grid-template-columns:minmax(220px, 360px) auto; gap:10px; align-items:end;">
+              <div>
+                <label for="member-activity-role-filter"><strong>Top 20 by role</strong></label>
+                {role_filter_select.replace("<select ", "<select id='member-activity-role-filter' ")}
+              </div>
+              <div><button class="btn secondary" type="submit">Apply Filter</button></div>
+            </div>
+          </form>
+          <p class="muted">Showing the top {escape(str(top_limit))} eligible members by message activity for each time window.</p>
+          <p class="muted">Current filter: <strong>{escape(selected_role_label)}</strong>. Members with moderator/admin/employee-style access are excluded from rankings.</p>
+          <p class="muted">Columns show exact messages sent in the selected period, active days in that period, and the most recent message timestamp.</p>
+          {"<p class='muted'>" + escape(activity_error) + "</p>" if activity_error else ""}
+        </div>
+        {"".join(window_cards) if window_cards else "<div class='card'><p class='muted'>No member activity windows are available yet.</p></div>"}
+        {export_html}
+        """
+        return _render_page(
+            "Member Activity",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/member-activity/export", methods=["GET"])
+    @login_required
+    def member_activity_export():
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        selected_role_id = str(request.args.get("role_id", "") or "").strip()
+        if not callable(on_export_member_activity):
+            flash("Member activity export is not configured.", "error")
+            return redirect(url_for("member_activity_page"))
+        payload = on_export_member_activity(selected_guild_id, selected_role_id)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            flash(
+                str(payload.get("error") or "Failed to export member activity.")
+                if isinstance(payload, dict)
+                else "Failed to export member activity.",
+                "error",
+            )
+            return redirect(url_for("member_activity_page"))
+        file_name = str(payload.get("filename") or "member_activity.zip")
+        content_type = str(payload.get("content_type") or "application/octet-stream")
+        data = payload.get("data") or b""
+        return send_file(
+            BytesIO(data),
+            mimetype=content_type,
+            as_attachment=True,
+            download_name=file_name,
         )
 
     @app.route("/admin/documentation", methods=["GET"])
@@ -3592,13 +5466,8 @@ def create_web_app(
 
         page_paths.sort(key=sort_key)
         if not page_paths:
-            body = (
-                "<div class='card'><h2>Documentation</h2>"
-                "<p class='muted'>No wiki pages were found in the runtime image.</p></div>"
-            )
-            return _render_page(
-                "Documentation", body, user["email"], bool(user.get("is_admin"))
-            )
+            body = "<div class='card'><h2>Documentation</h2><p class='muted'>No wiki pages were found in the runtime image.</p></div>"
+            return _render_page("Documentation", body, user["email"], bool(user.get("is_admin")))
 
         page_rows = []
         for path in page_paths:
@@ -3613,9 +5482,7 @@ def create_web_app(
             "<p class='muted'>Browse wiki pages packaged with this bot image.</p>"
             f"<ul>{''.join(page_rows)}</ul></div>"
         )
-        return _render_page(
-            "Documentation", body, user["email"], bool(user.get("is_admin"))
-        )
+        return _render_page("Documentation", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/documentation/<page_slug>", methods=["GET"])
     @login_required
@@ -3627,11 +5494,7 @@ def create_web_app(
         page_path = _get_wiki_page_map().get(page_slug.casefold())
         if page_path is None:
             return {"ok": False, "error": "Documentation page not found."}, 404
-        if (
-            not page_path.exists()
-            or not page_path.is_file()
-            or page_path.name.startswith("_")
-        ):
+        if not page_path.exists() or not page_path.is_file() or page_path.name.startswith("_"):
             return {"ok": False, "error": "Documentation page not found."}, 404
         try:
             resolved = page_path.resolve()
@@ -3654,6 +5517,11 @@ def create_web_app(
         )
         return _render_page(title, body, user["email"], bool(user.get("is_admin")))
 
+    @app.route("/admin/wiki", methods=["GET"])
+    @login_required
+    def wiki_viewer():
+        return redirect(url_for("documentation"))
+
     @app.route("/admin/bot-profile", methods=["GET", "POST"])
     @login_required
     def bot_profile():
@@ -3663,44 +5531,49 @@ def create_web_app(
             return selection_redirect
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
-        max_avatar_upload_bytes = _get_int_env(
-            "WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
-        )
-        profile = (
-            on_get_bot_profile(selected_guild_id)
-            if callable(on_get_bot_profile)
-            else {"ok": False, "error": "Not configured"}
-        )
+        max_avatar_upload_bytes = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
+        profile = on_get_bot_profile(selected_guild_id) if callable(on_get_bot_profile) else {"ok": False, "error": "Not configured"}
 
         if request.method == "POST":
             action = str(request.form.get("action", "avatar")).strip().lower()
-            if action == "identity":
+            if action in {"nickname", "username"}:
                 if not callable(on_update_bot_profile):
                     flash("Bot profile update callback is not configured.", "error")
                 else:
-                    username_input = str(request.form.get("bot_name", ""))
-                    server_nickname_input = str(request.form.get("server_nickname", ""))
-                    clear_server_nickname = str(
-                        request.form.get("clear_server_nickname", "")
-                    ).strip().lower() in {
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    }
-                    username_value = username_input.strip() or None
-                    server_nickname_value = server_nickname_input.strip() or None
-                    response = on_update_bot_profile(
-                        selected_guild_id,
-                        username_value,
-                        server_nickname_value,
-                        clear_server_nickname,
-                        user["email"],
-                    )
-                    if not isinstance(response, dict):
-                        flash(
-                            "Invalid response from bot profile update handler.", "error"
+                    response = None
+                    if action == "username":
+                        username_input = str(request.form.get("bot_name", ""))
+                        username_value = username_input.strip() or None
+                        if username_value is None:
+                            flash("Enter a global bot username to update.", "error")
+                        else:
+                            response = on_update_bot_profile(
+                                selected_guild_id,
+                                username_value,
+                                None,
+                                False,
+                                user["email"],
+                            )
+                    else:
+                        server_nickname_input = str(request.form.get("server_nickname", ""))
+                        clear_server_nickname = str(request.form.get("clear_server_nickname", "")).strip().lower() in {
+                            "1",
+                            "true",
+                            "yes",
+                            "on",
+                        }
+                        server_nickname_value = server_nickname_input.strip() or None
+                        response = on_update_bot_profile(
+                            selected_guild_id,
+                            None,
+                            server_nickname_value,
+                            clear_server_nickname,
+                            user["email"],
                         )
+                    if response is None:
+                        pass
+                    elif not isinstance(response, dict):
+                        flash("Invalid response from bot profile update handler.", "error")
                     elif not response.get("ok"):
                         flash(
                             response.get("error", "Failed to update bot profile."),
@@ -3709,10 +5582,7 @@ def create_web_app(
                     else:
                         profile = response
                         flash(
-                            str(
-                                response.get("message")
-                                or "Bot profile updated successfully."
-                            ),
+                            str(response.get("message") or "Bot profile updated successfully."),
                             "success",
                         )
             elif action == "avatar":
@@ -3735,13 +5605,9 @@ def create_web_app(
                     elif not lowered_name.endswith(allowed_extensions):
                         flash("Avatar must be PNG, JPG, JPEG, WEBP, or GIF.", "error")
                     else:
-                        response = on_update_bot_avatar(
-                            payload, uploaded_file.filename, user["email"]
-                        )
+                        response = on_update_bot_avatar(payload, uploaded_file.filename, user["email"])
                         if not isinstance(response, dict):
-                            flash(
-                                "Invalid response from avatar update handler.", "error"
-                            )
+                            flash("Invalid response from avatar update handler.", "error")
                         elif not response.get("ok"):
                             flash(
                                 response.get("error", "Failed to update bot avatar."),
@@ -3757,18 +5623,10 @@ def create_web_app(
         if isinstance(profile, dict) and profile.get("ok"):
             avatar_url = str(profile.get("avatar_url") or "").strip()
             username = str(profile.get("name") or "unknown")
-            global_name = str(
-                profile.get("global_name") or profile.get("display_name") or "Not set"
-            )
-            server_display_name = str(
-                profile.get("server_display_name")
-                or profile.get("display_name")
-                or username
-            )
+            global_name = str(profile.get("global_name") or profile.get("display_name") or "Not set")
+            server_display_name = str(profile.get("server_display_name") or profile.get("display_name") or username)
             server_nickname = str(profile.get("server_nickname") or "Not set")
-            guild_name = str(
-                profile.get("guild_name") or "Configured guild unavailable"
-            )
+            guild_name = str(profile.get("guild_name") or "Configured guild unavailable")
             avatar_image = (
                 f"<img src='{escape(avatar_url, quote=True)}' alt='Bot avatar' "
                 "style='max-width:160px;max-height:160px;border-radius:12px;border:1px solid #d1d5db;' />"
@@ -3788,31 +5646,36 @@ def create_web_app(
             </div>
             """
         else:
-            profile_error = str(
-                profile.get("error")
-                if isinstance(profile, dict)
-                else "Unable to load profile."
-            )
+            profile_error = str(profile.get("error") if isinstance(profile, dict) else "Unable to load profile.")
             profile_html = f"<div class='card'><p class='muted'>Could not load bot profile: {escape(profile_error)}</p></div>"
 
         body = f"""
         <div class="grid">
           <div class="card">
-            <h2>Bot Identity</h2>
-            <p class="muted">Set bot username and the server nickname used in <strong>{escape(str(selected_guild.get("name") or "this server"))}</strong>.</p>
-            <p class="muted">Discord may rate-limit username changes.</p>
+            <h2>Server Nickname</h2>
+            <p class="muted">Update the nickname used in <strong>{escape(str(selected_guild.get("name") or "this server"))}</strong>. This does not change the bot's main Discord username.</p>
             <form method="post">
-              <input type="hidden" name="action" value="identity" />
-              <label>Bot username (global)</label>
-              <input type="text" name="bot_name" placeholder="WickedYoda'sLittleHelper" />
-              <label style="margin-top:10px;display:block;">Server nickname (this guild)</label>
+              <input type="hidden" name="action" value="nickname" />
+              <label>Server nickname (this guild)</label>
               <input type="text" name="server_nickname" placeholder="Leave blank to keep current nickname" />
               <label style="margin-top:10px;display:block;">
                 <input type="checkbox" name="clear_server_nickname" value="1" />
                 Clear server nickname
               </label>
               <div style="margin-top:14px;">
-                <button class="btn" type="submit">Update Identity</button>
+                <button class="btn" type="submit">Update Server Nickname</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Global Bot Username</h2>
+            <p class="muted">This changes the bot's main Discord username everywhere. Discord may rate-limit username changes, so it is intentionally separate from guild nickname edits.</p>
+            <form method="post">
+              <input type="hidden" name="action" value="username" />
+              <label>Bot username (global)</label>
+              <input type="text" name="bot_name" placeholder="GL.iNet UnOfficial Discord Bot" />
+              <div style="margin-top:14px;">
+                <button class="btn secondary" type="submit">Update Global Username</button>
               </div>
             </form>
           </div>
@@ -3833,9 +5696,7 @@ def create_web_app(
           {profile_html}
         </div>
         """
-        return _render_page(
-            "Bot Profile", body, user["email"], bool(user.get("is_admin"))
-        )
+        return _render_page("Bot Profile", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/reddit-feeds", methods=["GET", "POST"])
     @login_required
@@ -3858,27 +5719,12 @@ def create_web_app(
         if not croniter.is_valid(current_schedule):
             current_schedule = "*/30 * * * *"
 
-        discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog)
-            else None
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
         )
-        channel_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
-        text_channel_options = [
-            option
-            for option in channel_options
-            if str(option.get("type") or "").strip().lower() == "text"
-        ]
         channel_labels = {
-            str(option.get("id") or "").strip(): str(
-                option.get("label") or option.get("name") or option.get("id") or "Unknown"
-            )
+            str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
             for option in text_channel_options
             if str(option.get("id") or "").strip()
         }
@@ -3892,46 +5738,65 @@ def create_web_app(
         if request.method == "POST":
             action = str(request.form.get("action") or "").strip().lower()
             if action == "schedule":
-                selected_schedule = str(
-                    request.form.get("reddit_feed_schedule") or ""
-                ).strip()
+                selected_schedule = str(request.form.get("reddit_feed_schedule") or "").strip()
                 allowed_schedules = {value for value, _ in REDDIT_FEED_SCHEDULE_OPTIONS}
                 if selected_schedule not in allowed_schedules:
                     flash("Choose a valid Reddit feed schedule option.", "error")
                 else:
-                    file_values["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
-                    os.environ["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
-                    _write_env_file(env_file, file_values)
-                    if callable(on_env_settings_saved):
-                        on_env_settings_saved(
-                            {"REDDIT_FEED_CHECK_SCHEDULE": selected_schedule}
-                        )
-                    current_schedule = selected_schedule
-                    flash("Reddit feed schedule updated.", "success")
+                    updated_file_values = dict(file_values)
+                    updated_file_values["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
+                    saved, save_error, saved_env_file, _ = _try_write_env_file_with_fallback(
+                        env_file,
+                        fallback_env_file,
+                        updated_file_values,
+                    )
+                    if not saved:
+                        flash(save_error, "error")
+                    else:
+                        file_values = updated_file_values
+                        os.environ["REDDIT_FEED_CHECK_SCHEDULE"] = selected_schedule
+                        os.environ["WEB_ENV_FILE"] = str(saved_env_file)
+                        if callable(on_env_settings_saved):
+                            on_env_settings_saved(
+                                {
+                                    "REDDIT_FEED_CHECK_SCHEDULE": selected_schedule,
+                                    "WEB_ENV_FILE": str(saved_env_file),
+                                }
+                            )
+                        current_schedule = selected_schedule
+                        if saved_env_file != env_file:
+                            flash(
+                                f"Reddit feed schedule updated and saved to fallback env file {saved_env_file}.",
+                                "success",
+                            )
+                        else:
+                            flash("Reddit feed schedule updated.", "success")
             elif not callable(on_manage_reddit_feeds):
                 flash("Reddit feed update callback is not configured.", "error")
             else:
                 callback_payload = {"action": action}
                 if action == "add":
-                    selected_channel_id = str(
-                        request.form.get("channel_id", "")
-                    ).strip()
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
                     valid_text_channel_ids = {
-                        str(option.get("id") or "").strip()
-                        for option in text_channel_options
-                        if str(option.get("id") or "").strip()
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
                     }
-                    if (
-                        selected_channel_id
-                        and valid_text_channel_ids
-                        and selected_channel_id not in valid_text_channel_ids
-                    ):
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
                         flash("Choose a valid Discord text channel.", "error")
                         callback_payload = None
                     else:
-                        callback_payload["subreddit"] = request.form.get(
-                            "subreddit", ""
-                        )
+                        callback_payload["subreddit"] = request.form.get("subreddit", "")
+                        callback_payload["channel_id"] = selected_channel_id
+                elif action == "edit":
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["feed_id"] = request.form.get("feed_id", "")
+                        callback_payload["subreddit"] = request.form.get("subreddit", "")
                         callback_payload["channel_id"] = selected_channel_id
                 elif action == "toggle":
                     callback_payload["feed_id"] = request.form.get("feed_id", "")
@@ -3943,9 +5808,7 @@ def create_web_app(
                     callback_payload = None
 
                 if callback_payload is not None:
-                    response = on_manage_reddit_feeds(
-                        callback_payload, user["email"], selected_guild_id
-                    )
+                    response = on_manage_reddit_feeds(callback_payload, user["email"], selected_guild_id)
                     if not isinstance(response, dict):
                         flash("Invalid response from Reddit feed handler.", "error")
                     elif response.get("ok"):
@@ -3967,16 +5830,11 @@ def create_web_app(
             )
 
         feeds = payload.get("feeds", []) if isinstance(payload, dict) else []
-        feeds_error = (
-            str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
-        )
+        feeds_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
         schedule_select_html = _render_fixed_select_input(
             "reddit_feed_schedule",
             current_schedule,
-            [
-                {"value": value, "label": label}
-                for value, label in REDDIT_FEED_SCHEDULE_OPTIONS
-            ],
+            [{"value": value, "label": label} for value, label in REDDIT_FEED_SCHEDULE_OPTIONS],
             placeholder="Select Reddit poll interval...",
         )
         channel_select_html = _render_select_input(
@@ -3991,21 +5849,32 @@ def create_web_app(
             subreddit = str(feed.get("subreddit") or "").strip()
             channel_id = str(feed.get("channel_id") or "").strip()
             enabled = bool(feed.get("enabled"))
-            last_checked_at = str(feed.get("last_checked_at") or "Never")
-            last_posted_at = str(feed.get("last_posted_at") or "Never")
+            last_checked_at = format_timestamp_display(feed.get("last_checked_at"), blank="Never")
+            last_posted_at = format_timestamp_display(feed.get("last_posted_at"), blank="Never")
             last_error = str(feed.get("last_error") or "").strip()
             status_label = "Enabled" if enabled else "Disabled"
             if last_error:
                 status_label = f"{status_label} | {last_error}"
-            channel_label = channel_labels.get(
-                channel_id, f"Unknown channel ({channel_id or 'not set'})"
-            )
+            channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
             action_html = ""
             if is_admin:
                 toggle_label = "Disable" if enabled else "Enable"
                 toggle_value = "0" if enabled else "1"
+                edit_channel_select_html = _render_select_input(
+                    "channel_id",
+                    channel_id,
+                    text_channel_options,
+                    placeholder="Select a Discord text channel...",
+                )
                 action_html = f"""
                 <div class="dash-actions">
+                  <form method="post" style="display:inline-block;min-width:260px;">
+                    <input type="hidden" name="action" value="edit" />
+                    <input type="hidden" name="feed_id" value="{escape(feed_id, quote=True)}" />
+                    <input type="text" name="subreddit" value="{escape(subreddit, quote=True)}" placeholder="Subreddit" required style="margin-bottom:8px;" />
+                    {edit_channel_select_html}
+                    <button class="btn" type="submit" style="margin-top:8px;">Save</button>
+                  </form>
                   <form method="post" style="display:inline;">
                     <input type="hidden" name="action" value="toggle" />
                     <input type="hidden" name="feed_id" value="{escape(feed_id, quote=True)}" />
@@ -4022,6 +5891,7 @@ def create_web_app(
             else:
                 action_html = (
                     "<div class='dash-actions'>"
+                    "<button class='btn' type='button' disabled>Edit</button>"
                     "<button class='btn secondary' type='button' disabled>Enable/Disable</button>"
                     "<button class='btn danger' type='button' disabled>Delete</button>"
                     "</div>"
@@ -4031,7 +5901,7 @@ def create_web_app(
                 <tr>
                   <td><strong>r/{escape(subreddit)}</strong></td>
                   <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
-                  <td>{'Yes' if enabled else 'No'}</td>
+                  <td>{"Yes" if enabled else "No"}</td>
                   <td class="muted">{escape(last_checked_at)}</td>
                   <td class="muted">{escape(last_posted_at)}</td>
                   <td class="muted">{escape(status_label)}</td>
@@ -4042,17 +5912,11 @@ def create_web_app(
 
         catalog_note = ""
         if text_channel_options:
-            catalog_note = (
-                f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord for feed targets.</p>"
-            )
+            catalog_note = f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord for feed targets.</p>"
         elif catalog_error:
-            catalog_note = (
-                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
-            )
+            catalog_note = f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
         else:
-            catalog_note = (
-                "<p class='muted'>No Discord text channels are currently available for selection.</p>"
-            )
+            catalog_note = "<p class='muted'>No Discord text channels are currently available for selection.</p>"
 
         management_note = (
             "<p class='muted'>Add subreddit watchers here and the bot will post new Reddit submissions to the selected Discord channel.</p>"
@@ -4063,9 +5927,7 @@ def create_web_app(
         add_disabled_note = ""
         if not text_channel_options:
             add_disabled_attr = " disabled"
-            add_disabled_note = (
-                "<p class='muted'>A Discord text channel must be available before you can add a Reddit feed.</p>"
-            )
+            add_disabled_note = "<p class='muted'>A Discord text channel must be available before you can add a Reddit feed.</p>"
 
         body = f"""
         <div class="grid">
@@ -4077,7 +5939,7 @@ def create_web_app(
               <label>Polling interval</label>
               {schedule_select_html}
               <div style="margin-top:14px;">
-                <button class="btn" type="submit"{'' if is_admin else ' disabled'}>Save Schedule</button>
+                <button class="btn" type="submit"{"" if is_admin else " disabled"}>Save Schedule</button>
               </div>
             </form>
           </div>
@@ -4094,7 +5956,7 @@ def create_web_app(
               <label style="margin-top:10px;display:block;">Discord channel</label>
               {channel_select_html}
               <div style="margin-top:14px;">
-                <button class="btn" type="submit"{add_disabled_attr if is_admin else ' disabled'}>Add Feed</button>
+                <button class="btn" type="submit"{add_disabled_attr if is_admin else " disabled"}>Add Feed</button>
               </div>
             </form>
           </div>
@@ -4116,12 +5978,1925 @@ def create_web_app(
               </tr>
             </thead>
             <tbody>
-              {''.join(feed_rows) if feed_rows else "<tr><td colspan='7' class='muted'>No Reddit feeds are configured yet.</td></tr>"}
+              {"".join(feed_rows) if feed_rows else "<tr><td colspan='7' class='muted'>No Reddit feeds are configured yet.</td></tr>"}
             </tbody>
           </table>
         </div>
         """
         return _render_page("Reddit Feeds", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/youtube", methods=["GET", "POST"])
+    @login_required
+    def youtube_subscriptions():
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
+        channel_labels = {
+            str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
+            for option in text_channel_options
+            if str(option.get("id") or "").strip()
+        }
+
+        payload = (
+            on_get_youtube_subscriptions(selected_guild_id)
+            if callable(on_get_youtube_subscriptions)
+            else {"ok": False, "error": "YouTube subscription callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not callable(on_manage_youtube_subscriptions):
+                flash("YouTube subscription update callback is not configured.", "error")
+            else:
+                callback_payload = {"action": action}
+                if action == "add":
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["source_url"] = request.form.get("source_url", "")
+                        callback_payload["channel_id"] = selected_channel_id
+                elif action == "edit":
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                        callback_payload["source_url"] = request.form.get("source_url", "")
+                        callback_payload["channel_id"] = selected_channel_id
+                elif action == "delete":
+                    callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                else:
+                    flash("Invalid YouTube subscription action.", "error")
+                    callback_payload = None
+
+                if callback_payload is not None:
+                    response = on_manage_youtube_subscriptions(callback_payload, user["email"], selected_guild_id)
+                    if not isinstance(response, dict):
+                        flash("Invalid response from YouTube subscription handler.", "error")
+                    elif response.get("ok"):
+                        payload = response
+                        flash(
+                            str(response.get("message") or "YouTube subscriptions updated."),
+                            "success",
+                        )
+                    else:
+                        flash(
+                            str(response.get("error") or "Failed to update YouTube subscriptions."),
+                            "error",
+                        )
+
+            payload = (
+                on_get_youtube_subscriptions(selected_guild_id)
+                if callable(on_get_youtube_subscriptions)
+                else {"ok": False, "error": "YouTube subscription callbacks are not configured."}
+            )
+
+        subscriptions = payload.get("subscriptions", []) if isinstance(payload, dict) else []
+        subscriptions_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        channel_select_html = _render_select_input(
+            "channel_id",
+            "",
+            text_channel_options,
+            placeholder="Select a Discord text channel...",
+        )
+        rows = []
+        for subscription in subscriptions:
+            subscription_id = str(subscription.get("id") or "")
+            channel_id = str(subscription.get("target_channel_id") or "").strip()
+            channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
+            edit_channel_select_html = _render_select_input(
+                "channel_id",
+                channel_id,
+                text_channel_options,
+                placeholder="Select a Discord text channel...",
+            )
+            actions_html = (
+                f"""
+                <form method="post" style="display:inline-block;min-width:260px;">
+                  <input type="hidden" name="action" value="edit" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <input type="text" name="source_url" value="{escape(str(subscription.get("source_url") or ""), quote=True)}" placeholder="https://www.youtube.com/@example" required style="margin-bottom:8px;" />
+                  {edit_channel_select_html}
+                  <button class="btn" type="submit" style="margin-top:8px;">Save</button>
+                </form>
+                <form method="post" style="display:inline;" onsubmit="return confirm('Delete this YouTube subscription?');">
+                  <input type="hidden" name="action" value="delete" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <button class="btn danger" type="submit">Delete</button>
+                </form>
+                """
+                if is_admin
+                else "<div class='dash-actions'><button class='btn' type='button' disabled>Edit</button><button class='btn danger' type='button' disabled>Delete</button></div>"
+            )
+            rows.append(
+                f"""
+                <tr>
+                  <td>{escape(str(subscription.get("channel_title") or ""))}<div class="muted mono">{escape(str(subscription.get("channel_id") or ""))}</div></td>
+                  <td>{escape(str(subscription.get("source_url") or ""))}</td>
+                  <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
+                  <td>{escape(str(subscription.get("last_video_title") or "Unknown"))}</td>
+                  <td class="muted">{escape(format_timestamp_display(subscription.get("last_published_at"), blank="Never"))}</td>
+                  <td>{actions_html}</td>
+                </tr>
+                """
+            )
+
+        catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        add_disabled_attr = "" if text_channel_options and is_admin else " disabled"
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Add YouTube Subscription</h2>
+            <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+            <p class="muted">Track a YouTube channel and post new uploads into a Discord text channel.</p>
+            {catalog_note}
+            <form method="post">
+              <input type="hidden" name="action" value="add" />
+              <label>YouTube channel URL</label>
+              <input type="text" name="source_url" placeholder="https://www.youtube.com/@example" required{add_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {channel_select_html}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{add_disabled_attr}>Save Subscription</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured YouTube Subscriptions</h2>
+          {f"<p class='muted'>Could not load subscriptions: {escape(subscriptions_error)}</p>" if subscriptions_error else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Channel</th>
+                <th>Source URL</th>
+                <th>Discord Channel</th>
+                <th>Last Video</th>
+                <th>Last Published</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(rows) if rows else "<tr><td colspan='6' class='muted'>No YouTube subscriptions are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page(
+            "YouTube Subscriptions",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/linkedin", methods=["GET", "POST"])
+    @login_required
+    def linkedin_subscriptions():
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
+        channel_labels = {
+            str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
+            for option in text_channel_options
+            if str(option.get("id") or "").strip()
+        }
+
+        payload = (
+            on_get_linkedin_subscriptions(selected_guild_id)
+            if callable(on_get_linkedin_subscriptions)
+            else {"ok": False, "error": "LinkedIn subscription callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not callable(on_manage_linkedin_subscriptions):
+                flash("LinkedIn subscription update callback is not configured.", "error")
+            else:
+                callback_payload = {"action": action}
+                if action == "add":
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["source_url"] = request.form.get("source_url", "")
+                        callback_payload["channel_id"] = selected_channel_id
+                elif action == "edit":
+                    selected_channel_id = str(request.form.get("channel_id", "")).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if selected_channel_id and valid_text_channel_ids and selected_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                        callback_payload = None
+                    else:
+                        callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                        callback_payload["source_url"] = request.form.get("source_url", "")
+                        callback_payload["channel_id"] = selected_channel_id
+                elif action == "delete":
+                    callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                else:
+                    flash("Invalid LinkedIn subscription action.", "error")
+                    callback_payload = None
+
+                if callback_payload is not None:
+                    response = on_manage_linkedin_subscriptions(callback_payload, user["email"], selected_guild_id)
+                    if not isinstance(response, dict):
+                        flash("Invalid response from LinkedIn subscription handler.", "error")
+                    elif response.get("ok"):
+                        payload = response
+                        flash(
+                            str(response.get("message") or "LinkedIn subscriptions updated."),
+                            "success",
+                        )
+                    else:
+                        flash(
+                            str(response.get("error") or "Failed to update LinkedIn subscriptions."),
+                            "error",
+                        )
+
+            payload = (
+                on_get_linkedin_subscriptions(selected_guild_id)
+                if callable(on_get_linkedin_subscriptions)
+                else {"ok": False, "error": "LinkedIn subscription callbacks are not configured."}
+            )
+
+        subscriptions = payload.get("subscriptions", []) if isinstance(payload, dict) else []
+        subscriptions_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        channel_select_html = _render_select_input(
+            "channel_id",
+            "",
+            text_channel_options,
+            placeholder="Select a Discord text channel...",
+        )
+        rows = []
+        for subscription in subscriptions:
+            subscription_id = str(subscription.get("id") or "")
+            channel_id = str(subscription.get("target_channel_id") or "").strip()
+            channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
+            edit_channel_select_html = _render_select_input(
+                "channel_id",
+                channel_id,
+                text_channel_options,
+                placeholder="Select a Discord text channel...",
+            )
+            actions_html = (
+                f"""
+                <form method="post" style="display:inline-block;min-width:260px;">
+                  <input type="hidden" name="action" value="edit" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <input type="text" name="source_url" value="{escape(str(subscription.get("source_url") or ""), quote=True)}" placeholder="https://www.linkedin.com/in/example" required style="margin-bottom:8px;" />
+                  {edit_channel_select_html}
+                  <button class="btn" type="submit" style="margin-top:8px;">Save</button>
+                </form>
+                <form method="post" style="display:inline;" onsubmit="return confirm('Delete this LinkedIn subscription?');">
+                  <input type="hidden" name="action" value="delete" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <button class="btn danger" type="submit">Delete</button>
+                </form>
+                """
+                if is_admin
+                else "<div class='dash-actions'><button class='btn' type='button' disabled>Edit</button><button class='btn danger' type='button' disabled>Delete</button></div>"
+            )
+            rows.append(
+                f"""
+                <tr>
+                  <td>{escape(str(subscription.get("profile_name") or "Unknown profile"))}</td>
+                  <td>{escape(str(subscription.get("source_url") or ""))}</td>
+                  <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
+                  <td>{escape(_clip_text(str(subscription.get("last_post_text") or "No post captured yet."), max_chars=100))}</td>
+                  <td class="muted">{escape(format_timestamp_display(subscription.get("last_published_at"), blank="Never"))}</td>
+                  <td class="muted">{escape(format_timestamp_display(subscription.get("last_checked_at"), blank="Never"))}</td>
+                  <td class="muted">{escape(str(subscription.get("last_error") or "")) or "OK"}</td>
+                  <td>{actions_html}</td>
+                </tr>
+                """
+            )
+
+        catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        add_disabled_attr = "" if text_channel_options and is_admin else " disabled"
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Add LinkedIn Profile</h2>
+            <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+            <p class="muted">Track a public LinkedIn profile and post new profile activity into a Discord text channel.</p>
+            <p class="muted">Use the public profile URL, for example <span class="mono">https://www.linkedin.com/in/example</span>.</p>
+            {catalog_note}
+            <form method="post">
+              <input type="hidden" name="action" value="add" />
+              <label>LinkedIn profile URL</label>
+              <input type="text" name="source_url" placeholder="https://www.linkedin.com/in/example" required{add_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {channel_select_html}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{add_disabled_attr}>Save Subscription</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured LinkedIn Profiles</h2>
+          <p class="muted">This watcher works best for public LinkedIn profiles whose recent posts are visible on the public profile page.</p>
+          {f"<p class='muted'>Could not load subscriptions: {escape(subscriptions_error)}</p>" if subscriptions_error else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Profile</th>
+                <th>Source URL</th>
+                <th>Discord Channel</th>
+                <th>Last Post Preview</th>
+                <th>Last Published</th>
+                <th>Last Checked</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(rows) if rows else "<tr><td colspan='8' class='muted'>No LinkedIn profiles are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page(
+            "LinkedIn Profiles",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/beta-programs", methods=["GET", "POST"])
+    @login_required
+    def beta_program_subscriptions():
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
+        channel_labels = {
+            str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
+            for option in text_channel_options
+            if str(option.get("id") or "").strip()
+        }
+
+        payload = (
+            on_get_beta_program_subscriptions(selected_guild_id)
+            if callable(on_get_beta_program_subscriptions)
+            else {"ok": False, "error": "GL.iNet beta program callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not callable(on_manage_beta_program_subscriptions):
+                flash("GL.iNet beta program update callback is not configured.", "error")
+            else:
+                callback_payload = {"action": action}
+                if action == "add":
+                    callback_payload["channel_id"] = str(request.form.get("channel_id", "")).strip()
+                elif action == "delete":
+                    callback_payload["subscription_id"] = request.form.get("subscription_id", "")
+                else:
+                    flash("Invalid GL.iNet beta program action.", "error")
+                    callback_payload = None
+
+                if callback_payload is not None:
+                    response = on_manage_beta_program_subscriptions(callback_payload, user["email"], selected_guild_id)
+                    if not isinstance(response, dict):
+                        flash("Invalid response from GL.iNet beta program handler.", "error")
+                    elif response.get("ok"):
+                        payload = response
+                        flash(
+                            str(response.get("message") or "GL.iNet beta programs updated."),
+                            "success",
+                        )
+                    else:
+                        flash(
+                            str(response.get("error") or "Failed to update GL.iNet beta programs."),
+                            "error",
+                        )
+
+            payload = (
+                on_get_beta_program_subscriptions(selected_guild_id)
+                if callable(on_get_beta_program_subscriptions)
+                else {"ok": False, "error": "GL.iNet beta program callbacks are not configured."}
+            )
+
+        subscriptions = payload.get("subscriptions", []) if isinstance(payload, dict) else []
+        subscriptions_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+        source_url = str(payload.get("source_url") or "https://www.gl-inet.com/beta-testing/#register")
+        channel_select_html = _render_select_input(
+            "channel_id",
+            "",
+            text_channel_options,
+            placeholder="Select a Discord text channel...",
+        )
+        rows = []
+        for subscription in subscriptions:
+            subscription_id = str(subscription.get("id") or "")
+            channel_id = str(subscription.get("target_channel_id") or "").strip()
+            channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
+            program_count = len(subscription.get("programs") or [])
+            actions_html = (
+                f"""
+                <form method="post" style="display:inline;" onsubmit="return confirm('Delete this GL.iNet beta program monitor?');">
+                  <input type="hidden" name="action" value="delete" />
+                  <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <button class="btn danger" type="submit">Delete</button>
+                </form>
+                """
+                if is_admin
+                else "<button class='btn danger' type='button' disabled>Delete</button>"
+            )
+            rows.append(
+                f"""
+                <tr>
+                  <td>{escape(str(subscription.get("source_name") or "GL.iNet Beta Programs"))}</td>
+                  <td><a href="{escape(str(subscription.get("source_url") or source_url), quote=True)}" target="_blank" rel="noopener">{escape(str(subscription.get("source_url") or source_url))}</a></td>
+                  <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
+                  <td>{program_count}</td>
+                  <td class="muted">{escape(format_timestamp_display(subscription.get("last_checked_at"), blank="Never"))}</td>
+                  <td class="muted">{escape(str(subscription.get("last_error") or "")) or "OK"}</td>
+                  <td>{actions_html}</td>
+                </tr>
+                """
+            )
+
+        catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        add_disabled_attr = "" if text_channel_options and is_admin else " disabled"
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Add GL.iNet Beta Program Monitor</h2>
+            <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+            <p class="muted">Monitor the GL.iNet beta testing page and notify a Discord text channel whenever beta programs are added or removed.</p>
+            <p class="muted">Source page: <a href="{escape(source_url, quote=True)}" target="_blank" rel="noopener">{escape(source_url)}</a></p>
+            {catalog_note}
+            <form method="post">
+              <input type="hidden" name="action" value="add" />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {channel_select_html}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{add_disabled_attr}>Save Monitor</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured GL.iNet Beta Program Monitors</h2>
+          <p class="muted">This watcher polls the public GL.iNet beta page and compares the current program list against the last seen snapshot for the selected guild.</p>
+          {f"<p class='muted'>Could not load subscriptions: {escape(subscriptions_error)}</p>" if subscriptions_error else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Page URL</th>
+                <th>Discord Channel</th>
+                <th>Known Programs</th>
+                <th>Last Checked</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(rows) if rows else "<tr><td colspan='7' class='muted'>No GL.iNet beta program monitors are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page(
+            "GL.iNet Beta Programs",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
+    @app.route("/admin/service-monitors", methods=["GET", "POST"])
+    @login_required
+    def service_monitors_page():
+        user = _current_user()
+        can_manage = _is_admin_user(user) or _is_glinet_rw_user(user) or _is_guild_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "").strip()
+        selected_guild_id_int = int(selected_guild_id) if selected_guild_id.isdigit() else 0
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        fallback_env_file = _env_fallback_file_path(data_dir)
+
+        def _fetch_json_url(url: str, *, verify_tls: bool = True):
+            response = _safe_outbound_get(
+                str(url or "").strip(),
+                timeout=15,
+                verify_tls=verify_tls,
+                headers={
+                    "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                    "Accept": "application/json",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Status page API returned an unexpected payload.")
+            return payload
+
+        def _fetch_text_url(url: str, *, api_key: str = "", verify_tls: bool = True):
+            request_headers = {
+                "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                "Accept": "text/plain, application/openmetrics-text;q=0.9, */*;q=0.8",
+            }
+            normalized_api_key = str(api_key or "").strip()
+            auth_variants = [{}]
+            if normalized_api_key:
+                encoded = base64.b64encode(f":{normalized_api_key}".encode()).decode("ascii")
+                auth_variants = [
+                    {"Authorization": f"Basic {encoded}"},
+                    {"Authorization": f"Bearer {normalized_api_key}"},
+                    {"X-API-Key": normalized_api_key},
+                ]
+            last_response = None
+            for auth_headers in auth_variants:
+                response = _safe_outbound_get(
+                    str(url or "").strip(),
+                    timeout=15,
+                    verify_tls=verify_tls,
+                    headers={**request_headers, **auth_headers},
+                )
+                last_response = response
+                if response.status_code == 401 and normalized_api_key and auth_headers is not auth_variants[-1]:
+                    continue
+                response.raise_for_status()
+                return response.text
+            if last_response is not None:
+                last_response.raise_for_status()
+            raise ValueError("Uptime Kuma instance did not return any response.")
+
+        def _load_page_state():
+            file_values = _load_effective_env_values(env_file, fallback_env_file)
+            raw_default_channel = str(_read_env_value(file_values, "SERVICE_MONITOR_DEFAULT_CHANNEL_ID") or "").strip()
+            try:
+                default_channel_id = int(raw_default_channel or 0)
+            except ValueError:
+                default_channel_id = 0
+            raw_timeout = str(_read_env_value(file_values, "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS") or "10").strip()
+            try:
+                service_timeout = max(3, int(raw_timeout or 10))
+            except ValueError:
+                service_timeout = 10
+            raw_targets = _read_env_value(file_values, "SERVICE_MONITOR_TARGETS_JSON")
+            targets_error = ""
+            try:
+                all_targets = normalize_service_monitor_targets(
+                    raw_targets,
+                    default_timeout_seconds=service_timeout,
+                    default_channel_id=default_channel_id,
+                )
+            except ValueError as exc:
+                all_targets = []
+                targets_error = str(exc)
+
+            visible_targets = []
+            for target in all_targets:
+                target_guild_id = int(target.get("guild_id") or 0)
+                if target_guild_id not in {0, selected_guild_id_int}:
+                    continue
+                visible_targets.append(dict(target))
+
+            service_schedule = str(
+                _read_env_value(file_values, "SERVICE_MONITOR_CHECK_SCHEDULE") or "*/5 * * * *"
+            ).strip() or "*/5 * * * *"
+            if not croniter.is_valid(service_schedule):
+                service_schedule = "*/5 * * * *"
+
+            uptime_schedule = str(
+                _read_env_value(file_values, "UPTIME_STATUS_CHECK_SCHEDULE") or "*/5 * * * *"
+            ).strip() or "*/5 * * * *"
+            if not croniter.is_valid(uptime_schedule):
+                uptime_schedule = "*/5 * * * *"
+
+            raw_uptime_timeout = str(_read_env_value(file_values, "UPTIME_STATUS_TIMEOUT_SECONDS") or "15").strip()
+            try:
+                uptime_timeout = max(3, int(raw_uptime_timeout or 15))
+            except ValueError:
+                uptime_timeout = 15
+
+            return {
+                "file_values": file_values,
+                "all_targets": all_targets,
+                "visible_targets": visible_targets,
+                "targets_error": targets_error,
+                "service_enabled": str(_read_env_value(file_values, "SERVICE_MONITOR_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "service_default_channel_id": default_channel_id,
+                "service_schedule": service_schedule,
+                "service_timeout": service_timeout,
+                "uptime_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "uptime_notify_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "uptime_page_url": str(_read_env_value(file_values, "UPTIME_STATUS_PAGE_URL") or "").strip(),
+                "uptime_instance_url": str(_read_env_value(file_values, "UPTIME_STATUS_INSTANCE_URL") or "").strip(),
+                "uptime_api_key_configured": bool(
+                    str(_read_env_value(file_values, "UPTIME_STATUS_API_KEY") or "").strip()
+                    or default_uptime_api_key(str(_read_env_value(file_values, "UPTIME_STATUS_INSTANCE_URL") or "").strip())
+                ),
+                "uptime_notify_channel_id": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_CHANNEL_ID") or "").strip(),
+                "uptime_schedule": uptime_schedule,
+                "uptime_timeout": uptime_timeout,
+                "uptime_verify_tls": str(_read_env_value(file_values, "UPTIME_STATUS_VERIFY_TLS") or "true").strip().lower()
+                in {"1", "true", "yes", "on"},
+            }
+
+        def _persist_monitor_updates(applied_updates: dict):
+            merged_values = _load_effective_env_values(env_file, fallback_env_file)
+            for key, value in applied_updates.items():
+                merged_values[str(key)] = "" if value is None else str(value)
+            normalized_values = _normalize_env_updates(merged_values)
+            validation_errors = _validate_env_updates(applied_updates)
+            if validation_errors:
+                return False, validation_errors[0]
+
+            saved, save_error, saved_env_file, skipped_keys = _try_write_env_file_with_fallback(
+                env_file,
+                fallback_env_file,
+                normalized_values,
+            )
+            if not saved:
+                return False, save_error
+
+            for key, value in applied_updates.items():
+                os.environ[str(key)] = "" if value is None else str(value)
+            os.environ["WEB_ENV_FILE"] = str(saved_env_file)
+            if callable(on_env_settings_saved):
+                on_env_settings_saved({**applied_updates, "WEB_ENV_FILE": str(saved_env_file)})
+            if saved_env_file != env_file:
+                flash(
+                    f"Monitor settings saved to fallback env file {saved_env_file}.",
+                    "success",
+                )
+            return True, ""
+
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
+        channel_labels = {
+            str(option.get("id") or "").strip(): str(option.get("label") or option.get("name") or option.get("id") or "Unknown")
+            for option in text_channel_options
+            if str(option.get("id") or "").strip()
+        }
+
+        page_state = _load_page_state()
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not can_manage:
+                flash("Read-only account: this action is not allowed.", "error")
+            elif action == "save_service_settings":
+                selected_default_channel_id = str(request.form.get("default_channel_id") or "").strip()
+                updates = {
+                    "SERVICE_MONITOR_ENABLED": "true"
+                    if str(request.form.get("service_monitor_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+                    else "false",
+                    "SERVICE_MONITOR_CHECK_SCHEDULE": str(request.form.get("service_monitor_schedule") or "*/5 * * * *").strip(),
+                    "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS": str(
+                        request.form.get("service_monitor_timeout") or page_state["service_timeout"] or 10
+                    ).strip(),
+                    "SERVICE_MONITOR_DEFAULT_CHANNEL_ID": selected_default_channel_id,
+                }
+                ok, error_text = _persist_monitor_updates(updates)
+                if ok:
+                    flash("Direct service monitor settings updated.", "success")
+                else:
+                    flash(error_text, "error")
+            elif action in {
+                "add_target",
+                "edit_target",
+                "delete_target",
+                "add_tailscale_status",
+                "add_glinet_domain_set",
+            }:
+                all_targets = list(page_state["all_targets"])
+                if action == "delete_target":
+                    target_id = str(request.form.get("target_id") or "").strip()
+                    next_targets = []
+                    removed = False
+                    for target in all_targets:
+                        target_guild_id = int(target.get("guild_id") or 0)
+                        if str(target.get("id") or "") == target_id and target_guild_id in {0, selected_guild_id_int}:
+                            removed = True
+                            continue
+                        next_targets.append(target)
+                    if not removed:
+                        flash("Service monitor entry was not found.", "error")
+                    else:
+                        ok, error_text = _persist_monitor_updates(
+                            {"SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets)}
+                        )
+                        if ok:
+                            flash("Service monitor deleted.", "success")
+                        else:
+                            flash(error_text, "error")
+                else:
+                    target_id = str(request.form.get("target_id") or "").strip()
+                    if action == "add_tailscale_status":
+                        name = "Tailscale Status"
+                        url = "https://status.tailscale.com/"
+                        method = "GET"
+                        expected_status = "200"
+                        contains_text = ""
+                        channel_id = str(request.form.get("preset_channel_id") or "").strip()
+                        timeout_seconds = str(
+                            request.form.get("preset_timeout_seconds") or page_state["service_timeout"] or 10
+                        ).strip()
+                    elif action == "add_glinet_domain_set":
+                        channel_id = str(request.form.get("glinet_preset_channel_id") or "").strip()
+                        timeout_seconds = str(
+                            request.form.get("glinet_preset_timeout_seconds") or page_state["service_timeout"] or 10
+                        ).strip()
+                        name = ""
+                        url = ""
+                        method = "GET"
+                        expected_status = "200"
+                        contains_text = ""
+                    else:
+                        name = str(request.form.get("name") or "").strip()
+                        url = str(request.form.get("url") or "").strip()
+                        method = str(request.form.get("method") or "GET").strip().upper()
+                        expected_status = str(request.form.get("expected_status") or "200").strip() or "200"
+                        contains_text = str(request.form.get("contains_text") or "").strip()
+                        channel_id = str(request.form.get("channel_id") or "").strip()
+                        timeout_seconds = str(
+                            request.form.get("timeout_seconds") or page_state["service_timeout"] or 10
+                        ).strip()
+                    valid_text_channel_ids = {
+                        str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                    }
+                    if channel_id and valid_text_channel_ids and channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel.", "error")
+                    else:
+                        channel_id_value = int(channel_id or page_state["service_default_channel_id"] or 0)
+                        try:
+                            if action == "add_glinet_domain_set":
+                                incoming_targets = build_glinet_domain_monitor_targets(
+                                    guild_id=selected_guild_id_int,
+                                    channel_id=channel_id_value,
+                                    timeout_seconds=int(timeout_seconds or page_state["service_timeout"] or 10),
+                                )
+                                merge_result = merge_service_monitor_targets(all_targets, incoming_targets)
+                                next_targets = merge_result["targets"]
+                            else:
+                                candidate = {
+                                    "guild_id": selected_guild_id_int,
+                                    "name": name,
+                                    "url": url,
+                                    "method": method,
+                                    "expected_status": expected_status,
+                                    "contains_text": contains_text,
+                                    "timeout_seconds": timeout_seconds,
+                                    "channel_id": channel_id_value,
+                                }
+                                normalized_candidate = normalize_service_monitor_targets(
+                                    [candidate],
+                                    default_timeout_seconds=page_state["service_timeout"],
+                                    default_channel_id=page_state["service_default_channel_id"],
+                                )[0]
+                                next_targets = []
+                                merge_result = None
+                            if action == "edit_target":
+                                replaced = False
+                                for target in all_targets:
+                                    target_guild_id = int(target.get("guild_id") or 0)
+                                    if str(target.get("id") or "") == target_id and target_guild_id in {0, selected_guild_id_int}:
+                                        next_targets.append(normalized_candidate)
+                                        replaced = True
+                                    else:
+                                        next_targets.append(target)
+                                if not replaced:
+                                    flash("Service monitor entry was not found.", "error")
+                                    page_state = _load_page_state()
+                                    target_rows = []
+                                    # fall through to render
+                                    next_targets = None
+                            elif action == "add_glinet_domain_set":
+                                pass
+                            else:
+                                next_targets = list(all_targets) + [normalized_candidate]
+                            if next_targets is not None:
+                                ok, error_text = _persist_monitor_updates(
+                                    {"SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets)}
+                                )
+                                if ok:
+                                    flash(
+                                        "Service monitor updated."
+                                        if action == "edit_target"
+                                        else (
+                                            f"Added {merge_result['added']} GL.iNet domain monitor(s)"
+                                            + (
+                                                f", updated {merge_result['updated']}"
+                                                if merge_result and merge_result["updated"]
+                                                else ""
+                                            )
+                                            + (
+                                                f", removed {merge_result['deduped']} duplicate(s)"
+                                                if merge_result and merge_result["deduped"]
+                                                else ""
+                                            )
+                                            + "."
+                                        )
+                                        if action == "add_glinet_domain_set"
+                                        else "Tailscale status monitor added."
+                                        if action == "add_tailscale_status"
+                                        else "Service monitor added.",
+                                        "success",
+                                    )
+                                else:
+                                    flash(error_text, "error")
+                        except ValueError as exc:
+                            flash(str(exc), "error")
+            else:
+                flash("Invalid service monitor action.", "error")
+            page_state = _load_page_state()
+
+        enabled_options = [
+            {"value": "true", "label": "Enabled"},
+            {"value": "false", "label": "Disabled"},
+        ]
+        channel_catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord for <strong>{escape(guild_name)}</strong>.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        direct_settings_channel_select = _render_select_input(
+            "default_channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Optional fallback Discord text channel...",
+        )
+        add_target_channel_select = _render_select_input(
+            "channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        glinet_preset_target_channel_select = _render_select_input(
+            "glinet_preset_channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        service_schedule_select = _render_fixed_select_input(
+            "service_monitor_schedule",
+            page_state["service_schedule"],
+            [{"value": value, "label": label} for value, label in MONITOR_RECHECK_SCHEDULE_OPTIONS],
+            placeholder="Select recheck interval...",
+        )
+        service_enabled_select = _render_fixed_select_input(
+            "service_monitor_enabled",
+            "true" if page_state["service_enabled"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        method_options = [{"value": "GET", "label": "GET"}, {"value": "HEAD", "label": "HEAD"}]
+        target_rows = []
+        for target in page_state["visible_targets"]:
+            target_id = str(target.get("id") or "").strip()
+            target_channel_id = str(target.get("channel_id") or "").strip()
+            target_channel_label = channel_labels.get(target_channel_id, f"Unknown channel ({target_channel_id or 'not set'})")
+            edit_channel_select = _render_select_input(
+                "channel_id",
+                target_channel_id,
+                text_channel_options,
+                placeholder="Choose the Discord text channel...",
+            )
+            edit_method_select = _render_fixed_select_input(
+                "method",
+                str(target.get("method") or "GET").strip().upper(),
+                method_options,
+                placeholder="Choose method...",
+            )
+            actions_html = (
+                f"""
+                <form method="post" style="display:inline-block;min-width:320px;">
+                  <input type="hidden" name="action" value="edit_target" />
+                  <input type="hidden" name="target_id" value="{escape(target_id, quote=True)}" />
+                  <input type="text" name="name" value="{escape(str(target.get('name') or ''), quote=True)}" placeholder="Friendly name" required style="margin-bottom:8px;" />
+                  <input type="text" name="url" value="{escape(str(target.get('url') or ''), quote=True)}" placeholder="https://example.com/health" required style="margin-bottom:8px;" />
+                  {edit_method_select}
+                  <input type="number" name="expected_status" min="100" max="599" value="{escape(str(target.get('expected_status') or 200), quote=True)}" placeholder="Expected HTTP status" style="margin-top:8px;" />
+                  <input type="text" name="contains_text" value="{escape(str(target.get('contains_text') or ''), quote=True)}" placeholder="Optional required text" style="margin-top:8px;" />
+                  {edit_channel_select}
+                  <input type="number" name="timeout_seconds" min="3" max="120" value="{escape(str(target.get('timeout_seconds') or page_state['service_timeout']), quote=True)}" placeholder="Timeout seconds" style="margin-top:8px;" />
+                  <button class="btn" type="submit" style="margin-top:8px;">Save</button>
+                </form>
+                <form method="post" style="display:inline;" onsubmit="return confirm('Delete this direct service monitor?');">
+                  <input type="hidden" name="action" value="delete_target" />
+                  <input type="hidden" name="target_id" value="{escape(target_id, quote=True)}" />
+                  <button class="btn danger" type="submit">Delete</button>
+                </form>
+                """
+                if can_manage
+                else "<div class='dash-actions'><button class='btn' type='button' disabled>Edit</button><button class='btn danger' type='button' disabled>Delete</button></div>"
+            )
+            target_rows.append(
+                f"""
+                <tr>
+                  <td><strong>{escape(str(target.get("name") or ""))}</strong></td>
+                  <td><a href="{escape(str(target.get("url") or ""), quote=True)}" target="_blank" rel="noopener">{escape(str(target.get("url") or ""))}</a></td>
+                  <td>{escape(str(target.get("method") or "GET"))}<div class="muted">HTTP {escape(str(target.get("expected_status") or 200))}</div></td>
+                  <td>{escape(target_channel_label)}<div class="muted mono">{escape(target_channel_id)}</div></td>
+                  <td class="muted">{escape(str(target.get("contains_text") or "")) or "Any valid response"}</td>
+                  <td class="muted">{escape(str(target.get("timeout_seconds") or page_state["service_timeout"]))}s</td>
+                  <td>{actions_html}</td>
+                </tr>
+                """
+            )
+
+        manage_disabled_attr = "" if can_manage else " disabled"
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Direct Service Monitor Settings</h2>
+            <p class="muted">These checks watch websites and API endpoints directly and only alert on state changes. The current page manages the entries scoped to <strong>{escape(guild_name)}</strong>.</p>
+            <p class="muted">Uptime Kuma watcher settings and imports now live on the dedicated <strong>Uptime Kuma</strong> page.</p>
+            {channel_catalog_note}
+            <form method="post">
+              <input type="hidden" name="action" value="save_service_settings" />
+              <label>Direct monitor state</label>
+              {service_enabled_select}
+              <label style="margin-top:10px;display:block;">Recheck interval</label>
+              {service_schedule_select}
+              <label>Request timeout (seconds)</label>
+              <input type="number" name="service_monitor_timeout" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Fallback Discord channel</label>
+              {direct_settings_channel_select}
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{manage_disabled_attr}>Save Direct Monitor Settings</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Uptime Kuma</h2>
+            <p class="muted">Use the dedicated Uptime Kuma page to configure the watcher, import direct checks, and remove previously imported monitor sets.</p>
+            <div style="margin-top:14px;">
+              <a class="btn" href="{escape(url_for('uptime_kuma_page'), quote=True)}">Open Uptime Kuma</a>
+            </div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:16px;">
+          <div class="card">
+            <h2>Add Direct Service Monitor</h2>
+            <p class="muted">Create a direct website or API check for <strong>{escape(guild_name)}</strong>. Use optional required text when a simple HTTP status code is not enough.</p>
+            <div class="card" style="margin:0 0 16px 0;">
+              <h3 style="margin-top:0;">Quick Preset: GL.iNet Domains</h3>
+              <p class="muted">Add the standard GL.iNet domain set for this guild and automatically remove duplicates by URL.</p>
+              <form method="post">
+                <input type="hidden" name="action" value="add_glinet_domain_set" />
+                <label>Discord channel</label>
+                {glinet_preset_target_channel_select}
+                <label>Request timeout (seconds)</label>
+                <input type="number" name="glinet_preset_timeout_seconds" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
+                <div style="margin-top:14px;">
+                  <button class="btn" type="submit"{manage_disabled_attr}>Add GL.iNet Domain Set</button>
+                </div>
+              </form>
+            </div>
+            <div class="card" style="margin:0 0 16px 0;">
+              <h3 style="margin-top:0;">Quick Preset: Tailscale</h3>
+              <p class="muted">Add a ready-to-use monitor for <span class="mono">https://status.tailscale.com/</span>.</p>
+              <form method="post">
+                <input type="hidden" name="action" value="add_tailscale_status" />
+                <label>Discord channel</label>
+                {_render_select_input(
+                    "preset_channel_id",
+                    str(page_state["service_default_channel_id"] or ""),
+                    text_channel_options,
+                    placeholder="Choose the Discord text channel...",
+                )}
+                <label>Request timeout (seconds)</label>
+                <input type="number" name="preset_timeout_seconds" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
+                <div style="margin-top:14px;">
+                  <button class="btn" type="submit"{manage_disabled_attr}>Add Tailscale Status</button>
+                </div>
+              </form>
+            </div>
+            <form method="post">
+              <input type="hidden" name="action" value="add_target" />
+              <label>Friendly name</label>
+              <input type="text" name="name" placeholder="Discord Status" required{manage_disabled_attr} />
+              <label>URL</label>
+              <input type="text" name="url" placeholder="https://status.discord.com" required{manage_disabled_attr} />
+              <label>Method</label>
+              {_render_fixed_select_input("method", "GET", method_options, placeholder="Choose method...")}
+              <label>Expected HTTP status</label>
+              <input type="number" name="expected_status" min="100" max="599" value="200"{manage_disabled_attr} />
+              <label>Required text (optional)</label>
+              <input type="text" name="contains_text" placeholder="Optional response text"{manage_disabled_attr} />
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {add_target_channel_select}
+              <label>Request timeout (seconds)</label>
+              <input type="number" name="timeout_seconds" min="3" max="120" value="{escape(str(page_state['service_timeout']), quote=True)}"{manage_disabled_attr} />
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{manage_disabled_attr}>Add Direct Monitor</button>
+              </div>
+            </form>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Configured Direct Service Monitors</h2>
+          <p class="muted">These checks belong to <strong>{escape(guild_name)}</strong> and use the global direct-monitor interval shown above. Alerts are sent only when a service changes from up to down or recovers from down to up.</p>
+          {f"<p class='muted'>Current target configuration could not be parsed: {escape(page_state['targets_error'])}</p>" if page_state["targets_error"] else ""}
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>URL</th>
+                <th>Request</th>
+                <th>Discord Channel</th>
+                <th>Required Text</th>
+                <th>Timeout</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(target_rows) if target_rows else "<tr><td colspan='7' class='muted'>No direct service monitors are configured yet.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page("Service Monitors", body, user["email"], bool(user.get("is_admin")), str(user.get("display_name") or ""))
+
+    @app.route("/admin/uptime-kuma", methods=["GET", "POST"])
+    @login_required
+    def uptime_kuma_page():
+        user = _current_user()
+        can_manage = _is_admin_user(user) or _is_glinet_rw_user(user) or _is_guild_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "").strip()
+        selected_guild_id_int = int(selected_guild_id) if selected_guild_id.isdigit() else 0
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        fallback_env_file = _env_fallback_file_path(data_dir)
+
+        def _fetch_json_url(url: str, *, verify_tls: bool = True):
+            response = _safe_outbound_get(
+                str(url or "").strip(),
+                timeout=15,
+                verify_tls=verify_tls,
+                headers={
+                    "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                    "Accept": "application/json",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Status page API returned an unexpected payload.")
+            return payload
+
+        def _fetch_text_url(url: str, *, api_key: str = "", verify_tls: bool = True):
+            request_headers = {
+                "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                "Accept": "text/plain, application/openmetrics-text;q=0.9, */*;q=0.8",
+            }
+            normalized_api_key = str(api_key or "").strip()
+            auth_variants = [{}]
+            if normalized_api_key:
+                encoded = base64.b64encode(f":{normalized_api_key}".encode()).decode("ascii")
+                auth_variants = [
+                    {"Authorization": f"Basic {encoded}"},
+                    {"Authorization": f"Bearer {normalized_api_key}"},
+                    {"X-API-Key": normalized_api_key},
+                ]
+            last_response = None
+            for auth_headers in auth_variants:
+                response = _safe_outbound_get(
+                    str(url or "").strip(),
+                    timeout=15,
+                    verify_tls=verify_tls,
+                    headers={**request_headers, **auth_headers},
+                )
+                last_response = response
+                if response.status_code == 401 and normalized_api_key and auth_headers is not auth_variants[-1]:
+                    continue
+                response.raise_for_status()
+                return response.text
+            if last_response is not None:
+                last_response.raise_for_status()
+            raise ValueError("Uptime Kuma instance did not return any response.")
+
+        def _load_page_state():
+            file_values = _load_effective_env_values(env_file, fallback_env_file)
+            raw_default_channel = str(_read_env_value(file_values, "SERVICE_MONITOR_DEFAULT_CHANNEL_ID") or "").strip()
+            try:
+                default_channel_id = int(raw_default_channel or 0)
+            except ValueError:
+                default_channel_id = 0
+            raw_timeout = str(_read_env_value(file_values, "SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS") or "10").strip()
+            try:
+                service_timeout = max(3, int(raw_timeout or 10))
+            except ValueError:
+                service_timeout = 10
+            raw_targets = _read_env_value(file_values, "SERVICE_MONITOR_TARGETS_JSON")
+            try:
+                all_targets = normalize_service_monitor_targets(
+                    raw_targets,
+                    default_timeout_seconds=service_timeout,
+                    default_channel_id=default_channel_id,
+                )
+            except ValueError:
+                all_targets = []
+
+            uptime_schedule = str(
+                _read_env_value(file_values, "UPTIME_STATUS_CHECK_SCHEDULE") or "*/5 * * * *"
+            ).strip() or "*/5 * * * *"
+            if not croniter.is_valid(uptime_schedule):
+                uptime_schedule = "*/5 * * * *"
+
+            raw_uptime_timeout = str(_read_env_value(file_values, "UPTIME_STATUS_TIMEOUT_SECONDS") or "15").strip()
+            try:
+                uptime_timeout = max(3, int(raw_uptime_timeout or 15))
+            except ValueError:
+                uptime_timeout = 15
+
+            return {
+                "file_values": file_values,
+                "all_targets": all_targets,
+                "service_default_channel_id": default_channel_id,
+                "service_timeout": service_timeout,
+                "uptime_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "uptime_notify_enabled": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_ENABLED") or "false").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "uptime_page_url": str(_read_env_value(file_values, "UPTIME_STATUS_PAGE_URL") or "").strip(),
+                "uptime_instance_url": str(_read_env_value(file_values, "UPTIME_STATUS_INSTANCE_URL") or "").strip(),
+                "uptime_api_key_configured": bool(
+                    str(_read_env_value(file_values, "UPTIME_STATUS_API_KEY") or "").strip()
+                    or default_uptime_api_key(str(_read_env_value(file_values, "UPTIME_STATUS_INSTANCE_URL") or "").strip())
+                ),
+                "uptime_notify_channel_id": str(_read_env_value(file_values, "UPTIME_STATUS_NOTIFY_CHANNEL_ID") or "").strip(),
+                "uptime_schedule": uptime_schedule,
+                "uptime_timeout": uptime_timeout,
+                "uptime_verify_tls": str(_read_env_value(file_values, "UPTIME_STATUS_VERIFY_TLS") or "true").strip().lower()
+                in {"1", "true", "yes", "on"},
+                "imported_sources": summarize_uptime_import_sources(all_targets, guild_id=selected_guild_id_int),
+                "kuma_admin_gui_enabled": is_uptime_kuma_admin_gui_enabled(),
+                "kuma_monitors": [],
+            }
+
+        def _persist_monitor_updates(applied_updates: dict):
+            merged_values = _load_effective_env_values(env_file, fallback_env_file)
+            for key, value in applied_updates.items():
+                merged_values[str(key)] = "" if value is None else str(value)
+            normalized_values = _normalize_env_updates(merged_values)
+            validation_errors = _validate_env_updates(applied_updates)
+            if validation_errors:
+                return False, validation_errors[0]
+
+            saved, save_error, saved_env_file, _skipped_keys = _try_write_env_file_with_fallback(
+                env_file,
+                fallback_env_file,
+                normalized_values,
+            )
+            if not saved:
+                return False, save_error
+
+            for key, value in applied_updates.items():
+                os.environ[str(key)] = "" if value is None else str(value)
+            os.environ["WEB_ENV_FILE"] = str(saved_env_file)
+            if callable(on_env_settings_saved):
+                on_env_settings_saved({**applied_updates, "WEB_ENV_FILE": str(saved_env_file)})
+            if saved_env_file != env_file:
+                flash(f"Monitor settings saved to fallback env file {saved_env_file}.", "success")
+            return True, ""
+
+        text_channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
+        page_state = _load_page_state()
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not can_manage:
+                flash("Read-only account: this action is not allowed.", "error")
+            elif action == "save_uptime_settings":
+                notify_channel_id = str(request.form.get("uptime_notify_channel_id") or "").strip()
+                valid_text_channel_ids = {
+                    str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                }
+                if notify_channel_id and valid_text_channel_ids and notify_channel_id not in valid_text_channel_ids:
+                    flash("Choose a valid Discord text channel for Uptime Kuma alerts.", "error")
+                else:
+                    uptime_api_key_value = str(request.form.get("uptime_status_api_key") or "").strip()
+                    updates = {
+                        "UPTIME_STATUS_ENABLED": "true"
+                        if str(request.form.get("uptime_status_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                        "UPTIME_STATUS_NOTIFY_ENABLED": "true"
+                        if str(request.form.get("uptime_status_notify_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                        "UPTIME_STATUS_PAGE_URL": str(request.form.get("uptime_status_page_url") or "").strip(),
+                        "UPTIME_STATUS_INSTANCE_URL": str(request.form.get("uptime_status_instance_url") or "").strip(),
+                        "UPTIME_STATUS_NOTIFY_CHANNEL_ID": notify_channel_id,
+                        "UPTIME_STATUS_CHECK_SCHEDULE": str(request.form.get("uptime_status_schedule") or "*/5 * * * *").strip(),
+                        "UPTIME_STATUS_TIMEOUT_SECONDS": str(request.form.get("uptime_status_timeout") or page_state["uptime_timeout"] or 15).strip(),
+                        "UPTIME_STATUS_VERIFY_TLS": "true"
+                        if str(request.form.get("uptime_status_verify_tls") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                    }
+                    if uptime_api_key_value:
+                        updates["UPTIME_STATUS_API_KEY"] = uptime_api_key_value
+                    elif str(request.form.get("uptime_status_api_key_clear") or "").strip().lower() in {"1", "true", "yes", "on"}:
+                        updates["UPTIME_STATUS_API_KEY"] = ""
+                    ok, error_text = _persist_monitor_updates(updates)
+                    if ok:
+                        flash("Uptime Kuma watcher settings updated.", "success")
+                    else:
+                        flash(error_text, "error")
+            elif action in {"import_uptime_targets", "import_uptime_instance_targets", "remove_imported_uptime_targets"}:
+                all_targets = list(page_state["all_targets"])
+                valid_text_channel_ids = {
+                    str(option.get("id") or "").strip() for option in text_channel_options if str(option.get("id") or "").strip()
+                }
+                if action == "remove_imported_uptime_targets":
+                    source_type = str(request.form.get("source_type") or "").strip().lower()
+                    source_key = str(request.form.get("source_key") or "").strip()
+                    next_targets = [
+                        target
+                        for target in all_targets
+                        if not (
+                            int(target.get("guild_id") or 0) == selected_guild_id_int
+                            and str(target.get("source_type") or "").strip().lower() == source_type
+                            and str(target.get("source_key") or "").strip() == source_key
+                        )
+                    ]
+                    removed_count = len(all_targets) - len(next_targets)
+                    if removed_count <= 0:
+                        flash("Imported Uptime Kuma monitor set was not found.", "error")
+                    else:
+                        ok, error_text = _persist_monitor_updates(
+                            {"SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(next_targets)}
+                        )
+                        if ok:
+                            flash(f"Removed {removed_count} imported direct service monitor(s).", "success")
+                        else:
+                            flash(error_text, "error")
+                elif action == "import_uptime_targets":
+                    import_page_url = str(request.form.get("uptime_import_page_url") or page_state["uptime_page_url"] or "").strip()
+                    import_channel_id = str(request.form.get("uptime_import_channel_id") or "").strip() or str(page_state["service_default_channel_id"] or "").strip()
+                    if import_channel_id and valid_text_channel_ids and import_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel for imported service monitors.", "error")
+                    else:
+                        try:
+                            channel_id_int = int(import_channel_id or 0)
+                            config_payload = fetch_uptime_public_config(
+                                page_url=import_page_url,
+                                fetch_json=lambda url: _fetch_json_url(url, verify_tls=page_state["uptime_verify_tls"]),
+                            )
+                            extracted = extract_service_monitor_targets_from_uptime_config(
+                                config_payload,
+                                guild_id=selected_guild_id_int,
+                                channel_id=channel_id_int,
+                                timeout_seconds=page_state["service_timeout"],
+                            )
+                            imported_targets = annotate_uptime_import_targets(
+                                extracted.get("targets", []),
+                                source_type="uptime_public_page",
+                                source_url=import_page_url,
+                                source_label=f"Public page: {import_page_url}",
+                                guild_id=selected_guild_id_int,
+                            )
+                            merge_result = merge_service_monitor_targets(all_targets, imported_targets)
+                            ok, error_text = _persist_monitor_updates(
+                                {
+                                    "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(merge_result["targets"]),
+                                    "UPTIME_STATUS_PAGE_URL": import_page_url,
+                                }
+                            )
+                            if ok:
+                                skipped_count = len(extracted.get("skipped", []) or [])
+                                summary = f"Imported {merge_result['added']} new direct service monitor(s)"
+                                if merge_result["updated"]:
+                                    summary += f", updated {merge_result['updated']}"
+                                if merge_result["deduped"]:
+                                    summary += f", removed {merge_result['deduped']} duplicate(s)"
+                                if skipped_count:
+                                    summary += f", skipped {skipped_count} page-only monitor(s)"
+                                summary += "."
+                                flash(summary, "success")
+                            else:
+                                flash(error_text, "error")
+                        except (requests.RequestException, ValueError) as exc:
+                            flash(str(exc), "error")
+                else:
+                    import_instance_url = str(request.form.get("uptime_import_instance_url") or page_state["uptime_instance_url"] or "").strip()
+                    import_channel_id = str(request.form.get("uptime_import_channel_id") or "").strip() or str(page_state["service_default_channel_id"] or "").strip()
+                    import_verify_tls = str(request.form.get("uptime_import_verify_tls") or "").strip().lower() in {"1", "true", "yes", "on"}
+                    stored_api_key = str(_read_env_value(page_state["file_values"], "UPTIME_STATUS_API_KEY") or "").strip()
+                    if not stored_api_key:
+                        stored_api_key = default_uptime_api_key(import_instance_url)
+                    import_api_key = str(request.form.get("uptime_import_api_key") or "").strip() or stored_api_key
+                    if import_channel_id and valid_text_channel_ids and import_channel_id not in valid_text_channel_ids:
+                        flash("Choose a valid Discord text channel for imported service monitors.", "error")
+                    else:
+                        try:
+                            channel_id_int = int(import_channel_id or 0)
+                            metrics_text = fetch_uptime_metrics_text(
+                                instance_url=import_instance_url,
+                                api_key=import_api_key,
+                                fetch_text=lambda url, api_key="": _fetch_text_url(url, api_key=api_key, verify_tls=import_verify_tls),
+                            )
+                            extracted = extract_service_monitor_targets_from_uptime_metrics(
+                                metrics_text,
+                                guild_id=selected_guild_id_int,
+                                channel_id=channel_id_int,
+                                timeout_seconds=page_state["service_timeout"],
+                            )
+                            imported_targets = annotate_uptime_import_targets(
+                                extracted.get("targets", []),
+                                source_type="uptime_instance",
+                                source_url=import_instance_url,
+                                source_label=f"Instance: {import_instance_url}",
+                                guild_id=selected_guild_id_int,
+                            )
+                            merge_result = merge_service_monitor_targets(all_targets, imported_targets)
+                            updates = {
+                                "SERVICE_MONITOR_TARGETS_JSON": serialize_service_monitor_targets(merge_result["targets"]),
+                                "UPTIME_STATUS_INSTANCE_URL": import_instance_url,
+                                "UPTIME_STATUS_VERIFY_TLS": "true" if import_verify_tls else "false",
+                            }
+                            if str(request.form.get("uptime_import_api_key") or "").strip():
+                                updates["UPTIME_STATUS_API_KEY"] = str(request.form.get("uptime_import_api_key") or "").strip()
+                            ok, error_text = _persist_monitor_updates(updates)
+                            if ok:
+                                skipped_count = len(extracted.get("skipped", []) or [])
+                                summary = f"Imported {merge_result['added']} new direct service monitor(s)"
+                                if merge_result["updated"]:
+                                    summary += f", updated {merge_result['updated']}"
+                                if merge_result["deduped"]:
+                                    summary += f", removed {merge_result['deduped']} duplicate(s)"
+                                if skipped_count:
+                                    summary += f", skipped {skipped_count} page-only monitor(s)"
+                                summary += "."
+                                flash(summary, "success")
+                            else:
+                                flash(error_text, "error")
+                        except (requests.RequestException, ValueError) as exc:
+                            flash(str(exc), "error")
+            elif is_uptime_kuma_admin_gui_enabled() and action in {
+                "list_kuma_monitors",
+                "add_kuma_monitor",
+                "update_kuma_monitor",
+                "remove_kuma_monitor",
+            }:
+                instance_url = str(page_state["uptime_instance_url"] or "").strip()
+                api_key = str(_read_env_value(page_state["file_values"], "UPTIME_STATUS_API_KEY") or "").strip()
+                if not instance_url or not api_key:
+                    flash("Configure an authenticated Uptime Kuma instance URL and API key to manage monitors.", "error")
+                else:
+                    try:
+                        from app.uptime_kuma_admin import (
+                            UptimeKumaAdminError,
+                            add_monitor,
+                            list_monitors,
+                            remove_monitor,
+                            update_monitor,
+                        )
+                        admin_timeout = int(page_state.get("uptime_timeout") or 15)
+                        admin_verify_tls = bool(page_state.get("uptime_verify_tls"))
+                        if action == "list_kuma_monitors":
+                            page_state["kuma_monitors"] = list_monitors(
+                                instance_url=instance_url,
+                                api_key=api_key,
+                                timeout=admin_timeout,
+                                verify_tls=admin_verify_tls,
+                            )
+                            flash("Refreshed Uptime Kuma monitor list.", "success")
+                        elif action == "add_kuma_monitor":
+                            monitor_payload = {
+                                "name": str(request.form.get("kuma_monitor_name") or "").strip(),
+                                "url": str(request.form.get("kuma_monitor_url") or "").strip(),
+                                "method": str(request.form.get("kuma_monitor_method") or "GET").strip().upper() or "GET",
+                                "expectedStatusCodes": [int(request.form.get("kuma_monitor_expected_status") or 200)],
+                                "interval": int(request.form.get("kuma_monitor_interval") or 60),
+                                "timeout": int(request.form.get("kuma_monitor_timeout") or admin_timeout),
+                                "retry": int(request.form.get("kuma_monitor_retry") or 0),
+                                "resendInterval": int(request.form.get("kuma_monitor_resend_interval") or 0),
+                                "active": str(request.form.get("kuma_monitor_active") or "true").strip().lower() in {"1", "true", "yes", "on"},
+                                "notify": str(request.form.get("kuma_monitor_notify") or "true").strip().lower() in {"1", "true", "yes", "on"},
+                                "keyword": str(request.form.get("kuma_monitor_keyword") or "").strip(),
+                                "path": str(request.form.get("kuma_monitor_path") or "/").strip() or "/",
+                                "ignoreSsl": str(request.form.get("kuma_monitor_ignore_ssl") or "false").strip().lower() in {"1", "true", "yes", "on"},
+                            }
+                            add_monitor(
+                                instance_url=instance_url,
+                                api_key=api_key,
+                                monitor=monitor_payload,
+                                timeout=admin_timeout,
+                                verify_tls=admin_verify_tls,
+                            )
+                            flash("Added monitor to Uptime Kuma instance.", "success")
+                        elif action == "update_kuma_monitor":
+                            monitor_id = str(request.form.get("kuma_monitor_id") or "").strip()
+                            if not monitor_id:
+                                flash("Missing monitor ID for update.", "error")
+                            else:
+                                monitor_payload = {
+                                    "name": str(request.form.get("kuma_monitor_name") or "").strip(),
+                                    "url": str(request.form.get("kuma_monitor_url") or "").strip(),
+                                    "method": str(request.form.get("kuma_monitor_method") or "GET").strip().upper() or "GET",
+                                    "expectedStatusCodes": [int(request.form.get("kuma_monitor_expected_status") or 200)],
+                                    "interval": int(request.form.get("kuma_monitor_interval") or 60),
+                                    "timeout": int(request.form.get("kuma_monitor_timeout") or admin_timeout),
+                                    "retry": int(request.form.get("kuma_monitor_retry") or 0),
+                                    "resendInterval": int(request.form.get("kuma_monitor_resend_interval") or 0),
+                                    "active": str(request.form.get("kuma_monitor_active") or "true").strip().lower() in {"1", "true", "yes", "on"},
+                                    "notify": str(request.form.get("kuma_monitor_notify") or "true").strip().lower() in {"1", "true", "yes", "on"},
+                                    "keyword": str(request.form.get("kuma_monitor_keyword") or "").strip(),
+                                    "path": str(request.form.get("kuma_monitor_path") or "/").strip() or "/",
+                                    "ignoreSsl": str(request.form.get("kuma_monitor_ignore_ssl") or "false").strip().lower() in {"1", "true", "yes", "on"},
+                                }
+                                update_monitor(
+                                    instance_url=instance_url,
+                                    api_key=api_key,
+                                    monitor_id=monitor_id,
+                                    monitor=monitor_payload,
+                                    timeout=admin_timeout,
+                                    verify_tls=admin_verify_tls,
+                                )
+                                flash("Updated Uptime Kuma monitor.", "success")
+                        elif action == "remove_kuma_monitor":
+                            monitor_id = str(request.form.get("kuma_monitor_id") or "").strip()
+                            if not monitor_id:
+                                flash("Missing monitor ID for removal.", "error")
+                            else:
+                                remove_monitor(
+                                    instance_url=instance_url,
+                                    api_key=api_key,
+                                    monitor_id=monitor_id,
+                                    timeout=admin_timeout,
+                                    verify_tls=admin_verify_tls,
+                                )
+                                flash("Removed Uptime Kuma monitor.", "success")
+                    except (UptimeKumaAdminError, requests.RequestException, ValueError) as exc:
+                        flash(str(exc), "error")
+                    page_state = _load_page_state()
+                    if "kuma_monitors" not in page_state:
+                        page_state["kuma_monitors"] = []
+            else:
+                flash("Invalid Uptime Kuma action.", "error")
+            page_state = _load_page_state()
+
+        enabled_options = [
+            {"value": "true", "label": "Enabled"},
+            {"value": "false", "label": "Disabled"},
+        ]
+        channel_catalog_note = (
+            f"<p class='muted'>Loaded {len(text_channel_options)} text channel options from Discord for <strong>{escape(guild_name)}</strong>.</p>"
+            if text_channel_options
+            else (
+                f"<p class='muted'>Could not load Discord text channels: {escape(catalog_error)}</p>"
+                if catalog_error
+                else "<p class='muted'>No Discord text channels are currently available for selection.</p>"
+            )
+        )
+        import_target_channel_select = _render_select_input(
+            "uptime_import_channel_id",
+            str(page_state["service_default_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        uptime_notify_channel_select = _render_select_input(
+            "uptime_notify_channel_id",
+            str(page_state["uptime_notify_channel_id"] or ""),
+            text_channel_options,
+            placeholder="Choose the Discord text channel...",
+        )
+        uptime_verify_tls_select = _render_fixed_select_input(
+            "uptime_status_verify_tls",
+            "true" if page_state["uptime_verify_tls"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        import_verify_tls_select = _render_fixed_select_input(
+            "uptime_import_verify_tls",
+            "true" if page_state["uptime_verify_tls"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        uptime_schedule_select = _render_fixed_select_input(
+            "uptime_status_schedule",
+            page_state["uptime_schedule"],
+            [{"value": value, "label": label} for value, label in MONITOR_RECHECK_SCHEDULE_OPTIONS],
+            placeholder="Select recheck interval...",
+        )
+        uptime_enabled_select = _render_fixed_select_input(
+            "uptime_status_enabled",
+            "true" if page_state["uptime_enabled"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        uptime_notify_enabled_select = _render_fixed_select_input(
+            "uptime_status_notify_enabled",
+            "true" if page_state["uptime_notify_enabled"] else "false",
+            enabled_options,
+            placeholder="Select state...",
+        )
+        imported_source_rows = []
+        for source_entry in page_state["imported_sources"]:
+            imported_source_rows.append(
+                f"""
+                <tr>
+                  <td>{escape(str(source_entry.get("source_label") or "Imported source"))}</td>
+                  <td>{escape(str(source_entry.get("source_type") or ""))}</td>
+                  <td>{escape(str(source_entry.get("target_count") or 0))}</td>
+                  <td>
+                    <form method="post" onsubmit="return confirm('Remove all direct service monitors imported from this Uptime Kuma source?');">
+                      <input type="hidden" name="action" value="remove_imported_uptime_targets" />
+                      <input type="hidden" name="source_type" value="{escape(str(source_entry.get('source_type') or ''), quote=True)}" />
+                      <input type="hidden" name="source_key" value="{escape(str(source_entry.get('source_key') or ''), quote=True)}" />
+                      <button class="btn danger" type="submit"{'' if can_manage else ' disabled'}>Remove Imported Set</button>
+                    </form>
+                  </td>
+                </tr>
+                """
+            )
+
+        manage_disabled_attr = "" if can_manage else " disabled"
+        body = f"""
+        <div class="grid">
+          <div class="card">
+            <h2>Uptime Kuma Watcher</h2>
+            <p class="muted">Configure the guild's Uptime Kuma watcher and Discord alert delivery without mixing those settings into the direct service monitor page.</p>
+            {channel_catalog_note}
+            <form method="post">
+              <input type="hidden" name="action" value="save_uptime_settings" />
+              <label>Watcher enabled</label>
+              {uptime_enabled_select}
+              <label style="margin-top:10px;display:block;">Discord alerting</label>
+              {uptime_notify_enabled_select}
+              <label>Public status page URL (optional)</label>
+              <input type="text" name="uptime_status_page_url" value="{escape(page_state['uptime_page_url'], quote=True)}" placeholder="https://status.example.com/status/default"{manage_disabled_attr} />
+              <label>Authenticated instance URL (optional)</label>
+              <input type="text" name="uptime_status_instance_url" value="{escape(page_state['uptime_instance_url'], quote=True)}" placeholder="https://kuma.example.com/"{manage_disabled_attr} />
+              <label>API key (optional)</label>
+              <input type="password" name="uptime_status_api_key" value="" placeholder="{'•••••• (unchanged if blank)' if page_state['uptime_api_key_configured'] else 'Paste a Uptime Kuma API key'}"{manage_disabled_attr} />
+              <label class="checkbox" style="margin-top:8px;">
+                <input type="checkbox" name="uptime_status_api_key_clear" value="true"{manage_disabled_attr} />
+                Clear stored API key
+              </label>
+              <label style="margin-top:10px;display:block;">Discord channel</label>
+              {uptime_notify_channel_select}
+              <label style="margin-top:10px;display:block;">Verify TLS certificates</label>
+              {uptime_verify_tls_select}
+              <label style="margin-top:10px;display:block;">Recheck interval</label>
+              {uptime_schedule_select}
+              <label>Request timeout (seconds)</label>
+              <input type="number" name="uptime_status_timeout" min="3" max="120" value="{escape(str(page_state['uptime_timeout']), quote=True)}"{manage_disabled_attr} />
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit"{manage_disabled_attr}>Save Uptime Kuma Watcher</button>
+              </div>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Import Direct Checks</h2>
+            <p class="muted">Import monitors from Uptime Kuma into the direct service monitor system. Only public HTTP(S) monitor URLs can be imported as direct checks.</p>
+            <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;">
+              <div class="card" style="margin:0;">
+                <h3 style="margin-top:0;">From Public Page</h3>
+                <form method="post">
+                  <input type="hidden" name="action" value="import_uptime_targets" />
+                  <label>Public status page URL</label>
+                  <input type="text" name="uptime_import_page_url" value="{escape(page_state['uptime_page_url'] or 'https://status.glinet.admon.me/status/default', quote=True)}" placeholder="https://status.example.com/status/default" required{manage_disabled_attr} />
+                  <label style="margin-top:10px;display:block;">Discord channel</label>
+                  {import_target_channel_select}
+                  <div style="margin-top:14px;">
+                    <button class="btn" type="submit"{manage_disabled_attr}>Import From Public Page</button>
+                  </div>
+                </form>
+              </div>
+              <div class="card" style="margin:0;">
+                <h3 style="margin-top:0;">From Authenticated Instance</h3>
+                <form method="post">
+                  <input type="hidden" name="action" value="import_uptime_instance_targets" />
+                  <label>Authenticated instance URL</label>
+                  <input type="text" name="uptime_import_instance_url" value="{escape(page_state['uptime_instance_url'], quote=True)}" placeholder="https://kuma.example.com/" required{manage_disabled_attr} />
+                  <label>API key</label>
+                  <input type="password" name="uptime_import_api_key" value="" placeholder="{'•••••• (stored key will be used if blank)' if page_state['uptime_api_key_configured'] else 'Paste a Uptime Kuma API key'}"{manage_disabled_attr} />
+                  <label style="margin-top:10px;display:block;">Verify TLS certificates</label>
+                  {import_verify_tls_select}
+                  <label style="margin-top:10px;display:block;">Discord channel</label>
+                  {import_target_channel_select}
+                  <div style="margin-top:14px;">
+                    <button class="btn" type="submit"{manage_disabled_attr}>Import From Instance</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px;">
+          <h2>Imported Monitor Sets</h2>
+          <p class="muted">Each row represents a group of direct service monitors imported from one Uptime Kuma source for <strong>{escape(guild_name)}</strong>.</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Type</th>
+                <th>Imported Direct Checks</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {"".join(imported_source_rows) if imported_source_rows else "<tr><td colspan='4' class='muted'>No imported Uptime Kuma monitor sets are currently tracked for this guild.</td></tr>"}
+            </tbody>
+          </table>
+        </div>
+        """
+        return _render_page("Uptime Kuma", body, user["email"], bool(user.get("is_admin")), str(user.get("display_name") or ""))
+
+    @app.route("/admin/role-access", methods=["GET", "POST"])
+    @login_required
+    def role_access_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+
+        payload = (
+            on_get_role_access_mappings(selected_guild_id)
+            if callable(on_get_role_access_mappings)
+            else {"ok": False, "error": "Role access callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            response, messages = process_role_access_submission(
+                form=request.form,
+                on_manage_role_access_mappings=on_manage_role_access_mappings,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                payload = response
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = (
+                str(payload.get("error") or "Unable to load role access mappings.")
+                if isinstance(payload, dict)
+                else "Unable to load role access mappings."
+            )
+            body = (
+                f"<div class='card'><h2>Role Access</h2><p class='muted'>Could not load role access mappings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Role Access", body, user["email"], bool(user.get("is_admin")))
+
+        body = render_role_access_body(
+            guild_name=guild_name,
+            mappings=payload.get("mappings", []) or [],
+            role_options=role_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Role Access", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/reaction-roles", methods=["GET", "POST"])
+    @login_required
+    def reaction_roles_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+
+        payload = (
+            on_get_reaction_roles(selected_guild_id)
+            if callable(on_get_reaction_roles)
+            else {"ok": False, "error": "Reaction role callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            response, messages = process_reaction_roles_submission(
+                form=request.form,
+                on_manage_reaction_roles=on_manage_reaction_roles,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                payload = response
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = (
+                str(payload.get("error") or "Unable to load reaction roles.")
+                if isinstance(payload, dict)
+                else "Unable to load reaction roles."
+            )
+            body = (
+                f"<div class='card'><h2>Reaction Roles</h2><p class='muted'>Could not load reaction roles: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Reaction Roles", body, user["email"], bool(user.get("is_admin")))
+
+        body = render_reaction_roles_body(
+            guild_name=guild_name,
+            mappings=payload.get("mappings", []) or [],
+            channel_options=channel_options,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Reaction Roles", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/command-status", methods=["GET", "POST"])
+    @login_required
+    def command_status():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        permissions_payload = (
+            on_get_command_permissions(selected_guild_id)
+            if callable(on_get_command_permissions)
+            else {"ok": False, "error": "Not configured"}
+        )
+
+        if request.method == "POST":
+            if not callable(on_save_command_permissions):
+                flash("Command status save callback is not configured.", "error")
+            else:
+                command_updates = {}
+                for command_key in request.form.getlist("command_key"):
+                    current_mode = str(request.form.get(f"current_mode__{command_key}", "default") or "default").strip()
+                    current_role_ids = request.form.get(f"current_role_ids__{command_key}", "")
+                    enabled_value = str(request.form.get(f"enabled__{command_key}", "enabled") or "enabled").strip().lower()
+                    next_mode = "disabled" if enabled_value == "disabled" else (current_mode if current_mode != "disabled" else "default")
+                    command_updates[command_key] = {
+                        "mode": next_mode,
+                        "role_ids": current_role_ids,
+                    }
+                response = on_save_command_permissions({"commands": command_updates}, user["email"], selected_guild_id)
+                if not isinstance(response, dict):
+                    flash("Invalid response from command status save handler.", "error")
+                elif not response.get("ok"):
+                    flash(response.get("error", "Failed to save command status."), "error")
+                else:
+                    permissions_payload = response
+                    flash(response.get("message", "Command status updated."), "success")
+
+        if not isinstance(permissions_payload, dict) or not permissions_payload.get("ok"):
+            error_text = str(
+                permissions_payload.get("error") if isinstance(permissions_payload, dict) else "Unable to load command status."
+            )
+            body = (
+                "<div class='card'><h2>Command Status</h2>"
+                f"<p class='muted'>Could not load command status: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Command Status", body, user["email"], bool(user.get("is_admin")))
+
+        rows = []
+        for entry in permissions_payload.get("commands", []) or []:
+            command_key = str(entry.get("key") or "").strip()
+            if not command_key:
+                continue
+            label = str(entry.get("label") or command_key)
+            description = str(entry.get("description") or "").strip()
+            current_mode = str(entry.get("mode") or "default").strip()
+            role_ids = entry.get("role_ids", []) or []
+            enabled_value = "disabled" if current_mode == "disabled" else "enabled"
+            description_html = f"<div class='muted'>{escape(description)}</div>" if description else ""
+            rows.append(
+                f"""
+                <tr>
+                  <td>
+                    <strong>{escape(label)}</strong>
+                    {description_html}
+                    <input type="hidden" name="command_key" value="{escape(command_key, quote=True)}" />
+                    <input type="hidden" name="current_mode__{escape(command_key, quote=True)}" value="{escape(current_mode, quote=True)}" />
+                    <input type="hidden" name="current_role_ids__{escape(command_key, quote=True)}" value="{escape(','.join(str(value) for value in role_ids), quote=True)}" />
+                  </td>
+                  <td>{escape(_dashboard_command_access_label(entry))}</td>
+                  <td>
+                    {_render_fixed_select_input(
+                        f"enabled__{command_key}",
+                        enabled_value,
+                        [
+                            {"value": "enabled", "label": "Enabled"},
+                            {"value": "disabled", "label": "Disabled"},
+                        ],
+                        placeholder="Select status...",
+                    )}
+                  </td>
+                </tr>
+                """
+            )
+
+        body = f"""
+        <div class="card">
+          <h2>Command Status</h2>
+          <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
+          <p class="muted">Use this page for quick on/off control. Use <a href="{escape(url_for("command_permissions"), quote=True)}">Command Permissions</a> to change access rules or custom-role gates.</p>
+          <form method="post">
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr><th>Command</th><th>Access</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  {"".join(rows) if rows else "<tr><td colspan='3' class='muted'>No command metadata is available for this server.</td></tr>"}
+                </tbody>
+              </table>
+            </div>
+            <div style="margin-top:14px;">
+              <button class="btn" type="submit">Save Command Status</button>
+            </div>
+          </form>
+        </div>
+        """
+        return _render_page("Command Status", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/command-permissions", methods=["GET", "POST"])
     @login_required
@@ -4137,18 +7912,7 @@ def create_web_app(
             if callable(on_get_command_permissions)
             else {"ok": False, "error": "Not configured"}
         )
-        discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog)
-            else None
-        )
-        role_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                role_options = discord_catalog.get("roles", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         if request.method == "POST":
             if not callable(on_save_command_permissions):
@@ -4157,25 +7921,17 @@ def create_web_app(
                 command_updates = {}
                 for command_key in request.form.getlist("command_key"):
                     selected_role_ids = request.form.getlist(f"role_ids__{command_key}")
-                    manual_role_ids = request.form.get(
-                        f"role_ids_text__{command_key}", ""
-                    )
-                    role_ids_payload = (
-                        selected_role_ids if role_options else manual_role_ids
-                    )
-                    if (
-                        role_options
-                        and not selected_role_ids
-                        and manual_role_ids.strip()
-                    ):
+                    manual_role_ids = request.form.get(f"role_ids_text__{command_key}", "")
+                    role_ids_payload = selected_role_ids if role_options else manual_role_ids
+                    if role_options and not selected_role_ids and manual_role_ids.strip():
                         role_ids_payload = manual_role_ids
+                    enabled = request.form.get(f"enabled__{command_key}") == "1"
+                    selected_mode = request.form.get(f"mode__{command_key}", "default")
                     command_updates[command_key] = {
-                        "mode": request.form.get(f"mode__{command_key}", "default"),
+                        "mode": selected_mode if enabled else "disabled",
                         "role_ids": role_ids_payload,
                     }
-                response = on_save_command_permissions(
-                    {"commands": command_updates}, user["email"], selected_guild_id
-                )
+                response = on_save_command_permissions({"commands": command_updates}, user["email"], selected_guild_id)
                 if not isinstance(response, dict):
                     flash(
                         "Invalid response from command permissions save handler.",
@@ -4193,21 +7949,15 @@ def create_web_app(
                         "success",
                     )
 
-        if not isinstance(permissions_payload, dict) or not permissions_payload.get(
-            "ok"
-        ):
+        if not isinstance(permissions_payload, dict) or not permissions_payload.get("ok"):
             error_text = str(
-                permissions_payload.get("error")
-                if isinstance(permissions_payload, dict)
-                else "Unable to load command permissions."
+                permissions_payload.get("error") if isinstance(permissions_payload, dict) else "Unable to load command permissions."
             )
             body = (
                 "<div class='card'><h2>Command Permissions</h2>"
                 f"<p class='muted'>Could not load command permissions: {escape(error_text)}</p></div>"
             )
-            return _render_page(
-                "Command Permissions", body, user["email"], bool(user.get("is_admin"))
-            )
+            return _render_page("Command Permissions", body, user["email"], bool(user.get("is_admin")))
 
         commands = permissions_payload.get("commands", []) or []
         rows = []
@@ -4224,6 +7974,7 @@ def create_web_app(
             default_selected = " selected" if mode == "default" else ""
             public_selected = " selected" if mode == "public" else ""
             custom_selected = " selected" if mode == "custom_roles" else ""
+            enabled_checked = "" if mode == "disabled" else " checked"
             if role_options:
                 role_input_html = (
                     _render_multi_select_input(
@@ -4252,6 +8003,9 @@ def create_web_app(
                   </td>
                   <td class="muted">{escape(default_policy_label)}</td>
                   <td>
+                    <label><input type="checkbox" name="enabled__{escape(command_key, quote=True)}" value="1"{enabled_checked} /> Enabled</label>
+                  </td>
+                  <td>
                     <select name="mode__{escape(command_key, quote=True)}">
                       <option value="default"{default_selected}>Default rule</option>
                       <option value="public"{public_selected}>Public (any member)</option>
@@ -4270,8 +8024,7 @@ def create_web_app(
             role_hint_html = f"<p class='muted'>Could not load guild roles: {escape(catalog_error)}</p>"
         elif role_options:
             role_hint_html = (
-                "<p class='muted'>Role dropdown loaded from Discord. "
-                "Use Ctrl/Cmd-click to select multiple roles per command.</p>"
+                "<p class='muted'>Role dropdown loaded from Discord. Use Ctrl/Cmd-click to select multiple roles per command.</p>"
             )
 
         allowed_role_names = permissions_payload.get("allowed_role_names", []) or []
@@ -4280,14 +8033,14 @@ def create_web_app(
         <div class="card">
           <h2>Command Permissions</h2>
           <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
-          <p class="muted">Set access mode per command. Default mode follows built-in behavior. Custom mode requires at least one role ID.</p>
+          <p class="muted">Use the Enabled checkbox to turn a command on or off for this server. Access mode controls who can run enabled commands. Custom mode requires at least one role ID.</p>
           <p class="muted">Default named-role gate: {escape(", ".join(str(item) for item in allowed_role_names) or "None")}</p>
           <p class="muted">Current moderator role IDs: <span class="mono">{escape(",".join(str(item) for item in moderator_role_ids) or "None")}</span></p>
           {role_hint_html}
           <form method="post">
             <table>
               <thead>
-                <tr><th>Command</th><th>Default Access</th><th>Mode</th><th>Custom Role Selection</th></tr>
+                <tr><th>Command</th><th>Default Access</th><th>Enabled</th><th>Mode</th><th>Custom Role Selection</th></tr>
               </thead>
               <tbody>
                 {"".join(rows)}
@@ -4299,9 +8052,7 @@ def create_web_app(
           </form>
         </div>
         """
-        return _render_page(
-            "Command Permissions", body, user["email"], bool(user.get("is_admin"))
-        )
+        return _render_page("Command Permissions", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/guild-settings", methods=["GET", "POST"])
     @login_required
@@ -4318,54 +8069,25 @@ def create_web_app(
             if callable(on_get_guild_settings)
             else {"ok": False, "error": "Guild settings callbacks are not configured."}
         )
-        discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog)
-            else None
-        )
-        channel_options = []
-        role_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-                role_options = discord_catalog.get("roles", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
         text_channel_options = [
-            option
-            for option in channel_options
-            if str(option.get("type") or "").strip().lower() == "text"
+            option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"
         ]
+        max_welcome_image_upload_bytes = _get_int_env("WEB_AVATAR_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
 
         if request.method == "POST":
-            if not callable(on_save_guild_settings):
-                flash("Guild settings save callback is not configured.", "error")
-            else:
-                payload = {
-                    "bot_log_channel_id": request.form.get("bot_log_channel_id", ""),
-                    "mod_log_channel_id": request.form.get("mod_log_channel_id", ""),
-                    "firmware_notify_channel_id": request.form.get(
-                        "firmware_notify_channel_id", ""
-                    ),
-                    "access_role_id": request.form.get("access_role_id", ""),
-                }
-                response = on_save_guild_settings(
-                    payload, user["email"], selected_guild_id
-                )
-                if not isinstance(response, dict):
-                    flash("Invalid response from guild settings handler.", "error")
-                elif not response.get("ok"):
-                    flash(
-                        str(response.get("error") or "Failed to update guild settings."),
-                        "error",
-                    )
-                else:
-                    settings_payload = response
-                    flash(
-                        str(response.get("message") or "Guild settings updated."),
-                        "success",
-                    )
+            response, messages = process_guild_settings_submission(
+                form=request.form,
+                files=request.files,
+                on_save_guild_settings=on_save_guild_settings,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+                max_welcome_image_upload_bytes=max_welcome_image_upload_bytes,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                settings_payload = response
 
         if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
             error_text = (
@@ -4374,87 +8096,315 @@ def create_web_app(
                 else "Unable to load guild settings."
             )
             body = (
-                "<div class='card'><h2>Guild Settings</h2>"
-                f"<p class='muted'>Could not load guild settings: {escape(error_text)}</p></div>"
+                f"<div class='card'><h2>Guild Settings</h2><p class='muted'>Could not load guild settings: {escape(error_text)}</p></div>"
             )
             return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
 
         current_settings = settings_payload.get("settings", {}) or {}
         effective_settings = settings_payload.get("effective", {}) or {}
-        catalog_note = ""
-        if text_channel_options or role_options:
-            catalog_note = (
-                f"<p class='muted'>Loaded live Discord options from <strong>{escape(guild_name)}</strong>. "
-                f"Text channels: {len(text_channel_options)}; Roles: {len(role_options)}.</p>"
-            )
-        elif catalog_error:
-            catalog_note = (
-                f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
-            )
-
-        bot_log_select = _render_select_input(
-            "bot_log_channel_id",
-            str(current_settings.get("bot_log_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
+        body = render_guild_settings_body(
+            guild_name=guild_name,
+            current_settings=current_settings,
+            effective_settings=effective_settings,
+            text_channel_options=text_channel_options,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            max_welcome_image_upload_bytes=max_welcome_image_upload_bytes,
+            render_select_input=_render_select_input,
         )
-        mod_log_select = _render_select_input(
-            "mod_log_channel_id",
-            str(current_settings.get("mod_log_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
-        )
-        firmware_select = _render_select_input(
-            "firmware_notify_channel_id",
-            str(current_settings.get("firmware_notify_channel_id") or ""),
-            text_channel_options,
-            placeholder="Use global fallback",
-        )
-        access_role_select = _render_select_input(
-            "access_role_id",
-            str(current_settings.get("access_role_id") or ""),
-            role_options,
-            placeholder="No self-assign role",
-        )
-
-        body = f"""
-        <div class="card">
-          <h2>Guild Settings</h2>
-          <p class="muted">These values apply only to <strong>{escape(guild_name)}</strong>. Leave a field blank to use the global fallback.</p>
-          {catalog_note}
-          <form method="post">
-            <table>
-              <thead><tr><th>Setting</th><th>Configured Value</th><th>Effective Value</th></tr></thead>
-              <tbody>
-                <tr>
-                  <td><strong>Bot Log Channel</strong><div class="muted mono">bot_log_channel_id</div></td>
-                  <td>{bot_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("bot_log_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Moderation Log Channel</strong><div class="muted mono">mod_log_channel_id</div></td>
-                  <td>{mod_log_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("mod_log_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Firmware Notify Channel</strong><div class="muted mono">firmware_notify_channel_id</div></td>
-                  <td>{firmware_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("firmware_notify_channel_id") or ""))}</td>
-                </tr>
-                <tr>
-                  <td><strong>Self-Assign Access Role</strong><div class="muted mono">access_role_id</div></td>
-                  <td>{access_role_select}</td>
-                  <td class="muted mono">{escape(str(effective_settings.get("access_role_id") or ""))}</td>
-                </tr>
-              </tbody>
-            </table>
-            <div style="margin-top:14px;">
-              <button class="btn" type="submit">Save Guild Settings</button>
-            </div>
-          </form>
-        </div>
-        """
         return _render_page("Guild Settings", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/ticket-settings", methods=["GET", "POST"])
+    @login_required
+    def ticket_settings():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        payload = (
+            on_get_ticket_settings(selected_guild_id)
+            if callable(on_get_ticket_settings)
+            else {"ok": False, "error": "Ticket settings callbacks are not configured."}
+        )
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+
+        if request.method == "POST" and callable(on_save_ticket_settings):
+            form = request.form
+            role_map = {k: form.getlist(f"ticket_role_map[{k}][]") for k in ("search", "create", "reassign", "admin")}
+            cleaned = {}
+            for key, values in role_map.items():
+                cleaned[key] = [int(v) for v in values if str(v or "").strip().isdigit()]
+            save_payload = {"ticket_role_map": cleaned}
+            response = on_save_ticket_settings(save_payload, user["email"], selected_guild_id)
+            flash(response.get("message") or "Ticket settings saved.", "success" if response.get("ok") else "error")
+            payload = response
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = str(payload.get("error") if isinstance(payload, dict) else payload) or "Unable to load ticket settings."
+            body = f"<div class='card'><h2>Ticket Settings</h2><p class='muted'>Could not load ticket settings: {escape(error_text)}</p></div>"
+            return _render_page("Ticket Settings", body, user["email"], bool(user.get("is_admin")))
+
+        current_role_map = payload.get("ticket_role_map") or {}
+        tier_labels = {
+            "search": "Role 1 — Read-only search",
+            "create": "Role 2 — Create / update / close",
+            "reassign": "Role 3 — + reassign",
+            "admin": "Role 4 — Admin",
+        }
+        select_options = role_options or []
+        rows = []
+        for key, label in tier_labels.items():
+            selected = [str(role_id) for role_id in (current_role_map.get(key) or [])]
+            rows.append(
+                f"""
+                <tr>
+                  <td><strong>{escape(label)}</strong><div class="muted mono">{escape(key)}</div></td>
+                  <td>
+                    <select name='ticket_role_map[{escape(key)}][]' multiple size='6' style='min-width:280px;'>
+                      <option value='' disabled>Select role(s)...</option>
+                      {''.join(
+                          f"<option value='{escape(str(opt.get('id') or ''))}' {'selected' if str(opt.get('id') or '') in selected else ''}>{escape(str(opt.get('name') or opt.get('id') or ''))}</option>"
+                          for opt in select_options
+                      )}
+                    </select>
+                    <div class='muted'>Ctrl/Cmd-click to select multiple.</div>
+                  </td>
+                  <td class='muted mono'>{escape(', '.join(selected)) or 'Disabled'}</td>
+                </tr>
+                """
+            )
+        body = f"""
+          <div class='card'>
+            <h3>Ticket Role Tiers</h3>
+            <p class='muted'>Assign Discord roles to ticket tiers for <strong>{escape(guild_name)}</strong>. Ticket features are disabled until at least one role is assigned.</p>
+            {f"<p class='muted'>Loaded {len(select_options)} roles from Discord.</p>" if select_options else f"<p class='muted'>Could not load Discord roles: {escape(catalog_error)}</p>" if catalog_error else "<p class='muted'>No roles available.</p>"}
+            <form method='post' style='margin-top:14px;'>
+              <table>
+                <thead><tr><th>Tier</th><th>Roles</th><th>Effective</th></tr></thead>
+                <tbody>{''.join(rows)}</tbody>
+              </table>
+              <div style='margin-top:14px;'>
+                <button class='btn' type='submit'>Save Ticket Roles</button>
+              </div>
+            </form>
+          </div>
+        """
+        return _render_page("Ticket Settings", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/moderation", methods=["GET", "POST"])
+    @login_required
+    def moderation_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Moderation callbacks are not configured."}
+        )
+        channel_options, _, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        text_channel_options = [
+            option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"
+        ]
+
+        if request.method == "POST":
+            response, messages = process_moderation_submission(
+                form=request.form,
+                on_save_guild_settings=on_save_guild_settings,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                settings_payload = response
+
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            error_text = (
+                str(settings_payload.get("error") or "Unable to load moderation settings.")
+                if isinstance(settings_payload, dict)
+                else "Unable to load moderation settings."
+            )
+            body = (
+                f"<div class='card'><h2>Moderation</h2><p class='muted'>Could not load moderation settings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Moderation", body, user["email"], bool(user.get("is_admin")))
+
+        current_settings = settings_payload.get("settings", {}) or {}
+        effective_settings = settings_payload.get("effective", {}) or {}
+        body = render_moderation_body(
+            guild_name=guild_name,
+            current_settings=current_settings,
+            effective_settings=effective_settings,
+            text_channel_options=text_channel_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Moderation", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/honeypot", methods=["GET", "POST"])
+    @login_required
+    def honeypot_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        honeypot_payload = (
+            on_get_honeypot(selected_guild_id)
+            if callable(on_get_honeypot)
+            else {"ok": False, "error": "Honeypot callbacks are not configured."}
+        )
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        text_channel_options = [
+            option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"
+        ]
+
+        if request.method == "POST":
+            response, messages = process_honeypot_submission(
+                form=request.form,
+                on_manage_honeypot=on_manage_honeypot,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                honeypot_payload = response
+
+        if not isinstance(honeypot_payload, dict) or not honeypot_payload.get("ok"):
+            error_text = (
+                str(honeypot_payload.get("error") or "Unable to load honeypot settings.")
+                if isinstance(honeypot_payload, dict)
+                else "Unable to load honeypot settings."
+            )
+            body = (
+                f"<div class='card'><h2>Honeypot</h2><p class='muted'>Could not load honeypot settings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Honeypot", body, user["email"], bool(user.get("is_admin")))
+
+        body = render_honeypot_body(
+            guild_name=guild_name,
+            payload=honeypot_payload,
+            text_channel_options=text_channel_options,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Honeypot", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/members", methods=["GET", "POST"])
+    @login_required
+    def members_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        search_query = str(request.values.get("q") or "").strip()
+        role_filter_id = str(request.values.get("role_id") or request.values.get("role_filter_id") or "").strip()
+        try:
+            page = max(1, int(request.values.get("page") or 1))
+        except (TypeError, ValueError):
+            page = 1
+
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        members_payload = (
+            on_get_members(selected_guild_id, search_query, role_filter_id, page)
+            if callable(on_get_members)
+            else {"ok": False, "error": "Member management callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            response, messages = process_member_action_submission(
+                form=request.form,
+                on_manage_member=on_manage_member,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                return redirect(
+                    url_for(
+                        "members_page",
+                        q=search_query,
+                        role_id=role_filter_id,
+                        page=page,
+                    )
+                )
+
+        body = render_members_body(
+            guild_name=guild_name,
+            members_payload=members_payload,
+            role_options=role_options,
+            catalog_error=catalog_error,
+            current_query=search_query,
+            current_role_id=role_filter_id,
+        )
+        return _render_page("Members", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/discourse", methods=["GET", "POST"])
+    @login_required
+    def discourse_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Discourse callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            response, messages = process_discourse_submission(
+                form=request.form,
+                on_save_guild_settings=on_save_guild_settings,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                settings_payload = response
+
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            error_text = (
+                str(settings_payload.get("error") or "Unable to load Discourse settings.")
+                if isinstance(settings_payload, dict)
+                else "Unable to load Discourse settings."
+            )
+            body = (
+                f"<div class='card'><h2>Discourse</h2><p class='muted'>Could not load Discourse settings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Discourse", body, user["email"], bool(user.get("is_admin")))
+
+        current_settings = settings_payload.get("settings", {}) or {}
+        effective_settings = settings_payload.get("effective", {}) or {}
+        body = render_discourse_body(
+            guild_name=guild_name,
+            current_settings=current_settings,
+            effective_settings=effective_settings,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Discourse", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/settings", methods=["GET", "POST"])
     @login_required
@@ -4462,27 +8412,22 @@ def create_web_app(
         user = _current_user()
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
-        file_values = _parse_env_file(env_file)
+        file_values = _load_effective_env_values(env_file, fallback_env_file)
         normalized_file_values = _normalize_env_updates(file_values)
         if normalized_file_values != file_values:
-            _write_env_file(env_file, normalized_file_values)
-            file_values = normalized_file_values
-            for key, value in file_values.items():
-                os.environ[key] = value
-        discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog) and selected_guild_id
-            else None
-        )
-        channel_options = []
-        role_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-                role_options = discord_catalog.get("roles", []) or []
+            saved, save_error, saved_env_file, _ = _try_write_env_file_with_fallback(
+                env_file,
+                fallback_env_file,
+                normalized_file_values,
+            )
+            if not saved:
+                flash(save_error, "warning")
             else:
-                catalog_error = str(discord_catalog.get("error") or "")
+                file_values = normalized_file_values
+                os.environ["WEB_ENV_FILE"] = str(saved_env_file)
+                for key, value in file_values.items():
+                    os.environ[key] = value
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         if request.method == "POST":
             updated_values = {}
@@ -4504,32 +8449,55 @@ def create_web_app(
                 for key, value in updated_values.items():
                     if value == "":
                         final_values.pop(key, None)
-                        os.environ.pop(key, None)
                     else:
                         final_values[key] = value
-                        os.environ[key] = value
                 for legacy_keys in ENV_KEY_ALIASES.values():
                     for legacy_key in legacy_keys:
                         final_values.pop(legacy_key, None)
-                        os.environ.pop(legacy_key, None)
-                _write_env_file(env_file, final_values)
-                effective_timeout_minutes = _normalize_session_timeout_minutes(
-                    final_values.get(
-                        "WEB_SESSION_TIMEOUT_MINUTES",
-                        os.getenv(
-                            "WEB_SESSION_TIMEOUT_MINUTES",
-                            str(WEB_INACTIVITY_TIMEOUT_MINUTES),
-                        ),
-                    ),
-                    default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
+                saved, save_error, saved_env_file, skipped_keys = _try_write_env_file_with_fallback(
+                    env_file,
+                    fallback_env_file,
+                    final_values,
                 )
-                session_timeout_state["minutes"] = effective_timeout_minutes
-                if callable(on_env_settings_saved):
-                    on_env_settings_saved(updated_values)
-                flash("Settings saved to .env and applied where supported.", "success")
-                file_values = _parse_env_file(env_file)
+                if not saved:
+                    file_values = final_values
+                    flash(save_error, "error")
+                else:
+                    os.environ["WEB_ENV_FILE"] = str(saved_env_file)
+                    for key, value in updated_values.items():
+                        if key in skipped_keys:
+                            continue
+                        if value == "":
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = value
+                    for legacy_keys in ENV_KEY_ALIASES.values():
+                        for legacy_key in legacy_keys:
+                            os.environ.pop(legacy_key, None)
+                    effective_timeout_minutes = _normalize_session_timeout_minutes(
+                        final_values.get(
+                            "WEB_SESSION_TIMEOUT_MINUTES",
+                            os.getenv(
+                                "WEB_SESSION_TIMEOUT_MINUTES",
+                                str(WEB_INACTIVITY_TIMEOUT_MINUTES),
+                            ),
+                        ),
+                        default_value=WEB_INACTIVITY_TIMEOUT_MINUTES,
+                    )
+                    session_timeout_state["minutes"] = effective_timeout_minutes
+                    if callable(on_env_settings_saved):
+                        applied_updates = {key: value for key, value in updated_values.items() if key not in skipped_keys}
+                        on_env_settings_saved({**applied_updates, "WEB_ENV_FILE": str(saved_env_file)})
+                    if saved_env_file != env_file:
+                        flash(
+                            f"Settings saved to fallback env file {saved_env_file} and applied where supported.",
+                            "success",
+                        )
+                    else:
+                        flash(f"Settings saved to {env_file} and applied where supported.", "success")
+                    file_values = _load_effective_env_values(env_file, fallback_env_file)
 
-        rows = []
+        grouped_rows: dict[str, list[str]] = {section_title: [] for section_title, _section_description, _field_keys in ENV_FIELD_SECTIONS}
         for key, label, description in ENV_FIELDS:
             value = _read_env_value(file_values, key)
             safe_value = "" if key in SENSITIVE_KEYS else value
@@ -4546,16 +8514,32 @@ def create_web_app(
                     )
                 )
                 static_select_options = [
-                    {"value": str(minutes), "label": f"{minutes} minutes"}
-                    for minutes in SESSION_TIMEOUT_MINUTE_OPTIONS
+                    {"value": str(minutes), "label": f"{minutes} minutes"} for minutes in SESSION_TIMEOUT_MINUTE_OPTIONS
                 ]
                 select_placeholder = "Select auto logout timeout..."
             elif key == "REDDIT_FEED_CHECK_SCHEDULE":
-                static_select_options = [
-                    {"value": value, "label": label}
-                    for value, label in REDDIT_FEED_SCHEDULE_OPTIONS
-                ]
+                static_select_options = [{"value": value, "label": label} for value, label in REDDIT_FEED_SCHEDULE_OPTIONS]
                 select_placeholder = "Select Reddit polling interval..."
+            elif key in {
+                "ENABLE_MEMBERS_INTENT",
+                "COMMAND_RESPONSES_EPHEMERAL",
+                "SHORTENER_ENABLED",
+                "FIRMWARE_MONITOR_ENABLED",
+                "REDDIT_FEED_NOTIFY_ENABLED",
+                "YOUTUBE_NOTIFY_ENABLED",
+                "LINKEDIN_NOTIFY_ENABLED",
+                "BETA_PROGRAM_NOTIFY_ENABLED",
+                "SERVICE_MONITOR_ENABLED",
+                "UPTIME_STATUS_ENABLED",
+                "UPTIME_STATUS_NOTIFY_ENABLED",
+                "UPTIME_STATUS_VERIFY_TLS",
+            }:
+                safe_value = "true" if _is_truthy_env_value(safe_value) else "false"
+                static_select_options = [
+                    {"value": "false", "label": "false"},
+                    {"value": "true", "label": "true"},
+                ]
+                select_placeholder = "Select true/false..."
             elif key in {"LOG_LEVEL", "CONTAINER_LOG_LEVEL", "DISCORD_LOG_LEVEL"}:
                 safe_level = str(safe_value or "INFO").strip().upper()
                 if safe_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
@@ -4570,21 +8554,71 @@ def create_web_app(
                 ]
                 select_placeholder = "Select log level..."
             elif key == "WEB_SESSION_COOKIE_SAMESITE":
-                safe_value = _normalize_session_cookie_samesite(
-                    safe_value or "Lax", default_value="Lax"
-                )
+                safe_value = _normalize_session_cookie_samesite(safe_value or "Lax", default_value="Lax")
                 static_select_options = [
                     {"value": "Lax", "label": "Lax (recommended)"},
                     {"value": "Strict", "label": "Strict"},
                     {"value": "None", "label": "None (requires HTTPS secure cookie)"},
                 ]
                 select_placeholder = "Select SameSite policy..."
+            elif key == "PUPPY_IMAGE_TIMEOUT_SECONDS":
+                static_select_options = [{"value": value, "label": f"{value}s"} for value in ("5", "8", "10", "15", "30")]
+                select_placeholder = "Select puppy API timeout..."
+            elif key == "SHORTENER_TIMEOUT_SECONDS":
+                static_select_options = [{"value": value, "label": f"{value}s"} for value in ("5", "8", "10", "15", "30")]
+                select_placeholder = "Select shortener timeout..."
+            elif key == "YOUTUBE_POLL_INTERVAL_SECONDS":
+                static_select_options = [
+                    {"value": value, "label": label}
+                    for value, label in (
+                        ("60", "Every 1 minute"),
+                        ("120", "Every 2 minutes"),
+                        ("300", "Every 5 minutes"),
+                        ("600", "Every 10 minutes"),
+                        ("900", "Every 15 minutes"),
+                        ("1800", "Every 30 minutes"),
+                    )
+                ]
+                select_placeholder = "Select YouTube polling interval..."
+            elif key == "LINKEDIN_POLL_INTERVAL_SECONDS":
+                static_select_options = [
+                    {"value": value, "label": label}
+                    for value, label in (
+                        ("300", "Every 5 minutes"),
+                        ("600", "Every 10 minutes"),
+                        ("900", "Every 15 minutes"),
+                        ("1800", "Every 30 minutes"),
+                        ("3600", "Every 60 minutes"),
+                    )
+                ]
+                select_placeholder = "Select LinkedIn polling interval..."
+            elif key == "UPTIME_STATUS_CHECK_SCHEDULE":
+                static_select_options = [
+                    {"value": value, "label": label}
+                    for value, label in (
+                        ("*/1 * * * *", "Every 1 minute"),
+                        ("*/5 * * * *", "Every 5 minutes"),
+                        ("*/10 * * * *", "Every 10 minutes"),
+                        ("*/15 * * * *", "Every 15 minutes"),
+                        ("*/30 * * * *", "Every 30 minutes"),
+                    )
+                ]
+                select_placeholder = "Select Uptime Kuma polling interval..."
+            elif key in {"YOUTUBE_REQUEST_TIMEOUT_SECONDS", "LINKEDIN_REQUEST_TIMEOUT_SECONDS", "UPTIME_STATUS_TIMEOUT_SECONDS"}:
+                static_select_options = [{"value": value, "label": f"{value}s"} for value in ("5", "8", "10", "12", "15", "30")]
+                select_placeholder = "Select timeout..."
             if key == "firmware_notification_channel" or key.endswith("_CHANNEL_ID"):
                 select_options = channel_options
             elif key.endswith("_ROLE_ID"):
                 select_options = role_options
 
-            if static_select_options:
+            if key == "SERVICE_MONITOR_TARGETS_JSON":
+                input_html = (
+                    f"<textarea name='{escape(key, quote=True)}' "
+                    "placeholder='[{&quot;name&quot;:&quot;Discord Status&quot;,&quot;url&quot;:&quot;https://discordstatus.com&quot;}]'>"
+                    f"{escape(str(safe_value or ''))}</textarea>"
+                )
+            elif static_select_options:
                 input_html = _render_fixed_select_input(
                     name=key,
                     selected_value=safe_value,
@@ -4603,7 +8637,8 @@ def create_web_app(
                     f"<input type='{escape(input_type)}' name='{escape(key)}' "
                     f"value='{escape(safe_value, quote=True)}' placeholder='{escape(placeholder, quote=True)}' />"
                 )
-            rows.append(
+            section_title, _section_description = ENV_FIELD_SECTION_LOOKUP.get(key, ("Other Settings", ""))
+            grouped_rows.setdefault(section_title, []).append(
                 f"""
                 <tr>
                   <td><strong>{escape(label)}</strong><div class="muted mono">{escape(key)}</div></td>
@@ -4614,31 +8649,40 @@ def create_web_app(
             )
         catalog_note = ""
         if channel_options or role_options:
-            guild_info = (
-                discord_catalog.get("guild", {})
-                if isinstance(discord_catalog, dict)
-                else {}
-            )
-            guild_name = str(guild_info.get("name") or "unknown")
-            guild_id = str(guild_info.get("id") or "unknown")
             catalog_note = (
-                f"<p class='muted'>Loaded live Discord options from {escape(guild_name)} "
-                f"({escape(guild_id)}). Channels: {len(channel_options)}; Roles: {len(role_options)}.</p>"
+                f"<p class='muted'>Loaded live Discord options from {escape(str(selected_guild.get('name') or 'unknown'))} "
+                f"({escape(selected_guild_id or 'unknown')}). Channels: {len(channel_options)}; Roles: {len(role_options)}.</p>"
             )
         elif catalog_error:
             catalog_note = f"<p class='muted'>Could not load Discord options: {escape(catalog_error)}</p>"
 
+        section_cards = []
+        for section_title, section_description, _field_keys in ENV_FIELD_SECTIONS:
+            section_rows = grouped_rows.get(section_title, [])
+            if not section_rows:
+                continue
+            section_cards.append(
+                "<div class='card'>"
+                f"<h3>{escape(section_title)}</h3>"
+                f"<p class='muted'>{escape(section_description)}</p>"
+                "<table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
+                f"<tbody>{''.join(section_rows)}</tbody></table>"
+                "</div>"
+            )
+
         body = (
             "<div class='card'><h2>Global Environment Settings</h2>"
-            "<p class='muted'>These map to runtime bot settings shared across all Discord servers and persist in .env.</p>"
+            "<p class='muted'>These settings are shared across all Discord servers managed by this bot. Use this page for global defaults and runtime behavior.</p>"
+            "<p class='muted'>If a setting also exists in <span class='mono'>/admin/guild-settings</span>, the guild value overrides the global default for that one server.</p>"
             + (
                 f"<p class='muted'>Discord dropdown data is loaded from the selected server: <strong>{escape(str(selected_guild.get('name') or 'Unknown'))}</strong>.</p>"
                 if selected_guild_id
                 else "<p class='muted'>Select a Discord server to populate live channel and role dropdowns.</p>"
             )
             + f"{catalog_note}"
-            + "<form method='post'><table><thead><tr><th>Setting</th><th>Value</th><th>Description</th></tr></thead>"
-            f"<tbody>{''.join(rows)}</tbody></table><div style='margin-top:14px;'><button class='btn' type='submit'>Save Settings</button></div></form></div>"
+            + "<form method='post'>"
+            + "".join(section_cards)
+            + "<div class='card'><div style='margin-top:4px;'><button class='btn' type='submit'>Save Global Settings</button></div></div></form>"
         )
         return _render_page("Global Settings", body, user["email"], bool(user.get("is_admin")))
 
@@ -4665,17 +8709,11 @@ def create_web_app(
                     if not isinstance(key, str) or not isinstance(value, str):
                         raise ValueError("All tag keys/values must be strings")
                 if callable(on_save_tag_responses):
-                    response = on_save_tag_responses(
-                        parsed, user["email"], selected_guild_id
-                    )
+                    response = on_save_tag_responses(parsed, user["email"], selected_guild_id)
                     if not isinstance(response, dict):
-                        raise ValueError(
-                            "Invalid response from tag response save handler"
-                        )
+                        raise ValueError("Invalid response from tag response save handler")
                     if not response.get("ok"):
-                        raise ValueError(
-                            str(response.get("error") or "Failed to save tag responses")
-                        )
+                        raise ValueError(str(response.get("error") or "Failed to save tag responses"))
                 else:
                     path.write_text(json.dumps(parsed, indent=2) + "\n")
                 if callable(on_tag_responses_saved):
@@ -4690,14 +8728,8 @@ def create_web_app(
                 current_mapping = response.get("mapping", {}) or {}
                 current = json.dumps(current_mapping, indent=2) + "\n"
             else:
-                error_text = (
-                    response.get("error")
-                    if isinstance(response, dict)
-                    else "Unknown error"
-                )
-                flash(
-                    f"Could not load tag responses from storage: {error_text}", "error"
-                )
+                error_text = response.get("error") if isinstance(response, dict) else "Unknown error"
+                flash(f"Could not load tag responses from storage: {error_text}", "error")
                 current = "{}\n"
         else:
             if not path.exists():
@@ -4717,9 +8749,7 @@ def create_web_app(
           </form>
         </div>
         """
-        return _render_page(
-            "Tag Responses", body, user["email"], bool(user.get("is_admin"))
-        )
+        return _render_page("Tag Responses", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/bulk-role-csv", methods=["GET", "POST"])
     @login_required
@@ -4731,49 +8761,30 @@ def create_web_app(
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
         operation_result = None
-        max_upload_bytes = _get_int_env(
-            "WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024
-        )
-        report_list_limit = _get_int_env(
-            "WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", 50, minimum=1
-        )
-        discord_catalog = (
-            on_get_discord_catalog(selected_guild_id)
-            if callable(on_get_discord_catalog)
-            else None
-        )
-        role_options = []
-        catalog_error = ""
-        if isinstance(discord_catalog, dict):
-            if discord_catalog.get("ok"):
-                role_options = discord_catalog.get("roles", []) or []
-            else:
-                catalog_error = str(discord_catalog.get("error") or "")
+        max_upload_bytes = _get_int_env("WEB_BULK_ASSIGN_MAX_UPLOAD_BYTES", 2 * 1024 * 1024, minimum=1024)
+        report_list_limit = _get_int_env("WEB_BULK_ASSIGN_REPORT_LIST_LIMIT", 50, minimum=1)
+        _channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         if request.method == "POST":
             selected_role_input = request.form.get("role_id_select", "").strip()
             manual_role_input = request.form.get("role_id", "").strip()
-            role_input = (
-                selected_role_input
-                if role_options
-                else (manual_role_input or selected_role_input)
-            )
+            role_input = selected_role_input if role_options else (manual_role_input or selected_role_input)
             uploaded_file = request.files.get("csv_file")
             if not role_input:
                 flash("Role selection is required.", "error")
             elif uploaded_file is None or not uploaded_file.filename:
-                flash("CSV file is required.", "error")
-            elif not uploaded_file.filename.lower().endswith(".csv"):
-                flash("Uploaded file must be a .csv file.", "error")
+                flash("Spreadsheet file is required.", "error")
+            elif not (uploaded_file.filename.lower().endswith(".csv") or uploaded_file.filename.lower().endswith(".xlsx")):
+                flash("Uploaded file must be a .csv or .xlsx file.", "error")
             elif not callable(on_bulk_assign_role_csv):
-                flash("Bulk CSV assignment is not configured in this runtime.", "error")
+                flash("Bulk spreadsheet assignment is not configured in this runtime.", "error")
             else:
                 payload = uploaded_file.read()
                 if not payload:
-                    flash("Uploaded CSV is empty.", "error")
+                    flash("Uploaded file is empty.", "error")
                 elif len(payload) > max_upload_bytes:
                     flash(
-                        f"CSV file is too large ({len(payload)} bytes). Max allowed is {max_upload_bytes} bytes.",
+                        f"File is too large ({len(payload)} bytes). Max allowed is {max_upload_bytes} bytes.",
                         "error",
                     )
                 else:
@@ -4797,9 +8808,7 @@ def create_web_app(
         report_html = ""
         if operation_result:
             summary_lines = operation_result.get("summary_lines", [])
-            summary_rows = "".join(
-                f"<div class='mono'>{escape(line)}</div>" for line in summary_lines
-            )
+            summary_rows = "".join(f"<div class='mono'>{escape(line)}</div>" for line in summary_lines)
             summary_html = f"""
             <div class="card">
               <h3>Result Summary</h3>
@@ -4813,15 +8822,9 @@ def create_web_app(
                 values = result_data.get(key, []) or []
                 if not values:
                     return f"<div><h4>{escape(title)} (0)</h4><p class='muted'>None</p></div>"
-                items = "".join(
-                    f"<li class='mono'>{escape(value)}</li>" for value in values[:limit]
-                )
+                items = "".join(f"<li class='mono'>{escape(value)}</li>" for value in values[:limit])
                 overflow = len(values) - limit
-                overflow_note = (
-                    f"<p class='muted'>... and {overflow} more</p>"
-                    if overflow > 0
-                    else ""
-                )
+                overflow_note = f"<p class='muted'>... and {overflow} more</p>" if overflow > 0 else ""
                 return f"<div><h4>{escape(title)} ({len(values)})</h4><ul>{items}</ul>{overflow_note}</div>"
 
             details_html = f"""
@@ -4844,9 +8847,7 @@ def create_web_app(
         if role_options:
             role_picker_html = (
                 "<label>Role (Discord list)</label>"
-                + _render_select_input(
-                    "role_id_select", "", role_options, "Choose role..."
-                )
+                + _render_select_input("role_id_select", "", role_options, "Choose role...")
                 + "<p class='muted'>Choose the target role using the current guild role list.</p>"
             )
         elif catalog_error:
@@ -4856,15 +8857,15 @@ def create_web_app(
 
         body = f"""
         <div class="card">
-          <h2>Bulk Assign Role from CSV</h2>
+          <h2>Bulk Assign Role from Spreadsheet</h2>
           <p class="muted">Selected server: <strong>{escape(str(selected_guild.get("name") or "Unknown"))}</strong></p>
-          <p class="muted">Upload a CSV of Discord names (comma-separated or one-per-line), and assign all matched members to the specified role.</p>
+          <p class="muted">Upload a CSV or Excel file with Discord names (comma-separated or one-per-line), and assign all matched members to the specified role.</p>
           <p class="muted">Current upload limit: {max_upload_bytes} bytes. Current per-section display limit: {report_list_limit} entries.</p>
           <form method="post" enctype="multipart/form-data">
             {role_picker_html}
             {"<label>Role ID (or role mention like &lt;@&amp;123&gt;)</label><input type='text' name='role_id' placeholder='123456789012345678' />" if not role_options else ""}
-            <label style="margin-top:10px;display:block;">CSV file</label>
-            <input type="file" name="csv_file" accept=".csv,text/csv" required />
+            <label style="margin-top:10px;display:block;">Spreadsheet file (.csv or .xlsx)</label>
+            <input type="file" name="csv_file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" required />
             <div style="margin-top:14px;">
               <button class="btn" type="submit">Run Bulk Assignment</button>
             </div>
@@ -4874,34 +8875,116 @@ def create_web_app(
         {details_html}
         {report_html}
         """
-        return _render_page(
-            "Bulk Role CSV", body, user["email"], bool(user.get("is_admin"))
-        )
+        return _render_page("Bulk Role CSV", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/users", methods=["GET", "POST"])
-    @login_required
+    @admin_required
     def users():
         user = _current_user()
         users_data = _read_users(users_file)
+        groups_data = _read_guild_groups(users_file)
+        all_guilds, guild_error = _load_all_guilds()
+        guild_options = [
+            {
+                "id": str(entry.get("id") or "").strip(),
+                "label": str(entry.get("name") or entry.get("id") or "Unknown"),
+            }
+            for entry in all_guilds
+            if str(entry.get("id") or "").strip()
+        ]
+        group_options = [
+            {
+                "id": str(entry.get("id") or "").strip(),
+                "label": str(entry.get("name") or entry.get("id") or "Unknown"),
+            }
+            for entry in groups_data
+            if str(entry.get("id") or "").strip()
+        ]
+        group_name_by_id = {
+            str(entry.get("id") or "").strip(): str(entry.get("name") or "").strip()
+            for entry in groups_data
+            if str(entry.get("id") or "").strip()
+        }
 
         if request.method == "POST":
             action = request.form.get("action", "").strip()
-            if action == "create":
+            if action == "create_group":
+                group_name = _normalize_guild_group_name(request.form.get("group_name", ""))
+                guild_ids = _normalize_id_string_list(request.form.getlist("guild_ids"))
+                if not group_name:
+                    flash("Guild group name is required.", "error")
+                elif not guild_ids:
+                    flash("Choose at least one Discord server for the guild group.", "error")
+                elif any(str(entry.get("name") or "").strip().casefold() == group_name.casefold() for entry in groups_data):
+                    flash("A guild group with that name already exists.", "error")
+                else:
+                    groups_data.append(
+                        {
+                            "id": secrets.token_hex(8),
+                            "name": group_name,
+                            "guild_ids": guild_ids,
+                            "created_at": _now_iso(),
+                        }
+                    )
+                    _save_guild_groups(users_file, groups_data)
+                    flash(f"Created guild group {group_name}.", "success")
+                    groups_data = _read_guild_groups(users_file)
+            elif action == "edit_group":
+                group_id = str(request.form.get("group_id", "") or "").strip()
+                group_name = _normalize_guild_group_name(request.form.get("group_name", ""))
+                guild_ids = _normalize_id_string_list(request.form.getlist("guild_ids"))
+                if not group_id:
+                    flash("Guild group ID is required.", "error")
+                elif not group_name:
+                    flash("Guild group name is required.", "error")
+                elif not guild_ids:
+                    flash("Choose at least one Discord server for the guild group.", "error")
+                elif any(
+                    str(entry.get("name") or "").strip().casefold() == group_name.casefold()
+                    and str(entry.get("id") or "").strip() != group_id
+                    for entry in groups_data
+                ):
+                    flash("Another guild group already uses that name.", "error")
+                else:
+                    changed = False
+                    for entry in groups_data:
+                        if str(entry.get("id") or "").strip() == group_id:
+                            entry["name"] = group_name
+                            entry["guild_ids"] = guild_ids
+                            changed = True
+                            break
+                    if changed:
+                        _save_guild_groups(users_file, groups_data)
+                        flash(f"Updated guild group {group_name}.", "success")
+                        groups_data = _read_guild_groups(users_file)
+                    else:
+                        flash("Guild group not found.", "error")
+            elif action == "delete_group":
+                group_id = str(request.form.get("group_id", "") or "").strip()
+                next_groups = [entry for entry in groups_data if str(entry.get("id") or "").strip() != group_id]
+                if len(next_groups) == len(groups_data):
+                    flash("Guild group not found.", "error")
+                else:
+                    for entry in users_data:
+                        entry["guild_group_ids"] = [
+                            value
+                            for value in _normalize_string_id_list(entry.get("guild_group_ids", []))
+                            if value != group_id
+                        ]
+                    _save_guild_groups(users_file, next_groups)
+                    _save_users(users_file, users_data)
+                    flash("Deleted guild group.", "success")
+                    groups_data = _read_guild_groups(users_file)
+                    users_data = _read_users(users_file)
+            elif action == "create":
                 email = _normalize_email(request.form.get("email", ""))
                 password = request.form.get("password", "")
                 confirm_password = request.form.get("confirm_password", "")
-                first_name = _clean_profile_text(
-                    request.form.get("first_name", ""), max_length=80
-                )
-                last_name = _clean_profile_text(
-                    request.form.get("last_name", ""), max_length=80
-                )
-                display_name = _clean_profile_text(
-                    request.form.get("display_name", ""), max_length=80
-                )
-                requested_role = (
-                    str(request.form.get("role", "read_only")).strip().lower()
-                )
+                first_name = _clean_profile_text(request.form.get("first_name", ""), max_length=80)
+                last_name = _clean_profile_text(request.form.get("last_name", ""), max_length=80)
+                display_name = _clean_profile_text(request.form.get("display_name", ""), max_length=80)
+                requested_role = _normalize_web_user_role(request.form.get("role", "read_only"))
+                guild_group_ids = _normalize_string_id_list(request.form.getlist("guild_group_ids"))
                 is_admin = requested_role == "admin"
                 if not _is_valid_email(email):
                     flash("Enter a valid email.", "error")
@@ -4913,6 +8996,8 @@ def create_web_app(
                     flash("Display name is required.", "error")
                 elif any(entry["email"] == email for entry in users_data):
                     flash("A user with that email already exists.", "error")
+                elif requested_role == "guild_admin" and not guild_group_ids:
+                    flash("Guild Admin users must be assigned at least one guild group.", "error")
                 elif password != confirm_password:
                     flash("Password and confirmation must match.", "error")
                 else:
@@ -4925,10 +9010,13 @@ def create_web_app(
                             {
                                 "email": email,
                                 "password_hash": _hash_password(password),
+                                "previous_password_hash": "",
+                                "role": requested_role,
                                 "is_admin": is_admin,
                                 "first_name": first_name,
                                 "last_name": last_name,
                                 "display_name": display_name,
+                                "guild_group_ids": guild_group_ids,
                                 "password_changed_at": _now_iso(),
                                 "email_changed_at": _now_iso(),
                                 "created_at": _now_iso(),
@@ -4940,9 +9028,7 @@ def create_web_app(
 
             elif action == "delete":
                 target_email = _normalize_email(request.form.get("email", ""))
-                candidate = [
-                    entry for entry in users_data if entry["email"] != target_email
-                ]
+                candidate = [entry for entry in users_data if entry["email"] != target_email]
                 admin_count = sum(1 for entry in candidate if entry.get("is_admin"))
                 if target_email == user["email"]:
                     flash("You cannot delete your own account.", "error")
@@ -4957,41 +9043,116 @@ def create_web_app(
 
             elif action == "password":
                 target_email = _normalize_email(request.form.get("email", ""))
+                current_password = request.form.get("current_password", "")
                 new_password = request.form.get("password", "")
-                password_errors = _password_policy_errors(new_password)
-                if password_errors:
-                    for message in password_errors:
+                confirm_password = request.form.get("confirm_password", "")
+                validation_errors = []
+                if not str(current_password or ""):
+                    validation_errors.append("Your current password is required to reset another user's password.")
+                elif not check_password_hash(user["password_hash"], current_password):
+                    validation_errors.append("Your current password is incorrect.")
+                if not str(new_password or ""):
+                    validation_errors.append("New password is required.")
+                if not str(confirm_password or ""):
+                    validation_errors.append("Confirm password is required.")
+                if str(new_password or "") and str(confirm_password or "") and new_password != confirm_password:
+                    validation_errors.append("Password and confirmation must match.")
+                if validation_errors:
+                    for message in validation_errors:
                         flash(message, "error")
                 else:
+                    password_errors = _password_policy_errors(new_password)
+                    if password_errors:
+                        for message in password_errors:
+                            flash(message, "error")
+                    else:
+                        found_target = False
+                        changed = False
+                        for entry in users_data:
+                            if entry["email"] == target_email:
+                                found_target = True
+                                current_target_hash = str(entry.get("password_hash") or "").strip()
+                                previous_password_hash = str(entry.get("previous_password_hash") or "").strip()
+                                if current_target_hash and check_password_hash(current_target_hash, new_password):
+                                    flash("New password must be different from the user's current password.", "error")
+                                    changed = False
+                                    break
+                                if previous_password_hash and check_password_hash(previous_password_hash, new_password):
+                                    flash("New password must not match the user's previous password.", "error")
+                                    changed = False
+                                    break
+                                entry["previous_password_hash"] = current_target_hash
+                                entry["password_hash"] = _hash_password(new_password)
+                                entry["password_changed_at"] = _now_iso()
+                                changed = True
+                                break
+                        if changed:
+                            _save_users(users_file, users_data)
+                            flash(f"Password updated for {target_email}.", "success")
+                            users_data = _read_users(users_file)
+                        elif not found_target:
+                            flash("User not found.", "error")
+
+            elif action == "edit_user":
+                target_email = _normalize_email(request.form.get("email", ""))
+                updated_email = _normalize_email(request.form.get("updated_email", ""))
+                first_name = _clean_profile_text(request.form.get("first_name", ""), max_length=80)
+                last_name = _clean_profile_text(request.form.get("last_name", ""), max_length=80)
+                display_name = _clean_profile_text(request.form.get("display_name", ""), max_length=80)
+                guild_group_ids = _normalize_string_id_list(request.form.getlist("guild_group_ids"))
+                if not target_email:
+                    flash("User email is required.", "error")
+                elif not _is_valid_email(updated_email):
+                    flash("Enter a valid updated email.", "error")
+                elif not first_name:
+                    flash("First name is required.", "error")
+                elif not last_name:
+                    flash("Last name is required.", "error")
+                elif not display_name:
+                    flash("Display name is required.", "error")
+                elif updated_email != target_email and any(entry["email"] == updated_email for entry in users_data):
+                    flash("Another user already has that email.", "error")
+                else:
                     changed = False
+                    now_iso = _now_iso()
                     for entry in users_data:
                         if entry["email"] == target_email:
-                            entry["password_hash"] = _hash_password(new_password)
-                            entry["password_changed_at"] = _now_iso()
+                            original_email = entry["email"]
+                            entry["email"] = updated_email
+                            entry["first_name"] = first_name
+                            entry["last_name"] = last_name
+                            entry["display_name"] = display_name
+                            if _normalize_web_user_role(entry.get("role", ""), is_admin=bool(entry.get("is_admin"))) == "guild_admin":
+                                entry["guild_group_ids"] = guild_group_ids
+                            if updated_email != original_email:
+                                entry["email_changed_at"] = now_iso
                             changed = True
                             break
                     if changed:
                         _save_users(users_file, users_data)
-                        flash(f"Password updated for {target_email}.", "success")
+                        flash(f"Updated user profile for {updated_email}.", "success")
                         users_data = _read_users(users_file)
                     else:
                         flash("User not found.", "error")
 
             elif action == "set_role":
                 target_email = _normalize_email(request.form.get("email", ""))
-                requested_role = (
-                    str(request.form.get("role", "read_only")).strip().lower()
-                )
+                requested_role = _normalize_web_user_role(request.form.get("role", "read_only"))
                 target_is_admin = requested_role == "admin"
                 if target_email == user["email"] and not target_is_admin:
                     flash(
-                        "You cannot set your own account to Read-only. Another admin must do this.",
+                        "You cannot set your own account to a non-admin role. Another admin must do this.",
                         "error",
                     )
                 else:
                     changed = False
                     for entry in users_data:
                         if entry["email"] == target_email:
+                            if requested_role == "guild_admin" and not _normalize_string_id_list(entry.get("guild_group_ids", [])):
+                                flash("Assign at least one guild group before changing this user to Guild Admin.", "error")
+                                changed = False
+                                break
+                            entry["role"] = requested_role
                             entry["is_admin"] = target_is_admin
                             changed = True
                             break
@@ -5001,7 +9162,7 @@ def create_web_app(
                         else:
                             _save_users(users_file, users_data)
                             flash(
-                                f"Updated role for {target_email} to {_user_role_label_from_is_admin(target_is_admin)}.",
+                                f"Updated role for {target_email} to {_user_role_label(requested_role, is_admin=target_is_admin)}.",
                                 "success",
                             )
                             users_data = _read_users(users_file)
@@ -5011,27 +9172,29 @@ def create_web_app(
         user_rows = []
         for entry in users_data:
             email = entry["email"]
-            is_admin_entry = bool(entry.get("is_admin"))
-            role_label = _user_role_label_from_is_admin(is_admin_entry)
-            next_role_value = "read_only" if is_admin_entry else "admin"
-            next_role_label = _user_role_label_from_is_admin(next_role_value == "admin")
-            is_self_read_only_demotion = (
-                email == user["email"] and next_role_value == "read_only"
-            )
-            role_button_label = (
-                "Set Read-only (Self blocked)"
-                if is_self_read_only_demotion
-                else f"Set {next_role_label}"
-            )
-            role_button_disabled = " disabled" if is_self_read_only_demotion else ""
-            role_button_title = (
-                " title='You cannot set your own account to Read-only.'"
-                if is_self_read_only_demotion
-                else ""
-            )
+            current_role_value = _normalize_web_user_role(entry.get("role", ""), is_admin=bool(entry.get("is_admin")))
+            is_admin_entry = current_role_value == "admin"
+            role_label = _user_role_label(current_role_value, is_admin=is_admin_entry)
+            assigned_group_ids = _normalize_string_id_list(entry.get("guild_group_ids", []))
+            assigned_group_names = [group_name_by_id.get(group_id, f"Unknown ({group_id})") for group_id in assigned_group_ids]
+            group_scope_label = ", ".join(assigned_group_names) if assigned_group_names else ("All guilds" if current_role_value in {"admin", "read_only"} else "Primary GL.iNet guild only" if current_role_value in {"glinet_read_only", "glinet_rw"} else "No guild groups")
+            role_select_html = _render_fixed_select_input(
+                f"role__{email}",
+                current_role_value,
+                [
+                    {"value": "read_only", "label": "Read-only"},
+                    {"value": "guild_admin", "label": "Guild Admin"},
+                    {"value": "glinet_read_only", "label": "Glinet-Read-Only"},
+                    {"value": "glinet_rw", "label": "Glinet-RW"},
+                    {"value": "admin", "label": "Admin"},
+                ],
+                "Select role...",
+            ).replace("<select ", "<select style='min-width:150px;' ")
             display_name = str(entry.get("display_name") or _default_display_name(email))
+            first_name = str(entry.get("first_name") or "")
+            last_name = str(entry.get("last_name") or "")
             full_name = _clean_profile_text(
-                f"{str(entry.get('first_name') or '')} {str(entry.get('last_name') or '')}",
+                f"{first_name} {last_name}",
                 max_length=160,
             )
             user_rows.append(
@@ -5041,20 +9204,69 @@ def create_web_app(
                   <td>{escape(full_name or "n/a")}</td>
                   <td class="mono">{escape(email)}</td>
                   <td>{escape(role_label)}</td>
-                  <td class="mono">{escape(str(entry.get("password_changed_at", "n/a")))}</td>
-                  <td class="mono">{escape(str(entry.get("created_at", "n/a")))}</td>
+                  <td>{escape(group_scope_label)}</td>
+                  <td class="mono">{escape(format_timestamp_display(entry.get("password_changed_at"), blank="n/a"))}</td>
+                  <td class="mono">{escape(format_timestamp_display(entry.get("created_at"), blank="n/a"))}</td>
                   <td>
                     <form method="post" style="display:inline;">
                       <input type="hidden" name="action" value="set_role" />
                       <input type="hidden" name="email" value="{escape(email, quote=True)}" />
-                      <input type="hidden" name="role" value="{escape(next_role_value, quote=True)}" />
-                      <button class="btn secondary" type="submit"{role_button_disabled}{role_button_title}>{escape(role_button_label)}</button>
+                      {role_select_html.replace(f"name='{escape(f'role__{email}', quote=True)}'", "name='role'")}
+                      <button class="btn secondary" type="submit">Set Role</button>
                     </form>
+                    <a class="btn secondary" style="margin-left:6px;" href="#edit-user-{escape(email, quote=True)}">Edit</a>
                     <form method="post" style="display:inline;margin-left:6px;">
                       <input type="hidden" name="action" value="delete" />
                       <input type="hidden" name="email" value="{escape(email, quote=True)}" />
                       <button class="btn secondary" type="submit">Delete</button>
                     </form>
+                  </td>
+                </tr>
+                <tr>
+                  <td colspan="7">
+                    <details id="edit-user-{escape(email, quote=True)}">
+                      <summary>Edit {escape(display_name)}</summary>
+                      <div class="grid" style="margin-top:12px;">
+                        <div class="card">
+                          <h3>Edit Profile</h3>
+                          <form method="post">
+                            <input type="hidden" name="action" value="edit_user" />
+                            <input type="hidden" name="email" value="{escape(email, quote=True)}" />
+                            <label>First Name</label>
+                            <input type="text" name="first_name" autocomplete="given-name" value="{escape(first_name, quote=True)}" required />
+                            <label style="margin-top:10px;display:block;">Last Name</label>
+                            <input type="text" name="last_name" autocomplete="family-name" value="{escape(last_name, quote=True)}" required />
+                            <label style="margin-top:10px;display:block;">Display Name</label>
+                            <input type="text" name="display_name" autocomplete="nickname" value="{escape(display_name, quote=True)}" required />
+                            <label style="margin-top:10px;display:block;">Email</label>
+                            <input type="email" name="updated_email" autocomplete="email" autocapitalize="none" spellcheck="false" value="{escape(email, quote=True)}" required />
+                            <label style="margin-top:10px;display:block;">Guild Groups</label>
+                            {_render_multi_select_input("guild_group_ids", assigned_group_ids, group_options, size=6)}
+                            <p class="muted">Only used when this account role is <strong>Guild Admin</strong>. Use Ctrl/Cmd-click to select multiple groups.</p>
+                            <button class="btn" type="submit" style="margin-top:14px;">Save User Changes</button>
+                          </form>
+                        </div>
+                        <div class="card">
+                          <h3>Reset Password</h3>
+                          <form method="post">
+                            <input type="hidden" name="action" value="password" />
+                            <input type="hidden" name="email" value="{escape(email, quote=True)}" />
+                            <label>Your Current Password</label>
+                            <input id="reset_user_current_password_{escape(email, quote=True)}" type="password" name="current_password" autocomplete="current-password" required />
+                            <label style="margin-top:10px;display:block;">New Password</label>
+                            <input id="reset_user_password_{escape(email, quote=True)}" type="password" name="password" autocomplete="new-password" required />
+                            <label style="margin-top:10px;display:block;">Confirm Password</label>
+                            <input id="reset_user_password_confirm_{escape(email, quote=True)}" type="password" name="confirm_password" autocomplete="new-password" required />
+                            <label style="margin-top:8px;display:block;">
+                              <input type="checkbox"
+                                onchange="document.getElementById('reset_user_current_password_{escape(email, quote=True)}').type=this.checked?'text':'password';document.getElementById('reset_user_password_{escape(email, quote=True)}').type=this.checked?'text':'password';document.getElementById('reset_user_password_confirm_{escape(email, quote=True)}').type=this.checked?'text':'password';" />
+                              Show passwords
+                            </label>
+                            <button class="btn" type="submit" style="margin-top:14px;">Update Password</button>
+                          </form>
+                        </div>
+                      </div>
+                    </details>
                   </td>
                 </tr>
                 """
@@ -5087,33 +9299,61 @@ def create_web_app(
               <label style="margin-top:10px;display:block;">Role</label>
               <select name="role">
                 <option value="read_only">Read-only</option>
+                <option value="guild_admin">Guild Admin</option>
+                <option value="glinet_read_only">Glinet-Read-Only</option>
+                <option value="glinet_rw">Glinet-RW</option>
                 <option value="admin">Admin</option>
               </select>
+              <label style="margin-top:10px;display:block;">Guild Groups</label>
+              {_render_multi_select_input("guild_group_ids", [], group_options, size=6)}
+              <p class="muted">Guild Groups only apply to the <strong>Guild Admin</strong> role. Use Ctrl/Cmd-click to select multiple groups.</p>
               <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>
               <button class="btn" type="submit">Create User</button>
             </form>
           </div>
           <div class="card">
-            <h2>Reset Password</h2>
+            <h2>Guild Groups</h2>
+            <p class="muted">Guild Groups define which Discord servers a <strong>Guild Admin</strong> can manage. Assign one or more groups to a user to scope their server access.</p>
+            {f"<p class='muted'>Could not load Discord guild list: {escape(guild_error)}</p>" if guild_error else ""}
             <form method="post">
-              <input type="hidden" name="action" value="password" />
-              <label>User Email</label>
-              <input type="email" name="email" autocomplete="email" autocapitalize="none" spellcheck="false" required />
-              <label style="margin-top:10px;display:block;">New Password</label>
-              <input id="reset_user_password" type="password" name="password" autocomplete="new-password" required />
-              <label style="margin-top:8px;display:block;">
-                <input type="checkbox"
-                  onchange="document.getElementById('reset_user_password').type=this.checked?'text':'password';" />
-                Show password
-              </label>
-              <button class="btn" type="submit">Update Password</button>
+              <input type="hidden" name="action" value="create_group" />
+              <label>Group Name</label>
+              <input type="text" name="group_name" placeholder="Support Servers" required />
+              <label style="margin-top:10px;display:block;">Discord Servers</label>
+              {_render_multi_select_input("guild_ids", [], guild_options, size=6)}
+              <p class="muted">Use Ctrl/Cmd-click to select multiple servers.</p>
+              <button class="btn" type="submit">Create Guild Group</button>
             </form>
+            {"".join(
+                f'''
+                <details style="margin-top:12px;">
+                  <summary>{escape(str(group.get("name") or "Guild Group"))}</summary>
+                  <form method="post" style="margin-top:12px;">
+                    <input type="hidden" name="action" value="edit_group" />
+                    <input type="hidden" name="group_id" value="{escape(str(group.get("id") or ""), quote=True)}" />
+                    <label>Group Name</label>
+                    <input type="text" name="group_name" value="{escape(str(group.get("name") or ""), quote=True)}" required />
+                    <label style="margin-top:10px;display:block;">Discord Servers</label>
+                    {_render_multi_select_input("guild_ids", group.get("guild_ids", []), guild_options, size=6)}
+                    <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;">
+                      <button class="btn" type="submit">Save Group</button>
+                    </div>
+                  </form>
+                  <form method="post" style="margin-top:8px;" onsubmit="return confirm('Delete this guild group? Assigned users will lose access from this group.');">
+                    <input type="hidden" name="action" value="delete_group" />
+                    <input type="hidden" name="group_id" value="{escape(str(group.get("id") or ""), quote=True)}" />
+                    <button class="btn danger" type="submit">Delete Group</button>
+                  </form>
+                </details>
+                '''
+                for group in groups_data
+            ) if groups_data else "<p class='muted'>No guild groups created yet.</p>"}
           </div>
         </div>
         <div class="card">
           <h2>Existing Users</h2>
           <table>
-            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Role</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Role</th><th>Guild Scope</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody>{"".join(user_rows)}</tbody>
           </table>
         </div>
@@ -5144,12 +9384,33 @@ def start_web_admin_interface(
     on_get_discord_catalog=None,
     on_get_command_permissions=None,
     on_save_command_permissions=None,
+    on_get_honeypot=None,
+    on_manage_honeypot=None,
+    on_get_actions=None,
+    on_get_members=None,
+    on_manage_member=None,
+    on_get_member_activity=None,
+    on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
+    on_get_youtube_subscriptions=None,
+    on_manage_youtube_subscriptions=None,
+    on_get_linkedin_subscriptions=None,
+    on_manage_linkedin_subscriptions=None,
+    on_get_beta_program_subscriptions=None,
+    on_manage_beta_program_subscriptions=None,
+    on_get_role_access_mappings=None,
+    on_manage_role_access_mappings=None,
+    on_get_reaction_roles=None,
+    on_manage_reaction_roles=None,
     on_get_bot_profile=None,
     on_update_bot_profile=None,
     on_update_bot_avatar=None,
+    on_get_health_status=None,
     on_request_restart=None,
+    on_leave_guild=None,
+    on_get_ticket_settings=None,
+    on_save_ticket_settings=None,
     logger=None,
 ):
     app = create_web_app(
@@ -5169,12 +9430,33 @@ def start_web_admin_interface(
         on_get_discord_catalog=on_get_discord_catalog,
         on_get_command_permissions=on_get_command_permissions,
         on_save_command_permissions=on_save_command_permissions,
+        on_get_honeypot=on_get_honeypot,
+        on_manage_honeypot=on_manage_honeypot,
+        on_get_actions=on_get_actions,
+        on_get_members=on_get_members,
+        on_manage_member=on_manage_member,
+        on_get_member_activity=on_get_member_activity,
+        on_export_member_activity=on_export_member_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
         on_manage_reddit_feeds=on_manage_reddit_feeds,
+        on_get_youtube_subscriptions=on_get_youtube_subscriptions,
+        on_manage_youtube_subscriptions=on_manage_youtube_subscriptions,
+        on_get_linkedin_subscriptions=on_get_linkedin_subscriptions,
+        on_manage_linkedin_subscriptions=on_manage_linkedin_subscriptions,
+        on_get_beta_program_subscriptions=on_get_beta_program_subscriptions,
+        on_manage_beta_program_subscriptions=on_manage_beta_program_subscriptions,
+        on_get_role_access_mappings=on_get_role_access_mappings,
+        on_manage_role_access_mappings=on_manage_role_access_mappings,
+                    on_get_reaction_roles=on_get_reaction_roles,
+                    on_manage_reaction_roles=on_manage_reaction_roles,
         on_get_bot_profile=on_get_bot_profile,
         on_update_bot_profile=on_update_bot_profile,
         on_update_bot_avatar=on_update_bot_avatar,
+        on_get_health_status=on_get_health_status,
+        on_get_ticket_settings=on_get_ticket_settings,
+        on_save_ticket_settings=on_save_ticket_settings,
         on_request_restart=on_request_restart,
+        on_leave_guild=on_leave_guild,
         logger=logger,
     )
     servers = []
@@ -5195,14 +9477,10 @@ def start_web_admin_interface(
     if https_enabled:
         ssl_context, cert_path, key_path, generated = _ensure_https_ssl_context(
             data_dir=data_dir,
-            harden_file_permissions=_is_truthy_env_value(
-                os.getenv("WEB_HARDEN_FILE_PERMISSIONS", "true")
-            ),
+            harden_file_permissions=_is_truthy_env_value(os.getenv("WEB_HARDEN_FILE_PERMISSIONS", "true")),
             logger=logger,
         )
-        https_server = make_server(
-            host, https_port, app, threaded=True, ssl_context=ssl_context
-        )
+        https_server = make_server(host, https_port, app, threaded=True, ssl_context=ssl_context)
         servers.append(https_server)
         _serve_forever(https_server, "web_admin_https")
         if logger:
@@ -5219,13 +9497,12 @@ def start_web_admin_interface(
         while True:
             for thread in threads:
                 if not thread.is_alive():
-                    raise RuntimeError(
-                        f"Web admin listener thread stopped unexpectedly: {thread.name}"
-                    )
+                    raise RuntimeError(f"Web admin listener thread stopped unexpectedly: {thread.name}")
             time.sleep(1)
     finally:
         for server in servers:
             try:
                 server.shutdown()
-            except Exception:
-                pass
+            except Exception as exc:
+                if logger:
+                    logger.debug("Web admin server shutdown raised %s", exc)

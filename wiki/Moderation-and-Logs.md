@@ -17,6 +17,7 @@ Moderator tooling for members, roles, and operational incident visibility.
 | Member discipline | `/timeout_member` | `!timeoutmember` | Moderator |
 | Member discipline | `/untimeout_member` | `!untimeoutmember` | Moderator |
 | Channel hygiene | `/prune_messages` | `!prune` | Moderator |
+| Member selection | `/random_choice` | none | Moderator |
 | Logging test | `/modlog_test` | `!modlogtest` | Moderator |
 | Runtime error logs | `/logs` | none | Moderator |
 
@@ -25,13 +26,33 @@ Moderator tooling for members, roles, and operational incident visibility.
 - Removes recent messages in the current channel/thread.
 - Requires amount between `1` and `500`.
 - Skips pinned messages.
-- Logs the moderation action to `MOD_LOG_CHANNEL_ID`.
+- Logs the moderation action to the selected guild's configured moderation log channel.
 
 ## `/logs` Command Behavior
 
 - Reads recent lines from `${LOG_DIR}/container_errors.log` (default `/logs/container_errors.log`).
 - Ephemeral response to reduce accidental exposure.
 - Intended for production incident triage without shell access.
+
+## Web GUI Logs Page
+
+- `/admin/logs` provides the browser log viewer for:
+  - `bot.log`
+  - `bot_log.log`
+  - `container_errors.log`
+  - `web_gui_audit.log`
+- `Export All Logs` downloads the available runtime logs as one ZIP archive with a manifest.
+- GUI-rendered timestamps are shown in readable UTC format.
+
+## `/random_choice` Behavior
+
+- Randomly selects one eligible non-staff member from the current guild.
+- Excludes:
+  - bots
+  - configured moderator/admin role IDs
+  - named staff roles `Employee`, `Admin`, and `Gl.iNet Moderator`
+- Persists selections per guild so the same member cannot be chosen again for 7 days, even if the bot restarts.
+- Returns the chosen member privately to the moderator who invoked it.
 
 Tuning variable:
 
@@ -49,13 +70,15 @@ Layer 1: baseline role gates
 Layer 2: per-command overrides in web admin
 
 - `/admin/command-permissions`
-- Modes: `default`, `public`, `custom_roles`
+- Enabled checkbox per command
+- Modes for enabled commands: `default`, `public`, `custom_roles`
 
 ## Logged Events (Mod Log Channel)
 
 Configured target:
 
-- `MOD_LOG_CHANNEL_ID`
+- Guild Settings -> `mod_log_channel_id`
+- Fallback: global `MOD_LOG_CHANNEL_ID` from `/admin/settings` or env
 
 Event coverage includes:
 
@@ -85,12 +108,12 @@ Event coverage includes:
 - Moderator can run command in one channel but not another:
   - Check Discord channel permission overrides.
 - Mod logs missing:
-  - Validate `MOD_LOG_CHANNEL_ID` exists and bot can send messages there.
+  - Validate the selected guild has `mod_log_channel_id` configured, or that a valid global `MOD_LOG_CHANNEL_ID` fallback exists, and the bot can send messages there.
 - `/logs` empty during incident:
   - Lower `CONTAINER_LOG_LEVEL` temporarily to capture more detail.
 
 ## Related Pages
 
-- [Command Reference](Command-Reference)
-- [Environment Variables](Environment-Variables)
-- [Security Hardening](Security-Hardening)
+- [Command Reference](Command-Reference.md)
+- [Environment Variables](Environment-Variables.md)
+- [Security Hardening](Security-Hardening.md)

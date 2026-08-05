@@ -43,5 +43,5 @@ Bot requires:
 
 ## Related Pages
 
-- [Command Reference](Command-Reference)
-- [Moderation and Logs](Moderation-and-Logs)
+- [Command Reference](Command-Reference.md)
+- [Moderation and Logs](Moderation-and-Logs.md)

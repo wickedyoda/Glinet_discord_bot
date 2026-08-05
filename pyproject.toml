@@ -1,0 +1,21 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+exclude = [
+  ".git",
+  "__pycache__",
+  ".venv",
+  "data",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I", "UP"]
+ignore = ["E501"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "data", "__pycache__"]
+skips = ["B101"]

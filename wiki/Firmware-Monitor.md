@@ -9,7 +9,7 @@ Scheduled monitor for new firmware entries from GL.iNet firmware feed pages.
 - Detects only deltas after baseline:
   - new firmware entries
   - changed firmware entries (same model/track/version, updated metadata)
-- Posts a short summary notification to configured Discord channel.
+- Posts a short summary notification to the configured Discord channel.
 - Stores seen IDs and signature snapshots in SQLite to avoid repeat alerts.
 
 ## Source and Schedule
@@ -20,7 +20,7 @@ Scheduled monitor for new firmware entries from GL.iNet firmware feed pages.
 | `firmware_check_schedule` | `*/30 * * * *` | UTC cron schedule |
 | `FIRMWARE_REQUEST_TIMEOUT_SECONDS` | `30` | HTTP timeout |
 | `FIRMWARE_RELEASE_NOTES_MAX_CHARS` | `900` | Legacy compatibility setting (compact summary mode does not include long excerpts) |
-| `firmware_notification_channel` | none | Target Discord channel |
+| `firmware_notification_channel` | none | Global default Discord channel. Guild Settings -> `firmware_notify_channel_id` can override it per guild. |
 
 ## Channel Target Formats
 
@@ -65,8 +65,11 @@ Example cron values (UTC):
 ## Troubleshooting
 
 - Warning: notify channel not found:
-  - Verify channel ID and guild/channel availability.
+  - Verify the selected guild has `firmware_notify_channel_id` configured or a valid global `firmware_notification_channel`.
   - Verify bot has access to target channel.
+- Firmware updates expected for one guild but not another:
+  - Check `/admin/guild-settings` for the selected guild.
+  - If `Override global setting` is enabled and `Enabled for this guild` is unchecked, firmware notifications are intentionally disabled for that guild even if the global monitor is enabled.
 - First run produced no alerts:
   - Expected. Baseline snapshot is created first, then only future deltas are notified.
 - No notifications:
@@ -75,6 +78,6 @@ Example cron values (UTC):
 
 ## Related Pages
 
-- [Environment Variables](Environment-Variables)
-- [Moderation and Logs](Moderation-and-Logs)
-- [Data Files](Data-Files)
+- [Environment Variables](Environment-Variables.md)
+- [Moderation and Logs](Moderation-and-Logs.md)
+- [Data Files](Data-Files.md)

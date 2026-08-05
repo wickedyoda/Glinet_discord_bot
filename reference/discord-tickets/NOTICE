@@ -1,0 +1,19 @@
+# Third-Party Attribution — discord-tickets
+
+This project incorporates ideas, workflows, and UX patterns from
+**[discord-tickets/bot](https://github.com/discord-tickets/bot)** (Isaac Saunders / eartharoid),
+which is licensed under the **GNU General Public License v3.0**.
+
+Upstream code used as reference only; no files were copied verbatim.
+Porting performed by Hermes / Wickedyoda under the same GPLv3 terms.
+
+Relevant upstream components that influenced this port:
+- Ticket lifecycle: create → claim → close → reopen → transcript
+- Button-based interaction model
+- Category + question modal flow
+- i18n/localization framework shape
+- HTTP route structure for the web admin dashboard
+- Staff/superuser permission checks
+
+All original discord-tickets code remains © its authors.
+See https://github.com/discord-tickets/bot/blob/main/LICENSE

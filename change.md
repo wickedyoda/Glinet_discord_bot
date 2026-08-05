@@ -2,6 +2,336 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-07-21] - Ticket System and Ticket-Beta Docker Image
+
+### Added
+- New ticket system with role-tier permissions
+- `/ticket` command with category selection modal
+- `/ticket-search` ephemeral search by ticket number or owner email
+- `/ticket-stats` ephemeral open/closed counts
+- `/admin/ticket-settings` web page for assigning Discord roles to ticket tiers
+- `/admin/ticket-settings` scope: guild-scoped
+- Ticket features are disabled until at least one role tier is assigned
+- GPLv3 attribution for upstream `discord-tickets/bot` in `reference/discord-tickets/NOTICE`
+- GitHub Actions workflow `.github/workflows/docker-publish-ticket-beta.yml`
+  - Publishes `ghcr.io/wickedyoda/Glinet_discord_bot-ticket-beta:YYYYMMDD-HHMMSS`
+  - Publishes `latest-ticket-beta` floating tag
+  - Multi-arch manifest: `linux/amd64`, `linux/arm64`
+
+### Changed
+- Ticket commands enforce role tiers with preflight check
+- Ticket search and stats responses are ephemeral
+- Web admin interface expanded with ticket settings page
+- Documentation updated in wiki and README
+
+## [2026-03-25] - Web GUI Readability and Log Export
+
+### Added
+
+- Added `/admin/logs/export` so the web GUI can download the available runtime logs as one ZIP archive.
+- Added dashboard quick-note links for recently visited admin pages in the current web session.
+- Added a shared web timestamp formatter used across GUI pages.
+- Added shared CSV helpers for upload parsing and export generation.
+
+### Changed
+
+- Web GUI timestamps now render in readable UTC format instead of raw ISO strings.
+- Dashboard quick notes now link directly to `Guild Settings` and `Command Status`.
+- Member-activity CSV exports now escape spreadsheet-formula prefixes (`=`, `+`, `-`, `@`) for safer spreadsheet import.
+- Bulk CSV parsing now uses one shared path with consistent UTF-8 BOM and Latin-1 fallback handling.
+
+## [2026-03-23] - GitHub Wiki Publication
+
+### Changed
+
+- Switched default bot help and web header documentation links to the live GitHub wiki:
+  - `https://github.com/wickedyoda/Glinet_discord_bot/wiki`
+- Added `scripts/export_github_wiki.sh` to export the repo `wiki/` directory into the standalone GitHub wiki repository layout.
+- Published the current wiki content to `https://github.com/wickedyoda/Glinet_discord_bot.wiki.git`.
+
+## [2026-03-25] - Web Role Access Management
+
+### Added
+
+- Added `/admin/role-access` for guild-scoped management of invite/code role access mappings.
+- The new page shows the stored:
+  - invite link
+  - invite code
+  - 6-digit code
+  - target role
+  - current status
+- Added per-mapping status controls:
+  - `Activate`
+  - `Pause`
+  - `Disable`
+- Added manual web restore/add flow for invite/code mappings using an existing Discord invite.
+
+### Changed
+
+- `/enter_role` and join-by-invite role assignment now respect role-access mapping status and only honor `active` mappings.
+
+## [2026-03-23] - Welcome Automation Enhancements
+
+### Added
+
+- Added guild-scoped welcome automation settings in `/admin/guild-settings`:
+  - welcome channel selection
+  - welcome channel message
+  - optional DM on join
+  - welcome DM message
+  - optional uploaded welcome image
+  - independent image attachment toggles for channel and DM
+  - stored image metadata display in the web GUI (filename, media type, byte size, dimensions)
+- Added welcome-message placeholder support:
+  - `{member_mention}`
+  - `{member_name}`
+  - `{display_name}`
+  - `{guild_name}`
+  - `{member_count}`
+  - `{account_created_at}`
+
+### Changed
+
+- Welcome image uploads now validate actual image content instead of only file extension.
+- Welcome image uploads now enforce dimension limits of `64x64` to `4096x4096`.
+- Guild settings UI now documents exact supported formats, byte-size cap, dimension limits, and recommended image layout guidance.
+
+## [2026-03-23] - GL.iNet Scoped Roles and Moderation Expansion
+
+### Added
+
+- Added `Glinet-Read-Only` web role pinned to the primary GL.iNet Community Discord server with read-only access to guild-scoped pages there.
+- Added `Glinet-RW` web role pinned to the primary GL.iNet Community Discord server with guild-scoped write access there.
+- Added moderator-only voice and nickname moderation slash commands:
+  - `/set_member_nickname`
+  - `/clear_member_nickname`
+  - `/voice_mute_member`
+  - `/voice_deafen_member`
+  - `/voice_disconnect_member`
+  - `/voice_move_member`
+
+### Changed
+
+- Expanded `/restore_code` so moderators can restore a 6-digit access code with an existing Discord invite URL/code instead of always generating a fresh invite.
+- Updated the web GUI role editor, routing, and navigation to use the new scoped GL.iNet roles instead of the legacy single `Glinet` role.
+
+## [2026-03-23] - Tag Command Consolidation
+
+### Changed
+
+- Replaced one-slash-command-per-tag registration with a single `/tag` slash command that uses autocomplete to select the stored tag response.
+- Tag updates no longer require Discord slash-command resyncs for every tag add/remove.
+- Updated docs to reflect the new `/tag` selection flow while preserving prefix `!<tag>` and `!list`.
+
+## [2026-03-23] - Fun Commands
+
+### Added
+
+- Added public fun/utility slash commands:
+  - `/coin_flip`
+  - `/eight_ball`
+  - `/meme`
+  - `/dad_joke`
+
+## [2026-03-22] - Bot Profile Form Separation
+
+### Changed
+- Split `/admin/bot-profile` identity updates into separate actions for guild nickname changes and global username changes.
+- Guild nickname updates no longer submit a global username change attempt.
+- Added tests to verify nickname-only updates do not trigger global username edits.
+
+## [2026-03-20] - Web Settings Save Hardening
+
+### Changed
+- Hardened env-backed web settings saves so read-only or non-writable `WEB_ENV_FILE` paths return a normal flash error instead of a Flask `500`.
+- Delayed runtime env mutation until after the web settings file is written successfully, preventing partial in-memory changes when persistence fails.
+- Applied the same safe-write behavior to Reddit feed schedule saves, since they use the same env-backed persistence path.
+- Docker defaults now point `WEB_ENV_FILE` at `/app/data/web-settings.env` and load that file again on startup so web-edited settings persist across container restarts.
+- Updated tests to verify guild settings saves, global settings saves, and read-only env-file failure handling.
+
+## [2026-03-20] - Help Command Refresh
+
+### Changed
+- Updated `/sayhi` to use the public bot name `GL.iNet UnOfficial Discord Bot`.
+- Updated `/sayhi` to direct users to `/help` for command guidance.
+- Expanded `/help` to support command-specific help and wiki links for the relevant command area.
+
+## [2026-03-19] - GL.iNet Beta Program Monitor
+
+### Added
+- Guild-scoped GL.iNet beta program subscriptions in the web GUI.
+- `/admin/beta-programs` page for mapping the public GL.iNet beta page to Discord text channels.
+- Background monitor that posts notifications when beta programs are added to or removed from the GL.iNet beta page.
+
+### Notes
+- This watcher is a best-effort public-page monitor built around `https://www.gl-inet.com/beta-testing/#register`.
+
+## [2026-03-17] - LinkedIn Profile Notifications
+
+### Added
+- Guild-scoped LinkedIn public profile subscriptions in the web GUI.
+- LinkedIn-to-Discord notification monitor for newly detected public profile posts.
+- Discord channel dropdown selection for each LinkedIn profile subscription.
+
+## [2026-03-16] - Member Activity Analytics
+
+### Added
+- Member activity tracking for guild messages with rolling hourly retention for the last 90 days.
+- New private `/stats` slash command for personal activity summaries covering:
+  - last 90 days
+  - last 30 days
+  - last 7 days
+  - last 24 hours
+- New guild-scoped web admin page at `/admin/member-activity` showing top-20 member activity tables for the same time windows.
+
+### Changed
+- Help and wiki docs now include the member activity analytics feature and `/stats` command.
+- Member activity retention is now capped at 90 days and the lifetime "Since Joining" view has been removed.
+- Member activity views now show exact period totals instead of derived average-rate fields.
+
+## [2026-03-17] - Web User Admin Editing
+
+### Added
+- Admins can now edit another web GUI user's:
+  - first name
+  - last name
+  - display name
+  - email
+- Admins can now reset another web GUI user's password directly from that user's edit section.
+
+## [2026-03-19] - Guild Data Archive and Restore Window
+
+### Added
+
+- When the bot leaves a guild, guild-scoped data is archived for 14 days instead of being discarded immediately.
+- If the bot rejoins the exact same guild ID within that 14-day window, the archived guild data is restored automatically.
+- Expired archived guild data is purged permanently on startup after the 14-day retention window passes.
+
+## [2026-03-19] - Web GUI Guild Leave Action
+
+### Added
+
+- Admin-only `Remove Bot` action on the server-selection page to make the bot leave a Discord server directly from the web GUI.
+
+## [2026-03-19] - Glinet Web Role Guild Pinning
+
+### Changed
+
+- Glinet web users now auto-select the primary Discord server and go directly to member activity instead of choosing a server manually.
+- Added a direct logout button to the top web GUI header on desktop and mobile layouts.
+
+## [2026-03-18] - Smarter Member Activity Backfill Coverage
+
+### Changed
+
+- Member activity backfill now reuses previously completed coverage windows so reruns only scan missing time ranges instead of rereading already indexed periods.
+
+## [2026-03-18] - Canonical Status Route
+
+### Fixed
+
+- Corrected the public observability/status page so `/status` is the canonical route and `/staus` redirects to it for backward compatibility.
+
+## [2026-03-18] - Restore Invite Code Command
+
+### Added
+
+- Added moderator-only `/restore_code` to restore a specific 6-digit role access code and generate a fresh invite link for the selected role.
+
+## [2026-03-17] - Native Role Picker for `/submitrole`
+
+### Changed
+- `/submitrole` now uses a native Discord slash-command role parameter instead of waiting for the user to mention a role in a follow-up message.
+- The command now validates the selected role before generating the invite link and 6-digit access code.
+
+## [2026-03-17] - Member Activity Backfill Job
+
+### Added
+- One-time startup backfill job for member activity history using:
+  - `MEMBER_ACTIVITY_BACKFILL_ENABLED`
+  - `MEMBER_ACTIVITY_BACKFILL_GUILD_ID`
+  - `MEMBER_ACTIVITY_BACKFILL_SINCE`
+- Backfill run-state storage so the same completed guild/date range does not replay on every restart.
+- Message-level dedupe table for member activity so live collection and backfill do not double-count the same Discord messages.
+
+## [2026-03-17] - Moderator `/random_choice` Command
+
+### Added
+- New moderator-only `/random_choice` slash command.
+- Random selection excludes members with:
+  - configured moderator/admin role IDs
+  - named staff roles `Employee`, `Admin`, and `Gl.iNet Moderator`
+
+### Changed
+- `/random_choice` now enforces a per-guild 7-day cooldown so the same member cannot be selected twice within that window.
+
+## [2026-03-17] - Member Activity Export
+
+### Added
+- ZIP export option at the bottom of `/admin/member-activity`.
+- Export archive now includes:
+  - one CSV per activity window
+  - raw member activity summary CSV
+  - raw hourly activity CSV
+  - JSON summary manifest
+
+### Changed
+- README and wiki pages now consistently document member-activity backfill, export behavior, HTTPS certificate replacement, and the `/random_choice` 7-day cooldown.
+
+## [2026-03-17] - Member Activity Encryption
+
+### Changed
+- Member-activity identity fields (`username`, `display_name`) are now encrypted at rest before being written to SQLite.
+- Existing plaintext member-activity profile rows are automatically migrated to encrypted storage on first access.
+- Added `MEMBER_ACTIVITY_ENCRYPTION_KEY` for deployments that want external key management instead of the generated `${DATA_DIR}/member_activity.key` file.
+- Guild-scoped member-activity and random-choice history paths now fail closed on invalid or unmanaged guild IDs instead of falling back to the primary guild.
+
+## [2026-03-16] - Web GUI Publish Configuration
+
+### Added
+- New Compose/env controls for explicit web GUI host-side publish overrides:
+  - `WEB_HTTP_PUBLISH`
+  - `WEB_HTTPS_PUBLISH`
+
+### Changed
+- Docker Compose web publish overrides can now be left unset to disable explicit host/IP pinning.
+- Documentation now distinguishes same-host proxy-only localhost binding from proxy-on-another-machine access via LAN IP or unrestricted publish plus firewall.
+
+## [2026-03-15] - Dependency Security Update
+
+### Changed
+- Upgraded `cryptography` from `46.0.1` to `46.0.5` to address `CVE-2026-26007` / `GHSA-r6ph-v2qm-q3c2`.
+- Updated Docker dependency bootstrap to require `cryptography>=46.0.5` during image build.
+- Updated the Docker image build to refresh Debian base packages and apply security upgrades for `libc-bin` and `libc6`, addressing `CVE-2026-0861`.
+
+## [2026-03-15] - Feature Parity Merge from WickedYodaDiscordBot
+
+### Added
+- Utility slash commands:
+  - `/ping`
+  - `/sayhi`
+  - `/happy`
+  - `/shorten`
+  - `/expand`
+  - `/uptime`
+- Guild-scoped web admin page at `/admin/actions` for recent moderation and server-event history.
+- Guild-scoped web admin page at `/admin/youtube` for YouTube-channel-to-Discord subscriptions.
+- Managed-guild allowlist support via `MANAGED_GUILD_IDS`.
+- Verification tooling:
+  - `pyproject.toml`
+  - `requirements-dev.txt`
+  - `scripts/verify.sh`
+  - `tests/test_web_admin.py`
+- Route aliases:
+  - `/status/everything`
+  - `/admin/wiki`
+
+### Changed
+- The current repository now includes the user-visible feature set that previously existed only in `WickedYodaDiscordBot`.
+- Discord members intent can now be toggled through `ENABLE_MEMBERS_INTENT`.
+- Utility command response visibility can be controlled through `COMMAND_RESPONSES_EPHEMERAL`.
+- Wiki and README references were updated to reflect the merged feature surface and verification workflow.
+
 ## [2026-03-15] - Dual Web GUI HTTP/HTTPS Listeners
 
 ### Added
@@ -36,9 +366,9 @@ All notable changes to this project are documented in this file.
 ## [2026-03-15] - Bot Identity Naming
 
 ### Changed
-- Updated the primary project/bot name shown in the README to `WickedYoda'sLittleHelper`.
-- Updated the web GUI window title suffix to `WickedYoda'sLittleHelper Dashboard`.
-- Updated the web GUI bot-profile username placeholder to `WickedYoda'sLittleHelper`.
+- Updated the public project/bot name shown in the docs to `GL.iNet UnOfficial Discord Bot`.
+- Updated the web GUI window title suffix to `GL.iNet UnOfficial Discord Bot Dashboard`.
+- Updated the web GUI bot-profile username placeholder to `GL.iNet UnOfficial Discord Bot`.
 
 ## [2026-03-14] - Web GUI Guild Selection
 
@@ -164,6 +494,7 @@ All notable changes to this project are documented in this file.
 - Admin web controls for command permissions with per-command modes:
   - default policy
   - public
+  - disabled
   - custom roles (multi-role selection)
 - Web observability page:
   - runtime snapshot cards for CPU, memory, I/O, network, and uptime
@@ -296,6 +627,17 @@ All notable changes to this project are documented in this file.
 - Persistent role-code pairing.
 - Code generation constraints to avoid long repeated-digit patterns.
 - `/getaccess` for default access role assignment.
+
+## [2026-03-20] - Web Session Timeout Options
+
+### Changed
+- `WEB_SESSION_TIMEOUT_MINUTES` now supports 5, 10, 15, 20, 30, 45, 60, 90, and 120 minute auto-logout values in the web GUI and env validation.
+
+## [2026-03-20] - Deployment Publish Override Update
+
+### Changed
+- Docker/Compose web publish settings now use optional `WEB_HTTP_PUBLISH` and `WEB_HTTPS_PUBLISH` overrides.
+- Leaving those values unset disables explicit host/IP pinning, which is the correct mode when the reverse proxy lives on another machine.
 
 ## [2025-07-05] - Core Functional Bot Build
 

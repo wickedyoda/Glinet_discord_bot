@@ -15,8 +15,8 @@ Password-protected admin UI for runtime bot and policy management.
 - Replace `${DATA_DIR}/ssl/tls.crt` and `${DATA_DIR}/ssl/tls.key` with your own files if you want a browser-trusted HTTPS listener.
 - Login uses email + password (web-only account model)
 - Optional "Keep me signed in" extends session to 5 days on device
-- Inactivity timeout is configurable: 5 to 30 minutes in 5-minute steps
-- Theme options in header: `Light` and `Black`
+- Inactivity timeout is configurable: `5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, or `120` minutes
+- Theme options in header: `Light`, `Black`, `Forest`, `Ember`, and `Ice`
 
 Security controls include:
 
@@ -24,6 +24,18 @@ Security controls include:
 - CSRF enforcement
 - Same-origin POST checks
 - Strict cookie settings and browser hardening headers
+
+## Health Endpoints
+
+The web service exposes two unauthenticated runtime endpoints:
+
+- `/healthz`
+  - confirms the web process is alive
+- `/readyz`
+  - confirms the Discord bot runtime is ready
+  - returns HTTP `503` until the bot loop is running and the client is ready
+
+Use `/readyz` for Docker healthchecks and external uptime monitors when you want to know whether the bot is actually usable, not just whether Flask is listening.
 
 ## User and Identity Fields
 
@@ -34,7 +46,7 @@ Each web user includes:
 - First name
 - Last name
 - Display name (shown in GUI)
-- Role (`Admin` or `Read-only`)
+- Role (`Admin`, `Read-only`, `Guild Admin`, `Glinet-Read-Only`, or `Glinet-RW`)
 - Password age metadata (90-day rotation enforcement)
 
 User self-service capabilities:
@@ -49,12 +61,48 @@ Admin-only user management capabilities:
 - Delete users
 - Promote/demote admin users
 - Reset user credentials as needed
+- Create, edit, and delete guild groups used by `Guild Admin`
 
 Read-only capabilities:
 
 - Can sign in and navigate all admin pages
 - Can view all settings/options/data exposed by the web GUI
 - Cannot apply management/configuration changes (save/update/delete/restart actions are blocked server-side)
+
+`Guild Admin` capabilities:
+
+- Can sign in and see only the Discord servers included in their assigned guild groups
+- Can select and manage only those assigned servers
+- Can save guild-scoped settings/pages for allowed servers, including:
+  - command permissions
+  - guild settings
+  - Reddit/YouTube/LinkedIn/Beta subscriptions
+  - service monitors
+  - tag responses
+  - bot nickname on the selected server
+- Can manage their own `/admin/account` page
+- Cannot access global settings, logs, documentation, user management, or servers outside their assigned guild groups
+
+`Glinet-Read-Only` capabilities:
+
+- Can sign in
+- Is automatically pinned to the primary Discord server (intended for the GL.iNet Community Discord)
+- Can view the guild-scoped GL.iNet pages for that primary server, including dashboard, command permissions, actions, feeds, bot profile, guild settings, tag responses, bulk role CSV, and member activity
+- Can export member-activity ZIP archives from `/admin/member-activity/export`
+- Can manage their own `/admin/account` page
+- Cannot access global settings, logs, documentation, user management, or other non-guild/global admin pages
+
+`Glinet-RW` capabilities:
+
+- Includes all `Glinet-Read-Only` viewing access
+- Is pinned to the same primary Discord server only
+- Can save guild-scoped settings/pages for that server:
+  - command permissions
+  - guild settings
+  - Reddit/YouTube/LinkedIn/Beta subscriptions
+  - tag responses
+  - bot nickname on the selected server
+- Cannot access global settings, user management, container restart, or cross-guild selection
 
 No Discord `/login` or `!login` flow exists for web-user creation.
 
@@ -75,11 +123,32 @@ UI forms include show/hide password toggles and validation feedback.
 - Main page lists the Discord servers the bot is currently in.
 - Select a server first, then open the server dashboard for guild-scoped admin actions.
 - Top menu uses dropdown-based section navigation.
+- Direct `Logout` action is available from the top header on desktop and mobile layouts.
+- Mobile layout uses a compact quickbar plus collapsible menu drawer for server jump, account access, theme switching, and primary page links.
 - Dedicated dashboard link is shown beside the dropdown.
 - Dashboard includes direct action buttons/cards for major admin workflows.
 - Mobile layout is responsive for smaller screens and touch interaction.
+
+## Command Permissions
+
+- `/admin/command-permissions` manages command access per selected guild.
+- Each command has an `Enabled` checkbox.
+  - unchecked: command is disabled for that guild
+  - checked: command is enabled and follows the selected access mode
+- Available modes for enabled commands:
+  - `Default rule`: follow the bot's built-in default access policy for that command
+  - `Public`: allow any guild member
+  - `Custom roles`: restrict the command to one or more selected roles
+- Custom-role mode requires at least one role ID or selected role.
 - Reddit feed management page lets admins map subreddits to Discord text channels and set the polling interval from a dropdown.
+- Service monitors page lets admins manage direct website/API outage checks and Uptime Kuma alerting without editing raw JSON.
+- LinkedIn profile management page lets admins map public LinkedIn profiles to Discord text channels for new-post notifications.
+- GL.iNet beta program page lets admins map the public GL.iNet beta-testing page to Discord text channels for added/removed program notifications.
+- Role access page lets admins review invite/code/role mappings, pause or disable them individually, and manually restore a mapping with an existing Discord invite.
 - Tag responses and guild settings pages now follow the selected server context instead of using one global mapping.
+- Member activity page shows top-20 member activity windows for the selected server.
+- Member activity exports are generated for the selected server only and match the currently retained 90-day dataset.
+- Guild settings also control per-server welcome messages, optional join DMs, and optional uploaded welcome images.
 
 ## Admin Pages and Capabilities
 
@@ -88,11 +157,93 @@ UI forms include show/hide password toggles and validation feedback.
 - Server selector / entry page
 - Lists every Discord server the bot can currently access
 - Sets the active server context used by guild-scoped admin pages
+- Admin users can remove the bot from a server directly from this page using the per-server `Remove Bot` action
+- `Guild Admin` users stay on this page and only see the servers included in their assigned guild groups
+- `Glinet-Read-Only` and `Glinet-RW` users do not stay here; they are redirected to `/admin/dashboard` using the primary guild
 
 ### `/admin/dashboard`
 
 - Server dashboard overview
-- Quick links to settings, users, moderation tooling, and logs-related actions for the selected server
+- Grouped sections for core controls, community tools, notification feeds, and runtime operations
+- Quick Notes panel includes:
+  - direct links for the most common admin path
+  - clickable recently visited page links for the current web session
+- Links to the dedicated `Command Status`, `Guild Settings`, feed pages, logs, docs, and account areas for the selected server
+
+### `/admin/command-status`
+
+- Scoped to the selected server
+- Dedicated quick-toggle page for command enable/disable state
+- Shows each command with:
+  - effective access level (`Public`, `Mod Only`, `Named Roles`, `Custom Roles`, or `Disabled`)
+  - current enabled/disabled state
+- Uses the same guild-scoped command-permissions data the bot enforces at runtime
+- Intended for fast on/off control without opening the deeper permissions editor
+
+### `/admin/service-monitors`
+
+- Scoped to the selected server
+- Dedicated monitor-management page for:
+  - direct website/API checks
+  - Uptime Kuma public-page alerting
+  - Uptime Kuma authenticated-instance alerting
+  - Uptime Kuma import into direct checks
+- Direct monitor management supports:
+  - add
+  - edit
+  - delete
+  - bulk-add preset for the standard GL.iNet domain set
+  - quick-add preset for `https://status.tailscale.com/`
+  - per-target Discord channel
+  - request method (`GET` or `HEAD`)
+  - expected HTTP status
+  - optional required response text
+  - per-target request timeout
+- Direct monitor recheck interval is configured once for the direct-monitor loop
+- Uptime Kuma watcher management supports:
+  - enable/disable
+  - alert enable/disable
+  - public status page URL
+  - authenticated instance URL
+  - API key storage and clearing
+  - Discord notify channel
+  - TLS verification toggle
+  - recheck interval
+  - request timeout
+- Import supports both:
+  - public status pages
+  - authenticated Kuma instances through the metrics endpoint
+- The GL.iNet bulk preset currently adds and deduplicates direct checks for:
+  - `gl-inet.com`
+  - `gl-inet.cn`
+  - `gl-inet.net`
+  - `fw.gl-inet.com`
+  - `dl.gl-inet.com`
+  - `dev.gl-inet.com`
+  - `glinet.io`
+  - `goodcloud.xyz`
+  - `remotetohome.io`
+  - `glddns.com`
+  - `docs.gl-inet.com`
+  - `forum.gl-inet.com`
+  - `astrowarp.net`
+  - `docs.astrowarp.net`
+  - `glinet.biz`
+  - `glinet.ai`
+  - `glinet.hk`
+- Import converts monitors with public HTTP(S) URLs into direct service-monitor entries
+- Monitors that do not expose a usable public URL stay covered by the Uptime Kuma watcher instead of the direct monitor list
+
+### `/admin/users`
+
+- Admin-only user management page
+- Supports:
+  - create, edit, and delete web users
+  - password resets
+  - role changes
+  - guild group creation/edit/delete
+- Guild groups are reusable named sets of Discord servers
+- Assign one or more guild groups to a `Guild Admin` user to limit that account to those servers only
 
 ### `/admin/guild-settings`
 
@@ -101,35 +252,177 @@ UI forms include show/hide password toggles and validation feedback.
   - bot log channel
   - moderation log channel
   - firmware notify channel
+  - firmware monitor enabled/disabled
+  - Reddit feed monitor enabled/disabled
+  - YouTube notifications enabled/disabled
+  - LinkedIn notifications enabled/disabled
+  - beta program notifications enabled/disabled
   - self-assign access role
-- Blank values fall back to the global runtime environment settings
+  - welcome channel
+  - welcome channel message
+  - welcome DM enable/disable
+  - welcome DM message
+  - uploaded welcome image
+  - image attachment enable/disable for channel and DM
+- Bot log, moderation log, and firmware notification channels can be set here per guild
+- Monitor feature flags can also be overridden here per guild
+- These values override the global defaults configured in `/admin/settings`
+- If a guild-level channel is left unset, the bot falls back to the corresponding global channel setting
+- If a per-guild feature override is left unset, the bot falls back to the corresponding global feature toggle
+
+Welcome-message placeholders:
+
+- `{member_mention}`
+- `{member_name}`
+- `{display_name}`
+- `{guild_name}`
+- `{member_count}`
+- `{account_created_at}`
+
+How to configure welcome automation:
+
+1. Open `/admin/guild-settings`
+2. Select the target guild
+3. Set `Welcome Channel` if you want a public join post
+4. Enter `Welcome Channel Message`, or leave it blank to use the default
+5. Enable `Send Welcome DM` if you want a DM on join
+6. Enter `Welcome DM Message`, or leave it blank to use the default
+7. Upload a welcome image if desired
+8. Enable image attachment for channel, DM, or both
+9. Save the guild settings
+
+Notes:
+
+- If no welcome channel is selected, the bot will not post a public welcome message
+- If the member blocks DMs, the DM send is skipped and the join flow continues normally
+- Supported image formats: `PNG`, `JPG`, `JPEG`, `WEBP`, `GIF`
+- Upload size follows the configured web avatar upload limit (`WEB_AVATAR_MAX_UPLOAD_BYTES`; default `2097152` bytes / `2048 KiB`)
+- Welcome images must be between `64x64` and `4096x4096`
+- Per-guild monitor overrides use two controls:
+  - `Override global setting`
+  - `Enabled for this guild`
+- If `Override global setting` is unchecked, the selected server follows the global setting from `/admin/settings`
+- The page shows current uploaded image metadata:
+  - filename
+  - media type
+  - size in bytes / KiB
+  - width x height
+- Recommended welcome image layout is landscape artwork around `1200x675` for clearer preview sizing inside Discord
+
+### `/admin/role-access`
+
+- Scoped to the selected server
+- Shows each stored role-access mapping with:
+  - 6-digit code
+  - invite link
+  - invite code
+  - target role
+  - current status
+- Quick actions:
+  - `Activate`
+  - `Pause`
+  - `Disable`
+- Manual restore/add form lets admins enter:
+  - 6-digit code
+  - existing Discord invite URL or invite code
+  - target role
+  - initial status
+- Paused and disabled entries stop working for both:
+  - join-by-invite role assignment
+  - `/enter_role`
 
 ### `/admin/settings`
 
 - Global environment-backed settings editor
 - Live dropdowns for known channel and role fields load from the currently selected server
-- Bot profile and web-session/security settings
-- Auto-logout selection (5 to 30 minutes)
+- Managed-guild allowlist and utility integration settings
+- Global feature toggles for:
+  - firmware monitor
+  - Reddit feed monitor
+  - YouTube monitor
+  - LinkedIn monitor
+  - GL.iNet beta program monitor
+- Disabling a monitor stops polling/posting but keeps its saved subscriptions and web pages available
+- Web-session/security settings
+- Auto-logout selection (`5`, `10`, `15`, `20`, `30`, `45`, `60`, `90`, `120` minutes)
+- Writes to `WEB_ENV_FILE`, which should point to a writable path such as `${DATA_DIR}/web-settings.env`
+- Service-monitor and Uptime Kuma fields still appear here as raw environment values, but `/admin/service-monitors` is the preferred page for normal monitor management
 
-### `/staus` (Public Read-Only Status)
+### Feed and Profile Watchers
+
+- `/admin/reddit-feeds`
+  - Add subreddit-to-channel mappings
+  - Edit existing subreddit or destination channel without deleting the row
+  - Enable/disable or delete existing mappings
+  - Editing a subreddit resets that feed's seen-post baseline so old posts are not reposted
+- `/admin/youtube`
+  - Add YouTube channel subscriptions
+  - Edit an existing source URL or destination channel in place
+  - Delete existing subscriptions
+  - Editing reseeds the subscription from the current latest upload so old uploads are not replayed
+- `/admin/linkedin`
+  - Add LinkedIn profile subscriptions
+  - Edit an existing profile URL or destination channel in place
+  - Delete existing subscriptions
+  - Editing reseeds the subscription from the current latest public post so old posts are not replayed
+
+### `/status/everything` (Public Read-Only Status)
 
 - Runtime observability view in web GUI
 - CPU, memory, I/O, network, and uptime snapshot cards
 - 24-hour rolling metrics summary (min/avg/max) retained in-memory
 - Manual refresh plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
 - Public and read-only (no login required)
-- `/admin/observability` redirects to `/staus`
+- `/admin/observability` redirects to `/status/everything`
 
 ### `/admin/logs` (Login Required)
 
 - Log viewer with dropdown selection (`bot.log`, `bot_log.log`, `container_errors.log`, `web_gui_audit.log`)
 - Refresh button plus auto-refresh interval dropdown (`1`, `5`, `10`, `30`, `60`, `120` seconds)
+- `Export All Logs` downloads a single ZIP archive containing the available runtime logs plus a manifest file
+- Log timestamps in the GUI are rendered in readable UTC format
 - Requires web GUI login
+
+### `/admin/actions`
+
+- Scoped to the selected server
+- Read-only activity history for moderation actions and server-event log writes
+- Timestamps are rendered in readable UTC format
+- Useful for reviewing what the bot did without reading raw log files
+
+### `/admin/account`
+
+- Self-service account page for the current web GUI user
+- Change password
+- Change email
+- Update first name, last name, and display name
+
+### `/admin/member-activity`
+
+- Scoped to the selected server
+- Read-only top 20 member activity tables for:
+  - last 90 days
+  - last 30 days
+  - last 7 days
+  - last 24 hours
+- Each table shows:
+  - message count
+  - active day count
+  - last seen timestamp
+- Timestamps are rendered in readable UTC format
+- Export option at the bottom of the page downloads a compressed ZIP archive for the selected server
+- Export respects the selected server context; there is no cross-guild combined export
+- Export includes:
+  - per-window leaderboard CSV files
+  - raw member activity summary CSV
+  - raw hourly activity CSV
+  - JSON summary manifest
+- CSV files in the archive use spreadsheet-formula escaping for cells that begin with `=`, `+`, `-`, or `@`
 
 ### `/admin/command-permissions`
 
 - Per-command access policy editor for the selected server
-- Modes: `default`, `public`, `custom_roles`
+- Modes: `default`, `public`, `disabled`, `custom_roles`
 - Multi-select role dropdown by role name
 - Manual role-ID entry fallback if catalog is incomplete
 
@@ -141,6 +434,39 @@ UI forms include show/hide password toggles and validation feedback.
 - Global Reddit polling interval dropdown (default every 30 minutes)
 - Feed list shows enabled state, last checked time, last posted time, and last error
 - New subscriptions baseline existing posts first, then only publish newer Reddit submissions
+
+### `/admin/youtube`
+
+- Scoped to the selected server
+- Add a YouTube channel URL and target Discord text channel
+- Stores last seen video metadata so only newer uploads are posted
+- Per-subscription enable/disable and delete controls
+
+### `/admin/linkedin`
+
+- Scoped to the selected server
+- Add a public LinkedIn profile URL and target Discord text channel
+- Uses the public profile page to detect newer visible posts
+- Stores last seen post metadata so only newer posts are announced
+- Best-effort public-profile monitoring: private or login-gated activity will not be detected
+
+### `/admin/beta-programs`
+
+- Scoped to the selected server
+- Add the public GL.iNet beta-testing page monitor and target Discord text channel
+- Detects when beta programs are added to or removed from the page
+- Stores the last seen program snapshot per guild/channel so only changes are announced
+- Best-effort public-page monitoring: if GL.iNet changes the page structure, the watcher may need adjustment
+
+### `/admin/documentation`
+
+- Built-in documentation page inside the web GUI
+- Presents operator guidance and shortcuts for bot administration topics
+
+### `/admin/wiki`
+
+- Embedded wiki/documentation viewer in the web GUI
+- Useful when the operator wants docs without leaving the admin interface
 
 ### `/admin/tag-responses`
 
@@ -155,17 +481,32 @@ UI forms include show/hide password toggles and validation feedback.
 - Assignment execution with timeout protections
 - Structured results with unmatched/ambiguous/failure sections
 
+### `/admin/ticket-settings`
+
+- Scoped to the selected server
+- Ticket role-tier editor with multi-select Discord roles
+- Four configurable tiers: `search`, `create`, `reassign`, `admin`
+- Effective role IDs shown per tier
+- Save persists `ticket_role_map_json` into `guild_settings`
+- Ticket features are disabled until at least one tier has at least one role assigned
+
 ### `/admin/users`
 
-- User and role management (`Admin` / `Read-only`)
+- User and role management (`Admin` / `Read-only` / `Glinet-Read-Only` / `Glinet-RW`)
 - User creation with password policy enforcement
+- Admins can edit another web user's:
+  - first name
+  - last name
+  - display name
+  - email
+- Admins can reset another web user's password from the same page
 - Password visibility toggle in create/reset forms
 
 ### `/admin/bot-profile`
 
 - Read bot identity
-- Rename bot username
-- Set server nickname/listing label for the selected server
+- Update server nickname/listing label for the selected server using a guild-scoped form
+- Rename bot username using a separate dedicated global form/action
 - Upload avatar image
 
 Rename/profile updates are admin-only and web-GUI-only (read-only users can view this page but cannot apply changes).
@@ -174,15 +515,20 @@ Scope notes:
 
 - Guild-scoped:
   - `/admin/dashboard`
+  - `/admin/guild-settings`
+  - `/admin/actions`
+  - `/admin/member-activity`
   - `/admin/command-permissions`
   - `/admin/reddit-feeds`
+  - `/admin/youtube`
+  - `/admin/linkedin`
+  - `/admin/tag-responses`
   - `/admin/bulk-role-csv`
   - server nickname in `/admin/bot-profile`
 - Global:
   - `.env` settings in `/admin/settings`
   - bot username/avatar in `/admin/bot-profile`
   - web users
-  - tag responses
   - logs and observability
 
 ## Reverse Proxy Behavior
@@ -223,7 +569,8 @@ If behind proxy, ensure forwarded headers include:
 - `WEB_ENABLED`
 - `WEB_BIND_HOST`
 - `WEB_PORT`
-- `WEB_HOST_PORT`
+- `WEB_HTTP_PUBLISH`
+- `WEB_HTTPS_PUBLISH`
 - `LOG_HARDEN_FILE_PERMISSIONS`
 - `WEB_SESSION_TIMEOUT_MINUTES`
 - `WEB_PUBLIC_BASE_URL`
@@ -245,9 +592,38 @@ If behind proxy, ensure forwarded headers include:
 - `WEB_BULK_ASSIGN_REPORT_LIST_LIMIT`
 - `WEB_BOT_PROFILE_TIMEOUT_SECONDS`
 - `WEB_AVATAR_MAX_UPLOAD_BYTES`
+- `MANAGED_GUILD_IDS`
+- `ENABLE_MEMBERS_INTENT`
+- `COMMAND_RESPONSES_EPHEMERAL`
+- `PUPPY_IMAGE_API_URL`
+- `PUPPY_IMAGE_TIMEOUT_SECONDS`
+- `SHORTENER_ENABLED`
+- `SHORTENER_BASE_URL`
+- `SHORTENER_TIMEOUT_SECONDS`
+- `YOUTUBE_NOTIFY_ENABLED`
+- `YOUTUBE_POLL_INTERVAL_SECONDS`
+- `YOUTUBE_REQUEST_TIMEOUT_SECONDS`
+- `UPTIME_STATUS_ENABLED`
+- `UPTIME_STATUS_PAGE_URL`
+- `UPTIME_STATUS_TIMEOUT_SECONDS`
+- `SERVICE_MONITOR_ENABLED`
+- `SERVICE_MONITOR_DEFAULT_CHANNEL_ID`
+- `SERVICE_MONITOR_CHECK_SCHEDULE`
+- `SERVICE_MONITOR_REQUEST_TIMEOUT_SECONDS`
+- `SERVICE_MONITOR_TARGETS_JSON`
+
+Use `SERVICE_MONITOR_TARGETS_JSON` to monitor external websites or APIs for outages. The bot will establish a baseline on first successful check, then post only when a target changes from up to down or from down to up.
+
+The preferred UI for editing those entries is `/admin/service-monitors`, which writes the same backing environment values for you.
+
+- `UPTIME_STATUS_NOTIFY_ENABLED`
+- `UPTIME_STATUS_NOTIFY_CHANNEL_ID`
+- `UPTIME_STATUS_CHECK_SCHEDULE`
+
+If `UPTIME_STATUS_ENABLED` is on, the bot can also poll a public Uptime Kuma status page on a schedule and post only when one or more Kuma monitors go down or recover.
 
 ## Related Pages
 
-- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
-- [Environment Variables](Environment-Variables)
-- [Security Hardening](Security-Hardening)
+- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
+- [Environment Variables](Environment-Variables.md)
+- [Security Hardening](Security-Hardening.md)

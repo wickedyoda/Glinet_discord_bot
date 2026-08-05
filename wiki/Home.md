@@ -1,62 +1,38 @@
-# Discord Invite + Utility Bot Wiki
+# GL.iNet UnOfficial Discord Bot — Documentation Hub
 
 <p align="center">
   <img src="../assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="170" />
 </p>
 
-This wiki is the complete operations and feature reference for the Discord Invite + Utility Bot.
+This wiki documents the current `GL.iNet UnOfficial Discord Bot` implementation and operations model.
 
-## Platform Summary
+## Installation and Setup
 
-Core capabilities:
+- [Installation](./docs-installation/install.md)
+- [Setup](./docs-installation/setup.md)
 
-- Role-bound invite links and 6-digit access code flows
-- Bulk CSV role assignment with rich result reporting
-- Tag auto-replies and dynamic slash command generation
-- Source-specific search helpers for GL.iNet forums, OpenWrt forums, Reddit, and docs
-- Country suffix nickname utilities
-- Moderation tooling for members, roles, and event logs
-- Firmware feed monitor with scheduled notification delivery
-- Secure web admin interface with per-command permissions and user management
-- SQLite-backed persistence with legacy merge imports on startup
+## Feature Documentation
 
-## Read by Goal
+- [Role Access and Invites](Role-Access-and-Invites.md)
+- [Join With an Invite Code](Join-With-Invite-Code.md)
+- [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment.md)
+- [Tag Responses](Tag-Responses.md)
+- [Search and Docs](Search-and-Docs.md)
+- [Country Code Commands](Country-Code-Commands.md)
+- [Moderation and Logs](Moderation-and-Logs.md)
+- [Firmware Monitor](Firmware-Monitor.md)
+- [Web Admin Interface](Web-Admin-Interface.md)
+- [Tickets](Tickets.md)
 
-- I need full command list and access restrictions:
-  - [Command Reference](Command-Reference)
-- I need onboarding/access role setup:
-  - [Role Access and Invites](Role-Access-and-Invites)
-- I need moderation/logging operations:
-  - [Moderation and Logs](Moderation-and-Logs)
-- I need web GUI administration details:
-  - [Web Admin Interface](Web-Admin-Interface)
-- I need deployment and proxy guidance:
-  - [Docker and Portainer Deploy](Docker-and-Portainer-Deploy)
-  - [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
-- I need security baseline and controls:
-  - [Security Hardening](Security-Hardening)
-- I need variable documentation:
-  - [Environment Variables](Environment-Variables)
+## Operations and Security
 
-## Feature Pages
-
-- [Role Access and Invites](Role-Access-and-Invites)
-- [Bulk CSV Role Assignment](Bulk-CSV-Role-Assignment)
-- [Tag Responses](Tag-Responses)
-- [Search and Docs](Search-and-Docs)
-- [Country Code Commands](Country-Code-Commands)
-- [Moderation and Logs](Moderation-and-Logs)
-- [Firmware Monitor](Firmware-Monitor)
-- [Web Admin Interface](Web-Admin-Interface)
-
-## Operations and Security Pages
-
-- [Environment Variables](Environment-Variables)
-- [Docker and Portainer Deploy](Docker-and-Portainer-Deploy)
-- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI)
-- [Data Files](Data-Files)
-- [Security Hardening](Security-Hardening)
-- [Command Reference](Command-Reference)
+- [Environment Variables](Environment-Variables.md)
+- [Docker and Portainer Deploy](Docker-and-Portainer-Deploy.md)
+- [Health Checks and Readiness](Health-Checks-and-Readiness.md)
+- [Reverse Proxy Web GUI](Reverse-Proxy-Web-GUI.md)
+- [Data Files](Data-Files.md)
+- [Security Hardening](Security-Hardening.md)
+- [Command Reference](Command-Reference.md)
 
 ## Source of Truth
 

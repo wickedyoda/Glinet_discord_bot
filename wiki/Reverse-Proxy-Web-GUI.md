@@ -56,6 +56,27 @@ ports:
   - "127.0.0.1:8081:8081"
 ```
 
+Equivalent `.env` values for that mapping:
+
+```env
+WEB_HTTP_PUBLISH=127.0.0.1:8080
+WEB_HTTPS_PUBLISH=127.0.0.1:8081
+```
+
+If your reverse proxy is on another machine, disable explicit host/IP pinning or publish on the Docker host LAN IP instead:
+
+```env
+# Disabled explicit host/IP pinning:
+# WEB_HTTP_PUBLISH=8080
+# WEB_HTTPS_PUBLISH=8081
+
+# Or pin to the Docker host LAN IP:
+# WEB_HTTP_PUBLISH=192.168.1.50:8080
+# WEB_HTTPS_PUBLISH=192.168.1.50:8081
+```
+
+Restrict access to those ports with a firewall so only the proxy machine can reach them.
+
 ## Nginx Example
 
 Replace `discord-admin.example.com` with your real domain.
@@ -230,11 +251,11 @@ If browser console warns that `Cross-Origin-Opener-Policy` was ignored on login:
 - Login works through proxy.
 - POST actions (save settings, create users, update profile) succeed.
 - No origin-policy errors in logs.
-- Cookies show `HttpOnly`, `Secure`, and `SameSite=Strict`.
+- Cookies show `HttpOnly`, `Secure`, and configurable `SameSite` (`Lax` by default).
 - Direct container port is not publicly reachable.
 
 ## Related Pages
 
-- [Web Admin Interface](Web-Admin-Interface)
-- [Environment Variables](Environment-Variables)
-- [Security Hardening](Security-Hardening)
+- [Web Admin Interface](Web-Admin-Interface.md)
+- [Environment Variables](Environment-Variables.md)
+- [Security Hardening](Security-Hardening.md)
