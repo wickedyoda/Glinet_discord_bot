@@ -1381,6 +1381,43 @@ def _ensure_default_admin(users_db_file: Path, default_email: str, default_passw
     )
 
 
+def _ensure_default_admin_safe(users_db_file: Path, default_email: str, default_password: str, logger):
+    """Wrap _ensure_default_admin so it never crashes the web admin listener.
+
+    If a password-policy ValueError fires (weak/empty WEB_ADMIN_DEFAULT_PASSWORD)
+    and no users exist yet, log a clear critical message and write a banner
+    into the data dir so the web server still starts and can surface an error
+    page instead of leaving the reverse proxy with no upstream (which produces
+    a 502 Bad Gateway).
+
+    If users already exist, the default-admin check is a no-op anyway, so we
+    never raise here.
+    """
+    try:
+        _ensure_default_admin(users_db_file, default_email, default_password, logger)
+    except ValueError:
+        if _read_users(users_db_file):
+            # Users table already populated; nothing to do.
+            return
+        if logger:
+            logger.critical(
+                "WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet password policy. "
+                "The web admin server is starting but login is disabled until a valid "
+                "admin password (6-16 chars, >= 2 digits, >= 1 uppercase, >= 1 symbol) "
+                "is set via WEB_ADMIN_DEFAULT_PASSWORD and the bot is restarted. "
+                "Set a strong password to restore login access."
+            )
+        banner_path = users_db_file.parent / ".admin_password_required"
+        try:
+            banner_path.write_text(
+                "WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet the password "
+                "policy. Set a strong password and restart the bot to re-enable login."
+            )
+            os.chmod(banner_path, 0o600)
+        except (PermissionError, OSError):
+            pass
+
+
 def _read_guild_groups(users_db_file: Path):
     return _store_read_guild_groups(users_db_file, clean_profile_text=_clean_profile_text)
 
@@ -3267,7 +3304,7 @@ def create_web_app(
             except (PermissionError, OSError):
                 pass
 
-    _ensure_default_admin(users_file, default_admin_email, default_admin_password, logger)
+    _ensure_default_admin_safe(users_file, default_admin_email, default_admin_password, logger)
     favicon_file = Path(__file__).resolve().parent / "assets" / "images" / "glinet-bot-round.png"
     wiki_dir = Path(__file__).resolve().parent / "wiki"
     wiki_dir_resolved = wiki_dir.resolve()
@@ -4125,6 +4162,12 @@ def create_web_app(
             "Login",
             f"""
             <div class="card" style="max-width:520px;margin:30px auto;">
+              {('<div class="banner error" style="background:#fee;border:1px solid #fcc;padding:12px;margin-bottom:12px;border-radius:4px;">'
+                '<strong>Login temporarily disabled:</strong> '
+                'WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet the password policy. '
+                'Set a strong password (6-16 chars, >= 2 digits, >= 1 uppercase, >= 1 symbol) '
+                'and restart the bot to restore login access.</div>'
+                if (users_file.parent / ".admin_password_required").exists() else '')}
               <h2>Web Login</h2>
               <p class="muted">Web GUI login with email/password. Users are created by an admin only.</p>
               <form method="post">
