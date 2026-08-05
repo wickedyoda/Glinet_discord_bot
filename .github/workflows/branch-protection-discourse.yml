@@ -79,7 +79,7 @@ jobs:
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 0 \
-            local/discord-invite-bot:${{ github.sha }}
+            local/discord-invite-bot:${{ github.sha }}-discourse
       - name: Upload Trivy SARIF to code scanning
         if: always() && hashFiles('trivy-image-discourse.sarif') != ''
         uses: github/codeql-action/upload-sarif@v4
@@ -97,14 +97,20 @@ jobs:
             --exit-code 1 \
             local/discord-invoke-bot:${{ github.sha }}
 
-  # --- Gate: Dependency Review ---
+      # --- Gate: Dependency Review ---
   dependency-review:
     runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
     steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Dependency review
         uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
 
   # --- Gate: Python Vulnerability Scan ---
   pip-audit:
@@ -137,41 +143,4 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # --- Gate: Build & Publish Discourse-tagged Image ---
-  docker-publish-discourse:
-    needs: [integrity, trivy, dependency-review, pip-audit, gitleaks]
-    runs-on: ubuntu-latest
-    if: github.event_name != 'pull_request'
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Prepare variables
-        id: vars
-        run: |
-          echo "DATE_TAG=$(date +'%Y%m%d')" >> \"$GITHUB_OUTPUT\"
-          echo "IMAGE=ghcr.io/${{ github.actor }}/discord_invite_bot" >> \"$GITHUB_OUTPUT\"
-      - name: Build and push discourse image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: |
-            ${{ steps.vars.outputs.IMAGE }}:${{ steps.vars.outputs.DATE_TAG }}-discourse
-            ${{ steps.vars.outputs.IMAGE }}:main-discourse
+  # --- Gate: Build & Publish Discourse-tagged Image (in docker-publish-discourse.yml) ---
