@@ -92,11 +92,13 @@ class FeedWebCallbacks:
 
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = self.normalize_target_guild_id(guild_id)
+        audit_actor = self.build_web_actor_audit_label(actor_email)
         try:
             if action == "add":
                 subreddit = str(payload.get("subreddit") or "")
                 channel_id = int(str(payload.get("channel_id") or "0").strip())
                 self.create_reddit_feed_subscription(safe_guild_id, subreddit, channel_id, actor_email)
+                self.record_action_safe(action="reddit_feed_add", status="success", moderator=audit_actor, target=self.normalize_reddit_subreddit_name(subreddit), reason="Added via web admin", guild_id=safe_guild_id)
                 message = f"Reddit feed added for r/{self.normalize_reddit_subreddit_name(subreddit)}."
             elif action == "edit":
                 feed_id = int(str(payload.get("feed_id") or "0").strip())
@@ -107,6 +109,7 @@ class FeedWebCallbacks:
                 channel_id = int(str(payload.get("channel_id") or "0").strip())
                 if not self.update_reddit_feed_subscription(feed_id, safe_guild_id, subreddit, channel_id, actor_email):
                     return {"ok": False, "error": "Reddit feed entry was not found."}
+                self.record_action_safe(action="reddit_feed_edit", status="success", moderator=audit_actor, target=self.normalize_reddit_subreddit_name(subreddit), reason="Edited via web admin", guild_id=safe_guild_id)
                 message = f"Reddit feed updated for r/{self.normalize_reddit_subreddit_name(subreddit)}."
             elif action == "toggle":
                 feed_id = int(str(payload.get("feed_id") or "0").strip())
@@ -116,14 +119,17 @@ class FeedWebCallbacks:
                 enabled = str(payload.get("enabled") or "").strip().lower() in self.truthy_env_values
                 if not self.set_reddit_feed_subscription_enabled(feed_id, enabled, actor_email):
                     return {"ok": False, "error": "Reddit feed entry was not found."}
+                self.record_action_safe(action="reddit_feed_toggle", status="success", moderator=audit_actor, target=str(feed_id), reason=f"Enabled={enabled} via web admin", guild_id=safe_guild_id)
                 message = "Reddit feed enabled." if enabled else "Reddit feed disabled."
             elif action == "delete":
                 feed_id = int(str(payload.get("feed_id") or "0").strip())
                 feed = self.get_reddit_feed_subscription(feed_id)
                 if feed is None or int(feed.get("guild_id") or 0) != safe_guild_id:
                     return {"ok": False, "error": "Reddit feed entry was not found."}
+                subreddit = feed.get("subreddit") or str(feed_id)
                 if not self.delete_reddit_feed_subscription(feed_id):
                     return {"ok": False, "error": "Reddit feed entry was not found."}
+                self.record_action_safe(action="reddit_feed_delete", status="success", moderator=audit_actor, target=self.normalize_reddit_subreddit_name(subreddit), reason="Deleted via web admin", guild_id=safe_guild_id)
                 message = "Reddit feed deleted."
             else:
                 return {"ok": False, "error": "Invalid Reddit feed action."}
@@ -138,7 +144,7 @@ class FeedWebCallbacks:
             self.logger.exception("Failed to manage Reddit feeds from web admin")
             return {"ok": False, "error": "Failed to update Reddit feeds."}
 
-        self.logger.info("Reddit feeds updated via web admin action=%s", action)
+        self.logger.info("Reddit feeds updated via web admin actor=%s action=%s", audit_actor, action)
         response = self.build_reddit_feeds_web_payload(safe_guild_id)
         response["message"] = message
         return response
