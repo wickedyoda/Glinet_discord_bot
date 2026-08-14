@@ -486,6 +486,23 @@ Notes:
 - API endpoints: `/admin/discourse/viewer/api/categories` and `/admin/discourse/viewer/api/topics`
 - Search page: `/admin/discourse/viewer/search?q=...`
 
+### `/admin/freshdesk/viewer` (Read-only for all users)
+
+- Read-only Freshdesk ticket viewer for GL.iNet support tickets
+- Sections:
+  1. **Integration Settings** — displays Freshdesk helpdesk URL, API key status, timeout
+  2. **Search** — search box for querying Freshdesk tickets
+  3. **Solution Categories** — live list of KB categories (auto-refreshes)
+  4. **Available Actions** — lists Discord `/freshdesk-*` commands
+- Uses global environment configuration (not per-guild):
+  - `FRESHDESK_BASE_URL`
+  - `FRESHDESK_API_KEY` (sensitive — masked in UI/logs)
+  - `FRESHDESK_REQUEST_TIMEOUT_SECONDS`
+- API endpoints: `/admin/freshdesk/viewer/api/categories`
+- Search page: `/admin/freshdesk/viewer/search?q=...`
+- Ticket detail: `/admin/freshdesk/viewer/ticket/<id>`
+- All users can view; only Admins can configure via `/admin/settings`
+
 ### `/admin/guild-settings`
 
 - Scoped to the selected server
