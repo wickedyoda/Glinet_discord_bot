@@ -9069,7 +9069,18 @@ def read_recent_log_lines(path: str, max_lines: int):
     return sanitize_log_text("".join(buffer))
 
 
+_server_event_dedup: dict[int, tuple[str, float]] = {}
+_SERVER_EVENT_DEDUP_SECONDS = 3.0
+
+
 async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
+    now = time.monotonic()
+    dedup_key = f"{event_name}:{details}"
+    last = _server_event_dedup.get(guild.id)
+    if last and last[0] == dedup_key and (now - last[1]) < _SERVER_EVENT_DEDUP_SECONDS:
+        logger.info("WEB_AUDIT suppress_duplicate event=%s guild_id=%s", event_name, guild.id)
+        return
+    _server_event_dedup[guild.id] = (dedup_key, now)
     message = f"📌 **Server Event:** `{event_name}`\n{details}"
     record_action_safe(
         action=event_name,
@@ -12065,6 +12076,48 @@ async def on_user_update(before: discord.User, after: discord.User):
         await send_server_event_log(guild, "user_avatar_change", details)
 
 
+async def _resolve_role_change_actor(guild: discord.Guild, target_member_id: int) -> str:
+    """Query the guild audit log to find who most recently added/removed a role on the target member."""
+    try:
+        async for entry in guild.audit_logs(
+            limit=25,
+            action=discord.AuditLogAction.member_role_update,
+        ):
+            if str(getattr(entry, "target_id", "")) == str(target_member_id):
+                user = entry.user
+                return (
+                    f"{user.mention} (`{user.id}`)"
+                    if user
+                    else f"`{entry.user_id}`"
+                )
+    except discord.Forbidden:
+        return "Unknown (bot lacks audit log permission)"
+    except Exception:
+        return "Unknown"
+    return "Unknown (not in audit log)"
+
+
+async def _resolve_role_create_actor(guild: discord.Guild, role_id: int) -> str:
+    """Query the guild audit log to find who created the role."""
+    try:
+        async for entry in guild.audit_logs(
+            limit=25,
+            action=discord.AuditLogAction.role_create,
+        ):
+            if str(getattr(entry, "target_id", "")) == str(role_id):
+                user = entry.user
+                return (
+                    f"{user.mention} (`{user.id}`)"
+                    if user
+                    else f"`{entry.user_id}`"
+                )
+    except discord.Forbidden:
+        return "Unknown (bot lacks audit log permission)"
+    except Exception:
+        return "Unknown"
+    return "Unknown (not in audit log)"
+
+
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     guild = after.guild
@@ -12083,14 +12136,24 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     added_role_ids = sorted(set(after_role_map) - set(before_role_map))
     removed_role_ids = sorted(set(before_role_map) - set(after_role_map))
 
+    actor_label = await _resolve_role_change_actor(guild, after.id)
+
     for role_id in added_role_ids:
         role = after_role_map[role_id]
-        details = f"**Member:** {after.mention} (`{after.id}`)\n**Role Added:** {role.mention} (`{role.id}`)\n"
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Role Added:** {role.mention} (`{role.id}`)\n"
+            f"**Actor:** {actor_label}\n"
+        )
         await send_server_event_log(guild, "member_role_added", details)
 
     for role_id in removed_role_ids:
         role = before_role_map[role_id]
-        details = f"**Member:** {after.mention} (`{after.id}`)\n**Role Removed:** {role.name} (`{role.id}`)\n"
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Role Removed:** {role.name} (`{role.id}`)\n"
+            f"**Actor:** {actor_label}\n"
+        )
         await send_server_event_log(guild, "member_role_removed", details)
 
 
@@ -12249,7 +12312,13 @@ async def on_guild_role_create(role: discord.Role):
     if not is_managed_guild_id(guild.id):
         return
 
-    details = f"**Role:** {role.mention} (`{role.id}`)\n**Color:** `{role.color}`\n**Position:** `{role.position}`\n"
+    actor_label = await _resolve_role_create_actor(guild, role.id)
+    details = (
+        f"**Role:** {role.mention} (`{role.id}`\n"
+        f"**Color:** `{role.color}`\n"
+        f"**Position:** `{role.position}`\n"
+        f"**Actor:** {actor_label}\n"
+    )
     await send_server_event_log(guild, "role_created", details)
 
 
