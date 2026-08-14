@@ -27,17 +27,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from flask import (
-    Flask,
-    flash,
-    g,
-    redirect,
-    render_template_string,
-    request,
-    send_file,
-    session,
-    url_for,
-)
+from flask import (Flask, flash, g, jsonify, redirect, render_template_string, request, send_file, session, url_for)
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
@@ -68,7 +58,18 @@ from app.uptime_kuma_admin import (
     update_monitor,
 )
 from app.web_audit import should_log_web_audit_event
-from app.web_discourse import process_discourse_submission, render_discourse_body
+from app.discourse_api import (
+    DiscourseApiError,
+    DiscourseRateLimitError,
+    fetch_discourse_categories,
+    search_discourse_topics,
+)
+from app.web_discourse import (
+    build_discourse_config_from_settings,
+    process_discourse_submission,
+    render_discourse_body,
+    render_discourse_viewer_body,
+)
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_honeypot import process_honeypot_submission, render_honeypot_body
 from app.web_members import process_member_action_submission, render_members_body
@@ -2777,6 +2778,7 @@ def _render_layout(
                 <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
+                <option value="{{ url_for('discourse_viewer_page') }}">Forum Viewer</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -2797,6 +2799,7 @@ def _render_layout(
                 <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
+                <option value="{{ url_for('discourse_viewer_page') }}">Forum Viewer</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -3552,6 +3555,7 @@ def create_web_app(
             "honeypot_page": "Honeypot",
             "members_page": "Members",
             "discourse_page": "Discourse",
+            "discourse_viewer_page": "Forum Viewer",
             "uptime_kuma_page": "Uptime Kuma",
             "command_status": "Command Status",
             "command_permissions": "Command Permissions",
@@ -8448,6 +8452,191 @@ def create_web_app(
             render_fixed_select_input=_render_fixed_select_input,
         )
         return _render_page("Discourse", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/discourse/viewer", methods=["GET"])
+    @login_required
+    def discourse_viewer_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Discourse callbacks are not configured."}
+        )
+
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            error_text = (
+                str(settings_payload.get("error") or "Unable to load Discourse settings.")
+                if isinstance(settings_payload, dict)
+                else "Unable to load Discourse settings."
+            )
+            body = (
+                f"<div class='card'><h2>Discourse Forum Viewer</h2>"
+                f"<p class='muted'>Could not load Discourse settings: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Discourse Viewer", body, user["email"], bool(user.get("is_admin")))
+
+        effective_settings = settings_payload.get("effective", {}) or {}
+        body = render_discourse_viewer_body(
+            guild_name=guild_name,
+            effective_settings=effective_settings,
+        )
+        return _render_page("Discourse Viewer", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/discourse/viewer/api/categories")
+    @login_required
+    def discourse_viewer_api_categories():
+        user = _current_user()
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        if not str(user["email"]):
+            return jsonify({"ok": False, "error": "Not authenticated"}), 401
+
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Discourse callbacks are not configured."}
+        )
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            return jsonify({"ok": False, "error": "Discourse settings not available"}), 500
+
+        effective_settings = settings_payload.get("effective", {}) or {}
+        config = build_discourse_config_from_settings(effective_settings)
+
+        if not config["base_url"]:
+            return jsonify({"ok": False, "error": "Discourse base URL not configured"}), 400
+
+        try:
+            categories = fetch_discourse_categories(
+                base_url=config["base_url"],
+                timeout_seconds=config["timeout"],
+                user_agent="GLiNetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)",
+                api_key=config["api_key"],
+                api_username=config["api_username"],
+            )
+            return jsonify({"ok": True, "categories": categories})
+        except (DiscourseApiError, DiscourseRateLimitError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 502
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.route("/admin/discourse/viewer/api/topics")
+    @login_required
+    def discourse_viewer_api_topics():
+        user = _current_user()
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        if not str(user["email"]):
+            return jsonify({"ok": False, "error": "Not authenticated"}), 401
+
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Discourse callbacks are not configured."}
+        )
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            return jsonify({"ok": False, "error": "Discourse settings not available"}), 500
+
+        effective_settings = settings_payload.get("effective", {}) or {}
+        config = build_discourse_config_from_settings(effective_settings)
+
+        if not config["base_url"]:
+            return jsonify({"ok": False, "error": "Discourse base URL not configured"}), 400
+
+        try:
+            topics = search_discourse_topics(
+                base_url=config["base_url"],
+                query="",
+                max_results=20,
+                source_name="Discourse latest",
+                timeout_seconds=config["timeout"],
+                user_agent="GLiNetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)",
+                api_key=config["api_key"],
+                api_username=config["api_username"],
+            )
+            return jsonify({"ok": True, "topics": topics})
+        except (DiscourseApiError, DiscourseRateLimitError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 502
+        except Exception as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 500
+
+    @app.route("/admin/discourse/viewer/search")
+    @login_required
+    def discourse_viewer_search():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        selected_guild_id_str = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+
+        search_query = str(request.args.get("q", "")).strip()
+
+        settings_payload = (
+            on_get_guild_settings(selected_guild_id)
+            if callable(on_get_guild_settings)
+            else {"ok": False, "error": "Discourse callbacks are not configured."}
+        )
+
+        if not isinstance(settings_payload, dict) or not settings_payload.get("ok"):
+            body = (
+                f"<div class='card'><h2>Discourse Forum Search</h2>"
+                f"<p class='muted'>Could not load Discourse settings: {escape(str(settings_payload.get('error', '')))}</p></div>"
+            )
+            return _render_page("Discourse Search", body, user["email"], bool(user.get("is_admin")))
+
+        effective_settings = settings_payload.get("effective", {}) or {}
+        config = build_discourse_config_from_settings(effective_settings)
+
+        search_results_html = ""
+        if search_query and config["base_url"]:
+            try:
+                topics = search_discourse_topics(
+                    base_url=config["base_url"],
+                    query=search_query,
+                    max_results=20,
+                    source_name="Discourse search",
+                    timeout_seconds=config["timeout"],
+                    user_agent="GLiNetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)",
+                    api_key=config["api_key"],
+                    api_username=config["api_username"],
+                )
+                if topics:
+                    result_items = "".join(
+                        f'<li><a href="{escape(t["url"])}" target="_blank">{escape(t["title"])}</a>'
+                        f'<div class="muted">{escape(t.get("excerpt", ""))}</div></li>'
+                        for t in topics
+                    )
+                    search_results_html = f"<ul>{result_items}</ul>"
+                else:
+                    search_results_html = '<p class="muted">No topics found for your search.</p>'
+            except (DiscourseApiError, DiscourseRateLimitError) as exc:
+                search_results_html = f'<p class="warning">Search error: {escape(str(exc))}</p>'
+            except Exception as exc:
+                search_results_html = f'<p class="warning">Search error: {escape(str(exc))}</p>'
+        elif not search_query:
+            search_results_html = '<p class="muted">Enter a search query above to search the forum.</p>'
+
+        body = f"""
+        <div class='card'>
+          <h2>Discourse Forum Search</h2>
+          <p class='muted'>Searching <strong>{escape(config['base_url'] or 'not configured')}</strong> for <strong>{escape(search_query)}</strong></p>
+          <form method='get' action='/admin/discourse/viewer/search' style='margin-bottom:12px;'>
+            <input type='text' name='q' value='{escape(search_query, quote=True)}' placeholder='Search query...' style='width:400px;' />
+            <button class='btn' type='submit'>Search</button>
+          </form>
+          {search_results_html}
+        </div>
+        """
+        return _render_page("Discourse Search", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/settings", methods=["GET", "POST"])
     @login_required
