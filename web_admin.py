@@ -58,11 +58,20 @@ from app.uptime_kuma_admin import (
     update_monitor,
 )
 from app.web_audit import should_log_web_audit_event
+from app.freshdesk_api import (
+    FreshdeskApiError,
+    FreshdeskRateLimitError,
+    fetch_freshdesk_ticket,
+    list_freshdesk_solution_categories,
+    list_freshdesk_ticket_fields,
+    search_freshdesk_tickets,
+)
 from app.web_discourse import (
     process_discourse_submission,
     render_discourse_body,
 )
 from app.web_discourse_routes import register_discourse_viewer_blueprint
+from app.web_freshdesk_routes import register_freshdesk_viewer_blueprint
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_honeypot import process_honeypot_submission, render_honeypot_body
 from app.web_members import process_member_action_submission, render_members_body
@@ -164,6 +173,7 @@ INT_KEYS = {
     "GUILD_ID",
     "BOT_LOG_CHANNEL_ID",
     "FORUM_MAX_RESULTS",
+    "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
     "DOCS_MAX_RESULTS_PER_SITE",
     "DOCS_INDEX_TTL_SECONDS",
     "SEARCH_RESPONSE_MAX_CHARS",
@@ -199,6 +209,8 @@ SENSITIVE_KEYS = {
     "WEB_ADMIN_DEFAULT_PASSWORD",
     "WEB_ADMIN_SESSION_SECRET",
     "UPTIME_STATUS_API_KEY",
+    "FRESHDESK_API_KEY",
+    "DISCOURSE_API_KEY",
 }
 FALLBACK_PROTECTED_ENV_KEYS = SENSITIVE_KEYS | {"WEB_ENV_FILE"}
 
@@ -298,6 +310,21 @@ ENV_FIELDS = [
     ),
     ("FORUM_BASE_URL", "Forum Base URL", "GL.iNet forum root URL."),
     ("FORUM_MAX_RESULTS", "Forum Max Results", "Max forum links returned per search."),
+    (
+        "FRESHDESK_BASE_URL",
+        "Freshdesk Base URL",
+        "GL.iNet Freshdesk helpdesk root URL (e.g. https://support.gl-inet.com).",
+    ),
+    (
+        "FRESHDESK_API_KEY",
+        "Freshdesk API Key",
+        "API key for read-only Freshdesk ticket search (never committed — use .env).",
+    ),
+    (
+        "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
+        "Freshdesk Request Timeout",
+        "HTTP timeout in seconds for Freshdesk API calls.",
+    ),
     (
         "DOCS_MAX_RESULTS_PER_SITE",
         "Docs Max/Site",
@@ -2772,6 +2799,7 @@ def _render_layout(
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
+                <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -2793,6 +2821,7 @@ def _render_layout(
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
+                <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -2932,6 +2961,8 @@ def _render_layout(
             <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
             <option value="{{ url_for('members_page') }}">Members</option>
             <option value="{{ url_for('discourse_page') }}">Discourse</option>
+            <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
+            <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
             <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -3549,6 +3580,7 @@ def create_web_app(
             "members_page": "Members",
             "discourse_page": "Discourse",
             "discourse_viewer_page": "Forum Viewer",
+            "freshdesk_viewer_page": "Freshdesk",
             "uptime_kuma_page": "Uptime Kuma",
             "command_status": "Command Status",
             "command_permissions": "Command Permissions",
@@ -4620,6 +4652,12 @@ def create_web_app(
                 "Control the forum URL, API key usage, profile identity, and guild-scoped Discourse feature toggles.",
                 url_for("discourse_page"),
                 "Open Discourse",
+            ),
+            build_dashboard_card(
+                "Freshdesk",
+                "Read-only viewer for GL.iNet support tickets — search and browse Freshdesk tickets without modifications.",
+                url_for("freshdesk_viewer.freshdesk_viewer_page"),
+                "Open Freshdesk",
             ),
             build_dashboard_card(
                 "Bot Profile",
@@ -8454,6 +8492,24 @@ def create_web_app(
         require_selected_guild_redirect=_require_selected_guild_redirect,
         render_page=_render_page,
         get_guild_settings=on_get_guild_settings,
+    )
+
+    # Register Freshdesk Ticket Viewer blueprint (read-only, app/web_freshdesk_routes.py)
+    def _on_get_freshdesk_env():
+        env_vals = _load_effective_env_values(env_file, fallback_env_file)
+        return {
+            "FRESHDESK_BASE_URL": env_vals.get("FRESHDESK_BASE_URL", ""),
+            "FRESHDESK_API_KEY": env_vals.get("FRESHDESK_API_KEY", ""),
+            "FRESHDESK_REQUEST_TIMEOUT_SECONDS": env_vals.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15"),
+        }
+
+    register_freshdesk_viewer_blueprint(
+        app,
+        current_user=_current_user,
+        selected_guild=_selected_guild,
+        require_selected_guild_redirect=_require_selected_guild_redirect,
+        render_page=_render_page,
+        on_get_env=_on_get_freshdesk_env,
     )
 
     @app.route("/admin/settings", methods=["GET", "POST"])
