@@ -4,7 +4,7 @@
   <img src="./assets/images/glinet-bot-round.png" alt="GL.iNet Bot Logo (Round)" width="250" />
 </p>
 
-Discord bot for GL.iNet community operations under the public `GL.iNet UnOfficial Discord Bot` name, with invite/code role access, moderation tools, search helpers, firmware/YouTube/LinkedIn/beta-program monitoring, member-activity analytics, utility commands, role-tier ticket handling, and a secured multi-guild web admin GUI.
+Discord bot for GL.iNet community operations under the public `GL.iNet UnOfficial Discord Bot` name, with invite/code role access, moderation tools, search helpers, firmware/YouTube/LinkedIn/beta-program monitoring, member-activity analytics, utility commands, role-tier ticket handling, Discourse forum integration, and a secured multi-guild web admin GUI.
 
 - Install / invite link: [Add GL.iNet UnOfficial Discord Bot to your server](https://discord.com/oauth2/authorize?client_id=1390519966050291734)
 
@@ -53,6 +53,30 @@ Defaults:
 - CSRF and session hardening are enabled by default.
 - Member-activity identity fields are encrypted at rest. Set `MEMBER_ACTIVITY_ENCRYPTION_KEY` for external key management, or let the bot generate `${DATA_DIR}/member_activity.key`.
 - Security controls and hardening checklist: `wiki/Security-Hardening.md`
+
+## Discourse Forum Integration
+
+The bot integrates with GL.iNet Discourse forums (e.g., `https://forum.gl-inet.com/`). Integration is configurable **per guild** — each Discord server can independently enable or disable Discourse features.
+
+**Web Admin interface:**
+- `/admin/discourse` — configure Discourse integration settings (base URL, API key, username, profile, timeout, features, enabled state)
+- `/admin/discourse/viewer` — **read-only forum viewer** showing live categories, recent topics, and a search page. Accessible to all web users; only admins can edit settings.
+- `/admin/discourse/viewer/search?q=...` — search the Discourse forum
+- `/admin/discourse/viewer/api/categories` and `/admin/discourse/viewer/api/topics` — backing AJAX endpoints
+
+**Discord commands:**
+- `/search_forum` — search the Discourse forum
+- `/forum_categories` — browse forum categories
+- `/view_topic` — view a specific topic
+
+**Environment variables:**
+- `FORUM_BASE_URL` — Discourse base URL
+- `FORUM_API_KEY` — optional Discourse API key
+- `FORUM_API_USERNAME` — optional Discourse API username
+- `FORUM_MAX_RESULTS` — max results per search
+- `FORUM_REQUEST_TIMEOUT_SECONDS` — request timeout
+
+Detailed documentation: [`wiki/Discourse-Integration.md`](./wiki/Discourse-Integration.md)
 
 ## Contributing
 

@@ -93,9 +93,8 @@ class GuildStateManager:
             "beta_program_notify_enabled": -1,
             "forum_announcements_enabled": -1,
             "forum_announcements_channel_id": 0,
-            "forum_announcements_category_path": "/c/glrouter/5",
             "forum_announcements_refresh_minutes": 60,
-            "discourse_enabled": -1,
+            "discourse_enabled": 0,
             "discourse_base_url": "",
             "discourse_api_key": "",
             "discourse_api_username": "",
@@ -337,7 +336,7 @@ class GuildStateManager:
             60,
             minimum=1,
         )
-        merged["discourse_enabled"] = normalize_discourse_override(source.get("discourse_enabled", current.get("discourse_enabled", -1)))
+        merged["discourse_enabled"] = normalize_discourse_override(source.get("discourse_enabled", current.get("discourse_enabled", 0)))
         merged["discourse_base_url"] = normalize_discourse_base_url(
             source.get("discourse_base_url", current.get("discourse_base_url", ""))
         )

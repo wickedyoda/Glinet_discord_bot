@@ -458,6 +458,49 @@ Notes:
 - Stores the last seen program snapshot per guild/channel so only changes are announced
 - Best-effort public-page monitoring: if GL.iNet changes the page structure, the watcher may need adjustment
 
+### `/admin/discourse` (Admin-only)
+
+- Scoped to the selected server
+- Configure Discourse forum integration per guild
+- **Integration State** — `Enabled` or `Disabled` (per-guild; no global fallback — each guild must explicitly choose)
+- Settings:
+  - Forum Base URL
+  - API Key (stored encrypted; clear checkbox to remove)
+  - API Username
+  - Profile Name
+  - Request Timeout (dropdown: 5–60 seconds)
+  - Enabled Features (multi-select: Forum Search, Topic Lookups, Category Browsing, Create Topics, Reply To Topics)
+- Save applies to the selected guild only
+
+### `/admin/discourse/viewer` (Read-only for all users)
+
+- Scoped to the selected server
+- Read-only viewer showing live Discourse forum data
+- Sections:
+  1. **Integration Settings** — displays effective configuration (base URL, API username status, profile, timeout, state, features)
+  2. **Bot Commands** — lists available Discord commands
+  3. **Categories** — live list of forum categories (auto-refreshes)
+  4. **Recent Topics** — live list of recent forum topics (auto-refreshes)
+  5. **Search** — search box for querying the forum
+- All users can view; only admins can navigate to `/admin/discourse` to edit settings
+- API endpoints: `/admin/discourse/viewer/api/categories` and `/admin/discourse/viewer/api/topics`
+- Search page: `/admin/discourse/viewer/search?q=...`
+
+### `/admin/guild-settings`
+
+- Scoped to the selected server
+- Per-guild overrides for:
+  - bot log channel
+  - moderation log channel
+  - firmware notify channel
+  - firmware monitor enabled/disabled
+  - Reddit feed monitor enabled/disabled
+  - YouTube notifications enabled/disabled
+  - LinkedIn notifications enabled/disabled
+  - beta program notifications enabled/disabled
+  - **Discourse integration enabled/disabled** (per-guild, no global fallback)
+  - **Discourse base URL, API key, API username, profile name, timeout, features**
+
 ### `/admin/documentation`
 
 - Built-in documentation page inside the web GUI

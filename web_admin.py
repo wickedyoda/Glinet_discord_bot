@@ -27,17 +27,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from flask import (
-    Flask,
-    flash,
-    g,
-    redirect,
-    render_template_string,
-    request,
-    send_file,
-    session,
-    url_for,
-)
+from flask import (Flask, flash, g, jsonify, redirect, render_template_string, request, send_file, session, url_for)
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
@@ -68,7 +58,11 @@ from app.uptime_kuma_admin import (
     update_monitor,
 )
 from app.web_audit import should_log_web_audit_event
-from app.web_discourse import process_discourse_submission, render_discourse_body
+from app.web_discourse import (
+    process_discourse_submission,
+    render_discourse_body,
+)
+from app.web_discourse_routes import register_discourse_viewer_blueprint
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_honeypot import process_honeypot_submission, render_honeypot_body
 from app.web_members import process_member_action_submission, render_members_body
@@ -1379,6 +1373,43 @@ def _ensure_default_admin(users_db_file: Path, default_email: str, default_passw
         hash_password=_hash_password,
         default_display_name=_default_display_name,
     )
+
+
+def _ensure_default_admin_safe(users_db_file: Path, default_email: str, default_password: str, logger):
+    """Wrap _ensure_default_admin so it never crashes the web admin listener.
+
+    If a password-policy ValueError fires (weak/empty WEB_ADMIN_DEFAULT_PASSWORD)
+    and no users exist yet, log a clear critical message and write a banner
+    into the data dir so the web server still starts and can surface an error
+    page instead of leaving the reverse proxy with no upstream (which produces
+    a 502 Bad Gateway).
+
+    If users already exist, the default-admin check is a no-op anyway, so we
+    never raise here.
+    """
+    try:
+        _ensure_default_admin(users_db_file, default_email, default_password, logger)
+    except ValueError:
+        if _read_users(users_db_file):
+            # Users table already populated; nothing to do.
+            return
+        if logger:
+            logger.critical(
+                "WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet password policy. "
+                "The web admin server is starting but login is disabled until a valid "
+                "admin password (6-16 chars, >= 2 digits, >= 1 uppercase, >= 1 symbol) "
+                "is set via WEB_ADMIN_DEFAULT_PASSWORD and the bot is restarted. "
+                "Set a strong password to restore login access."
+            )
+        banner_path = users_db_file.parent / ".admin_password_required"
+        try:
+            banner_path.write_text(
+                "WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet the password "
+                "policy. Set a strong password and restart the bot to re-enable login."
+            )
+            os.chmod(banner_path, 0o600)
+        except (PermissionError, OSError):
+            pass
 
 
 def _read_guild_groups(users_db_file: Path):
@@ -2740,6 +2771,7 @@ def _render_layout(
                 <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
+                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -2760,6 +2792,7 @@ def _render_layout(
                 <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
+                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -3267,7 +3300,7 @@ def create_web_app(
             except (PermissionError, OSError):
                 pass
 
-    _ensure_default_admin(users_file, default_admin_email, default_admin_password, logger)
+    _ensure_default_admin_safe(users_file, default_admin_email, default_admin_password, logger)
     favicon_file = Path(__file__).resolve().parent / "assets" / "images" / "glinet-bot-round.png"
     wiki_dir = Path(__file__).resolve().parent / "wiki"
     wiki_dir_resolved = wiki_dir.resolve()
@@ -3515,6 +3548,7 @@ def create_web_app(
             "honeypot_page": "Honeypot",
             "members_page": "Members",
             "discourse_page": "Discourse",
+            "discourse_viewer_page": "Forum Viewer",
             "uptime_kuma_page": "Uptime Kuma",
             "command_status": "Command Status",
             "command_permissions": "Command Permissions",
@@ -4125,6 +4159,12 @@ def create_web_app(
             "Login",
             f"""
             <div class="card" style="max-width:520px;margin:30px auto;">
+              {('<div class="banner error" style="background:#fee;border:1px solid #fcc;padding:12px;margin-bottom:12px;border-radius:4px;">'
+                '<strong>Login temporarily disabled:</strong> '
+                'WEB_ADMIN_DEFAULT_PASSWORD is missing or does not meet the password policy. '
+                'Set a strong password (6-16 chars, >= 2 digits, >= 1 uppercase, >= 1 symbol) '
+                'and restart the bot to restore login access.</div>'
+                if (users_file.parent / ".admin_password_required").exists() else '')}
               <h2>Web Login</h2>
               <p class="muted">Web GUI login with email/password. Users are created by an admin only.</p>
               <form method="post">
@@ -8405,6 +8445,16 @@ def create_web_app(
             render_fixed_select_input=_render_fixed_select_input,
         )
         return _render_page("Discourse", body, user["email"], bool(user.get("is_admin")))
+
+    # Register Discourse Forum Viewer blueprint (extracted to app/web_discourse_routes.py)
+    register_discourse_viewer_blueprint(
+        app,
+        current_user=_current_user,
+        selected_guild=_selected_guild,
+        require_selected_guild_redirect=_require_selected_guild_redirect,
+        render_page=_render_page,
+        get_guild_settings=on_get_guild_settings,
+    )
 
     @app.route("/admin/settings", methods=["GET", "POST"])
     @login_required
