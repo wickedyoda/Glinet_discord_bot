@@ -5089,7 +5089,7 @@ async def send_safe_interaction_message(interaction: discord.Interaction, messag
     except discord.NotFound as exc:
         logger.warning(
             "Interaction expired before sending response message for user=%s command=%s code=%s",
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             interaction.command.name if interaction.command else "unknown",
             getattr(exc, "code", "unknown"),
         )
@@ -5097,7 +5097,7 @@ async def send_safe_interaction_message(interaction: discord.Interaction, messag
     except discord.HTTPException:
         logger.exception(
             "Failed sending interaction response message for user=%s command=%s",
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             interaction.command.name if interaction.command else "unknown",
         )
         return False
@@ -5113,7 +5113,7 @@ async def send_safe_interaction_modal(
         if interaction.response.is_done():
             logger.warning(
                 "Cannot open modal because interaction response is already complete for user=%s command=%s",
-                interaction.user,
+                f"{interaction.user} (id: {interaction.user.id})",
                 interaction.command.name if interaction.command else "unknown",
             )
             return False
@@ -5122,7 +5122,7 @@ async def send_safe_interaction_modal(
     except discord.NotFound as exc:
         logger.warning(
             "Interaction expired before opening modal for user=%s command=%s code=%s",
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             interaction.command.name if interaction.command else "unknown",
             getattr(exc, "code", "unknown"),
         )
@@ -5132,14 +5132,14 @@ async def send_safe_interaction_modal(
             except discord.HTTPException:
                 logger.warning(
                     "Failed sending stale interaction DM for user=%s command=%s",
-                    interaction.user,
+                    f"{interaction.user} (id: {interaction.user.id})",
                     interaction.command.name if interaction.command else "unknown",
                 )
         return False
     except discord.HTTPException:
         logger.exception(
             "Failed opening interaction modal for user=%s command=%s",
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             interaction.command.name if interaction.command else "unknown",
         )
         return False
@@ -9080,7 +9080,18 @@ def read_recent_log_lines(path: str, max_lines: int):
     return sanitize_log_text("".join(buffer))
 
 
+_server_event_dedup: dict[int, tuple[str, float]] = {}
+_SERVER_EVENT_DEDUP_SECONDS = 3.0
+
+
 async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
+    now = time.monotonic()
+    dedup_key = f"{event_name}:{details}"
+    last = _server_event_dedup.get(guild.id)
+    if last and last[0] == dedup_key and (now - last[1]) < _SERVER_EVENT_DEDUP_SECONDS:
+        logger.info("WEB_AUDIT suppress_duplicate event=%s guild_id=%s", event_name, guild.id)
+        return
+    _server_event_dedup[guild.id] = (dedup_key, now)
     message = f"📌 **Server Event:** `{event_name}`\n{details}"
     record_action_safe(
         action=event_name,
@@ -11935,7 +11946,7 @@ async def on_tree_error(interaction: discord.Interaction, error: app_commands.Ap
     logger.error(
         "Unhandled app command error in /%s invoked by %s",
         command_name,
-        interaction.user,
+        f"{interaction.user} (id: {interaction.user.id})",
         exc_info=(type(error), error, error.__traceback__),
     )
     if isinstance(error, app_commands.CommandNotFound):
@@ -12066,6 +12077,48 @@ async def on_user_update(before: discord.User, after: discord.User):
         await send_server_event_log(guild, "user_avatar_change", details)
 
 
+async def _resolve_role_change_actor(guild: discord.Guild, target_member_id: int) -> str:
+    """Query the guild audit log to find who most recently added/removed a role on the target member."""
+    try:
+        async for entry in guild.audit_logs(
+            limit=25,
+            action=discord.AuditLogAction.member_role_update,
+        ):
+            if str(getattr(entry, "target_id", "")) == str(target_member_id):
+                user = entry.user
+                return (
+                    f"{user.mention} (`{user.id}`)"
+                    if user
+                    else f"`{entry.user_id}`"
+                )
+    except discord.Forbidden:
+        return "Unknown (bot lacks audit log permission)"
+    except Exception:
+        return "Unknown"
+    return "Unknown (not in audit log)"
+
+
+async def _resolve_role_create_actor(guild: discord.Guild, role_id: int) -> str:
+    """Query the guild audit log to find who created the role."""
+    try:
+        async for entry in guild.audit_logs(
+            limit=25,
+            action=discord.AuditLogAction.role_create,
+        ):
+            if str(getattr(entry, "target_id", "")) == str(role_id):
+                user = entry.user
+                return (
+                    f"{user.mention} (`{user.id}`)"
+                    if user
+                    else f"`{entry.user_id}`"
+                )
+    except discord.Forbidden:
+        return "Unknown (bot lacks audit log permission)"
+    except Exception:
+        return "Unknown"
+    return "Unknown (not in audit log)"
+
+
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
     guild = after.guild
@@ -12084,14 +12137,24 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     added_role_ids = sorted(set(after_role_map) - set(before_role_map))
     removed_role_ids = sorted(set(before_role_map) - set(after_role_map))
 
+    actor_label = await _resolve_role_change_actor(guild, after.id)
+
     for role_id in added_role_ids:
         role = after_role_map[role_id]
-        details = f"**Member:** {after.mention} (`{after.id}`)\n**Role Added:** {role.mention} (`{role.id}`)\n"
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Role Added:** {role.mention} (`{role.id}`)\n"
+            f"**Actor:** {actor_label}\n"
+        )
         await send_server_event_log(guild, "member_role_added", details)
 
     for role_id in removed_role_ids:
         role = before_role_map[role_id]
-        details = f"**Member:** {after.mention} (`{after.id}`)\n**Role Removed:** {role.name} (`{role.id}`)\n"
+        details = (
+            f"**Member:** {after.mention} (`{after.id}`)\n"
+            f"**Role Removed:** {role.name} (`{role.id}`)\n"
+            f"**Actor:** {actor_label}\n"
+        )
         await send_server_event_log(guild, "member_role_removed", details)
 
 
@@ -12250,7 +12313,13 @@ async def on_guild_role_create(role: discord.Role):
     if not is_managed_guild_id(guild.id):
         return
 
-    details = f"**Role:** {role.mention} (`{role.id}`)\n**Color:** `{role.color}`\n**Position:** `{role.position}`\n"
+    actor_label = await _resolve_role_create_actor(guild, role.id)
+    details = (
+        f"**Role:** {role.mention} (`{role.id}`\n"
+        f"**Color:** `{role.color}`\n"
+        f"**Position:** `{role.position}`\n"
+        f"**Actor:** {actor_label}\n"
+    )
     await send_server_event_log(guild, "role_created", details)
 
 
@@ -12368,7 +12437,7 @@ async def list_commands(ctx: commands.Context):
 @app_commands.describe(tag="Select the tag response to post")
 @app_commands.autocomplete(tag=autocomplete_tag_response_name)
 async def tag_slash(interaction: discord.Interaction, tag: str):
-    logger.info("/tag invoked by %s with tag %s", interaction.user, tag)
+    logger.info("/tag invoked by %s with tag %s", f"{interaction.user} (id: {interaction.user.id})", tag)
     if not await ensure_interaction_command_access(interaction, "tag_commands"):
         return
 
@@ -12392,7 +12461,7 @@ async def tag_slash(interaction: discord.Interaction, tag: str):
 )
 @app_commands.describe(role="Role to map to a new invite link and access code")
 async def submitrole(interaction: discord.Interaction, role: discord.Role):
-    logger.info("/submitrole invoked by %s", interaction.user)
+    logger.info("/submitrole invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "submitrole"):
         return
 
@@ -12427,7 +12496,7 @@ async def submitrole(interaction: discord.Interaction, role: discord.Role):
     invite="Optional Discord invite URL or code to restore with the access code",
 )
 async def restore_code(interaction: discord.Interaction, role: discord.Role, code: str, invite: str | None = None):
-    logger.info("/restore_code invoked by %s for role %s", interaction.user, role.id if role else "unknown")
+    logger.info("/restore_code invoked by %s for role %s", f"{interaction.user} (id: {interaction.user.id})", role.id if role else "unknown")
     if not await ensure_interaction_command_access(interaction, "restore_code"):
         return
 
@@ -12471,7 +12540,7 @@ async def restore_code(interaction: discord.Interaction, role: discord.Role, cod
     csv_file="Upload a .csv or .xlsx containing Discord names (comma-separated or one-per-line)",
 )
 async def bulk_assign_role_csv(interaction: discord.Interaction, role: discord.Role, csv_file: discord.Attachment):
-    logger.info("/bulk_assign_role_csv invoked by %s", interaction.user)
+    logger.info("/bulk_assign_role_csv invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "bulk_assign_role_csv"):
         return
 
@@ -12583,7 +12652,7 @@ class CodeEntryModal(discord.ui.Modal):
 )
 async def enter_role(interaction: discord.Interaction):
     """Prompt the user to enter their code via a modal."""
-    logger.info("/enter_role invoked by %s", interaction.user)
+    logger.info("/enter_role invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "enter_role"):
         return
     await send_safe_interaction_modal(
@@ -12601,7 +12670,7 @@ async def enter_role(interaction: discord.Interaction):
     description="Assign yourself the protected role",
 )
 async def getaccess(interaction: discord.Interaction):
-    logger.info("/getaccess invoked by %s", interaction.user)
+    logger.info("/getaccess invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "getaccess"):
         return
     try:
@@ -12624,7 +12693,7 @@ async def getaccess(interaction: discord.Interaction):
             )
             return
         await interaction.user.add_roles(role)
-        logger.info("Assigned default role %s to user %s", role.id, interaction.user)
+        logger.info("Assigned default role %s to user %s", role.id, f"{interaction.user} (id: {interaction.user.id})")
         await interaction.response.send_message(f"✅ You've been given the **{role.name}** role!", ephemeral=True)
     except Exception:
         logger.exception("Error in /getaccess")
@@ -12637,7 +12706,7 @@ async def getaccess(interaction: discord.Interaction):
 )
 @app_commands.describe(code="2-letter country code (e.g. US, CA, DE)")
 async def country_slash(interaction: discord.Interaction, code: str):
-    logger.info("/country invoked by %s with code %s", interaction.user, code)
+    logger.info("/country invoked by %s with code %s", f"{interaction.user} (id: {interaction.user.id})", code)
     if not await ensure_interaction_command_access(interaction, "country"):
         return
     normalized = normalize_country_code(code)
@@ -12651,15 +12720,15 @@ async def country_slash(interaction: discord.Interaction, code: str):
     try:
         success, message = await set_member_country(interaction.user, normalized)
         await interaction.response.send_message(message, ephemeral=True)
-        logger.info("/country result for %s success=%s", interaction.user, success)
+        logger.info("/country result for %s success=%s", f"{interaction.user} (id: {interaction.user.id})", success)
     except discord.Forbidden:
-        logger.exception("Missing permission to edit nickname for %s", interaction.user)
+        logger.exception("Missing permission to edit nickname for %s", f"{interaction.user} (id: {interaction.user.id})")
         await interaction.response.send_message(
             "❌ I can't edit your nickname. Check role hierarchy and nickname permissions.",
             ephemeral=True,
         )
     except discord.HTTPException:
-        logger.exception("Failed to update nickname for %s", interaction.user)
+        logger.exception("Failed to update nickname for %s", f"{interaction.user} (id: {interaction.user.id})")
         await interaction.response.send_message(
             "❌ Could not update your nickname right now. Try again.",
             ephemeral=True,
@@ -12668,7 +12737,7 @@ async def country_slash(interaction: discord.Interaction, code: str):
 
 @bot.command(name="country")
 async def country_prefix(ctx: commands.Context, code: str):
-    logger.info("!country invoked by %s with code %s", ctx.author, code)
+    logger.info("!country invoked by %s with code %s", f"{ctx.author} (id: {ctx.author.id})", code)
     if not await ensure_prefix_command_access(ctx, "country"):
         return
     normalized = normalize_country_code(code)
@@ -12680,10 +12749,10 @@ async def country_prefix(ctx: commands.Context, code: str):
         _, message = await set_member_country(ctx.author, normalized)
         await ctx.send(message)
     except discord.Forbidden:
-        logger.exception("Missing permission to edit nickname for %s", ctx.author)
+        logger.exception("Missing permission to edit nickname for %s", f"{ctx.author} (id: {ctx.author.id})")
         await ctx.send("❌ I can't edit your nickname. Check role hierarchy and nickname permissions.")
     except discord.HTTPException:
-        logger.exception("Failed to update nickname for %s", ctx.author)
+        logger.exception("Failed to update nickname for %s", f"{ctx.author} (id: {ctx.author.id})")
         await ctx.send("❌ Could not update your nickname right now. Try again.")
 
 
@@ -12692,20 +12761,20 @@ async def country_prefix(ctx: commands.Context, code: str):
     description="Remove country code suffix from your nickname",
 )
 async def clear_country_slash(interaction: discord.Interaction):
-    logger.info("/clear_country invoked by %s", interaction.user)
+    logger.info("/clear_country invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "clear_country"):
         return
     try:
         _, message = await clear_member_country(interaction.user)
         await interaction.response.send_message(message, ephemeral=True)
     except discord.Forbidden:
-        logger.exception("Missing permission to edit nickname for %s", interaction.user)
+        logger.exception("Missing permission to edit nickname for %s", f"{interaction.user} (id: {interaction.user.id})")
         await interaction.response.send_message(
             "❌ I can't edit your nickname. Check role hierarchy and nickname permissions.",
             ephemeral=True,
         )
     except discord.HTTPException:
-        logger.exception("Failed to clear nickname suffix for %s", interaction.user)
+        logger.exception("Failed to clear nickname suffix for %s", f"{interaction.user} (id: {interaction.user.id})")
         await interaction.response.send_message(
             "❌ Could not update your nickname right now. Try again.",
             ephemeral=True,
@@ -12714,17 +12783,17 @@ async def clear_country_slash(interaction: discord.Interaction):
 
 @bot.command(name="clearcountry")
 async def clear_country_prefix(ctx: commands.Context):
-    logger.info("!clearcountry invoked by %s", ctx.author)
+    logger.info("!clearcountry invoked by %s", f"{ctx.author} (id: {ctx.author.id})")
     if not await ensure_prefix_command_access(ctx, "clear_country"):
         return
     try:
         _, message = await clear_member_country(ctx.author)
         await ctx.send(message)
     except discord.Forbidden:
-        logger.exception("Missing permission to edit nickname for %s", ctx.author)
+        logger.exception("Missing permission to edit nickname for %s", f"{ctx.author} (id: {ctx.author.id})")
         await ctx.send("❌ I can't edit your nickname. Check role hierarchy and nickname permissions.")
     except discord.HTTPException:
-        logger.exception("Failed to clear nickname suffix for %s", ctx.author)
+        logger.exception("Failed to clear nickname suffix for %s", f"{ctx.author} (id: {ctx.author.id})")
         await ctx.send("❌ Could not update your nickname right now. Try again.")
 
 
@@ -12745,7 +12814,7 @@ async def create_role_slash(
     hoist: bool = False,
     mentionable: bool = False,
 ):
-    logger.info("/create_role invoked by %s for role name %s", interaction.user, name)
+    logger.info("/create_role invoked by %s for role name %s", f"{interaction.user} (id: {interaction.user.id})", name)
     if not await ensure_interaction_command_access(interaction, "create_role"):
         return
     if interaction.guild is None:
@@ -12795,7 +12864,7 @@ async def create_role_slash(
         logger.exception("Missing permission to create role %s", normalized_name)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "create_role",
             reason=action_reason,
             outcome="failed",
@@ -12810,7 +12879,7 @@ async def create_role_slash(
         logger.exception("Failed to create role %s", normalized_name)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "create_role",
             reason=action_reason,
             outcome="failed",
@@ -12842,7 +12911,7 @@ async def delete_role_slash(
     role: discord.Role,
     reason: str | None = None,
 ):
-    logger.info("/delete_role invoked by %s for role %s", interaction.user, role)
+    logger.info("/delete_role invoked by %s for role %s", f"{interaction.user} (id: {interaction.user.id})", role)
     if not await ensure_interaction_command_access(interaction, "delete_role"):
         return
     if interaction.guild is None:
@@ -12883,7 +12952,7 @@ async def delete_role_slash(
         logger.exception("Missing permission to delete role %s", role)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "delete_role",
             reason=action_reason,
             outcome="failed",
@@ -12898,7 +12967,7 @@ async def delete_role_slash(
         logger.exception("Failed to delete role %s", role)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "delete_role",
             reason=action_reason,
             outcome="failed",
@@ -12941,7 +13010,7 @@ async def edit_role_slash(
     mentionable: bool | None = None,
     reason: str | None = None,
 ):
-    logger.info("/edit_role invoked by %s for role %s", interaction.user, role)
+    logger.info("/edit_role invoked by %s for role %s", f"{interaction.user} (id: {interaction.user.id})", role)
     if not await ensure_interaction_command_access(interaction, "edit_role"):
         return
     if interaction.guild is None:
@@ -13022,7 +13091,7 @@ async def edit_role_slash(
         logger.exception("Missing permission to edit role %s", role)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "edit_role",
             reason=action_reason,
             outcome="failed",
@@ -13037,7 +13106,7 @@ async def edit_role_slash(
         logger.exception("Failed to edit role %s", role)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "edit_role",
             reason=action_reason,
             outcome="failed",
@@ -13089,7 +13158,7 @@ async def diagnose_log_target_slash(interaction: discord.Interaction):
     description="Send a test moderation log entry",
 )
 async def modlog_test_slash(interaction: discord.Interaction):
-    logger.info("/modlog_test invoked by %s", interaction.user)
+    logger.info("/modlog_test invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "modlog_test"):
         return
     target_channel_id = get_effective_logging_channel_id(interaction.guild.id if interaction.guild else 0)
@@ -13117,7 +13186,7 @@ async def modlog_test_slash(interaction: discord.Interaction):
 
 @bot.command(name="modlogtest")
 async def modlog_test_prefix(ctx: commands.Context):
-    logger.info("!modlogtest invoked by %s", ctx.author)
+    logger.info("!modlogtest invoked by %s", f"{ctx.author} (id: {ctx.author.id})")
     if not await ensure_prefix_command_access(ctx, "modlog_test"):
         return
     target_channel_id = get_effective_logging_channel_id(ctx.guild.id if ctx.guild else 0)
@@ -13146,7 +13215,7 @@ async def logs_slash(
     interaction: discord.Interaction,
     lines: app_commands.Range[int, 10, 400] = 120,
 ):
-    logger.info("/logs invoked by %s", interaction.user)
+    logger.info("/logs invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "logs"):
         return
 
@@ -13195,7 +13264,7 @@ async def logs_slash(
     description="Randomly pick a non-staff guild member",
 )
 async def random_choice_slash(interaction: discord.Interaction):
-    logger.info("/random_choice invoked by %s", interaction.user)
+    logger.info("/random_choice invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "random_choice"):
         return
     if interaction.guild is None:
@@ -13275,7 +13344,7 @@ async def prune_messages_slash(
     interaction: discord.Interaction,
     amount: app_commands.Range[int, 1, 500],
 ):
-    logger.info("/prune_messages invoked by %s amount=%s", interaction.user, int(amount))
+    logger.info("/prune_messages invoked by %s amount=%s", f"{interaction.user} (id: {interaction.user.id})", int(amount))
     if not await ensure_interaction_command_access(interaction, "prune_messages"):
         return
     if interaction.guild is None:
@@ -13321,7 +13390,7 @@ async def prune_messages_slash(
         logger.exception("Missing permission to prune messages in channel %s", channel.id)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "prune_messages",
             reason=action_reason,
             outcome="failed",
@@ -13336,7 +13405,7 @@ async def prune_messages_slash(
         logger.exception("Failed to prune messages in channel %s", channel.id)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "prune_messages",
             reason=action_reason,
             outcome="failed",
@@ -13360,7 +13429,7 @@ async def prune_messages_slash(
 
 @bot.command(name="prune")
 async def prune_messages_prefix(ctx: commands.Context, amount: str):
-    logger.info("!prune invoked by %s amount=%s", ctx.author, amount)
+    logger.info("!prune invoked by %s amount=%s", f"{ctx.author} (id: {ctx.author.id})", amount)
     if not await ensure_prefix_command_access(ctx, "prune_messages"):
         return
     if ctx.guild is None:
@@ -13403,7 +13472,7 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
         logger.exception("Missing permission to prune messages in channel %s", channel.id)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "prune_messages",
             reason=action_reason,
             outcome="failed",
@@ -13415,7 +13484,7 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
         logger.exception("Failed to prune messages in channel %s", channel.id)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "prune_messages",
             reason=action_reason,
             outcome="failed",
@@ -13442,7 +13511,7 @@ async def prune_messages_prefix(ctx: commands.Context, amount: str):
 )
 @app_commands.describe(member="Member to ban", reason="Reason for ban")
 async def ban_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
-    logger.info("/ban_member invoked by %s targeting %s", interaction.user, member)
+    logger.info("/ban_member invoked by %s targeting %s", f"{interaction.user} (id: {interaction.user.id})", member)
     if not await ensure_interaction_command_access(interaction, "ban_member"):
         return
 
@@ -13467,7 +13536,7 @@ async def ban_member_slash(interaction: discord.Interaction, member: discord.Mem
         logger.exception("Missing permission to ban member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "ban_member",
             member,
             action_reason,
@@ -13483,7 +13552,7 @@ async def ban_member_slash(interaction: discord.Interaction, member: discord.Mem
         logger.exception("Failed to ban member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "ban_member",
             member,
             action_reason,
@@ -13506,7 +13575,7 @@ async def ban_member_slash(interaction: discord.Interaction, member: discord.Mem
 
 @bot.command(name="banmember")
 async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
-    logger.info("!banmember invoked by %s targeting %s", ctx.author, member)
+    logger.info("!banmember invoked by %s targeting %s", f"{ctx.author} (id: {ctx.author.id})", member)
     if not await ensure_prefix_command_access(ctx, "ban_member"):
         return
 
@@ -13531,7 +13600,7 @@ async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, re
         logger.exception("Missing permission to ban member %s", member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "ban_member",
             member,
             action_reason,
@@ -13544,7 +13613,7 @@ async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, re
         logger.exception("Failed to ban member %s", member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "ban_member",
             member,
             action_reason,
@@ -13571,7 +13640,7 @@ async def ban_member_prefix(ctx: commands.Context, member: discord.Member, *, re
 )
 @app_commands.describe(member="Member to kick", reason="Reason for kicking")
 async def kick_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
-    logger.info("/kick_member invoked by %s targeting %s", interaction.user, member)
+    logger.info("/kick_member invoked by %s targeting %s", f"{interaction.user} (id: {interaction.user.id})", member)
     if not await ensure_interaction_command_access(interaction, "kick_member"):
         return
 
@@ -13600,7 +13669,7 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
         logger.exception("Missing permission to kick member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "kick_member",
             member,
             action_reason,
@@ -13616,7 +13685,7 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
         logger.exception("Failed to kick member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "kick_member",
             member,
             action_reason,
@@ -13644,7 +13713,7 @@ async def kick_member_slash(interaction: discord.Interaction, member: discord.Me
 
 @bot.command(name="kickmember")
 async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
-    logger.info("!kickmember invoked by %s targeting %s", ctx.author, member)
+    logger.info("!kickmember invoked by %s targeting %s", f"{ctx.author} (id: {ctx.author.id})", member)
     if not await ensure_prefix_command_access(ctx, "kick_member"):
         return
 
@@ -13671,7 +13740,7 @@ async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, r
         logger.exception("Missing permission to kick member %s", member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "kick_member",
             member,
             action_reason,
@@ -13684,7 +13753,7 @@ async def kick_member_prefix(ctx: commands.Context, member: discord.Member, *, r
         logger.exception("Failed to kick member %s", member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "kick_member",
             member,
             action_reason,
@@ -13726,7 +13795,7 @@ async def timeout_member_slash(
 ):
     logger.info(
         "/timeout_member invoked by %s targeting %s for %s",
-        interaction.user,
+        f"{interaction.user} (id: {interaction.user.id})",
         member,
         duration,
     )
@@ -13769,7 +13838,7 @@ async def timeout_member_slash(
         logger.exception("Missing permission to timeout member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "timeout_member",
             member,
             action_reason,
@@ -13785,7 +13854,7 @@ async def timeout_member_slash(
         logger.exception("Failed to timeout member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "timeout_member",
             member,
             action_reason,
@@ -13812,7 +13881,7 @@ async def timeout_member_slash(
 
 @bot.command(name="timeoutmember")
 async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, duration: str, *, reason: str = ""):
-    logger.info("!timeoutmember invoked by %s targeting %s for %s", ctx.author, member, duration)
+    logger.info("!timeoutmember invoked by %s targeting %s for %s", f"{ctx.author} (id: {ctx.author.id})", member, duration)
     if not await ensure_prefix_command_access(ctx, "timeout_member"):
         return
 
@@ -13852,7 +13921,7 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
         logger.exception("Missing permission to timeout member %s", member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "timeout_member",
             member,
             action_reason,
@@ -13865,7 +13934,7 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
         logger.exception("Failed to timeout member %s", member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "timeout_member",
             member,
             action_reason,
@@ -13893,7 +13962,7 @@ async def timeout_member_prefix(ctx: commands.Context, member: discord.Member, d
 )
 @app_commands.describe(member="Member to remove timeout from", reason="Reason for removing timeout")
 async def untimeout_member_slash(interaction: discord.Interaction, member: discord.Member, reason: str | None = None):
-    logger.info("/untimeout_member invoked by %s targeting %s", interaction.user, member)
+    logger.info("/untimeout_member invoked by %s targeting %s", f"{interaction.user} (id: {interaction.user.id})", member)
     if not await ensure_interaction_command_access(interaction, "untimeout_member"):
         return
 
@@ -13923,7 +13992,7 @@ async def untimeout_member_slash(interaction: discord.Interaction, member: disco
         logger.exception("Missing permission to remove timeout for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "untimeout_member",
             member,
             action_reason,
@@ -13939,7 +14008,7 @@ async def untimeout_member_slash(interaction: discord.Interaction, member: disco
         logger.exception("Failed to remove timeout for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "untimeout_member",
             member,
             action_reason,
@@ -13962,7 +14031,7 @@ async def untimeout_member_slash(interaction: discord.Interaction, member: disco
 
 @bot.command(name="untimeoutmember")
 async def untimeout_member_prefix(ctx: commands.Context, member: discord.Member, *, reason: str = ""):
-    logger.info("!untimeoutmember invoked by %s targeting %s", ctx.author, member)
+    logger.info("!untimeoutmember invoked by %s targeting %s", f"{ctx.author} (id: {ctx.author.id})", member)
     if not await ensure_prefix_command_access(ctx, "untimeout_member"):
         return
 
@@ -13992,7 +14061,7 @@ async def untimeout_member_prefix(ctx: commands.Context, member: discord.Member,
         logger.exception("Missing permission to remove timeout for member %s", member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "untimeout_member",
             member,
             action_reason,
@@ -14005,7 +14074,7 @@ async def untimeout_member_prefix(ctx: commands.Context, member: discord.Member,
         logger.exception("Failed to remove timeout for member %s", member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "untimeout_member",
             member,
             action_reason,
@@ -14039,7 +14108,7 @@ async def add_role_member_slash(
 ):
     logger.info(
         "/add_role_member invoked by %s target=%s role=%s",
-        interaction.user,
+        f"{interaction.user} (id: {interaction.user.id})",
         member,
         role,
     )
@@ -14103,7 +14172,7 @@ async def add_role_member_slash(
         logger.exception("Missing permission to add role %s to member %s", role, member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "add_role_member",
             target=member,
             reason=action_reason,
@@ -14119,7 +14188,7 @@ async def add_role_member_slash(
         logger.exception("Failed to add role %s to member %s", role, member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "add_role_member",
             target=member,
             reason=action_reason,
@@ -14151,7 +14220,7 @@ async def add_role_member_prefix(
     *,
     reason: str = "",
 ):
-    logger.info("!addrolemember invoked by %s target=%s role=%s", ctx.author, member, role)
+    logger.info("!addrolemember invoked by %s target=%s role=%s", f"{ctx.author} (id: {ctx.author.id})", member, role)
     if not await ensure_prefix_command_access(ctx, "add_role_member"):
         return
     if ctx.guild is None:
@@ -14206,7 +14275,7 @@ async def add_role_member_prefix(
         logger.exception("Missing permission to add role %s to member %s", role, member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "add_role_member",
             target=member,
             reason=action_reason,
@@ -14219,7 +14288,7 @@ async def add_role_member_prefix(
         logger.exception("Failed to add role %s to member %s", role, member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "add_role_member",
             target=member,
             reason=action_reason,
@@ -14253,7 +14322,7 @@ async def remove_role_member_slash(
 ):
     logger.info(
         "/remove_role_member invoked by %s target=%s role=%s",
-        interaction.user,
+        f"{interaction.user} (id: {interaction.user.id})",
         member,
         role,
     )
@@ -14317,7 +14386,7 @@ async def remove_role_member_slash(
         logger.exception("Missing permission to remove role %s from member %s", role, member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "remove_role_member",
             target=member,
             reason=action_reason,
@@ -14333,7 +14402,7 @@ async def remove_role_member_slash(
         logger.exception("Failed to remove role %s from member %s", role, member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "remove_role_member",
             target=member,
             reason=action_reason,
@@ -14365,7 +14434,7 @@ async def remove_role_member_prefix(
     *,
     reason: str = "",
 ):
-    logger.info("!removerolemember invoked by %s target=%s role=%s", ctx.author, member, role)
+    logger.info("!removerolemember invoked by %s target=%s role=%s", f"{ctx.author} (id: {ctx.author.id})", member, role)
     if not await ensure_prefix_command_access(ctx, "remove_role_member"):
         return
     if ctx.guild is None:
@@ -14420,7 +14489,7 @@ async def remove_role_member_prefix(
         logger.exception("Missing permission to remove role %s from member %s", role, member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "remove_role_member",
             target=member,
             reason=action_reason,
@@ -14433,7 +14502,7 @@ async def remove_role_member_prefix(
         logger.exception("Failed to remove role %s from member %s", role, member)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "remove_role_member",
             target=member,
             reason=action_reason,
@@ -14465,7 +14534,7 @@ async def set_member_nickname_slash(
     nickname: str,
     reason: str | None = None,
 ):
-    logger.info("/set_member_nickname invoked by %s targeting %s", interaction.user, member)
+    logger.info("/set_member_nickname invoked by %s targeting %s", f"{interaction.user} (id: {interaction.user.id})", member)
     if not await ensure_interaction_command_access(interaction, "set_member_nickname"):
         return
     if interaction.guild is None:
@@ -14516,7 +14585,7 @@ async def set_member_nickname_slash(
         logger.exception("Missing permission to update nickname for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "set_member_nickname",
             member,
             action_reason,
@@ -14532,7 +14601,7 @@ async def set_member_nickname_slash(
         logger.exception("Failed to update nickname for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "set_member_nickname",
             member,
             action_reason,
@@ -14566,7 +14635,7 @@ async def clear_member_nickname_slash(
     member: discord.Member,
     reason: str | None = None,
 ):
-    logger.info("/clear_member_nickname invoked by %s targeting %s", interaction.user, member)
+    logger.info("/clear_member_nickname invoked by %s targeting %s", f"{interaction.user} (id: {interaction.user.id})", member)
     if not await ensure_interaction_command_access(interaction, "clear_member_nickname"):
         return
     if interaction.guild is None:
@@ -14609,7 +14678,7 @@ async def clear_member_nickname_slash(
         logger.exception("Missing permission to clear nickname for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "clear_member_nickname",
             member,
             action_reason,
@@ -14625,7 +14694,7 @@ async def clear_member_nickname_slash(
         logger.exception("Failed to clear nickname for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "clear_member_nickname",
             member,
             action_reason,
@@ -14660,7 +14729,7 @@ async def voice_mute_member_slash(
     mute: bool,
     reason: str | None = None,
 ):
-    logger.info("/voice_mute_member invoked by %s targeting %s mute=%s", interaction.user, member, mute)
+    logger.info("/voice_mute_member invoked by %s targeting %s mute=%s", f"{interaction.user} (id: {interaction.user.id})", member, mute)
     if not await ensure_interaction_command_access(interaction, "voice_mute_member"):
         return
     if interaction.guild is None:
@@ -14710,7 +14779,7 @@ async def voice_mute_member_slash(
         logger.exception("Missing permission to update voice mute for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "voice_mute_member",
             member,
             action_reason,
@@ -14726,7 +14795,7 @@ async def voice_mute_member_slash(
         logger.exception("Failed to update voice mute for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "voice_mute_member",
             member,
             action_reason,
@@ -14761,7 +14830,7 @@ async def voice_deafen_member_slash(
     deafen: bool,
     reason: str | None = None,
 ):
-    logger.info("/voice_deafen_member invoked by %s targeting %s deafen=%s", interaction.user, member, deafen)
+    logger.info("/voice_deafen_member invoked by %s targeting %s deafen=%s", f"{interaction.user} (id: {interaction.user.id})", member, deafen)
     if not await ensure_interaction_command_access(interaction, "voice_deafen_member"):
         return
     if interaction.guild is None:
@@ -14811,7 +14880,7 @@ async def voice_deafen_member_slash(
         logger.exception("Missing permission to update voice deafen for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "voice_deafen_member",
             member,
             action_reason,
@@ -14827,7 +14896,7 @@ async def voice_deafen_member_slash(
         logger.exception("Failed to update voice deafen for member %s", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "voice_deafen_member",
             member,
             action_reason,
@@ -14861,7 +14930,7 @@ async def voice_disconnect_member_slash(
     member: discord.Member,
     reason: str | None = None,
 ):
-    logger.info("/voice_disconnect_member invoked by %s targeting %s", interaction.user, member)
+    logger.info("/voice_disconnect_member invoked by %s targeting %s", f"{interaction.user} (id: {interaction.user.id})", member)
     if not await ensure_interaction_command_access(interaction, "voice_disconnect_member"):
         return
     if interaction.guild is None:
@@ -14906,7 +14975,7 @@ async def voice_disconnect_member_slash(
         logger.exception("Missing permission to disconnect member %s from voice", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "voice_disconnect_member",
             member,
             action_reason,
@@ -14922,7 +14991,7 @@ async def voice_disconnect_member_slash(
         logger.exception("Failed to disconnect member %s from voice", member)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "voice_disconnect_member",
             member,
             action_reason,
@@ -14957,7 +15026,7 @@ async def voice_move_member_slash(
     channel: discord.VoiceChannel,
     reason: str | None = None,
 ):
-    logger.info("/voice_move_member invoked by %s targeting %s channel=%s", interaction.user, member, channel)
+    logger.info("/voice_move_member invoked by %s targeting %s channel=%s", f"{interaction.user} (id: {interaction.user.id})", member, channel)
     if not await ensure_interaction_command_access(interaction, "voice_move_member"):
         return
     if interaction.guild is None:
@@ -15008,7 +15077,7 @@ async def voice_move_member_slash(
         logger.exception("Missing permission to move member %s to voice channel %s", member, channel)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "voice_move_member",
             member,
             action_reason,
@@ -15024,7 +15093,7 @@ async def voice_move_member_slash(
         logger.exception("Failed to move member %s to voice channel %s", member, channel)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "voice_move_member",
             member,
             action_reason,
@@ -15054,7 +15123,7 @@ async def voice_move_member_slash(
 )
 @app_commands.describe(user_id="User ID to unban", reason="Reason for unban")
 async def unban_member_slash(interaction: discord.Interaction, user_id: str, reason: str | None = None):
-    logger.info("/unban_member invoked by %s target=%s", interaction.user, user_id)
+    logger.info("/unban_member invoked by %s target=%s", f"{interaction.user} (id: {interaction.user.id})", user_id)
     if not await ensure_interaction_command_access(interaction, "unban_member"):
         return
     if interaction.guild is None:
@@ -15079,7 +15148,7 @@ async def unban_member_slash(interaction: discord.Interaction, user_id: str, rea
         logger.exception("Missing permission to unban user %s", target_user_id)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "unban_member",
             reason=action_reason,
             outcome="failed",
@@ -15094,7 +15163,7 @@ async def unban_member_slash(interaction: discord.Interaction, user_id: str, rea
         logger.exception("Failed to unban user %s", target_user_id)
         await send_moderation_log(
             interaction.guild,
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             "unban_member",
             reason=action_reason,
             outcome="failed",
@@ -15115,7 +15184,7 @@ async def unban_member_slash(interaction: discord.Interaction, user_id: str, rea
 
 @bot.command(name="unbanmember")
 async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: str = ""):
-    logger.info("!unbanmember invoked by %s target=%s", ctx.author, user_id)
+    logger.info("!unbanmember invoked by %s target=%s", f"{ctx.author} (id: {ctx.author.id})", user_id)
     if not await ensure_prefix_command_access(ctx, "unban_member"):
         return
     if ctx.guild is None:
@@ -15137,7 +15206,7 @@ async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: st
         logger.exception("Missing permission to unban user %s", target_user_id)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "unban_member",
             reason=action_reason,
             outcome="failed",
@@ -15149,7 +15218,7 @@ async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: st
         logger.exception("Failed to unban user %s", target_user_id)
         await send_moderation_log(
             ctx.guild,
-            ctx.author,
+            f"{ctx.author} (id: {ctx.author.id})",
             "unban_member",
             reason=action_reason,
             outcome="failed",
@@ -15173,7 +15242,7 @@ async def unban_member_prefix(ctx: commands.Context, user_id: str, *, reason: st
     description="Check if the bot is online.",
 )
 async def ping_slash(interaction: discord.Interaction):
-    logger.info("/ping invoked by %s", interaction.user)
+    logger.info("/ping invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "ping"):
         return
     await interaction.response.send_message(
@@ -15188,7 +15257,7 @@ async def ping_slash(interaction: discord.Interaction):
     description="Introduce the bot in the channel.",
 )
 async def sayhi_slash(interaction: discord.Interaction):
-    logger.info("/sayhi invoked by %s", interaction.user)
+    logger.info("/sayhi invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "sayhi"):
         return
     intro = (
@@ -15208,7 +15277,7 @@ async def sayhi_slash(interaction: discord.Interaction):
     description="Post a random puppy picture.",
 )
 async def happy_slash(interaction: discord.Interaction):
-    logger.info("/happy invoked by %s", interaction.user)
+    logger.info("/happy invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "happy"):
         return
     await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
@@ -15248,7 +15317,7 @@ async def happy_slash(interaction: discord.Interaction):
     description="Flip a coin.",
 )
 async def coin_flip_slash(interaction: discord.Interaction):
-    logger.info("/coin_flip invoked by %s", interaction.user)
+    logger.info("/coin_flip invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "coin_flip"):
         return
     result = "Heads" if secrets.randbelow(2) == 0 else "Tails"
@@ -15265,7 +15334,7 @@ async def coin_flip_slash(interaction: discord.Interaction):
 )
 @app_commands.describe(question="Question for the 8-ball")
 async def eight_ball_slash(interaction: discord.Interaction, question: str):
-    logger.info("/eight_ball invoked by %s", interaction.user)
+    logger.info("/eight_ball invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "eight_ball"):
         return
     normalized_question = str(question or "").strip()
@@ -15304,7 +15373,7 @@ async def eight_ball_slash(interaction: discord.Interaction, question: str):
     description="Post a random meme.",
 )
 async def meme_slash(interaction: discord.Interaction):
-    logger.info("/meme invoked by %s", interaction.user)
+    logger.info("/meme invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "meme"):
         return
     await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
@@ -15345,7 +15414,7 @@ async def meme_slash(interaction: discord.Interaction):
     description="Post a dad joke.",
 )
 async def dad_joke_slash(interaction: discord.Interaction):
-    logger.info("/dad_joke invoked by %s", interaction.user)
+    logger.info("/dad_joke invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "dad_joke"):
         return
     await interaction.response.defer(ephemeral=COMMAND_RESPONSES_EPHEMERAL)
@@ -15380,7 +15449,7 @@ async def dad_joke_slash(interaction: discord.Interaction):
 )
 @app_commands.describe(url="URL to shorten using the configured shortener")
 async def shorten_slash(interaction: discord.Interaction, url: str):
-    logger.info("/shorten invoked by %s", interaction.user)
+    logger.info("/shorten invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "shorten"):
         return
     if not SHORTENER_ENABLED:
@@ -15435,7 +15504,7 @@ async def shorten_slash(interaction: discord.Interaction, url: str):
 )
 @app_commands.describe(value="Short code or full short URL")
 async def expand_slash(interaction: discord.Interaction, value: str):
-    logger.info("/expand invoked by %s", interaction.user)
+    logger.info("/expand invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "expand"):
         return
     if not SHORTENER_ENABLED:
@@ -15489,7 +15558,7 @@ async def expand_slash(interaction: discord.Interaction, value: str):
     description="Show current uptime monitor status.",
 )
 async def uptime_slash(interaction: discord.Interaction):
-    logger.info("/uptime invoked by %s", interaction.user)
+    logger.info("/uptime invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "uptime"):
         return
     if not UPTIME_STATUS_ENABLED:
@@ -15534,7 +15603,7 @@ async def uptime_slash(interaction: discord.Interaction):
     description="Show your private member activity stats.",
 )
 async def stats_slash(interaction: discord.Interaction):
-    logger.info("/stats invoked by %s", interaction.user)
+    logger.info("/stats invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "stats"):
         return
     if interaction.guild is None:
@@ -15585,7 +15654,7 @@ async def stats_slash(interaction: discord.Interaction):
 )
 @app_commands.describe(command="Optional command name like sayhi, submitrole, or ban_member")
 async def help_slash(interaction: discord.Interaction, command: str | None = None):
-    logger.info("/help invoked by %s", interaction.user)
+    logger.info("/help invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "help"):
         return
     await interaction.response.send_message(
@@ -15602,7 +15671,7 @@ async def help_slash(interaction: discord.Interaction, command: str | None = Non
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(channel="Channel to use for hello-only replies. Leave blank to disable.")
 async def set_hello_channel_slash(interaction: discord.Interaction, channel: discord.TextChannel | None = None):
-    logger.info("/set_hello_channel invoked by %s", interaction.user)
+    logger.info("/set_hello_channel invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "set_hello_channel"):
         return
     if interaction.guild is None:
@@ -15636,7 +15705,7 @@ async def set_hello_channel_slash(interaction: discord.Interaction, channel: dis
 @app_commands.default_permissions(administrator=True)
 @app_commands.describe(text="Reply text to append after '<member> says'.")
 async def set_hello_text_slash(interaction: discord.Interaction, text: str):
-    logger.info("/set_hello_text invoked by %s", interaction.user)
+    logger.info("/set_hello_text invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "set_hello_text"):
         return
     if interaction.guild is None:
@@ -15699,7 +15768,7 @@ async def honeypot_create_slash(
     timeout_hours: app_commands.Range[int, 1, 672] = HONEYPOT_DEFAULT_TIMEOUT_HOURS,
     role: discord.Role | None = None,
 ):
-    logger.info("/honeypot create invoked by %s for channel %s", interaction.user, channel.id)
+    logger.info("/honeypot create invoked by %s for channel %s", f"{interaction.user} (id: {interaction.user.id})", channel.id)
     if not await ensure_interaction_command_access(interaction, "honeypot_create"):
         return
     try:
@@ -15751,7 +15820,7 @@ async def honeypot_edit_slash(
     role: discord.Role | None = None,
     enabled: bool = True,
 ):
-    logger.info("/honeypot edit invoked by %s for channel %s", interaction.user, channel.id)
+    logger.info("/honeypot edit invoked by %s for channel %s", f"{interaction.user} (id: {interaction.user.id})", channel.id)
     if not await ensure_interaction_command_access(interaction, "honeypot_edit"):
         return
     if load_honeypot_entry(interaction.guild.id, channel.id) is None:
@@ -15782,7 +15851,7 @@ async def honeypot_edit_slash(
 
 @honeypot_group.command(name="list", description="List all honeypots in this server.")
 async def honeypot_list_slash(interaction: discord.Interaction):
-    logger.info("/honeypot list invoked by %s", interaction.user)
+    logger.info("/honeypot list invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_list"):
         return
     entries = load_honeypot_entries(interaction.guild.id)
@@ -15798,7 +15867,7 @@ async def honeypot_list_slash(interaction: discord.Interaction):
 @honeypot_group.command(name="info", description="Show one honeypot configuration.")
 @app_commands.describe(channel="Channel to inspect.")
 async def honeypot_info_slash(interaction: discord.Interaction, channel: discord.TextChannel):
-    logger.info("/honeypot info invoked by %s for channel %s", interaction.user, channel.id)
+    logger.info("/honeypot info invoked by %s for channel %s", f"{interaction.user} (id: {interaction.user.id})", channel.id)
     if not await ensure_interaction_command_access(interaction, "honeypot_info"):
         return
     entry = load_honeypot_entry(interaction.guild.id, channel.id)
@@ -15811,7 +15880,7 @@ async def honeypot_info_slash(interaction: discord.Interaction, channel: discord
 @honeypot_group.command(name="delete", description="Delete a honeypot from a channel.")
 @app_commands.describe(channel="Channel whose honeypot should be removed.")
 async def honeypot_delete_slash(interaction: discord.Interaction, channel: discord.TextChannel):
-    logger.info("/honeypot delete invoked by %s for channel %s", interaction.user, channel.id)
+    logger.info("/honeypot delete invoked by %s for channel %s", f"{interaction.user} (id: {interaction.user.id})", channel.id)
     if not await ensure_interaction_command_access(interaction, "honeypot_delete"):
         return
     deleted = delete_honeypot_entry(interaction.guild.id, channel.id)
@@ -15825,7 +15894,7 @@ async def honeypot_delete_slash(interaction: discord.Interaction, channel: disco
 @honeypot_group.command(name="delete_all", description="Delete all honeypots in this server.")
 @app_commands.describe(confirm="Set to true to confirm deleting every honeypot.")
 async def honeypot_delete_all_slash(interaction: discord.Interaction, confirm: bool = False):
-    logger.info("/honeypot delete_all invoked by %s", interaction.user)
+    logger.info("/honeypot delete_all invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_delete_all"):
         return
     if not confirm:
@@ -15847,7 +15916,7 @@ honeypot_log_group = app_commands.Group(
 @honeypot_log_group.command(name="set_channel", description="Set the honeypot logging channel.")
 @app_commands.describe(channel="Channel to receive honeypot action logs.")
 async def honeypot_log_set_channel_slash(interaction: discord.Interaction, channel: discord.TextChannel):
-    logger.info("/honeypot_log set_channel invoked by %s", interaction.user)
+    logger.info("/honeypot_log set_channel invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_log_set_channel"):
         return
     settings = save_honeypot_logging_settings(
@@ -15864,7 +15933,7 @@ async def honeypot_log_set_channel_slash(interaction: discord.Interaction, chann
 
 @honeypot_log_group.command(name="clear_channel", description="Clear the honeypot logging channel.")
 async def honeypot_log_clear_channel_slash(interaction: discord.Interaction):
-    logger.info("/honeypot_log clear_channel invoked by %s", interaction.user)
+    logger.info("/honeypot_log clear_channel invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_log_clear_channel"):
         return
     save_honeypot_logging_settings(
@@ -15878,7 +15947,7 @@ async def honeypot_log_clear_channel_slash(interaction: discord.Interaction):
 @honeypot_log_group.command(name="set_role", description="Set the role pinged on honeypot logs.")
 @app_commands.describe(role="Role to ping when a honeypot triggers.")
 async def honeypot_log_set_role_slash(interaction: discord.Interaction, role: discord.Role):
-    logger.info("/honeypot_log set_role invoked by %s", interaction.user)
+    logger.info("/honeypot_log set_role invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_log_set_role"):
         return
     save_honeypot_logging_settings(
@@ -15891,7 +15960,7 @@ async def honeypot_log_set_role_slash(interaction: discord.Interaction, role: di
 
 @honeypot_log_group.command(name="clear_role", description="Clear the role pinged on honeypot logs.")
 async def honeypot_log_clear_role_slash(interaction: discord.Interaction):
-    logger.info("/honeypot_log clear_role invoked by %s", interaction.user)
+    logger.info("/honeypot_log clear_role invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_log_clear_role"):
         return
     save_honeypot_logging_settings(
@@ -15904,7 +15973,7 @@ async def honeypot_log_clear_role_slash(interaction: discord.Interaction):
 
 @honeypot_log_group.command(name="show", description="Show the current honeypot logging settings.")
 async def honeypot_log_show_slash(interaction: discord.Interaction):
-    logger.info("/honeypot_log show invoked by %s", interaction.user)
+    logger.info("/honeypot_log show invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_log_show"):
         return
     settings = load_honeypot_logging_settings(interaction.guild.id)
@@ -15948,7 +16017,7 @@ async def honeypot_join_guard_set_slash(
     timeout_hours: app_commands.Range[int, 1, 672] = HONEYPOT_DEFAULT_TIMEOUT_HOURS,
     role: discord.Role | None = None,
 ):
-    logger.info("/honeypot_join_guard set invoked by %s", interaction.user)
+    logger.info("/honeypot_join_guard set invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_join_guard_set"):
         return
     try:
@@ -15975,7 +16044,7 @@ async def honeypot_join_guard_set_slash(
 
 @honeypot_join_guard_group.command(name="disable", description="Disable join-time spam screening.")
 async def honeypot_join_guard_disable_slash(interaction: discord.Interaction):
-    logger.info("/honeypot_join_guard disable invoked by %s", interaction.user)
+    logger.info("/honeypot_join_guard disable invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_join_guard_disable"):
         return
     settings = save_honeypot_join_guard_settings(
@@ -15991,7 +16060,7 @@ async def honeypot_join_guard_disable_slash(interaction: discord.Interaction):
 
 @honeypot_join_guard_group.command(name="show", description="Show join-time spam screening settings.")
 async def honeypot_join_guard_show_slash(interaction: discord.Interaction):
-    logger.info("/honeypot_join_guard show invoked by %s", interaction.user)
+    logger.info("/honeypot_join_guard show invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "honeypot_join_guard_show"):
         return
     settings = load_honeypot_join_guard_settings(interaction.guild.id)
@@ -16007,7 +16076,7 @@ async def honeypot_join_guard_show_slash(interaction: discord.Interaction):
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_reddit_slash(interaction: discord.Interaction, query: str):
-    logger.info("/search_reddit invoked by %s with query %s", interaction.user, query)
+    logger.info("/search_reddit invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_reddit"):
         return
     query = query.strip()
@@ -16021,7 +16090,7 @@ async def search_reddit_slash(interaction: discord.Interaction, query: str):
     except Exception:
         logger.exception(
             "search_reddit command failed for user=%s query=%s",
-            interaction.user,
+            f"{interaction.user} (id: {interaction.user.id})",
             query,
         )
         if interaction.response.is_done():
@@ -16038,7 +16107,7 @@ async def search_reddit_slash(interaction: discord.Interaction, query: str):
 
 @bot.command(name="searchreddit")
 async def search_reddit_prefix(ctx: commands.Context, *, query: str):
-    logger.info("!searchreddit invoked by %s with query %s", ctx.author, query)
+    logger.info("!searchreddit invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_reddit"):
         return
     query = query.strip()
@@ -16050,7 +16119,7 @@ async def search_reddit_prefix(ctx: commands.Context, *, query: str):
         message = await asyncio.to_thread(build_reddit_search_message, query)
         await ctx.send(message)
     except Exception:
-        logger.exception("searchreddit command failed for user=%s query=%s", ctx.author, query)
+        logger.exception("searchreddit command failed for user=%s query=%s", f"{ctx.author} (id: {ctx.author.id})", query)
         await ctx.send("❌ Failed to fetch Reddit results. Please try again shortly.")
 
 
@@ -16060,7 +16129,7 @@ async def search_reddit_prefix(ctx: commands.Context, *, query: str):
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_forum_slash(interaction: discord.Interaction, query: str):
-    logger.info("/search_forum invoked by %s with query %s", interaction.user, query)
+    logger.info("/search_forum invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_forum"):
         return
     query = query.strip()
@@ -16074,7 +16143,7 @@ async def search_forum_slash(interaction: discord.Interaction, query: str):
 
 @bot.command(name="searchforum")
 async def search_forum_prefix(ctx: commands.Context, *, query: str):
-    logger.info("!searchforum invoked by %s with query %s", ctx.author, query)
+    logger.info("!searchforum invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_forum"):
         return
     query = query.strip()
@@ -16092,7 +16161,7 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_openwrt_forum_slash(interaction: discord.Interaction, query: str):
-    logger.info("/search_openwrt_forum invoked by %s with query %s", interaction.user, query)
+    logger.info("/search_openwrt_forum invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_openwrt_forum"):
         return
     query = query.strip()
@@ -16106,7 +16175,7 @@ async def search_openwrt_forum_slash(interaction: discord.Interaction, query: st
 
 @bot.command(name="searchopenwrtforum")
 async def search_openwrt_forum_prefix(ctx: commands.Context, *, query: str):
-    logger.info("!searchopenwrtforum invoked by %s with query %s", ctx.author, query)
+    logger.info("!searchopenwrtforum invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_openwrt_forum"):
         return
     query = query.strip()
@@ -16124,7 +16193,7 @@ async def search_openwrt_forum_prefix(ctx: commands.Context, *, query: str):
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_kvm_slash(interaction: discord.Interaction, query: str):
-    logger.info("/search_kvm invoked by %s with query %s", interaction.user, query)
+    logger.info("/search_kvm invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_kvm"):
         return
     query = query.strip()
@@ -16138,7 +16207,7 @@ async def search_kvm_slash(interaction: discord.Interaction, query: str):
 
 @bot.command(name="searchkvm")
 async def search_kvm_prefix(ctx: commands.Context, *, query: str):
-    logger.info("!searchkvm invoked by %s with query %s", ctx.author, query)
+    logger.info("!searchkvm invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_kvm"):
         return
     query = query.strip()
@@ -16156,7 +16225,7 @@ async def search_kvm_prefix(ctx: commands.Context, *, query: str):
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_iot_slash(interaction: discord.Interaction, query: str):
-    logger.info("/search_iot invoked by %s with query %s", interaction.user, query)
+    logger.info("/search_iot invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_iot"):
         return
     query = query.strip()
@@ -16170,7 +16239,7 @@ async def search_iot_slash(interaction: discord.Interaction, query: str):
 
 @bot.command(name="searchiot")
 async def search_iot_prefix(ctx: commands.Context, *, query: str):
-    logger.info("!searchiot invoked by %s with query %s", ctx.author, query)
+    logger.info("!searchiot invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_iot"):
         return
     query = query.strip()
@@ -16188,7 +16257,7 @@ async def search_iot_prefix(ctx: commands.Context, *, query: str):
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_router_slash(interaction: discord.Interaction, query: str):
-    logger.info("/search_router invoked by %s with query %s", interaction.user, query)
+    logger.info("/search_router invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_router"):
         return
     query = query.strip()
@@ -16202,7 +16271,7 @@ async def search_router_slash(interaction: discord.Interaction, query: str):
 
 @bot.command(name="searchrouter")
 async def search_router_prefix(ctx: commands.Context, *, query: str):
-    logger.info("!searchrouter invoked by %s with query %s", ctx.author, query)
+    logger.info("!searchrouter invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_router"):
         return
     query = query.strip()
@@ -16220,7 +16289,7 @@ async def search_router_prefix(ctx: commands.Context, *, query: str):
 )
 @app_commands.describe(query="Enter search keywords")
 async def search_astrowarp_slash(interaction: discord.Interaction, query: str):
-    logger.info("/search_astrowarp invoked by %s with query %s", interaction.user, query)
+    logger.info("/search_astrowarp invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_astrowarp"):
         return
     query = query.strip()
@@ -16234,7 +16303,7 @@ async def search_astrowarp_slash(interaction: discord.Interaction, query: str):
 
 @bot.command(name="searchastrowarp")
 async def search_astrowarp_prefix(ctx: commands.Context, *, query: str):
-    logger.info("!searchastrowarp invoked by %s with query %s", ctx.author, query)
+    logger.info("!searchastrowarp invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_astrowarp"):
         return
     query = query.strip()

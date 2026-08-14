@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from html import escape
 
 from app.discourse_integration import (
@@ -180,3 +181,164 @@ def render_discourse_body(
       </form>
     </div>
     """
+
+
+def render_discourse_viewer_body(
+    *,
+    guild_name: str,
+    effective_settings: dict,
+):
+    """Render a read-only Discourse forum viewer page showing integration settings and live forum data."""
+    base_url = str(effective_settings.get("discourse_base_url") or "").rstrip("/")
+    api_username = str(effective_settings.get("discourse_api_username") or "")
+    profile_name = str(effective_settings.get("discourse_profile_name") or "")
+    display_name = profile_name or api_username or "Not configured"
+    timeout = int(effective_settings.get("discourse_request_timeout_seconds") or 15)
+    features_summary = discourse_features_summary(
+        effective_settings.get("discourse_features_json")
+    )
+    enabled = str(effective_settings.get("discourse_enabled", -1))
+    enabled_label = "Enabled" if enabled == "1" else "Disabled" if enabled == "0" else "Not configured"
+    api_key_configured = int(effective_settings.get("discourse_api_key_configured") or 0) > 0
+
+    integration_rows = [
+        ("Forum Base URL", base_url or "Not configured"),
+        ("API Username / Profile", display_name or "Not configured"),
+        ("Request Timeout", f"{timeout} second(s)"),
+        ("Integration State", enabled_label),
+        ("API Key", "Configured for this guild" if api_key_configured else "Not configured"),
+        ("Enabled Features", features_summary or "None"),
+    ]
+
+    integration_items = "".join(
+        f"""
+        <tr>
+          <td><strong>{escape(label)}</strong></td>
+          <td class='muted mono'>{escape(value)}</td>
+        </tr>
+        """
+        for label, value in integration_rows
+    )
+
+    forum_sections = []
+    if base_url:
+        forum_sections.append(f"""
+        <div class='card'>
+          <h3 style='margin-top:0;'>Forum Categories</h3>
+          <p class='muted'>Categories fetched from {escape(base_url)}</p>
+          <div id='discourse-categories' class='muted'>Loading categories...</div>
+        </div>
+        """)
+        forum_sections.append(f"""
+        <div class='card'>
+          <h3 style='margin-top:0;'>Recent Topics</h3>
+          <p class='muted'>Latest topics from {escape(base_url)}</p>
+          <div id='discourse-topics' class='muted'>Loading topics...</div>
+        </div>
+        """)
+        forum_sections.append(f"""
+        <div class='card'>
+          <h3 style='margin-top:0;'>Search Forum</h3>
+          <p class='muted'>Search the {escape(base_url)} forum.</p>
+          <form method='get' action='/admin/discourse/viewer/search' style='margin-bottom:8px;'>
+            <input type='text' name='q' placeholder='Search query...' style='width:300px;' />
+            <button class='btn' type='submit'>Search</button>
+          </form>
+          <div id='discourse-search-results' class='muted'></div>
+        </div>
+        """)
+
+    forum_html = "".join(forum_sections) if forum_sections else (
+        f"<div class='card'><h3 style='margin-top:0;'>Forum Not Configured</h3>"
+        f"<p class='muted'>No Discourse base URL is configured for this guild. "
+        f"Visit the <a href='/admin/discourse'>Discourse settings</a> page to configure integration.</p></div>"
+    )
+
+    base_url_json = json.dumps(base_url or "")
+
+    return f"""
+    <div class='card'>
+      <h2>Discourse Forum Viewer</h2>
+      <p class='muted'>Read-only view of the Discord forum integration for <strong>{escape(guild_name)}</strong>.
+         This page displays integration settings and live forum data from the configured Discourse instance.
+         {'' if api_key_configured else ' <span class="warning">API key is not configured - live data may be limited.</span>'}
+      </p>
+
+      <div class='card' style='margin:16px 0 0 0;'>
+        <h3 style='margin-top:0;'>Integration Settings</h3>
+        <table>
+          <thead><tr><th>Setting</th><th>Value</th></tr></thead>
+          <tbody>
+            {integration_items}
+          </tbody>
+        </table>
+      </div>
+
+      <div class='card' style='margin:16px 0 0 0;'>
+        <h3 style='margin-top:0;'>Available Options</h3>
+        <ul>
+          <li><strong>/search_forum</strong> - Search topics across the configured Discourse forum</li>
+          <li><strong>/forum_categories</strong> - Browse categories from the configured Discourse forum (if enabled)</li>
+          <li><strong>/view_topic</strong> - View a specific topic by ID or URL (if enabled)</li>
+          <li><strong>Webhook Announcements</strong> - Auto-post new forum topics to a Discord channel (if enabled)</li>
+        </ul>
+        <p class='muted' style='margin-top:8px;'>Integration features: {escape(features_summary)}</p>
+      </div>
+
+      {forum_html}
+    </div>
+
+    <script>
+    (function() {{
+      var baseUrl = {base_url_json};
+      if (!baseUrl) return;
+      fetch('/admin/discourse/viewer/api/categories')
+        .then(function(r) {{ return r.json(); }})
+        .then(function(data) {{
+          var el = document.getElementById('discourse-categories');
+          if (data && data.categories && data.categories.length > 0) {{
+            el.innerHTML = data.categories.map(function(c) {{
+              return '<a href="\\\" + c.url + \\" target=\\"_blank\\">' + c.name + '</a> (' + c.topic_count + ' topics)';
+            }}).join('<br>');
+          }} else {{
+            el.textContent = 'No categories found or unable to fetch.';
+          }}
+        }})
+        .catch(function(e) {{
+          var el = document.getElementById('discourse-categories');
+          el.textContent = 'Error fetching categories: ' + e.message;
+        }});
+    }})();
+
+    (function() {{
+      var baseUrl = {base_url_json};
+      if (!baseUrl) return;
+      fetch('/admin/discourse/viewer/api/topics')
+        .then(function(r) {{ return r.json(); }})
+        .then(function(data) {{
+          var el = document.getElementById('discourse-topics');
+          if (data && data.topics && data.topics.length > 0) {{
+            el.innerHTML = data.topics.map(function(t) {{
+              return '<a href="\\\" + t.url + \\" target=\\"_blank\\">' + t.title + '</a><br><small class=\\"muted\\">' + (t.posts_count || 0) + ' posts - ' + (t.last_posted_at || 'unknown') + '</small>';
+            }}).join('<hr>');
+          }} else {{
+            el.textContent = 'No topics found or unable to fetch.';
+          }}
+        }})
+        .catch(function(e) {{
+          var el = document.getElementById('discourse-topics');
+          el.textContent = 'Error fetching topics: ' + e.message;
+        }});
+    }})();
+    </script>
+    """
+
+
+def build_discourse_config_from_settings(settings: dict) -> dict:
+    """Extract Discourse API config from the guild settings payload."""
+    return {
+        "base_url": str(settings.get("discourse_base_url") or "").rstrip("/"),
+        "api_key": str(settings.get("discourse_api_key") or ""),
+        "api_username": str(settings.get("discourse_api_username") or ""),
+        "timeout": int(settings.get("discourse_request_timeout_seconds") or 15),
+    }

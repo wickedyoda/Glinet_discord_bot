@@ -21,6 +21,7 @@ RUN python -m pip install --no-cache-dir --upgrade \
     --root-user-action=ignore \
     pip \
     "setuptools>=78.1.1" \
+    "msgpack>=1.2.1" \
     "cryptography>=48.0.1" \
     "wheel>=0.46.2" \
     "jaraco.context>=6.1.0" \
