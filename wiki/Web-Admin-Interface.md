@@ -486,6 +486,15 @@ Notes:
 - API endpoints: `/admin/discourse/viewer/api/categories` and `/admin/discourse/viewer/api/topics`
 - Search page: `/admin/discourse/viewer/search?q=...`
 
+### `/admin/uptime-kuma/proxy/<path>` (Admin-only)
+
+- Reverse proxy to the full Uptime Kuma web UI
+- Requires `UPTIME_KUMA_ADMIN_ENABLED=true` and `UPTIME_STATUS_INSTANCE_URL` to be set
+- Only admin users can access — non-admins receive HTTP 403
+- Forwards cookies, headers, and rewrites `Location` headers to maintain proxy-relative URLs
+- TLS verification respects the `UPTIME_STATUS_VERIFY_TLS` setting
+- Enable/disable via the checkbox in `/admin/settings`
+
 ### `/admin/freshdesk/viewer` (Read-only for all users)
 
 - Read-only Freshdesk ticket viewer for GL.iNet support tickets
