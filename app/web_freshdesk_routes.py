@@ -11,6 +11,7 @@ keyword argument is a closure defined inside ``create_web_app``
 """
 from __future__ import annotations
 
+import logging
 from html import escape
 from typing import Any
 
@@ -24,6 +25,8 @@ from app.freshdesk_api import (
     search_freshdesk_tickets,
 )
 from app.freshdesk_web_helpers import render_freshdesk_viewer_body
+
+logger = logging.getLogger("invite_bot.freshdesk_viewer")
 
 bp = Blueprint("freshdesk_viewer", __name__, url_prefix="/admin/freshdesk/viewer")
 
@@ -106,10 +109,11 @@ def search():
                 search_results_html = f"<ul>{result_items}</ul>"
             else:
                 search_results_html = "<p class='muted'>No tickets found for your search.</p>"
-        except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
-            search_results_html = f'<p class="warning">Search error: {escape(str(exc))}</p>'
-        except Exception as exc:  # noqa: BLE001
-            search_results_html = f'<p class="warning">Search error: {escape(str(exc))}</p>'
+        except (FreshdeskApiError, FreshdeskRateLimitError):
+            search_results_html = "<p class='warning'>Search error: an API error occurred. Please try again.</p>"
+        except Exception:  # noqa: BLE001
+            logger.exception("Freshdesk search error")
+            search_results_html = "<p class='warning'>Search error: an unexpected error occurred.</p>"
     elif not search_query:
         search_results_html = "<p class='muted'>Enter a search query above to search Freshdesk.</p>"
     elif not api_key:
@@ -166,10 +170,11 @@ def view_ticket(ticket_id: int):
                 )
             else:
                 ticket_html = "<p class='muted'>Ticket not found.</p>"
-        except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
-            ticket_html = f'<p class="warning">Error loading ticket: {escape(str(exc))}</p>'
-        except Exception as exc:  # noqa: BLE001
-            ticket_html = f'<p class="warning">Error loading ticket: {escape(str(exc))}</p>'
+        except (FreshdeskApiError, FreshdeskRateLimitError):
+            ticket_html = "<p class='warning'>Error loading ticket: an API error occurred.</p>"
+        except Exception:  # noqa: BLE001
+            logger.exception("Freshdesk ticket load error")
+            ticket_html = "<p class='warning'>Error loading ticket: an unexpected error occurred.</p>"
 
     body = f"""
     <div class='card'>
@@ -207,10 +212,11 @@ def api_categories():
             api_key=api_key,
         )
         return jsonify({"ok": True, "categories": categories})
-    except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"ok": False, "error": str(exc)}), 500
+    except (FreshdeskApiError, FreshdeskRateLimitError):
+        return jsonify({"ok": False, "error": "Freshdesk API error — check configuration."}), 502
+    except Exception:  # noqa: BLE001
+        logger.exception("Freshdesk API categories error")
+        return jsonify({"ok": False, "error": "An unexpected error occurred."}), 500
 
 
 # --------------------------------------------------------------------------- #
