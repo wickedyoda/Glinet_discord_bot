@@ -7862,7 +7862,17 @@ def create_web_app(
                     new_location += f"?{parsed.query}"
                 response_headers.append(("Location", new_location))
             else:
-                response_headers.append(("Location", location))
+                # Sanitize relative location to prevent javascript:/data: scheme injection
+                if not parsed.scheme or parsed.scheme in {"http", "https"}:
+                    response_headers.append(("Location", location))
+                else:
+                    # Reject non-http(s) location schemes
+                    response_headers.append(("Location", "/admin/uptime-kuma/proxy/"))
+
+        # Append security headers to prevent reflected XSS from upstream content
+        response_headers.append(("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' https://fonts.gstatic.com; connect-src 'self'; frame-ancestors 'none'"))
+        response_headers.append(("X-Content-Type-Options", "nosniff"))
+        response_headers.append(("X-Frame-Options", "DENY"))
 
         return Response(
             resp.content,
