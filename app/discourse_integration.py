@@ -25,7 +25,6 @@ DISCOURSE_DEFAULT_FEATURES = (
 DISCOURSE_STATE_OPTIONS = (
     {"value": "1", "label": "Enabled"},
     {"value": "0", "label": "Disabled"},
-    {"value": "-1", "label": "Use global default"},
 )
 DISCOURSE_TIMEOUT_SECOND_OPTIONS = (5, 10, 15, 20, 30, 45, 60)
 FEATURE_TOGGLE_OPTIONS = (
