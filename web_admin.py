@@ -27,7 +27,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from flask import (Flask, flash, g, jsonify, redirect, render_template_string, request, send_file, session, url_for)
+from flask import (Flask, flash, g, jsonify, redirect, render_template_string, request, Response, send_file, session, url_for)
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
@@ -538,6 +538,11 @@ ENV_FIELDS = [
         "Optional API key used to read the authenticated instance metrics endpoint.",
     ),
     (
+        "UPTIME_KUMA_ADMIN_ENABLED",
+        "Uptime Kuma Admin Proxy",
+        "Enable a reverse proxy to the authenticated Uptime Kuma web UI at /admin/uptime-kuma/proxy.",
+    ),
+    (
         "UPTIME_STATUS_VERIFY_TLS",
         "Uptime Kuma Verify TLS",
         "Set to true/false to enforce or skip TLS certificate verification for Kuma requests.",
@@ -785,6 +790,7 @@ ENV_FIELD_SECTIONS = (
             "UPTIME_STATUS_INSTANCE_URL",
             "UPTIME_STATUS_API_KEY",
             "UPTIME_STATUS_TIMEOUT_SECONDS",
+            "UPTIME_KUMA_ADMIN_ENABLED",
             "UPTIME_STATUS_VERIFY_TLS",
         ),
     ),
@@ -7086,6 +7092,7 @@ def create_web_app(
             <p class="muted">Use the dedicated Uptime Kuma page to configure the watcher, import direct checks, and remove previously imported monitor sets.</p>
             <div style="margin-top:14px;">
               <a class="btn" href="{escape(url_for('uptime_kuma_page'), quote=True)}">Open Uptime Kuma</a>
+              {f'<a class="btn secondary" href="/admin/uptime-kuma/proxy/">Admin Proxy →</a>' if page_state.get('kuma_admin_proxy_enabled') else ''}
             </div>
           </div>
         </div>
@@ -7290,6 +7297,7 @@ def create_web_app(
                 in {"1", "true", "yes", "on"},
                 "imported_sources": summarize_uptime_import_sources(all_targets, guild_id=selected_guild_id_int),
                 "kuma_admin_gui_enabled": is_uptime_kuma_admin_gui_enabled(),
+                "kuma_admin_proxy_enabled": _is_truthy_env_value(os.getenv("UPTIME_KUMA_ADMIN_ENABLED", "false")),
                 "kuma_monitors": [],
             }
 
@@ -7351,6 +7359,9 @@ def create_web_app(
                         "UPTIME_STATUS_TIMEOUT_SECONDS": str(request.form.get("uptime_status_timeout") or page_state["uptime_timeout"] or 15).strip(),
                         "UPTIME_STATUS_VERIFY_TLS": "true"
                         if str(request.form.get("uptime_status_verify_tls") or "").strip().lower() in {"1", "true", "yes", "on"}
+                        else "false",
+                        "UPTIME_KUMA_ADMIN_ENABLED": "true"
+                        if str(request.form.get("uptime_kuma_admin_enabled") or "").strip().lower() in {"1", "true", "yes", "on"}
                         else "false",
                     }
                     if uptime_api_key_value:
@@ -7698,6 +7709,9 @@ def create_web_app(
               {uptime_notify_channel_select}
               <label style="margin-top:10px;display:block;">Verify TLS certificates</label>
               {uptime_verify_tls_select}
+              <label class="checkbox" style="margin-top:8px;">
+                <input type="checkbox" name="uptime_kuma_admin_enabled" value="true"{manage_disabled_attr}{' checked' if page_state.get('kuma_admin_proxy_enabled') else ''} />
+                Enable Uptime Kuma admin web UI proxy</label>
               <label style="margin-top:10px;display:block;">Recheck interval</label>
               {uptime_schedule_select}
               <label>Request timeout (seconds)</label>
@@ -7763,6 +7777,98 @@ def create_web_app(
         </div>
         """
         return _render_page("Uptime Kuma", body, user["email"], bool(user.get("is_admin")), str(user.get("display_name") or ""))
+
+    @app.route("/admin/uptime-kuma/proxy/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+    @login_required
+    def uptime_kuma_proxy(subpath: str):
+        """Reverse proxy to the authenticated Uptime Kuma web UI.
+
+        Forwards the request to the instance configured by
+        ``UPTIME_STATUS_INSTANCE_URL`` and requires
+        ``UPTIME_KUMA_ADMIN_ENABLED=true``.
+
+        All requests are authenticated via the web admin session — only
+        logged-in admin web users can reach this proxy.
+        """
+        user = _current_user()
+        if not _is_admin_user(user):
+            return "Forbidden", 403
+
+        kuma_enabled = _is_truthy_env_value(os.getenv("UPTIME_KUMA_ADMIN_ENABLED", "false"))
+        if not kuma_enabled:
+            return "Uptime Kuma admin proxy is not enabled.", 404
+
+        instance_url = str(os.getenv("UPTIME_STATUS_INSTANCE_URL", "")).strip()
+        if not instance_url:
+            return "UPTIME_STATUS_INSTANCE_URL is not configured.", 502
+
+        # Build the target URL
+        base = instance_url.rstrip("/")
+        target_url = f"{base}/{subpath}"
+
+        # Build headers to forward, preserving cookies and auth
+        headers = {}
+        for key in request.headers:
+            if key.lower() in {"host", "content-length", "content-encoding"}:
+                continue
+            headers[key] = request.headers[key]
+
+        # Forward cookies to the Kuma instance
+        if request.cookies:
+            cookie_str = "; ".join(f"{k}={v}" for k, v in request.cookies.items())
+            headers["Cookie"] = cookie_str
+
+        # Read request body
+        body = request.get_data()
+
+        # Forward the request
+        verify_tls = _is_truthy_env_value(os.getenv("UPTIME_STATUS_VERIFY_TLS", "true"))
+        try:
+            resp = requests.request(
+                method=request.method,
+                url=target_url,
+                headers=headers,
+                data=body if body else None,
+                params=request.args,
+                cookies=request.cookies,
+                allow_redirects=False,
+                verify=verify_tls,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            logger.warning("Uptime Kuma proxy error for %s: %s", target_url, exc)
+            return "Uptime Kuma proxy error.", 502
+
+        # Build the response
+        excluded_headers = {
+            "content-encoding",
+            "content-length",
+            "transfer-encoding",
+            "connection",
+        }
+        response_headers = []
+        for key, value in resp.raw.headers.items():
+            if key.lower() not in excluded_headers:
+                response_headers.append((key, value))
+
+        # Rewrite location headers to go through the proxy
+        location = resp.headers.get("Location", "")
+        if location:
+            parsed = urlparse(location)
+            if parsed.scheme and parsed.netloc:
+                # Absolute URL — convert to proxy-relative
+                new_location = f"/admin/uptime-kuma/proxy{parsed.path}"
+                if parsed.query:
+                    new_location += f"?{parsed.query}"
+                response_headers.append(("Location", new_location))
+            else:
+                response_headers.append(("Location", location))
+
+        return Response(
+            resp.content,
+            status=resp.status_code,
+            headers=response_headers,
+        )
 
     @app.route("/admin/role-access", methods=["GET", "POST"])
     @login_required
