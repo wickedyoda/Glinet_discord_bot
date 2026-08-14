@@ -78,6 +78,28 @@ The bot integrates with GL.iNet Discourse forums (e.g., `https://forum.gl-inet.c
 
 Detailed documentation: [`wiki/Discourse-Integration.md`](./wiki/Discourse-Integration.md)
 
+## Freshdesk Ticket Viewer Integration (Read-Only)
+
+The bot provides a **read-only** Freshdesk ticket viewer for GL.iNet support tickets, accessible from both the Discord bot and the Web Admin GUI.
+
+**Web Admin interface:**
+- `/admin/freshdesk/viewer` — read-only Freshdesk ticket viewer showing live categories and a search page
+- `/admin/freshdesk/viewer/search?q=...` — search Freshdesk tickets
+- `/admin/freshdesk/viewer/ticket/<id>` — view a single ticket by ID
+- `/admin/freshdesk/viewer/api/categories` — backing AJAX endpoint
+
+**Discord commands:**
+- `/freshdesk-search query:<query>` — search Freshdesk tickets (e.g. `status:2`)
+- `/freshdesk-ticket ticket_id:<id>` — view a ticket by ID
+- `/freshdesk-categories` — list knowledge-base solution categories
+
+**Environment variables:**
+- `FRESHDESK_BASE_URL` — Freshdesk helpdesk root URL (e.g. `https://support.gl-inet.com`)
+- `FRESHDESK_API_KEY` — Freshdesk API key (read-only scope recommended)
+- `FRESHDESK_REQUEST_TIMEOUT_SECONDS` — request timeout (default: `15`)
+
+Detailed documentation: [`wiki/Freshdesk-Integration.md`](./wiki/Freshdesk-Integration.md)
+
 ## Contributing
 
 Use complete commit and PR descriptions for all changes.
