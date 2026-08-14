@@ -78,7 +78,7 @@ def _resolve_settings(selected_guild_id: str):
 # --------------------------------------------------------------------------- #
 #  Page routes
 # --------------------------------------------------------------------------- #
-@bp.route("/", methods=["GET"])
+@bp.route("/", methods=["GET"], endpoint="discourse_viewer_page")
 def viewer_page():
     user = _current_user()
     selection_redirect = _require_selected_guild_redirect()
@@ -102,7 +102,7 @@ def viewer_page():
     return _render_page("Discourse Viewer", body, user["email"], bool(user.get("is_admin")))
 
 
-@bp.route("/search", methods=["GET"])
+@bp.route("/search", methods=["GET"], endpoint="discourse_viewer_search")
 def search():
     user = _current_user()
     selection_redirect = _require_selected_guild_redirect()
@@ -169,7 +169,7 @@ def search():
 # --------------------------------------------------------------------------- #
 #  API routes
 # --------------------------------------------------------------------------- #
-@bp.route("/api/categories")
+@bp.route("/api/categories", endpoint="discourse_viewer_api_categories")
 def api_categories():
     user = _current_user()
     if not str(user["email"]):
@@ -200,7 +200,7 @@ def api_categories():
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
-@bp.route("/api/topics")
+@bp.route("/api/topics", endpoint="discourse_viewer_api_topics")
 def api_topics():
     user = _current_user()
     if not str(user["email"]):
