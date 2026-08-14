@@ -68,6 +68,13 @@ from app.discourse_integration import (
     parse_discourse_features,
 )
 from app.feed_web_callbacks import FeedWebCallbacks
+from app.freshdesk_api import (
+    FreshdeskApiError,
+    FreshdeskRateLimitError,
+    fetch_freshdesk_ticket,
+    list_freshdesk_solution_categories,
+    search_freshdesk_tickets,
+)
 from app.guild_archive import GuildArchiveManager
 from app.guild_state import GuildStateManager
 from app.help_content import build_help_message_for_command as build_help_content_message_for_command
@@ -16491,6 +16498,150 @@ async def ticket_stats(interaction: discord.Interaction):
     data = store.stats(interaction.guild_id or 0)
     lines = [f"- **{k}**: {v.get('open',0)} open / {v.get('closed',0)} closed" for k, v in data.items()]
     await interaction.response.send_message("\n".join(lines) if lines else "No tickets.", ephemeral=True)
+
+
+def resolve_freshdesk_config():
+    """Build Freshdesk API config from environment values."""
+    base_url = str(os.getenv("FRESHDESK_BASE_URL", "")).strip()
+    api_key = str(os.getenv("FRESHDESK_API_KEY", "")).strip()
+    timeout = 15
+    try:
+        timeout = int(os.getenv("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15") or "15")
+        if timeout < 3:
+            timeout = 15
+    except (ValueError, TypeError):
+        timeout = 15
+    return {
+        "base_url": base_url,
+        "api_key": api_key,
+        "timeout": timeout,
+    }
+
+
+def _freshdesk_not_configured_reply():
+    return (
+        "❌ Freshdesk integration is not configured. "
+        "Set `FRESHDESK_BASE_URL` and `FRESHDESK_API_KEY` in the environment."
+    )
+
+
+@tree.command(name="freshdesk-search", description="Search GL.iNet Freshdesk support tickets")
+@app_commands.describe(query="Search query (e.g. status:2, priority:4)")
+async def freshdesk_search(interaction: discord.Interaction, query: str):
+    logger.info("/freshdesk-search invoked by %s with query: %s", f"{interaction.user} (id: {interaction.user.id})", query)
+    config = resolve_freshdesk_config()
+    if not config["base_url"] or not config["api_key"]:
+        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        tickets = search_freshdesk_tickets(
+            base_url=config["base_url"],
+            query=query,
+            max_results=20,
+            timeout_seconds=config["timeout"],
+            api_key=config["api_key"],
+        )
+    except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
+        await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
+        return
+    except Exception as exc:  # noqa: BLE001
+        await interaction.followup.send(f"❌ Error searching Freshdesk: {exc}", ephemeral=True)
+        return
+
+    if not tickets:
+        await interaction.followup.send(
+            f"🔎 No tickets found for `{query}` on `{config['base_url']}`.",
+            ephemeral=True,
+        )
+        return
+
+    lines = [f"**Freshdesk search: `{query}`**\n"]
+    for t in tickets[:15]:
+        lines.append(
+            f"- **#{t['id']}** [{t['status']}] {t['subject']}\n"
+            f"  {t['url']}"
+        )
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+@tree.command(name="freshdesk-ticket", description="View a GL.iNet Freshdesk ticket by ID")
+@app_commands.describe(ticket_id="Freshdesk ticket ID (e.g. 12345)")
+async def freshdesk_ticket(interaction: discord.Interaction, ticket_id: int):
+    logger.info("/freshdesk-ticket invoked by %s for ticket: %s", f"{interaction.user} (id: {interaction.user.id})", ticket_id)
+    config = resolve_freshdesk_config()
+    if not config["base_url"] or not config["api_key"]:
+        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        ticket = fetch_freshdesk_ticket(
+            base_url=config["base_url"],
+            ticket_id=ticket_id,
+            timeout_seconds=config["timeout"],
+            api_key=config["api_key"],
+        )
+    except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
+        await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
+        return
+    except Exception as exc:  # noqa: BLE001
+        await interaction.followup.send(f"❌ Error fetching ticket: {exc}", ephemeral=True)
+        return
+
+    if not ticket:
+        await interaction.followup.send(f"❌ Ticket #{ticket_id} not found.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title=f"#{ticket['id']} — {ticket['subject']}",
+        url=ticket.get("url", ""),
+        color=0x0099FF,
+    )
+    embed.add_field(name="Status", value=ticket.get("status", "Unknown"), inline=True)
+    embed.add_field(name="Priority", value=ticket.get("priority", "Unknown"), inline=True)
+    embed.add_field(name="Type", value=ticket.get("type", "N/A"), inline=True)
+    if ticket.get("description"):
+        desc = ticket["description"][:1024] if len(ticket["description"]) > 1024 else ticket["description"]
+        embed.add_field(name="Description", value=desc, inline=False)
+    if ticket.get("tags"):
+        embed.add_field(name="Tags", value=", ".join(ticket["tags"][:10]), inline=False)
+    if ticket.get("created_at"):
+        embed.set_footer(text=f"Created: {ticket['created_at']} | Updated: {ticket.get('updated_at', 'N/A')}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@tree.command(name="freshdesk-categories", description="List Freshdesk solution/knowledge-base categories")
+async def freshdesk_categories(interaction: discord.Interaction):
+    logger.info("/freshdesk-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
+    config = resolve_freshdesk_config()
+    if not config["base_url"] or not config["api_key"]:
+        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    try:
+        categories = list_freshdesk_solution_categories(
+            base_url=config["base_url"],
+            timeout_seconds=config["timeout"],
+            api_key=config["api_key"],
+        )
+    except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
+        await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
+        return
+    except Exception as exc:  # noqa: BLE001
+        await interaction.followup.send(f"❌ Error fetching categories: {exc}", ephemeral=True)
+        return
+
+    if not categories:
+        await interaction.followup.send("No solution categories found.", ephemeral=True)
+        return
+
+    lines = ["**Freshdesk Solution Categories**\n"]
+    for cat in categories[:15]:
+        lines.append(f"- **{cat['name']}** (#{cat['id']}) — {cat['url']}")
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
 
 
 tree.add_command(honeypot_group)
