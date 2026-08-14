@@ -93,6 +93,7 @@ class GuildStateManager:
             "beta_program_notify_enabled": -1,
             "forum_announcements_enabled": -1,
             "forum_announcements_channel_id": 0,
+            "forum_announcements_refresh_minutes": 60,
             "discourse_enabled": 0,
             "discourse_base_url": "",
             "discourse_api_key": "",
@@ -329,6 +330,11 @@ class GuildStateManager:
             source.get("forum_announcements_channel_id", current.get("forum_announcements_channel_id", 0)),
             0,
             minimum=0,
+        )
+        merged["forum_announcements_refresh_minutes"] = self.parse_int_setting(
+            source.get("forum_announcements_refresh_minutes", current.get("forum_announcements_refresh_minutes", 60)),
+            60,
+            minimum=1,
         )
         merged["discourse_enabled"] = normalize_discourse_override(source.get("discourse_enabled", current.get("discourse_enabled", 0)))
         merged["discourse_base_url"] = normalize_discourse_base_url(

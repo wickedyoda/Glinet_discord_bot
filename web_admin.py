@@ -2771,7 +2771,7 @@ def _render_layout(
                 <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
-                <option value="{{ url_for('discourse_viewer_page') }}">Forum Viewer</option>
+                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
@@ -2792,7 +2792,7 @@ def _render_layout(
                 <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
-                <option value="{{ url_for('discourse_viewer_page') }}">Forum Viewer</option>
+                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
