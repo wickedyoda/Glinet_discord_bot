@@ -10,6 +10,7 @@ keyword argument is a closure defined inside ``create_web_app``
 """
 from __future__ import annotations
 
+import logging
 from html import escape
 
 from flask import Blueprint, jsonify, request
@@ -24,6 +25,8 @@ from app.web_discourse import (
     build_discourse_config_from_settings,
     render_discourse_viewer_body,
 )
+
+logger = logging.getLogger("invite_bot.discourse_viewer")
 
 bp = Blueprint("discourse_viewer", __name__, url_prefix="/admin/discourse/viewer")
 
@@ -145,10 +148,11 @@ def search():
                 search_results_html = f"<ul>{result_items}</ul>"
             else:
                 search_results_html = "<p class='muted'>No topics found for your search.</p>"
-        except (DiscourseApiError, DiscourseRateLimitError) as exc:
-            search_results_html = f'<p class="warning">Search error: {escape(str(exc))}</p>'
-        except Exception as exc:  # noqa: BLE001
-            search_results_html = f'<p class="warning">Search error: {escape(str(exc))}</p>'
+        except (DiscourseApiError, DiscourseRateLimitError):
+            search_results_html = "<p class='warning'>Search error: a Discourse API error occurred.</p>"
+        except Exception:  # noqa: BLE001
+            logger.exception("Discourse search error")
+            search_results_html = "<p class='warning'>Search error: an unexpected error occurred.</p>"
     elif not search_query:
         search_results_html = "<p class='muted'>Enter a search query above to search the forum.</p>"
 
@@ -194,10 +198,11 @@ def api_categories():
             api_username=config["api_username"],
         )
         return jsonify({"ok": True, "categories": categories})
-    except (DiscourseApiError, DiscourseRateLimitError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"ok": False, "error": str(exc)}), 500
+    except (DiscourseApiError, DiscourseRateLimitError):
+        return jsonify({"ok": False, "error": "Discourse API error — check configuration."}), 502
+    except Exception:  # noqa: BLE001
+        logger.exception("Discourse API categories error")
+        return jsonify({"ok": False, "error": "An unexpected error occurred."}), 500
 
 
 @bp.route("/api/topics", endpoint="discourse_viewer_api_topics")
@@ -228,10 +233,11 @@ def api_topics():
             api_username=config["api_username"],
         )
         return jsonify({"ok": True, "topics": topics})
-    except (DiscourseApiError, DiscourseRateLimitError) as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 502
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"ok": False, "error": str(exc)}), 500
+    except (DiscourseApiError, DiscourseRateLimitError):
+        return jsonify({"ok": False, "error": "Discourse API error — check configuration."}), 502
+    except Exception:  # noqa: BLE001
+        logger.exception("Discourse API topics error")
+        return jsonify({"ok": False, "error": "An unexpected error occurred."}), 500
 
 
 # --------------------------------------------------------------------------- #
