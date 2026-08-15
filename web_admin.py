@@ -7802,9 +7802,12 @@ def create_web_app(
         if not instance_url:
             return "UPTIME_STATUS_INSTANCE_URL is not configured.", 502
 
-        # Build the target URL
+        # Build the target URL — sanitize subpath to prevent URL injection / reflected XSS
         base = instance_url.rstrip("/")
-        target_url = f"{base}/{subpath}"
+        safe_subpath = subpath.replace("..", "").lstrip("/")
+        # Strip any scheme/host-like fragments that could enable SSRF or redirect injection
+        safe_subpath = re.sub(r"^[a-zA-Z]+://", "", safe_subpath)
+        target_url = f"{base}/{safe_subpath}"
 
         # Build headers to forward, preserving cookies and auth
         headers = {}
