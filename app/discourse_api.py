@@ -36,9 +36,20 @@ def build_discourse_headers(*, user_agent: str, api_key: str = "", api_username:
         "Accept": "application/json,text/plain,*/*",
         "User-Agent": str(user_agent or "CodexDiscourseClient/1.0"),
     }
-    if str(api_key or "").strip():
+    
+    def is_valid_credential(val: str | None) -> bool:
+        if not val:
+            return False
+        cleaned = str(val).strip()
+        if not cleaned:
+            return False
+        if cleaned.lower() in {"none", "null", "undefined", "empty"}:
+            return False
+        return True
+
+    if is_valid_credential(api_key):
         headers["Api-Key"] = str(api_key).strip()
-    if str(api_username or "").strip():
+    if is_valid_credential(api_username):
         headers["Api-Username"] = str(api_username).strip()
     return headers
 
