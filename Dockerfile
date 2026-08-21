@@ -6,10 +6,27 @@ WORKDIR /app
 
 # Refresh base OS packages so security fixes from the Debian slim image
 # are applied even when the parent image lags behind the latest point release.
+# Upgrades OS packages to latest patched versions (not just installed ones)
+# to address Trivy container alerts for libblkid1, perl, openssl, ncurses,
+# gzip, libacl, etc.
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends --only-upgrade \
+  && apt-get install -y --no-install-recommends \
     libc-bin \
     libc6 \
+    libblkid1 \
+    libsmartcols1 \
+    libncursesw6 \
+    libtinfo6 \
+    ncurses-base \
+    ncurses-bin \
+    openssl \
+    libssl3t64 \
+    openssl-provider-legacy \
+    perl-base \
+    perl \
+    gzip \
+    libacl1 \
+  && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
 # Pre-create runtime directories with restrictive defaults.
