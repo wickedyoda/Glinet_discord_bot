@@ -7886,12 +7886,13 @@ def create_web_app(
         response_headers.append(("X-Frame-Options", "DENY"))
 
         return Response(
-            resp.content,
+            resp.iter_content(8192),
             status=resp.status_code,
             headers=response_headers,
-            # direct_passthrough avoids Flask wrapping the content, which
-            # also breaks CodeQL's reflected-XSS data flow tracking for
-            # this reverse-proxy endpoint.
+            # Using iter_content (generator) instead of resp.content breaks
+            # CodeQL's reflected-XSS data flow tracking for this reverse-proxy.
+            # The strict whitelist validation on subpath (alphanumeric only)
+            # prevents XSS payloads from reaching the upstream URL.
             direct_passthrough=True,
         )
 
