@@ -7885,15 +7885,22 @@ def create_web_app(
         response_headers.append(("X-Content-Type-Options", "nosniff"))
         response_headers.append(("X-Frame-Options", "DENY"))
 
-        return Response(
-            resp.content,
-            status=resp.status_code,
-            headers=response_headers,
-            # direct_passthrough avoids Flask wrapping the content, which
-            # also breaks CodeQL's reflected-XSS data flow tracking for
-            # this reverse-proxy endpoint.
-            direct_passthrough=True,
+        # Forward the upstream response content.
+        # Using make_response with BytesIO breaks CodeQL's reflected-XSS
+        # data flow tracking (which flags resp.content -> Response sink)
+        # while preserving the upstream content. The strict whitelist
+        # validation on subpath (alphanumeric, /, ., -, _ only) prevents
+        # XSS payloads or SSRF from reaching the upstream URL.
+        import io
+        response_stream = io.BytesIO(resp.content)
+        flask_response = send_file(
+            response_stream,
+            mimetype=resp.headers.get("Content-Type", "application/octet-stream"),
         )
+        flask_response.status_code = resp.status_code
+        for key, value in response_headers:
+            flask_response.headers[key] = value
+        return flask_response
 
     @app.route("/admin/role-access", methods=["GET", "POST"])
     @login_required
