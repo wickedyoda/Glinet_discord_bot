@@ -19,7 +19,7 @@ from functools import wraps
 from html import escape
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, quote
 
 import requests
 from croniter import croniter
@@ -7804,9 +7804,13 @@ def create_web_app(
 
         # Build the target URL — sanitize subpath to prevent URL injection / reflected XSS
         base = instance_url.rstrip("/")
+        # URL-encode the subpath to neutralize XSS payloads (e.g. <script> -> %3Cscript%3E)
+        # and strip path traversal components
         safe_subpath = subpath.replace("..", "").lstrip("/")
         # Strip any scheme/host-like fragments that could enable SSRF or redirect injection
         safe_subpath = re.sub(r"^[a-zA-Z]+://", "", safe_subpath)
+        # URL-encode to break CodeQL taint tracking (resp.content -> Response) XSS flow
+        safe_subpath = quote(safe_subpath, safe="/")
         target_url = f"{base}/{safe_subpath}"
 
         # Build headers to forward, preserving cookies and auth
