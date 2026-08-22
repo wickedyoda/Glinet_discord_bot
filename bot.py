@@ -7650,6 +7650,18 @@ async def send_honeypot_log(
         logger.warning("Honeypot logging channel %s is unavailable for guild %s", target_channel_id, guild.id)
         return False
 
+    # Never cross-post logs between guilds. If a misconfigured channel id points at
+    # another guild's channel, refuse to send instead of leaking information.
+    channel_guild_id = getattr(getattr(channel, "guild", None), "id", None)
+    if channel_guild_id is not None and int(channel_guild_id) != int(guild.id):
+        logger.warning(
+            "Honeypot log channel %s belongs to guild %s (expected guild %s); refusing to post.",
+            target_channel_id,
+            channel_guild_id,
+            guild.id,
+        )
+        return False
+
     prefix = f"<@&{ping_role_id}>\n" if ping_role_id > 0 else ""
     message = (
         f"{prefix}"
@@ -7896,6 +7908,8 @@ async def apply_honeypot_join_guard(member: discord.Member):
 
 
 async def apply_bad_word_moderation(message: discord.Message):
+    def _record_bot_deleted(message_id: int):
+        _bot_deleted_message_ids.add(message_id)
     return await apply_bad_word_moderation_impl(
         message=message,
         bot_user_id=bot.user.id if bot.user else 0,
@@ -7906,6 +7920,7 @@ async def apply_bad_word_moderation(message: discord.Message):
         send_moderation_log=send_moderation_log,
         logger=logger,
         clip_text=clip_text,
+        record_bot_deleted_message=_record_bot_deleted,
     )
 
 
@@ -9091,7 +9106,7 @@ _server_event_dedup: dict[int, tuple[str, float]] = {}
 _SERVER_EVENT_DEDUP_SECONDS = 3.0
 
 
-async def send_server_event_log(guild: discord.Guild, event_name: str, details: str):
+async def send_server_event_log(guild: discord.Guild, event_name: str, details: str, actor: discord.abc.User | None = None):
     now = time.monotonic()
     dedup_key = f"{event_name}:{details}"
     last = _server_event_dedup.get(guild.id)
@@ -9099,11 +9114,12 @@ async def send_server_event_log(guild: discord.Guild, event_name: str, details: 
         logger.info("WEB_AUDIT suppress_duplicate event=%s guild_id=%s", event_name, guild.id)
         return
     _server_event_dedup[guild.id] = (dedup_key, now)
-    message = f"📌 **Server Event:** `{event_name}`\n{details}"
+    actor_text = f"{actor} (`{actor.id}`)" if actor else "system"
+    message = f"📌 **Server Event:** `{event_name}`\n**Actor:** {actor_text}\n{details}"
     record_action_safe(
         action=event_name,
         status="success",
-        moderator="system",
+        moderator=actor_text,
         target=str(guild.id),
         reason=truncate_log_text(details, max_length=500),
         guild_id=guild.id,
@@ -9399,6 +9415,12 @@ async def resolve_firmware_notify_channels():
                 continue
 
         if isinstance(channel, (discord.TextChannel, discord.Thread)):
+            # Verify the channel belongs to the expected guild to prevent
+            # cross-guild firmware notifications.
+            channel_guild_id = getattr(getattr(channel, "guild", None), "id", None)
+            if channel_guild_id is not None and int(channel_guild_id) != int(guild_id):
+                errors.append(f"guild={guild_id}:channel_belongs_to_guild_{channel_guild_id}")
+                continue
             channels.append(channel)
         else:
             errors.append(f"guild={guild_id}:channel_not_text")
@@ -12026,12 +12048,23 @@ async def on_member_remove(member: discord.Member):
     await send_server_event_log(guild, "member_leave", details)
 
 
+_bot_deleted_message_ids: set[int] = set()
+_BOT_DELETED_MESSAGE_TTL_SECONDS = 10.0
+
+
 @bot.event
 async def on_message_delete(message: discord.Message):
     guild = message.guild
     if guild is None:
         return
     if not is_managed_guild_id(guild.id):
+        return
+
+    # Skip messages deleted by the bot itself (bad-word filter, hi-channel
+    # auto-delete) to avoid duplicate log entries alongside the moderation
+    # action log.
+    if message.id in _bot_deleted_message_ids:
+        _bot_deleted_message_ids.discard(message.id)
         return
 
     channel_name = message.channel.mention if hasattr(message.channel, "mention") else f"`{message.channel.id}`"
@@ -12278,6 +12311,27 @@ async def on_invite_create(invite: discord.Invite):
     await send_server_event_log(guild, "invite_created", details)
 
 
+async def _resolve_channel_create_actor(guild: discord.Guild, channel_id: int) -> str:
+    """Query the guild audit log to find who created the channel."""
+    try:
+        async for entry in guild.audit_logs(
+            limit=25,
+            action=discord.AuditLogAction.channel_create,
+        ):
+            if str(getattr(entry, "target_id", "")) == str(channel_id):
+                user = entry.user
+                return (
+                    f"{user.mention} (`{user.id}`)"
+                    if user
+                    else f"`{entry.user_id}`"
+                )
+    except discord.Forbidden:
+        return "Unknown (bot lacks audit log permission)"
+    except Exception:
+        return "Unknown"
+    return "Unknown (not in audit log)"
+
+
 @bot.event
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     guild = channel.guild
@@ -12290,8 +12344,11 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
         event_name = "channel_created"
 
     parent_name = channel.category.name if channel.category else "N/A"
+    actor_label = await _resolve_channel_create_actor(guild, channel.id)
     details = (
-        f"**Name:** {clip_text(channel.name)}\n**ID:** `{channel.id}`\n**Type:** `{channel.type}`\n**Category:** {clip_text(parent_name)}\n"
+        f"**Name:** {clip_text(channel.name)}\n**ID:** `{channel.id}`\n**Type:** `{channel.type}`\n"
+        f"**Category:** {clip_text(parent_name)}\n"
+        f"**Actor:** {actor_label}\n"
     )
     await send_server_event_log(guild, event_name, details)
 
@@ -12322,7 +12379,7 @@ async def on_guild_role_create(role: discord.Role):
 
     actor_label = await _resolve_role_create_actor(guild, role.id)
     details = (
-        f"**Role:** {role.mention} (`{role.id}`\n"
+        f"**Role:** {role.mention} (`{role.id}`)\n"
         f"**Color:** `{role.color}`\n"
         f"**Position:** `{role.position}`\n"
         f"**Actor:** {actor_label}\n"
@@ -12381,6 +12438,7 @@ async def on_message(message: discord.Message):
             hi_response_text = f"{hi_member_name} says {hi_channel_text}"
             try:
                 await message.delete()
+                _bot_deleted_message_ids.add(message.id)
             except discord.Forbidden:
                 logger.warning(
                     "Cannot delete message %s in hi channel %s for guild %s",
