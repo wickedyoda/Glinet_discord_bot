@@ -72,6 +72,7 @@ async def apply_bad_word_moderation(
     send_moderation_log,
     logger,
     clip_text,
+    record_bot_deleted_message=None,
 ):
     if message.guild is None or not isinstance(message.author, discord.Member):
         return False
@@ -93,6 +94,8 @@ async def apply_bad_word_moderation(
     try:
         await message.delete()
         message_deleted = True
+        if callable(record_bot_deleted_message):
+            record_bot_deleted_message(message.id)
     except (discord.Forbidden, discord.HTTPException):
         logger.warning(
             "Failed to delete bad-word message %s in guild %s",
