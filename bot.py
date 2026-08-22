@@ -9114,8 +9114,8 @@ async def send_server_event_log(guild: discord.Guild, event_name: str, details: 
         logger.info("WEB_AUDIT suppress_duplicate event=%s guild_id=%s", event_name, guild.id)
         return
     _server_event_dedup[guild.id] = (dedup_key, now)
-    actor_text = f"{actor} ({actor.id})" if actor else "system"
-    message = f"📌 **Server Event:** `{event_name}`\n{details}"
+    actor_text = f"{actor} (`{actor.id}`)" if actor else "system"
+    message = f"📌 **Server Event:** `{event_name}`\n**Actor:** {actor_text}\n{details}"
     record_action_safe(
         action=event_name,
         status="success",
@@ -12311,6 +12311,27 @@ async def on_invite_create(invite: discord.Invite):
     await send_server_event_log(guild, "invite_created", details)
 
 
+async def _resolve_channel_create_actor(guild: discord.Guild, channel_id: int) -> str:
+    """Query the guild audit log to find who created the channel."""
+    try:
+        async for entry in guild.audit_logs(
+            limit=25,
+            action=discord.AuditLogAction.channel_create,
+        ):
+            if str(getattr(entry, "target_id", "")) == str(channel_id):
+                user = entry.user
+                return (
+                    f"{user.mention} (`{user.id}`)"
+                    if user
+                    else f"`{entry.user_id}`"
+                )
+    except discord.Forbidden:
+        return "Unknown (bot lacks audit log permission)"
+    except Exception:
+        return "Unknown"
+    return "Unknown (not in audit log)"
+
+
 @bot.event
 async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     guild = channel.guild
@@ -12323,8 +12344,11 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
         event_name = "channel_created"
 
     parent_name = channel.category.name if channel.category else "N/A"
+    actor_label = await _resolve_channel_create_actor(guild, channel.id)
     details = (
-        f"**Name:** {clip_text(channel.name)}\n**ID:** `{channel.id}`\n**Type:** `{channel.type}`\n**Category:** {clip_text(parent_name)}\n"
+        f"**Name:** {clip_text(channel.name)}\n**ID:** `{channel.id}`\n**Type:** `{channel.type}`\n"
+        f"**Category:** {clip_text(parent_name)}\n"
+        f"**Actor:** {actor_label}\n"
     )
     await send_server_event_log(guild, event_name, details)
 
@@ -12355,7 +12379,7 @@ async def on_guild_role_create(role: discord.Role):
 
     actor_label = await _resolve_role_create_actor(guild, role.id)
     details = (
-        f"**Role:** {role.mention} (`{role.id}`\n"
+        f"**Role:** {role.mention} (`{role.id}`)\n"
         f"**Color:** `{role.color}`\n"
         f"**Position:** `{role.position}`\n"
         f"**Actor:** {actor_label}\n"
