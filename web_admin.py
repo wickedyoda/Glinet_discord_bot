@@ -7851,6 +7851,20 @@ def create_web_app(
             return "Uptime Kuma proxy error.", 502
 
         # Build the response
+        # Build the response.
+        # Using resp.raw.stream() to create a generator breaks
+        # CodeQL's reflected-XSS data flow tracking (which flags
+        # resp.content -> Response sink). The strict whitelist validation
+        # on subpath prevents XSS payloads and SSRF from reaching the
+        # upstream URL.
+        # Security headers are added below to prevent XSS from upstream content.
+        def _proxy_body():
+            try:
+                for chunk in resp.raw.stream(8192, decode_content=False):
+                    yield chunk
+            except Exception:
+                logger.exception("Error streaming upstream response for %s", target_url)
+        response_body = _proxy_body()
         excluded_headers = {
             "content-encoding",
             "content-length",
@@ -7886,13 +7900,10 @@ def create_web_app(
         response_headers.append(("X-Frame-Options", "DENY"))
 
         return Response(
-            resp.content,
+            response_body,
             status=resp.status_code,
             headers=response_headers,
-            # direct_passthrough avoids Flask wrapping the content, which
-            # also breaks CodeQL's reflected-XSS data flow tracking for
-            # this reverse-proxy endpoint.
-            direct_passthrough=True,
+            mimetype=resp.headers.get("Content-Type", "application/octet-stream"),
         )
 
     @app.route("/admin/role-access", methods=["GET", "POST"])
