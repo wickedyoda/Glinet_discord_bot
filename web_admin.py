@@ -6218,10 +6218,12 @@ def create_web_app(
         selected_guild_id = str(selected_guild.get("id") or "")
 
         if request.method == "POST":
-            action = str(request.form.get("action") or "").strip().lower()
-            if not callable(on_manage_reddit_auto_responds):
+            if not is_admin:
+                flash("Admin access required to modify Reddit auto-respond rules.", "error")
+            elif not callable(on_manage_reddit_auto_responds):
                 flash("Reddit auto-respond callback is not configured.", "error")
             else:
+                action = str(request.form.get("action") or "").strip().lower()
                 callback_payload = {"action": action}
                 if action == "add":
                     callback_payload["subreddit"] = request.form.get("subreddit", "")
@@ -6269,19 +6271,21 @@ def create_web_app(
         )
         reddit_oauth_configured = bool(file_values.get("REDDIT_CLIENT_ID") or os.getenv("REDDIT_CLIENT_ID"))
 
-        # Build form HTML using regular strings (no f-strings to avoid quoting issues)
-        add_form_html = _render_page_section_html(
-            "Add Auto-Respond Rule",
+        # Build form HTML — admin-only for writes, visible to all for reads
+        add_form_html = (
+            '<div class="card"><h2>Add Auto-Respond Rule</h2>'
+            if is_admin else '<div class="card"><h2>Add Auto-Respond Rule (Admins Only)</h2>'
+        )
+        add_form_html += (
             '<form method="post" style="display: grid; gap: 12px; grid-template-columns: 1fr 1fr;">'
             '<input type="hidden" name="action" value="add" />'
             '<div><label>Subreddit</label><input type="text" name="subreddit" placeholder="e.g. GlInet" required /></div>'
             '<div><label>Keyword Pattern (regex)</label><input type="text" name="keyword_pattern" placeholder="e.g. flint[ -]?3" required /></div>'
             '<div style="grid-column: 1 / -1;"><label>Response Template</label>'
             '<textarea name="response_template" placeholder="Use {title}, {author}, {subreddit}, {post_id}, {post_link}" required style="min-height: 120px;"></textarea></div>'
-            '<div><button class="btn" type="submit">Add Rule</button></div>'
+            '<div>' + ('<button class="btn" type="submit">Add Rule</button>' if is_admin else '<button class="btn" type="button" disabled>Add Rule (Admin Only)</button>') + '</div>'
             '</form>'
-            '<p class="muted" style="margin-top: 8px;">Keyword pattern uses Python regex (case-insensitive). Template variables: {title}, {author}, {subreddit}, {post_id}, {post_link}</p>',
-            is_admin,
+            '<p class="muted" style="margin-top: 8px;">Keyword pattern uses Python regex (case-insensitive). Template variables: {title}, {author}, {subreddit}, {post_id}, {post_link}</p></div>'
         )
         if not reddit_oauth_configured:
             add_form_html += '<p class="muted" style="color: var(--flash-err-fg); background: var(--flash-err-bg); padding: 12px; border-radius: 8px; display: inline-block;">Reddit OAuth not configured. Set REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USERNAME, REDDIT_PASSWORD in .env to enable auto-reply.</p>'
