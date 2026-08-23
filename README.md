@@ -100,6 +100,36 @@ The bot provides a **read-only** Freshdesk ticket viewer for GL.iNet support tic
 
 Detailed documentation: [`wiki/Freshdesk-Integration.md`](./wiki/Freshdesk-Integration.md)
 
+## Reddit Auto-Responder
+
+The bot can automatically post replies as comments on Reddit submissions that match configurable keyword patterns. This is a **web-GUI-only** feature — all management is done through the Web Admin interface under `/admin/reddit-auto-responds`.
+
+**Web Admin interface (requires login):**
+- `/admin/reddit-auto-responds` — manage auto-respond rules (add, edit, toggle enable/disable, delete)
+- Each rule defines a subreddit, a regex keyword pattern, and a response template with variable substitution (`{title}`, `{author}`, `{subreddit}`, `{{post_id}}`, `{{post_link}}`)
+- Runtime status shown per rule: last matched post, last reply timestamp, last error
+- Status bar shows whether Reddit OAuth is configured and auto-reply is enabled
+
+**Requirements:**
+- `REDDIT_AUTO_REPLY_ENABLED=true` — enables the auto-responder feature
+- `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET` — Reddit OAuth2 app credentials (create a "Script" app at https://www.reddit.com/prefs/apps)
+- `REDDIT_USERNAME`, `REDDIT_PASSWORD` — Reddit account credentials for the bot account
+
+**How it works:**
+1. On each Reddit feed polling cycle, the bot checks all enabled auto-respond rules
+2. For each rule, it fetches new posts from the subreddit and matches the keyword pattern against post titles
+3. When a match is found, the bot posts a comment using the response template
+4. Posted comments prevent duplicate replies via a seen-post tracking table
+5. The rule's runtime status (last matched, last replied, last error) is updated in a single DB write per run
+
+**Security notes:**
+- OAuth credentials are stored as environment variables only — never committed to git
+- Comments are posted from the linked Reddit account
+- Rate limiting is handled automatically with exponential backoff
+- Auth errors automatically disable the affected rule
+
+Detailed documentation: [`wiki/Reddit-Auto-Responder.md`](./wiki/Reddit-Auto-Responder.md)
+
 ## Contributing
 
 Use complete commit and PR descriptions for all changes.

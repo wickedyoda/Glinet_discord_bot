@@ -113,6 +113,13 @@ from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
 )
 from app.moderation_runtime import apply_bad_word_moderation as apply_bad_word_moderation_impl
+from app.reddit_api_client import (
+    RedditApiError,
+    RedditAuthError,
+    RedditRateLimitError,
+    is_reddit_oauth_configured,
+    post_reddit_comment,
+)
 from app.reaction_role_web_callbacks import ReactionRolesWebCallbacks
 from app.reaction_roles import (
     delete_reaction_role_mapping as delete_reaction_role_mapping_impl,
@@ -204,6 +211,13 @@ REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
+REDDIT_AUTO_REPLY_ENABLED = is_truthy_env_value(
+    os.getenv("REDDIT_AUTO_REPLY_ENABLED", "false"),
+    default_value=False,
+)
+REDDIT_AUTO_REPLY_SEEN_REPLY_RETENTION_LIMIT = 500
+REDDIT_AUTO_REPLY_MAX_REPLIES_PER_RUN = 5
+REDDIT_AUTO_REPLY_RATE_LIMIT_BACKOFF_SECONDS = 30
 LINKEDIN_REQUEST_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -1752,6 +1766,23 @@ def ensure_db_schema():
                 FOREIGN KEY(feed_id) REFERENCES reddit_feed_subscriptions(id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS reddit_auto_respond_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                subreddit TEXT NOT NULL,
+                keyword_pattern TEXT NOT NULL,
+                response_template TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                last_matched_post_id TEXT NOT NULL DEFAULT '',
+                last_reply_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, subreddit, keyword_pattern)
+            );
+
             CREATE TABLE IF NOT EXISTS youtube_subscriptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL DEFAULT 0,
@@ -2155,6 +2186,58 @@ def ensure_db_schema():
             """
             CREATE INDEX IF NOT EXISTS idx_reddit_feed_subscriptions_guild_id
                 ON reddit_feed_subscriptions(guild_id)
+            """
+        )
+
+        # Ensure reddit_auto_respond_rules table exists (for Reddit auto-responder feature)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reddit_auto_respond_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                subreddit TEXT NOT NULL,
+                keyword_pattern TEXT NOT NULL,
+                response_template TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT '',
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                last_matched_post_id TEXT NOT NULL DEFAULT '',
+                last_reply_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, subreddit, keyword_pattern)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reddit_auto_respond_rules_guild
+                ON reddit_auto_respond_rules(guild_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reddit_auto_respond_rules_enabled
+                ON reddit_auto_respond_rules(enabled)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reddit_auto_respond_seen_replies (
+                rule_id INTEGER NOT NULL,
+                post_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(rule_id, post_id),
+                FOREIGN KEY(rule_id) REFERENCES reddit_auto_respond_rules(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_reddit_auto_respond_seen_replies_rule_id
+                ON reddit_auto_respond_seen_replies(rule_id)
             """
         )
 
@@ -3878,6 +3961,230 @@ def delete_reddit_feed_subscription(feed_id: int):
     return cursor.rowcount > 0
 
 
+def get_reddit_auto_respond_rule(rule_id: int, guild_id: int | str | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        query = "SELECT id, guild_id, subreddit, keyword_pattern, response_template, enabled, created_at, updated_at, created_by_email, updated_by_email, last_matched_post_id, last_reply_posted_at, last_error FROM reddit_auto_respond_rules WHERE id = ?"
+        params = [int(rule_id)]
+        if safe_guild_id is not None:
+            query += " AND guild_id = ?"
+            params.append(safe_guild_id)
+        row = conn.execute(query, tuple(params)).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "guild_id": int(row["guild_id"] or 0),
+        "subreddit": str(row["subreddit"] or ""),
+        "keyword_pattern": str(row["keyword_pattern"] or ""),
+        "response_template": str(row["response_template"] or ""),
+        "enabled": bool(row["enabled"]),
+        "created_at": str(row["created_at"] or ""),
+        "updated_at": str(row["updated_at"] or ""),
+        "created_by_email": str(row["created_by_email"] or ""),
+        "updated_by_email": str(row["updated_by_email"] or ""),
+        "last_matched_post_id": str(row["last_matched_post_id"] or ""),
+        "last_reply_posted_at": str(row["last_reply_posted_at"] or ""),
+        "last_error": str(row["last_error"] or ""),
+    }
+
+
+def list_reddit_auto_respond_rules(guild_id: int | str | None = None, enabled_only: bool = False):
+    conn = get_db_connection()
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    query = """
+        SELECT id, guild_id, subreddit, keyword_pattern, response_template,
+               enabled, created_at, updated_at, created_by_email, updated_by_email,
+               last_matched_post_id, last_reply_posted_at, last_error
+        FROM reddit_auto_respond_rules
+    """
+    where_clauses = []
+    params = []
+    if safe_guild_id is not None:
+        where_clauses.append("guild_id = ?")
+        params.append(safe_guild_id)
+    if enabled_only:
+        where_clauses.append("enabled = 1")
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+    query += " ORDER BY subreddit COLLATE NOCASE ASC, keyword_pattern ASC, id ASC"
+    with db_lock:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    rules = []
+    for row in rows:
+        rules.append(
+            {
+                "id": int(row["id"]),
+                "guild_id": int(row["guild_id"] or 0),
+                "subreddit": str(row["subreddit"] or ""),
+                "keyword_pattern": str(row["keyword_pattern"] or ""),
+                "response_template": str(row["response_template"] or ""),
+                "enabled": bool(row["enabled"]),
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+                "created_by_email": str(row["created_by_email"] or ""),
+                "updated_by_email": str(row["updated_by_email"] or ""),
+                "last_matched_post_id": str(row["last_matched_post_id"] or ""),
+                "last_reply_posted_at": str(row["last_reply_posted_at"] or ""),
+                "last_error": str(row["last_error"] or ""),
+            }
+        )
+    return rules
+
+
+def create_reddit_auto_respond_rule(guild_id: int, subreddit: str, keyword_pattern: str, response_template: str, actor_email: str):
+    now_iso = datetime.now(UTC).isoformat()
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit)
+    if not cleaned_subreddit:
+        raise ValueError("Invalid subreddit.")
+    if not keyword_pattern.strip():
+        raise ValueError("Keyword pattern is required.")
+    if not response_template.strip():
+        raise ValueError("Response template is required.")
+    actor_email_str = str(actor_email or "").strip().lower()
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            """
+            INSERT INTO reddit_auto_respond_rules (
+                guild_id, subreddit, keyword_pattern, response_template,
+                enabled, created_at, updated_at, created_by_email, updated_by_email
+            ) VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                cleaned_subreddit,
+                keyword_pattern.strip(),
+                response_template.strip(),
+                now_iso,
+                now_iso,
+                actor_email_str,
+                actor_email_str,
+            ),
+        )
+        conn.commit()
+    return cursor.lastrowid
+
+
+def update_reddit_auto_respond_rule(rule_id: int, guild_id: int, subreddit: str, keyword_pattern: str, response_template: str, actor_email: str):
+    now_iso = datetime.now(UTC).isoformat()
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit)
+    if not cleaned_subreddit:
+        raise ValueError("Invalid subreddit.")
+    if not keyword_pattern.strip():
+        raise ValueError("Keyword pattern is required.")
+    if not response_template.strip():
+        raise ValueError("Response template is required.")
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            """
+            UPDATE reddit_auto_respond_rules
+            SET subreddit = ?, keyword_pattern = ?, response_template = ?,
+                updated_at = ?, updated_by_email = ?
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                cleaned_subreddit,
+                keyword_pattern.strip(),
+                response_template.strip(),
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                int(rule_id),
+                safe_guild_id,
+            ),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def set_reddit_auto_respond_rule_enabled(rule_id: int, guild_id: int, enabled: bool, actor_email: str):
+    now_iso = datetime.now(UTC).isoformat()
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            """
+            UPDATE reddit_auto_respond_rules
+            SET enabled = ?, updated_at = ?, updated_by_email = ?
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                1 if enabled else 0,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                int(rule_id),
+                safe_guild_id,
+            ),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def delete_reddit_auto_respond_rule(rule_id: int, guild_id: int):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    conn = get_db_connection()
+    with db_lock:
+        cursor = conn.execute(
+            "DELETE FROM reddit_auto_respond_rules WHERE id = ? AND guild_id = ?",
+            (int(rule_id), safe_guild_id),
+        )
+        conn.commit()
+    return cursor.rowcount > 0
+
+
+def load_reddit_auto_respond_seen_reply_ids(rule_id: int):
+    conn = get_db_connection()
+    with db_lock:
+        rows = conn.execute(
+            "SELECT post_id FROM reddit_auto_respond_seen_replies WHERE rule_id = ?",
+            (int(rule_id),),
+        ).fetchall()
+    return {str(row["post_id"]) for row in rows if row["post_id"]}
+
+
+def merge_reddit_auto_respond_seen_reply_ids(rule_id: int, post_ids):
+    normalized_ids = []
+    seen = set()
+    for raw_post_id in post_ids or []:
+        post_id = str(raw_post_id or "").strip()
+        if not post_id or post_id in seen:
+            continue
+        seen.add(post_id)
+        normalized_ids.append(post_id)
+    if not normalized_ids:
+        return
+
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO reddit_auto_respond_seen_replies (rule_id, post_id, created_at)
+            VALUES (?, ?, ?)
+            """,
+            [(int(rule_id), post_id, now_iso) for post_id in normalized_ids],
+        )
+        # Prune old entries to enforce retention limit
+        conn.execute(
+            """
+            DELETE FROM reddit_auto_respond_seen_replies
+            WHERE rule_id = ?
+              AND post_id NOT IN (
+                SELECT post_id FROM reddit_auto_respond_seen_replies
+                WHERE rule_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+              )
+            """,
+            (int(rule_id), int(rule_id), REDDIT_AUTO_REPLY_SEEN_REPLY_RETENTION_LIMIT),
+        )
+        conn.commit()
+
+
 def load_reddit_feed_seen_post_ids(feed_id: int):
     conn = get_db_connection()
     with db_lock:
@@ -3959,6 +4266,38 @@ def update_reddit_feed_runtime_status(
                 str(last_posted_at or "").strip(),
                 str(last_error or "").strip(),
                 int(feed_id),
+            ),
+        )
+        conn.commit()
+
+
+def update_reddit_auto_respond_rule_runtime_status(
+    rule_id: int,
+    *,
+    last_matched_post_id: str = "",
+    last_reply_posted_at: str = "",
+    last_error: str = "",
+):
+    now_iso = datetime.now(UTC).isoformat()
+    conn = get_db_connection()
+    with db_lock:
+        conn.execute(
+            """
+            UPDATE reddit_auto_respond_rules
+            SET updated_at = ?,
+                last_matched_post_id = CASE WHEN ? != '' THEN ? ELSE last_matched_post_id END,
+                last_reply_posted_at = CASE WHEN ? != '' THEN ? ELSE last_reply_posted_at END,
+                last_error = ?
+            WHERE id = ?
+            """,
+            (
+                now_iso,
+                str(last_matched_post_id or "").strip(),
+                str(last_matched_post_id or "").strip(),
+                str(last_reply_posted_at or "").strip(),
+                str(last_reply_posted_at or "").strip(),
+                str(last_error or "").strip(),
+                int(rule_id),
             ),
         )
         conn.commit()
@@ -5668,6 +6007,18 @@ def run_web_get_reddit_feeds(guild_id: int):
 
 def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
     return get_feed_web_callbacks().run_web_manage_reddit_feeds(payload, actor_email, guild_id)
+
+
+def build_reddit_auto_responds_web_payload(guild_id: int):
+    return get_feed_web_callbacks().build_reddit_auto_responds_web_payload(guild_id)
+
+
+def run_web_get_reddit_auto_responds(guild_id: int):
+    return get_feed_web_callbacks().run_web_get_reddit_auto_responds(guild_id)
+
+
+def run_web_manage_reddit_auto_responds(payload: dict, actor_email: str, guild_id: int):
+    return get_feed_web_callbacks().run_web_manage_reddit_auto_responds(payload, actor_email, guild_id)
 
 
 def build_actions_web_payload(guild_id: int):
@@ -8508,6 +8859,12 @@ def get_feed_web_callbacks():
             update_reddit_feed_subscription=update_reddit_feed_subscription,
             set_reddit_feed_subscription_enabled=set_reddit_feed_subscription_enabled,
             delete_reddit_feed_subscription=delete_reddit_feed_subscription,
+            list_reddit_auto_respond_rules=list_reddit_auto_respond_rules,
+            get_reddit_auto_respond_rule=get_reddit_auto_respond_rule,
+            create_reddit_auto_respond_rule=create_reddit_auto_respond_rule,
+            update_reddit_auto_respond_rule=update_reddit_auto_respond_rule,
+            set_reddit_auto_respond_rule_enabled=set_reddit_auto_respond_rule_enabled,
+            delete_reddit_auto_respond_rule=delete_reddit_auto_respond_rule,
             list_youtube_subscriptions=list_youtube_subscriptions,
             get_youtube_subscription=get_youtube_subscription,
             create_or_update_youtube_subscription=create_or_update_youtube_subscription,
@@ -9802,6 +10159,171 @@ async def check_reddit_feed_updates_once():
         await process_reddit_feed_subscription(feed)
 
 
+async def process_reddit_auto_respond_rules():
+    if not REDDIT_AUTO_REPLY_ENABLED or not is_reddit_oauth_configured():
+        return
+    rules = list_reddit_auto_respond_rules(enabled_only=True)
+    if not rules:
+        return
+    for rule in rules:
+        await process_reddit_auto_respond_rule(rule)
+
+
+async def process_reddit_auto_respond_rule(rule: dict):
+    rule_id = int(rule.get("id") or 0)
+    guild_id = int(rule.get("guild_id") or 0)
+    subreddit = str(rule.get("subreddit") or "").strip()
+    keyword_pattern = str(rule.get("keyword_pattern") or "").strip()
+    response_template = str(rule.get("response_template") or "").strip()
+    checked_at = datetime.now(UTC).isoformat()
+    if rule_id <= 0 or guild_id <= 0 or not subreddit or not keyword_pattern or not response_template:
+        return
+
+    try:
+        normalized_subreddit, posts = await asyncio.to_thread(fetch_reddit_subreddit_new_posts, subreddit)
+    except Exception:
+        logger.exception("Reddit auto-respond rule %s failed to fetch posts for r/%s", rule_id, subreddit)
+        update_reddit_auto_respond_rule_runtime_status(
+            rule_id,
+            last_error="Failed to fetch Reddit posts.",
+        )
+        return
+
+    current_post_ids = [str(post.get("id") or "").strip() for post in posts if post.get("id")]
+    seen_reply_ids = load_reddit_auto_respond_seen_reply_ids(rule_id)
+    new_posts = [post for post in posts if str(post.get("id") or "").strip() not in seen_reply_ids]
+    if not new_posts:
+        merge_reddit_auto_respond_seen_reply_ids(rule_id, current_post_ids)
+        update_reddit_auto_respond_rule_runtime_status(
+            rule_id,
+            last_error="",
+        )
+        return
+
+    # Compile the keyword pattern (case-insensitive)
+    try:
+        compiled_pattern = re.compile(keyword_pattern, re.IGNORECASE)
+    except re.error:
+        logger.warning("Reddit auto-respond rule %s has invalid regex pattern: %s", rule_id, keyword_pattern)
+        update_reddit_auto_respond_rule_runtime_status(
+            rule_id,
+            last_error="Invalid keyword regex pattern.",
+        )
+        return
+
+    replied_post_ids = []
+    last_matched_post_id = ""
+    last_error = ""
+    auth_error = False
+    try:
+        for post in new_posts[:REDDIT_AUTO_REPLY_MAX_REPLIES_PER_RUN]:
+            post_id = str(post.get("id") or "").strip()
+            title = str(post.get("title") or "").strip()
+            author = str(post.get("author") or "unknown").strip()
+            post_link = str(post.get("link") or "").strip()
+
+            # Check if the keyword pattern matches the post title
+            if not compiled_pattern.search(title):
+                continue
+
+            # Build the response from the template
+            response_body = response_template.format(
+                subreddit=normalized_subreddit,
+                title=title,
+                author=author,
+                post_id=post_id,
+                post_link=post_link,
+            )
+
+            # Post the comment to Reddit
+            try:
+                result = post_reddit_comment(
+                    normalized_subreddit,
+                    post_id,
+                    response_body,
+                )
+                if result.get("ok"):
+                    comment_id = result.get("comment_id")
+                    logger.info(
+                        "Reddit auto-respond rule %s posted comment %s to post %s in r/%s",
+                        rule_id,
+                        comment_id,
+                        post_id,
+                        normalized_subreddit,
+                    )
+                    replied_post_ids.append(post_id)
+                    last_matched_post_id = post_id
+                    last_error = ""
+                else:
+                    error_msg = result.get("error", "Unknown error")
+                    logger.warning(
+                        "Reddit auto-respond rule %s failed to post comment to %s: %s",
+                        rule_id,
+                        post_id,
+                        error_msg,
+                    )
+                    last_matched_post_id = post_id
+                    last_error = f"Comment failed: {error_msg}"
+            except RedditRateLimitError:
+                logger.warning(
+                    "Reddit auto-respond rate limited for rule %s; backing off.",
+                    rule_id,
+                )
+                last_matched_post_id = post_id
+                last_error = "Rate limited."
+                break
+            except RedditAuthError:
+                logger.error(
+                    "Reddit auto-respond auth error for rule %s; disabling.",
+                    rule_id,
+                )
+                set_reddit_auto_respond_rule_enabled(rule_id, 0, True, "system")
+                last_error = "Auth error; rule disabled."
+                auth_error = True
+                break
+            except RedditApiError as exc:
+                logger.warning(
+                    "Reddit auto-respond API error for rule %s on post %s: %s",
+                    rule_id,
+                    post_id,
+                    exc,
+                )
+                last_matched_post_id = post_id
+                last_error = f"API error: {exc}"
+    except discord.Forbidden:
+        merge_reddit_auto_respond_seen_reply_ids(rule_id, replied_post_ids)
+        update_reddit_auto_respond_rule_runtime_status(
+            rule_id,
+            last_error="Permission denied.",
+        )
+        return
+    except Exception:
+        logger.exception(
+            "Unexpected error processing Reddit auto-respond rule %s",
+            rule_id,
+        )
+        update_reddit_auto_respond_rule_runtime_status(
+            rule_id,
+            last_error="Unexpected error.",
+        )
+        return
+
+    # Mark all processed posts as seen
+    merge_reddit_auto_respond_seen_reply_ids(rule_id, [p.get("id") for p in new_posts])
+
+    # Single DB update for runtime status (instead of multiple per-post updates)
+    if auth_error:
+        # Already updated by set_reddit_auto_respond_rule_enabled above
+        return
+    last_reply_posted_at = datetime.now(UTC).isoformat() if replied_post_ids else ""
+    update_reddit_auto_respond_rule_runtime_status(
+        rule_id,
+        last_matched_post_id=last_matched_post_id,
+        last_reply_posted_at=last_reply_posted_at,
+        last_error=last_error,
+    )
+
+
 async def reddit_feed_monitor_loop():
     if not croniter.is_valid(REDDIT_FEED_CHECK_SCHEDULE):
         logger.error(
@@ -9823,6 +10345,7 @@ async def reddit_feed_monitor_loop():
         logger.debug("Next Reddit feed check scheduled for %s UTC", next_run_utc.isoformat())
         await asyncio.sleep(wait_seconds)
         await check_reddit_feed_updates_once()
+        await process_reddit_auto_respond_rules()
 
 
 def restart_reddit_feed_monitor_task():

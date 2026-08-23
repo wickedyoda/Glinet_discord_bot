@@ -435,6 +435,19 @@ Notes:
 - Feed list shows enabled state, last checked time, last posted time, and last error
 - New subscriptions baseline existing posts first, then only publish newer Reddit submissions
 
+### `/admin/reddit-auto-responds`
+
+- Scoped to the selected server
+- Manage keyword-triggered auto-responder comment rules (web-GUI-only, no Discord commands)
+- Add, edit, toggle enable/disable, and delete rules per selected server
+- Each rule defines a subreddit, a regex keyword pattern, and a response template
+- Response template supports variable substitution: `{title}`, `{author}`, `{subreddit}`, `{post_id}`, `{post_link}`
+- Runtime status shown per rule: last matched post, last reply timestamp, last error
+- Status bar indicates whether Reddit OAuth credentials are configured and auto-reply is enabled
+- Maximum 5 replies per rule per polling cycle (`REDDIT_AUTO_REPLY_MAX_REPLIES_PER_RUN`)
+- Rate limiting and auth-error auto-disable are handled automatically
+- OAuth credentials (`REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_USERNAME`, `REDDIT_PASSWORD`) are masked as sensitive in the web GUI
+
 ### `/admin/youtube`
 
 - Scoped to the selected server
@@ -589,6 +602,7 @@ Scope notes:
   - `/admin/member-activity`
   - `/admin/command-permissions`
   - `/admin/reddit-feeds`
+  - `/admin/reddit-auto-responds`
   - `/admin/youtube`
   - `/admin/linkedin`
   - `/admin/tag-responses`
