@@ -106,6 +106,11 @@ This page reflects the current environment behavior in bot.py and .env.example.
 | `REDDIT_FEED_CHECK_SCHEDULE` | `*/30 * * * *` | Reddit feed poll cron |
 | `REDDIT_FEED_NOTIFY_ENABLED` | `true` | Reddit feed toggle |
 | `REDDIT_SUBREDDIT` | `GlInet` | Subreddit name, URL, or `r/<name>` |
+| `REDDIT_AUTO_REPLY_ENABLED` | `false` | Reddit auto-responder toggle |
+| `REDDIT_CLIENT_ID` | empty | Reddit OAuth2 client ID |
+| `REDDIT_CLIENT_SECRET` | empty | Reddit OAuth2 client secret (sensitive) |
+| `REDDIT_USERNAME` | empty | Reddit bot account username |
+| `REDDIT_PASSWORD` | empty | Reddit bot account password (sensitive) |
 | `YOUTUBE_NOTIFY_ENABLED` | `false` | YouTube monitor toggle |
 | `YOUTUBE_POLL_INTERVAL_SECONDS` | `300` | YouTube poll cadence |
 | `YOUTUBE_REQUEST_TIMEOUT_SECONDS` | `12` | YouTube fetch timeout |

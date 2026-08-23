@@ -211,6 +211,8 @@ SENSITIVE_KEYS = {
     "UPTIME_STATUS_API_KEY",
     "FRESHDESK_API_KEY",
     "DISCOURSE_API_KEY",
+    "REDDIT_CLIENT_SECRET",
+    "REDDIT_PASSWORD",
 }
 FALLBACK_PROTECTED_ENV_KEYS = SENSITIVE_KEYS | {"WEB_ENV_FILE"}
 
@@ -431,6 +433,21 @@ ENV_FIELDS = [
         "REDDIT_FEED_NOTIFY_ENABLED",
         "Reddit Feed Monitor Enabled",
         "Enable or disable Reddit feed polling and posting without removing saved feed subscriptions.",
+    ),
+    (
+        "REDDIT_AUTO_REPLY_ENABLED",
+        "Reddit Auto-Reply Enabled",
+        "Enable or disable automatic Reddit comment replies based on keyword rules.",
+    ),
+    (
+        "REDDIT_CLIENT_ID",
+        "Reddit OAuth Client ID",
+        "Reddit OAuth2 client ID for auto-reply (never committed — use .env).",
+    ),
+    (
+        "REDDIT_CLIENT_SECRET",
+        "Reddit OAuth Client Secret",
+        "Reddit OAuth2 client secret for auto-reply (never committed — use .env).",
     ),
     (
         "YOUTUBE_NOTIFY_ENABLED",
@@ -2652,6 +2669,118 @@ def _render_layout(
       gap: 12px;
       margin-bottom: 12px;
     }
+    /* Sidebar layout for new UI design */
+    .app-container {
+      display: grid;
+      grid-template-columns: var(--sidebar-width, 240px) 1fr;
+      min-height: calc(100vh - 70px);
+    }
+    .sidebar {
+      background: var(--card);
+      border-right: 1px solid var(--border);
+      padding: 16px;
+      overflow-y: auto;
+      position: sticky;
+      top: 0;
+      height: calc(100vh - 70px);
+    }
+    .sidebar h3 {
+      margin: 0 0 16px 0;
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .sidebar-section {
+      margin-bottom: 20px;
+    }
+    .sidebar-section ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 4px;
+    }
+    .sidebar-section li {
+      margin: 0;
+    }
+    .sidebar-section a {
+      display: block;
+      padding: 8px 10px;
+      border-radius: 8px;
+      text-decoration: none;
+      color: var(--fg);
+      font-size: 0.9rem;
+      transition: background 0.15s;
+    }
+    .sidebar-section a:hover {
+      background: rgba(255,255,255,0.04);
+    }
+    .sidebar-section a.active {
+      background: var(--btn-bg);
+      color: #fff;
+    }
+    .main-content {
+      padding: 22px 16px;
+    }
+    .main-content .wrap {
+      max-width: none;
+      padding: 0;
+      margin: 0;
+    }
+    @media (max-width: 900px) {
+      .app-container {
+        grid-template-columns: 1fr;
+      }
+      .sidebar {
+        position: fixed;
+        top: 60px;
+        left: -260px;
+        width: 240px;
+        height: calc(100vh - 60px);
+        z-index: 100;
+        transition: left 0.2s ease;
+      }
+      .sidebar.open {
+        left: 0;
+      }
+      .main-content {
+        padding: 16px 10px;
+      }
+      .sidebar-toggle {
+        position: fixed;
+        top: 60px;
+        left: 10px;
+        z-index: 99;
+        background: var(--btn-bg);
+        color: #fff;
+        border: 0;
+        border-radius: 8px;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+      .sidebar-toggle .icon {
+        display: inline-block;
+        width: 20px;
+        height: 2px;
+        background: #fff;
+        margin: 5px 0;
+      }
+      .sidebar-overlay {
+        display: none;
+      }
+      .sidebar.open ~ .sidebar-overlay {
+        display: block;
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0,0,0,0.5);
+        z-index: 90;
+      }
+    }
     .members-mobile-card h3 {
       margin: 0 0 4px;
     }
@@ -2808,6 +2937,7 @@ def _render_layout(
                 <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
                 <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
@@ -2830,6 +2960,7 @@ def _render_layout(
                 <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
                 <option value="{{ url_for('actions_page') }}">Action History</option>
                 <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
                 <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
                 <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
                 <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
@@ -2950,6 +3081,7 @@ def _render_layout(
             <option value="{{ url_for('discourse_page') }}">Discourse</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+            <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
             <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
             <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
@@ -2971,6 +3103,7 @@ def _render_layout(
             <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
             <option value="{{ url_for('actions_page') }}">Action History</option>
             <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+            <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
             <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
             <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
             <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
@@ -3115,6 +3248,8 @@ def create_web_app(
     on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
+    on_get_reddit_auto_responds=None,
+    on_manage_reddit_auto_responds=None,
     on_get_youtube_subscriptions=None,
     on_manage_youtube_subscriptions=None,
     on_get_linkedin_subscriptions=None,
@@ -3597,6 +3732,7 @@ def create_web_app(
             "actions_page": "Action History",
             "bulk_role_csv": "Bulk Role CSV",
             "reddit_feeds": "Reddit Feeds",
+            "reddit_auto_responds": "Reddit Auto-Reply",
             "service_monitors_page": "Service Monitors",
             "youtube_subscriptions": "YouTube",
             "linkedin_subscriptions": "LinkedIn",
@@ -6068,6 +6204,161 @@ def create_web_app(
         </div>
         """
         return _render_page("Reddit Feeds", body, user["email"], bool(user.get("is_admin")))
+
+
+    @app.route("/admin/reddit-auto-responds", methods=["GET", "POST"])
+    @login_required
+    def reddit_auto_responds():
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip().lower()
+            if not callable(on_manage_reddit_auto_responds):
+                flash("Reddit auto-respond callback is not configured.", "error")
+            else:
+                callback_payload = {"action": action}
+                if action == "add":
+                    callback_payload["subreddit"] = request.form.get("subreddit", "")
+                    callback_payload["keyword_pattern"] = request.form.get("keyword_pattern", "")
+                    callback_payload["response_template"] = request.form.get("response_template", "")
+                elif action == "edit":
+                    callback_payload["rule_id"] = request.form.get("rule_id", "")
+                    callback_payload["subreddit"] = request.form.get("subreddit", "")
+                    callback_payload["keyword_pattern"] = request.form.get("keyword_pattern", "")
+                    callback_payload["response_template"] = request.form.get("response_template", "")
+                elif action == "toggle":
+                    callback_payload["rule_id"] = request.form.get("rule_id", "")
+                    callback_payload["enabled"] = request.form.get("enabled", "")
+                elif action == "delete":
+                    callback_payload["rule_id"] = request.form.get("rule_id", "")
+                else:
+                    flash("Invalid action.", "error")
+                    callback_payload = None
+
+                if callback_payload is not None:
+                    response = on_manage_reddit_auto_responds(callback_payload, user["email"], selected_guild_id)
+                    if not isinstance(response, dict):
+                        flash("Invalid response from auto-respond handler.", "error")
+                    elif response.get("ok"):
+                        flash(str(response.get("message") or "Rule updated."), "success")
+                    else:
+                        flash(str(response.get("error") or "Failed to update rule."), "error")
+
+        if callable(on_get_reddit_auto_responds):
+            payload = on_get_reddit_auto_responds(selected_guild_id)
+        else:
+            payload = {"ok": False, "error": "Reddit auto-respond callbacks are not configured."}
+
+        rules = payload.get("rules", []) if isinstance(payload, dict) else []
+        rules_error = str(payload.get("error") or "") if isinstance(payload, dict) and not payload.get("ok") else ""
+
+        file_values = {}
+        try:
+            file_values = _parse_env_file(os.path.join(data_dir, ".env"))
+        except Exception:
+            file_values = {}
+        reddit_auto_reply_enabled = is_truthy_env_value(
+            file_values.get("REDDIT_AUTO_REPLY_ENABLED", os.getenv("REDDIT_AUTO_REPLY_ENABLED", "false")),
+            default_value=False,
+        )
+        reddit_oauth_configured = bool(file_values.get("REDDIT_CLIENT_ID") or os.getenv("REDDIT_CLIENT_ID"))
+
+        # Build form HTML using regular strings (no f-strings to avoid quoting issues)
+        add_form_html = _render_page_section_html(
+            "Add Auto-Respond Rule",
+            '<form method="post" style="display: grid; gap: 12px; grid-template-columns: 1fr 1fr;">'
+            '<input type="hidden" name="action" value="add" />'
+            '<div><label>Subreddit</label><input type="text" name="subreddit" placeholder="e.g. GlInet" required /></div>'
+            '<div><label>Keyword Pattern (regex)</label><input type="text" name="keyword_pattern" placeholder="e.g. flint[ -]?3" required /></div>'
+            '<div style="grid-column: 1 / -1;"><label>Response Template</label>'
+            '<textarea name="response_template" placeholder="Use {title}, {author}, {subreddit}, {post_id}, {post_link}" required style="min-height: 120px;"></textarea></div>'
+            '<div><button class="btn" type="submit">Add Rule</button></div>'
+            '</form>'
+            '<p class="muted" style="margin-top: 8px;">Keyword pattern uses Python regex (case-insensitive). Template variables: {title}, {author}, {subreddit}, {post_id}, {post_link}</p>',
+            is_admin,
+        )
+        if not reddit_oauth_configured:
+            add_form_html += '<p class="muted" style="color: var(--flash-err-fg); background: var(--flash-err-bg); padding: 12px; border-radius: 8px; display: inline-block;">Reddit OAuth not configured. Set REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USERNAME, REDDIT_PASSWORD in .env to enable auto-reply.</p>'
+        if not reddit_auto_reply_enabled:
+            add_form_html += '<p class="muted" style="color: var(--flash-err-fg); background: var(--flash-err-bg); padding: 12px; border-radius: 8px; display: inline-block;">Reddit auto-reply is disabled. Set REDDIT_AUTO_REPLY_ENABLED=true in .env to enable.</p>'
+
+        rule_rows = []
+        for rule in rules:
+            rule_id = escape(str(rule.get("id") or ""), quote=True)
+            subreddit = escape(str(rule.get("subreddit") or ""), quote=True)
+            keyword_pattern = escape(str(rule.get("keyword_pattern") or ""), quote=True)
+            response_template = _clip_text(str(rule.get("response_template") or ""), 80)
+            enabled = bool(rule.get("enabled"))
+            last_matched = _clip_text(str(rule.get("last_matched_post_id") or ""), 20)
+            last_replied = _clip_text(str(rule.get("last_reply_posted_at") or ""), 20)
+            last_error = _clip_text(str(rule.get("last_error") or ""), 60)
+            toggle_value = "false" if enabled else "true"
+            toggle_label = "Disable" if enabled else "Enable"
+            status_label = "Enabled" if enabled else "Disabled"
+
+            row_html_parts = [
+                "<tr>",
+                "<td><code>" + subreddit + "</code></td>",
+                "<td><code>" + keyword_pattern + "</code></td>",
+                "<td>" + escape(response_template) + "</td>",
+                "<td>" + escape(status_label) + "</td>",
+                "<td>" + escape(last_matched) + "</td>",
+                "<td>" + escape(last_replied) + "</td>",
+                "<td>" + escape(last_error) + "</td>",
+                "<td style=\"white-space: nowrap;\">",
+                "<form method=\"post\" style=\"display:inline;\">",
+                "<input type=\"hidden\" name=\"action\" value=\"toggle\" />",
+                "<input type=\"hidden\" name=\"rule_id\" value=\"" + rule_id + "\" />",
+                "<input type=\"hidden\" name=\"enabled\" value=\"" + escape(toggle_value) + "\" />",
+                "<button class=\"btn secondary\" type=\"submit\" style=\"padding: 6px 10px; font-size: 0.85rem;\">" + escape(toggle_label) + "</button>",
+                "</form>",
+                "<button class=\"btn secondary\" type=\"button\" onclick=\"document.getElementById('edit-form-" + rule_id + "').style.display='block'\" style=\"padding: 6px 10px; font-size: 0.85rem;\">Edit</button>",
+                "<form method=\"post\" style=\"display:inline;\" onsubmit=\"return confirm('Delete this auto-respond rule?');\">",
+                "<input type=\"hidden\" name=\"action\" value=\"delete\" />",
+                "<input type=\"hidden\" name=\"rule_id\" value=\"" + rule_id + "\" />",
+                "<button class=\"btn danger\" type=\"submit\" style=\"padding: 6px 10px; font-size: 0.85rem;\">Delete</button>",
+                "</form>",
+                "</td></tr>",
+            ]
+            row_html = "".join(row_html_parts)
+            rule_rows.append(row_html)
+
+            edit_form_html_parts = [
+                "<div id=\"edit-form-" + rule_id + "\" style=\"display:none; position:fixed; top:50%; left:50%; transform:translate(-50%,-50%); background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; z-index:1000; max-width:500px; width:90%;\">",
+                "<h3 style=\"margin-top:0;\">Edit Auto-Respond Rule</h3>",
+                "<form method=\"post\" style=\"display:grid; gap:12px;\">",
+                "<input type=\"hidden\" name=\"action\" value=\"edit\" />",
+                "<input type=\"hidden\" name=\"rule_id\" value=\"" + rule_id + "\" />",
+                "<div><label>Subreddit</label><input type=\"text\" name=\"subreddit\" value=\"" + subreddit + "\" required /></div>",
+                "<div><label>Keyword Pattern (regex)</label><input type=\"text\" name=\"keyword_pattern\" value=\"" + keyword_pattern + "\" required /></div>",
+                "<div><label>Response Template</label><textarea name=\"response_template\" required style=\"min-height:120px;\">" + escape(str(rule.get("response_template") or "")) + "</textarea></div>",
+                "<div style=\"display:flex; gap:8px; justify-content:flex-end;\">",
+                "<button class=\"btn secondary\" type=\"button\" onclick=\"document.getElementById('edit-form-" + rule_id + "').style.display='none'\">Cancel</button>",
+                "<button class=\"btn\" type=\"submit\">Save</button></div>",
+                "</form></div>",
+            ]
+            edit_form_html = "".join(edit_form_html_parts)
+            rule_rows.append(edit_form_html)
+
+
+        body = add_form_html + (
+            '<div class="card">'
+            '<h2>Configured Auto-Respond Rules</h2>'
+            + (f'<p class="muted">{escape(rules_error)}</p>' if rules_error else "")
+            + '<div class="table-scroll"><table><thead><tr>'
+            '<th>Subreddit</th><th>Keyword Pattern</th><th>Response Template</th>'
+            '<th>Status</th><th>Last Matched</th><th>Last Replied</th><th>Last Error</th><th>Actions</th>'
+            '</tr></thead><tbody>'
+            + ("".join(rule_rows) if rule_rows else "<tr><td colspan='8' class='muted'>No auto-respond rules configured yet.</td></tr>")
+            + '</tbody></table></div></div>'
+        )
+        return _render_page("Reddit Auto-Reply", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/youtube", methods=["GET", "POST"])
     @login_required
@@ -9641,6 +9932,8 @@ def start_web_admin_interface(
     on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
+    on_get_reddit_auto_responds=None,
+    on_manage_reddit_auto_responds=None,
     on_get_youtube_subscriptions=None,
     on_manage_youtube_subscriptions=None,
     on_get_linkedin_subscriptions=None,
