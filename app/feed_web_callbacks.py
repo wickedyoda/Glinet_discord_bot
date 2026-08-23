@@ -15,6 +15,12 @@ class FeedWebCallbacks:
         update_reddit_feed_subscription,
         set_reddit_feed_subscription_enabled,
         delete_reddit_feed_subscription,
+        list_reddit_auto_respond_rules,
+        get_reddit_auto_respond_rule,
+        create_reddit_auto_respond_rule,
+        update_reddit_auto_respond_rule,
+        set_reddit_auto_respond_rule_enabled,
+        delete_reddit_auto_respond_rule,
         list_youtube_subscriptions,
         get_youtube_subscription,
         create_or_update_youtube_subscription,
@@ -48,6 +54,12 @@ class FeedWebCallbacks:
         self.update_reddit_feed_subscription = update_reddit_feed_subscription
         self.set_reddit_feed_subscription_enabled = set_reddit_feed_subscription_enabled
         self.delete_reddit_feed_subscription = delete_reddit_feed_subscription
+        self.list_reddit_auto_respond_rules = list_reddit_auto_respond_rules
+        self.get_reddit_auto_respond_rule = get_reddit_auto_respond_rule
+        self.create_reddit_auto_respond_rule = create_reddit_auto_respond_rule
+        self.update_reddit_auto_respond_rule = update_reddit_auto_respond_rule
+        self.set_reddit_auto_respond_rule_enabled = set_reddit_auto_respond_rule_enabled
+        self.delete_reddit_auto_respond_rule = delete_reddit_auto_respond_rule
         self.list_youtube_subscriptions = list_youtube_subscriptions
         self.get_youtube_subscription = get_youtube_subscription
         self.create_or_update_youtube_subscription = create_or_update_youtube_subscription
@@ -146,6 +158,107 @@ class FeedWebCallbacks:
 
         self.logger.info("Reddit feeds updated via web admin actor=%s action=%s", audit_actor, action)
         response = self.build_reddit_feeds_web_payload(safe_guild_id)
+        response["message"] = message
+        return response
+
+    def build_reddit_auto_responds_web_payload(self, guild_id: int):
+        safe_guild_id = self.normalize_target_guild_id(guild_id)
+        rules = self.list_reddit_auto_respond_rules(enabled_only=False, guild_id=safe_guild_id)
+        return {"ok": True, "rules": rules}
+
+    def run_web_get_reddit_auto_responds(self, guild_id: int):
+        try:
+            return self.build_reddit_auto_responds_web_payload(guild_id)
+        except Exception:
+            self.logger.exception("Failed to build Reddit auto-responds payload for web admin")
+            return {"ok": False, "error": "Unexpected error while loading Reddit auto-responds."}
+
+    def run_web_manage_reddit_auto_responds(self, payload: dict, actor_email: str, guild_id: int):
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "Invalid Reddit auto-respond payload."}
+        action = str(payload.get("action") or "").strip().lower()
+        safe_guild_id = self.normalize_target_guild_id(guild_id)
+        audit_actor = self.build_web_actor_audit_label(actor_email)
+        try:
+            if action == "add":
+                subreddit = str(payload.get("subreddit") or "")
+                keyword_pattern = str(payload.get("keyword_pattern") or "")
+                response_template = str(payload.get("response_template") or "")
+                self.create_reddit_auto_respond_rule(safe_guild_id, subreddit, keyword_pattern, response_template, actor_email)
+                self.record_action_safe(
+                    action="reddit_auto_respond_add",
+                    status="success",
+                    moderator=audit_actor,
+                    target=f"r/{self.normalize_reddit_subreddit_name(subreddit)}:{keyword_pattern}",
+                    reason="Added via web admin",
+                    guild_id=safe_guild_id,
+                )
+                message = f"Reddit auto-respond rule added for r/{self.normalize_reddit_subreddit_name(subreddit)}."
+            elif action == "edit":
+                rule_id = int(str(payload.get("rule_id") or "0").strip())
+                rule = self.get_reddit_auto_respond_rule(rule_id, guild_id=safe_guild_id)
+                if rule is None or int(rule.get("guild_id") or 0) != safe_guild_id:
+                    return {"ok": False, "error": "Reddit auto-respond rule was not found."}
+                subreddit = str(payload.get("subreddit") or "")
+                keyword_pattern = str(payload.get("keyword_pattern") or "")
+                response_template = str(payload.get("response_template") or "")
+                if not self.update_reddit_auto_respond_rule(rule_id, safe_guild_id, subreddit, keyword_pattern, response_template, actor_email):
+                    return {"ok": False, "error": "Reddit auto-respond rule was not found."}
+                self.record_action_safe(
+                    action="reddit_auto_respond_edit",
+                    status="success",
+                    moderator=audit_actor,
+                    target=f"r/{self.normalize_reddit_subreddit_name(subreddit)}:{keyword_pattern}",
+                    reason="Edited via web admin",
+                    guild_id=safe_guild_id,
+                )
+                message = f"Reddit auto-respond rule updated for r/{self.normalize_reddit_subreddit_name(subreddit)}."
+            elif action == "toggle":
+                rule_id = int(str(payload.get("rule_id") or "0").strip())
+                rule = self.get_reddit_auto_respond_rule(rule_id, guild_id=safe_guild_id)
+                if rule is None or int(rule.get("guild_id") or 0) != safe_guild_id:
+                    return {"ok": False, "error": "Reddit auto-respond rule was not found."}
+                enabled = str(payload.get("enabled") or "").strip().lower() in self.truthy_env_values
+                if not self.set_reddit_auto_respond_rule_enabled(rule_id, safe_guild_id, enabled, actor_email):
+                    return {"ok": False, "error": "Reddit auto-respond rule was not found."}
+                self.record_action_safe(
+                    action="reddit_auto_respond_toggle",
+                    status="success",
+                    moderator=audit_actor,
+                    target=str(rule_id),
+                    reason=f"Enabled={enabled} via web admin",
+                    guild_id=safe_guild_id,
+                )
+                message = "Reddit auto-respond rule enabled." if enabled else "Reddit auto-respond rule disabled."
+            elif action == "delete":
+                rule_id = int(str(payload.get("rule_id") or "0").strip())
+                rule = self.get_reddit_auto_respond_rule(rule_id, guild_id=safe_guild_id)
+                if rule is None or int(rule.get("guild_id") or 0) != safe_guild_id:
+                    return {"ok": False, "error": "Reddit auto-respond rule was not found."}
+                subreddit = rule.get("subreddit") or str(rule_id)
+                if not self.delete_reddit_auto_respond_rule(rule_id, safe_guild_id):
+                    return {"ok": False, "error": "Reddit auto-respond rule was not found."}
+                self.record_action_safe(
+                    action="reddit_auto_respond_delete",
+                    status="success",
+                    moderator=audit_actor,
+                    target=self.normalize_reddit_subreddit_name(subreddit),
+                    reason="Deleted via web admin",
+                    guild_id=safe_guild_id,
+                )
+                message = "Reddit auto-respond rule deleted."
+            else:
+                return {"ok": False, "error": "Invalid Reddit auto-respond action."}
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        except sqlite3.IntegrityError:
+            return {"ok": False, "error": "That keyword pattern already exists for this subreddit."}
+        except Exception:
+            self.logger.exception("Failed to manage Reddit auto-responds from web admin")
+            return {"ok": False, "error": "Failed to update Reddit auto-responds."}
+
+        self.logger.info("Reddit auto-responds updated via web admin actor=%s action=%s", audit_actor, action)
+        response = self.build_reddit_auto_responds_web_payload(safe_guild_id)
         response["message"] = message
         return response
 

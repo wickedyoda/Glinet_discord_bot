@@ -19,6 +19,7 @@ This wiki documents the current `GL.iNet UnOfficial Discord Bot` implementation 
 - [Tag Responses](Tag-Responses.md)
 - [Search and Docs](Search-and-Docs.md)
 - [Discourse Forum Integration](Discourse-Integration.md)
+- [Reddit Auto-Responder](Reddit-Auto-Responder.md)
 - [Freshdesk Ticket Viewer](Freshdesk-Integration.md)
 - [Country Code Commands](Country-Code-Commands.md)
 - [Moderation and Logs](Moderation-and-Logs.md)
