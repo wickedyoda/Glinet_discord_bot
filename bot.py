@@ -36,18 +36,13 @@ from defusedxml import ElementTree as ET
 from discord import app_commands
 from discord.ext import commands
 from dotenv import dotenv_values, load_dotenv
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from app.tickets import TicketStore
 
 from app.beta_programs import (
     fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
-)
-from app.beta_programs import (
     parse_beta_program_snapshot_json as parse_beta_program_snapshot_json_impl,
-)
-from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
 from app.discourse_announcements import (
@@ -102,14 +97,8 @@ from app.image_metadata import (
 from app.member_activity import MemberActivityManager
 from app.member_activity_backfill import (
     compute_missing_ranges as compute_member_activity_backfill_missing_ranges,
-)
-from app.member_activity_backfill import (
     extract_completed_ranges as extract_member_activity_backfill_completed_ranges,
-)
-from app.member_activity_backfill import (
     parse_backfill_since as parse_member_activity_backfill_since,
-)
-from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
 )
 from app.moderation_runtime import apply_bad_word_moderation as apply_bad_word_moderation_impl
@@ -141,9 +130,14 @@ from app.service_monitor import (
     normalize_service_monitor_targets,
     run_service_monitor_check,
 )
-from app.uptime_status import UptimeStatusAuthError, build_uptime_source_config, default_uptime_api_key, raise_uptime_http_error
-from app.uptime_status import fetch_uptime_snapshot as fetch_uptime_snapshot_impl
-from app.uptime_status import format_uptime_summary as format_uptime_summary_impl
+from app.uptime_status import (
+    UptimeStatusAuthError,
+    build_uptime_source_config,
+    default_uptime_api_key,
+    fetch_uptime_snapshot as fetch_uptime_snapshot_impl,
+    format_uptime_summary as format_uptime_summary_impl,
+    raise_uptime_http_error,
+)
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
 from app.youtube_monitor import YouTubeFeedError, build_youtube_feed_error
 from web_admin import start_web_admin_interface
