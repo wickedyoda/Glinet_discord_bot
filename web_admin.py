@@ -6028,7 +6028,7 @@ def create_web_app(
                     callback_payload = None
 
                 if callback_payload is not None:
-                    response = on_manage_reddit_feeds(callback_payload, user["email"], selected_guild_id)
+                    response = on_manage_reddit_feeds(callback_payload, user["email"], selected_guild_id, user.get("display_name", ""))
                     if not isinstance(response, dict):
                         flash("Invalid response from Reddit feed handler.", "error")
                     elif response.get("ok"):
@@ -6244,7 +6244,7 @@ def create_web_app(
                     callback_payload = None
 
                 if callback_payload is not None:
-                    response = on_manage_reddit_auto_responds(callback_payload, user["email"], selected_guild_id)
+                    response = on_manage_reddit_auto_responds(callback_payload, user["email"], selected_guild_id, user.get("display_name", ""))
                     if not isinstance(response, dict):
                         flash("Invalid response from auto-respond handler.", "error")
                     elif response.get("ok"):
@@ -6427,7 +6427,7 @@ def create_web_app(
                     callback_payload = None
 
                 if callback_payload is not None:
-                    response = on_manage_youtube_subscriptions(callback_payload, user["email"], selected_guild_id)
+                    response = on_manage_youtube_subscriptions(callback_payload, user["email"], selected_guild_id, user.get("display_name", ""))
                     if not isinstance(response, dict):
                         flash("Invalid response from YouTube subscription handler.", "error")
                     elif response.get("ok"):
@@ -6618,7 +6618,7 @@ def create_web_app(
                     callback_payload = None
 
                 if callback_payload is not None:
-                    response = on_manage_linkedin_subscriptions(callback_payload, user["email"], selected_guild_id)
+                    response = on_manage_linkedin_subscriptions(callback_payload, user["email"], selected_guild_id, user.get("display_name", ""))
                     if not isinstance(response, dict):
                         flash("Invalid response from LinkedIn subscription handler.", "error")
                     elif response.get("ok"):
@@ -6794,7 +6794,7 @@ def create_web_app(
                     callback_payload = None
 
                 if callback_payload is not None:
-                    response = on_manage_beta_program_subscriptions(callback_payload, user["email"], selected_guild_id)
+                    response = on_manage_beta_program_subscriptions(callback_payload, user["email"], selected_guild_id, user.get("display_name", ""))
                     if not isinstance(response, dict):
                         flash("Invalid response from GL.iNet beta program handler.", "error")
                     elif response.get("ok"):

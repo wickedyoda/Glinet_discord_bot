@@ -377,7 +377,7 @@ def _make_app(tmp_path: Path):
     def get_reddit_feeds(guild_id):
         return {"ok": True, "feeds": [dict(item) for item in reddit_feeds_state if int(item["guild_id"]) == int(guild_id)]}
 
-    def manage_reddit_feeds(payload, actor_email, guild_id):
+    def manage_reddit_feeds(payload, actor_email, guild_id, actor_display_name=""):
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = int(guild_id)
         if action == "add":
@@ -454,7 +454,7 @@ def _make_app(tmp_path: Path):
     def get_youtube_subscriptions(guild_id):
         return {"ok": True, "subscriptions": [dict(item) for item in youtube_subscriptions_state if int(item["guild_id"]) == int(guild_id)]}
 
-    def manage_youtube_subscriptions(payload, actor_email, guild_id):
+    def manage_youtube_subscriptions(payload, actor_email, guild_id, actor_display_name=""):
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = int(guild_id)
         if action == "edit":
@@ -520,7 +520,7 @@ def _make_app(tmp_path: Path):
     def get_linkedin_subscriptions(guild_id):
         return {"ok": True, "subscriptions": [dict(item) for item in linkedin_subscriptions_state if int(item["guild_id"]) == int(guild_id)]}
 
-    def manage_linkedin_subscriptions(payload, actor_email, guild_id):
+    def manage_linkedin_subscriptions(payload, actor_email, guild_id, actor_display_name=""):
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = int(guild_id)
         if action == "edit":

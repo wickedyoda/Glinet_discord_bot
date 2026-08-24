@@ -98,13 +98,13 @@ class FeedWebCallbacks:
             self.logger.exception("Failed to build Reddit feeds payload for web admin")
             return {"ok": False, "error": "Unexpected error while loading Reddit feeds."}
 
-    def run_web_manage_reddit_feeds(self, payload: dict, actor_email: str, guild_id: int):
+    def run_web_manage_reddit_feeds(self, payload: dict, actor_email: str, guild_id: int, actor_display_name: str = ""):
         if not isinstance(payload, dict):
             return {"ok": False, "error": "Invalid Reddit feed payload."}
 
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = self.normalize_target_guild_id(guild_id)
-        audit_actor = self.build_web_actor_audit_label(actor_email)
+        audit_actor = self.build_web_actor_audit_label(actor_email, actor_display_name)
         try:
             if action == "add":
                 subreddit = str(payload.get("subreddit") or "")
@@ -173,12 +173,12 @@ class FeedWebCallbacks:
             self.logger.exception("Failed to build Reddit auto-responds payload for web admin")
             return {"ok": False, "error": "Unexpected error while loading Reddit auto-responds."}
 
-    def run_web_manage_reddit_auto_responds(self, payload: dict, actor_email: str, guild_id: int):
+    def run_web_manage_reddit_auto_responds(self, payload: dict, actor_email: str, guild_id: int, actor_display_name: str = ""):
         if not isinstance(payload, dict):
             return {"ok": False, "error": "Invalid Reddit auto-respond payload."}
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = self.normalize_target_guild_id(guild_id)
-        audit_actor = self.build_web_actor_audit_label(actor_email)
+        audit_actor = self.build_web_actor_audit_label(actor_email, actor_display_name)
         try:
             if action == "add":
                 subreddit = str(payload.get("subreddit") or "")
@@ -278,12 +278,12 @@ class FeedWebCallbacks:
             self.logger.exception("Failed to build YouTube subscriptions payload for web admin")
             return {"ok": False, "error": "Unexpected error while loading YouTube subscriptions."}
 
-    def run_web_manage_youtube_subscriptions(self, payload: dict, actor_email: str, guild_id: int):
+    def run_web_manage_youtube_subscriptions(self, payload: dict, actor_email: str, guild_id: int, actor_display_name: str = ""):
         if not isinstance(payload, dict):
             return {"ok": False, "error": "Invalid YouTube subscription payload."}
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = self.normalize_target_guild_id(guild_id)
-        audit_actor = self.build_web_actor_audit_label(actor_email)
+        audit_actor = self.build_web_actor_audit_label(actor_email, actor_display_name)
         try:
             if action == "add":
                 source_url = str(payload.get("source_url") or "").strip()
@@ -399,12 +399,12 @@ class FeedWebCallbacks:
             self.logger.exception("Failed to build LinkedIn subscriptions payload for web admin")
             return {"ok": False, "error": "Unexpected error while loading LinkedIn subscriptions."}
 
-    def run_web_manage_linkedin_subscriptions(self, payload: dict, actor_email: str, guild_id: int):
+    def run_web_manage_linkedin_subscriptions(self, payload: dict, actor_email: str, guild_id: int, actor_display_name: str = ""):
         if not isinstance(payload, dict):
             return {"ok": False, "error": "Invalid LinkedIn subscription payload."}
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = self.normalize_target_guild_id(guild_id)
-        audit_actor = self.build_web_actor_audit_label(actor_email)
+        audit_actor = self.build_web_actor_audit_label(actor_email, actor_display_name)
         try:
             if action == "add":
                 source_url = str(payload.get("source_url") or "").strip()
@@ -523,12 +523,12 @@ class FeedWebCallbacks:
                 "error": "Unexpected error while loading GL.iNet beta program subscriptions.",
             }
 
-    def run_web_manage_beta_program_subscriptions(self, payload: dict, actor_email: str, guild_id: int):
+    def run_web_manage_beta_program_subscriptions(self, payload: dict, actor_email: str, guild_id: int, actor_display_name: str = ""):
         if not isinstance(payload, dict):
             return {"ok": False, "error": "Invalid GL.iNet beta program payload."}
         action = str(payload.get("action") or "").strip().lower()
         safe_guild_id = self.normalize_target_guild_id(guild_id)
-        audit_actor = self.build_web_actor_audit_label(actor_email)
+        audit_actor = self.build_web_actor_audit_label(actor_email, actor_display_name)
         try:
             if action == "add":
                 target_channel_id = int(str(payload.get("channel_id") or "0").strip())

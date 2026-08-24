@@ -118,20 +118,22 @@ class GuildStateManager:
             "updated_by_email": "",
         }
 
-    def build_web_actor_audit_label(self, actor_email: str):
-        normalized = str(actor_email or "").strip().lower()
-        if not normalized:
+    def build_web_actor_audit_label(self, actor_email: str, display_name: str = ""):
+        normalized_email = str(actor_email or "").strip().lower()
+        normalized_name = str(display_name or "").strip()
+        if not normalized_email:
             return "web_user:unknown"
         salt = (self.audit_hash_secret or "glinet-web-audit-label").encode("utf-8")
         digest = hashlib.scrypt(
-            normalized.encode("utf-8"),
+            normalized_email.encode("utf-8"),
             salt=salt,
             n=2**14,
             r=8,
             p=1,
             dklen=12,
         ).hex()
-        return f"web_user:{digest}"
+        label = normalized_name or normalized_email.split("@")[0]
+        return f"web_admin:{label} (web_user:{digest})"
 
     def _guild_settings_columns(self, conn):
         return {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}

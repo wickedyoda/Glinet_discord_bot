@@ -2545,8 +2545,8 @@ def default_guild_settings():
     return guild_state_manager.default_guild_settings()
 
 
-def build_web_actor_audit_label(actor_email: str):
-    return guild_state_manager.build_web_actor_audit_label(actor_email)
+def build_web_actor_audit_label(actor_email: str, display_name: str = ""):
+    return guild_state_manager.build_web_actor_audit_label(actor_email, display_name)
 
 
 def load_guild_settings(guild_id: int | None = None):
