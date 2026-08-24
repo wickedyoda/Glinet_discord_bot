@@ -8620,17 +8620,41 @@ def _clean_linkedin_post_text(raw_text: str):
     return re.sub(r"\s+", " ", text).strip()
 
 
-def fetch_linkedin_profile_posts(source_url: str):
-    normalized_url = normalize_linkedin_profile_url(source_url)
-    response = requests.get(
-        normalized_url,
-        timeout=LINKEDIN_REQUEST_TIMEOUT_SECONDS,
+def _fetch_with_retry(url: str, *, timeout: int, max_retries: int = 3):
+    """Fetch a URL with automatic retry on transient DNS/network errors.
+
+    Uses urllib3's Retry mechanism with exponential backoff to handle
+    temporary DNS resolution failures and connection issues.
+    """
+    session = requests.Session()
+    retry_strategy = urllib3.Retry(
+        total=max_retries,
+        backoff_factor=1,
+        status_forcelist=[502, 503, 504],
+        allowed_methods=frozenset(["GET", "HEAD"]),
+    )
+    adapter = requests.adapters.HTTPAdapter(max_retries=retry_strategy)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    response = session.get(
+        url,
+        timeout=timeout,
         headers={
             "User-Agent": LINKEDIN_REQUEST_USER_AGENT,
             "Accept": "text/html,application/xhtml+xml",
             "Accept-Language": "en-US,en;q=0.9",
             "Cache-Control": "no-cache",
         },
+    )
+    response.close()
+    return response
+
+
+def fetch_linkedin_profile_posts(source_url: str):
+    normalized_url = normalize_linkedin_profile_url(source_url)
+    response = _fetch_with_retry(
+        normalized_url,
+        timeout=LINKEDIN_REQUEST_TIMEOUT_SECONDS,
     )
     if response.status_code >= 400:
         raise RuntimeError(f"LinkedIn profile page returned HTTP {response.status_code}.")
