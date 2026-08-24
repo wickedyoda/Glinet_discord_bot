@@ -48,8 +48,28 @@ def test_build_web_actor_audit_label_is_stable_and_hides_email():
     second = manager.build_web_actor_audit_label("user@example.com")
 
     assert first == second
-    assert first.startswith("web_user:")
+    assert "web_admin:" in first
+    assert "web_user:" in first
     assert "example.com" not in first
+
+
+def test_build_web_actor_audit_label_includes_display_name():
+    manager = build_manager()
+
+    label = manager.build_web_actor_audit_label("user@example.com", "Alice")
+
+    assert label.startswith("web_admin:Alice")
+    assert "web_user:" in label
+    assert "example.com" not in label
+
+
+def test_build_web_actor_audit_label_falls_back_to_email_local_part():
+    manager = build_manager()
+
+    label = manager.build_web_actor_audit_label("user@example.com")
+
+    assert label.startswith("web_admin:user")
+    assert "web_user:" in label
 
 
 def test_normalize_activity_timestamp_keeps_utc():
