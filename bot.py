@@ -205,13 +205,6 @@ REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
-REDDIT_AUTO_REPLY_ENABLED = is_truthy_env_value(
-    os.getenv("REDDIT_AUTO_REPLY_ENABLED", "false"),
-    default_value=False,
-)
-REDDIT_AUTO_REPLY_SEEN_REPLY_RETENTION_LIMIT = 500
-REDDIT_AUTO_REPLY_MAX_REPLIES_PER_RUN = 5
-REDDIT_AUTO_REPLY_RATE_LIMIT_BACKOFF_SECONDS = 30
 LINKEDIN_REQUEST_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -275,6 +268,16 @@ def parse_positive_int_env(name: str, default_value: int, minimum: int = 1):
     if parsed < int(minimum):
         return int(default_value)
     return parsed
+
+
+# Reddit auto-responder configuration (requires is_truthy_env_value above)
+REDDIT_AUTO_REPLY_ENABLED = is_truthy_env_value(
+    os.getenv("REDDIT_AUTO_REPLY_ENABLED", "false"),
+    default_value=False,
+)
+REDDIT_AUTO_REPLY_SEEN_REPLY_RETENTION_LIMIT = 500
+REDDIT_AUTO_REPLY_MAX_REPLIES_PER_RUN = 5
+REDDIT_AUTO_REPLY_RATE_LIMIT_BACKOFF_SECONDS = 30
 
 
 def normalize_http_url_setting(raw_value: str, fallback_value: str, setting_name: str):
