@@ -10303,7 +10303,7 @@ async def process_reddit_auto_respond_rule(rule: dict):
         return
 
     # Mark all processed posts as seen
-    merge_reddit_auto_respond_seen_reply_ids(rule_id, [p.get("id") for p in new_posts])
+    merge_reddit_auto_respond_seen_reply_ids(rule_id, [str(p.get("id") or "").strip() for p in new_posts])
 
     # Single DB update for runtime status (instead of multiple per-post updates)
     if auth_error:
