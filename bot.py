@@ -9484,7 +9484,7 @@ _server_event_dedup: dict[int, tuple[str, float]] = {}
 _SERVER_EVENT_DEDUP_SECONDS = 3.0
 
 
-async def send_server_event_log(guild: discord.Guild, event_name: str, details: str, actor: discord.abc.User | None = None):
+async def send_server_event_log(guild: discord.Guild, event_name: str, details: str, actor: discord.abc.User | str | None = None):
     now = time.monotonic()
     dedup_key = f"{event_name}:{details}"
     last = _server_event_dedup.get(guild.id)
@@ -9492,7 +9492,15 @@ async def send_server_event_log(guild: discord.Guild, event_name: str, details: 
         logger.info("WEB_AUDIT suppress_duplicate event=%s guild_id=%s", event_name, guild.id)
         return
     _server_event_dedup[guild.id] = (dedup_key, now)
-    actor_text = f"{actor} (`{actor.id}`)" if actor else "system"
+    if isinstance(actor, str):
+        actor_text = actor.strip() or "system"
+    elif actor is not None:
+        if hasattr(actor, "mention"):
+            actor_text = f"{actor.mention} (`{actor.id}`)"
+        else:
+            actor_text = f"{actor} (`{getattr(actor, 'id', 'N/A')}`)"
+    else:
+        actor_text = "system"
     message = f"📌 **Server Event:** `{event_name}`\n**Actor:** {actor_text}\n{details}"
     record_action_safe(
         action=event_name,
@@ -12664,20 +12672,30 @@ async def on_user_update(before: discord.User, after: discord.User):
 async def _resolve_role_change_actor(guild: discord.Guild, target_member_id: int) -> str:
     """Query the guild audit log to find who most recently added/removed a role on the target member."""
     try:
-        async for entry in guild.audit_logs(
-            limit=25,
-            action=discord.AuditLogAction.member_role_update,
-        ):
-            if str(getattr(entry, "target_id", "")) == str(target_member_id):
-                user = entry.user
-                return (
-                    f"{user.mention} (`{user.id}`)"
-                    if user
-                    else f"`{entry.user_id}`"
-                )
+        for attempt in range(2):
+            now_utc = datetime.now(UTC)
+            async for entry in guild.audit_logs(
+                limit=15,
+                action=discord.AuditLogAction.member_role_update,
+            ):
+                target_id = getattr(entry.target, "id", None)
+                if target_id is not None and int(target_id) == int(target_member_id):
+                    if entry.created_at:
+                        entry_created = entry.created_at if entry.created_at.tzinfo else entry.created_at.replace(tzinfo=UTC)
+                        if (now_utc - entry_created).total_seconds() > 60:
+                            continue
+                    user = entry.user
+                    if user:
+                        return f"{user.mention} (`{user.id}`)"
+                    user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
+                    if user_id:
+                        return f"`{user_id}`"
+            if attempt == 0:
+                await asyncio.sleep(0.4)
     except discord.Forbidden:
         return "Unknown (bot lacks audit log permission)"
     except Exception:
+        logger.exception("Failed resolving role change actor for member %s in guild %s", target_member_id, guild.id)
         return "Unknown"
     return "Unknown (not in audit log)"
 
@@ -12685,20 +12703,30 @@ async def _resolve_role_change_actor(guild: discord.Guild, target_member_id: int
 async def _resolve_role_create_actor(guild: discord.Guild, role_id: int) -> str:
     """Query the guild audit log to find who created the role."""
     try:
-        async for entry in guild.audit_logs(
-            limit=25,
-            action=discord.AuditLogAction.role_create,
-        ):
-            if str(getattr(entry, "target_id", "")) == str(role_id):
-                user = entry.user
-                return (
-                    f"{user.mention} (`{user.id}`)"
-                    if user
-                    else f"`{entry.user_id}`"
-                )
+        for attempt in range(2):
+            now_utc = datetime.now(UTC)
+            async for entry in guild.audit_logs(
+                limit=15,
+                action=discord.AuditLogAction.role_create,
+            ):
+                target_id = getattr(entry.target, "id", None)
+                if target_id is not None and int(target_id) == int(role_id):
+                    if entry.created_at:
+                        entry_created = entry.created_at if entry.created_at.tzinfo else entry.created_at.replace(tzinfo=UTC)
+                        if (now_utc - entry_created).total_seconds() > 60:
+                            continue
+                    user = entry.user
+                    if user:
+                        return f"{user.mention} (`{user.id}`)"
+                    user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
+                    if user_id:
+                        return f"`{user_id}`"
+            if attempt == 0:
+                await asyncio.sleep(0.4)
     except discord.Forbidden:
         return "Unknown (bot lacks audit log permission)"
     except Exception:
+        logger.exception("Failed resolving role create actor for role %s in guild %s", role_id, guild.id)
         return "Unknown"
     return "Unknown (not in audit log)"
 
@@ -12721,6 +12749,9 @@ async def on_member_update(before: discord.Member, after: discord.Member):
     added_role_ids = sorted(set(after_role_map) - set(before_role_map))
     removed_role_ids = sorted(set(before_role_map) - set(after_role_map))
 
+    if not added_role_ids and not removed_role_ids:
+        return
+
     actor_label = await _resolve_role_change_actor(guild, after.id)
 
     for role_id in added_role_ids:
@@ -12728,18 +12759,16 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         details = (
             f"**Member:** {after.mention} (`{after.id}`)\n"
             f"**Role Added:** {role.mention} (`{role.id}`)\n"
-            f"**Actor:** {actor_label}\n"
         )
-        await send_server_event_log(guild, "member_role_added", details)
+        await send_server_event_log(guild, "member_role_added", details, actor=actor_label)
 
     for role_id in removed_role_ids:
         role = before_role_map[role_id]
         details = (
             f"**Member:** {after.mention} (`{after.id}`)\n"
             f"**Role Removed:** {role.name} (`{role.id}`)\n"
-            f"**Actor:** {actor_label}\n"
         )
-        await send_server_event_log(guild, "member_role_removed", details)
+        await send_server_event_log(guild, "member_role_removed", details, actor=actor_label)
 
 
 @bot.event
@@ -12858,20 +12887,30 @@ async def on_invite_create(invite: discord.Invite):
 async def _resolve_channel_create_actor(guild: discord.Guild, channel_id: int) -> str:
     """Query the guild audit log to find who created the channel."""
     try:
-        async for entry in guild.audit_logs(
-            limit=25,
-            action=discord.AuditLogAction.channel_create,
-        ):
-            if str(getattr(entry, "target_id", "")) == str(channel_id):
-                user = entry.user
-                return (
-                    f"{user.mention} (`{user.id}`)"
-                    if user
-                    else f"`{entry.user_id}`"
-                )
+        for attempt in range(2):
+            now_utc = datetime.now(UTC)
+            async for entry in guild.audit_logs(
+                limit=15,
+                action=discord.AuditLogAction.channel_create,
+            ):
+                target_id = getattr(entry.target, "id", None)
+                if target_id is not None and int(target_id) == int(channel_id):
+                    if entry.created_at:
+                        entry_created = entry.created_at if entry.created_at.tzinfo else entry.created_at.replace(tzinfo=UTC)
+                        if (now_utc - entry_created).total_seconds() > 60:
+                            continue
+                    user = entry.user
+                    if user:
+                        return f"{user.mention} (`{user.id}`)"
+                    user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
+                    if user_id:
+                        return f"`{user_id}`"
+            if attempt == 0:
+                await asyncio.sleep(0.4)
     except discord.Forbidden:
         return "Unknown (bot lacks audit log permission)"
     except Exception:
+        logger.exception("Failed resolving channel create actor for channel %s in guild %s", channel_id, guild.id)
         return "Unknown"
     return "Unknown (not in audit log)"
 
@@ -12892,9 +12931,8 @@ async def on_guild_channel_create(channel: discord.abc.GuildChannel):
     details = (
         f"**Name:** {clip_text(channel.name)}\n**ID:** `{channel.id}`\n**Type:** `{channel.type}`\n"
         f"**Category:** {clip_text(parent_name)}\n"
-        f"**Actor:** {actor_label}\n"
     )
-    await send_server_event_log(guild, event_name, details)
+    await send_server_event_log(guild, event_name, details, actor=actor_label)
 
 
 @bot.event
@@ -12926,9 +12964,8 @@ async def on_guild_role_create(role: discord.Role):
         f"**Role:** {role.mention} (`{role.id}`)\n"
         f"**Color:** `{role.color}`\n"
         f"**Position:** `{role.position}`\n"
-        f"**Actor:** {actor_label}\n"
     )
-    await send_server_event_log(guild, "role_created", details)
+    await send_server_event_log(guild, "role_created", details, actor=actor_label)
 
 
 @bot.event
@@ -17251,5 +17288,6 @@ tree.add_command(honeypot_log_group)
 tree.add_command(honeypot_join_guard_group)
 
 
-start_web_admin_server()
-bot.run(TOKEN, log_handler=None)
+if __name__ == "__main__":
+    start_web_admin_server()
+    bot.run(TOKEN, log_handler=None)
