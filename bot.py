@@ -130,7 +130,8 @@ from app.service_monitor import (
     normalize_service_monitor_targets,
     run_service_monitor_check,
 )
-from app.translate import translate_text
+from app.translate import get_lang_for_flag, translate_text
+from app.translate_channels import AutoTranslateChannelStore
 from app.uptime_status import (
     UptimeStatusAuthError,
     build_uptime_source_config,
@@ -1142,6 +1143,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_astrowarp": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "translate_to_english": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "translate_channels_manage": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "honeypot_create": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "honeypot_edit": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "honeypot_list": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
@@ -1432,6 +1434,10 @@ COMMAND_PERMISSION_METADATA = {
         "label": "Apps -> Translate to English",
         "description": "Translate a message to English via message context menu.",
     },
+    "translate_channels_manage": {
+        "label": "/translate_channels_*",
+        "description": "Moderator: list, add, or remove auto-translate channel mappings.",
+    },
 }
 COMMAND_PERMISSION_POLICY_LABELS = {
     COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC: "Public (any member)",
@@ -1481,6 +1487,7 @@ command_permissions_lock = threading.Lock()
 command_permissions_cache = {}
 db_lock = threading.RLock()
 db_connection = None
+auto_translate_channel_store: AutoTranslateChannelStore | None = None
 member_activity_recent_prune_marker = ""
 FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS = 3600
 FIRMWARE_NOTIFICATION_ITEM_LIMIT = 12
@@ -12432,7 +12439,10 @@ async def on_ready():
     global service_monitor_task
     global uptime_status_monitor_task
     global member_activity_backfill_task
+    global auto_translate_channel_store
     install_asyncio_exception_logging(asyncio.get_running_loop())
+    if auto_translate_channel_store is None:
+        auto_translate_channel_store = AutoTranslateChannelStore(DB_FILE, db_lock)
     purged_archives = purge_expired_guild_archives()
     if purged_archives:
         logger.info(
@@ -12777,6 +12787,39 @@ async def on_member_update(before: discord.Member, after: discord.Member):
         await send_server_event_log(guild, "member_role_removed", details, actor=actor_label)
 
 
+async def _post_translation_reply(
+    target_channel: discord.abc.MessageableChannel,
+    original_message: discord.Message,
+    result,
+    target_lang: str,
+) -> bool:
+    """Post a translation reply to the given channel as a quoted reply, returning success."""
+    embed = discord.Embed(
+        description=result.text[:4096],
+        color=discord.Color.blue(),
+    )
+    author_name = original_message.author.display_name
+    author_icon = original_message.author.display_avatar.url if original_message.author.display_avatar else None
+    if author_icon:
+        embed.set_author(name=f"{author_name}'s message", icon_url=author_icon, url=original_message.jump_url)
+    else:
+        embed.set_author(name=f"{author_name}'s message", url=original_message.jump_url)
+    embed.set_footer(
+        text=f"Translated from {result.source_language_name} ({result.source_language}) to {result.target_language_name}"
+    )
+    try:
+        await target_channel.send(
+            content=f"🌐 **Translation of {original_message.author.mention}'s [message]({original_message.jump_url}) to {target_lang.upper()}:**",
+            embed=embed,
+            reference=original_message if hasattr(target_channel, "send") else None,
+            mention_author=False,
+        )
+        return True
+    except discord.HTTPException:
+        logger.exception("Failed posting translation reply in channel %s", getattr(target_channel, "id", "?"))
+        return False
+
+
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if payload.user_id == (bot.user.id if bot.user else 0):
@@ -12825,6 +12868,36 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         await member.add_roles(role, reason=f"Reaction role assigned for message {payload.message_id}")
     except Exception:
         logger.exception("Failed to assign reaction role %s to member %s in guild %s", role_id, payload.user_id, guild_id)
+
+    # After reaction-role processing, also try flag-based auto-translation.
+    try:
+        if auto_translate_channel_store is not None:
+            emoji_str = str(payload.emoji) if payload.emoji else ""
+            target_lang = get_lang_for_flag(emoji_str)
+            if target_lang and channel is not None and hasattr(channel, "fetch_message"):
+                try:
+                    target_message = await channel.fetch_message(int(payload.message_id))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                    target_message = None
+                if target_message is not None:
+                    raw_text = str(getattr(target_message, "content", "") or "").strip()
+                    if raw_text:
+                        try:
+                            result = await asyncio.to_thread(translate_text, raw_text, target_lang, "auto")
+                        except Exception:
+                            logger.exception("Flag-reaction translation failed for message %s -> %s", target_message.id, target_lang)
+                        else:
+                            try:
+                                await _post_translation_reply(channel, target_message, result, target_lang)
+                            except Exception:
+                                logger.exception("Flag-reaction reply failed in channel %s", channel.id)
+                            else:
+                                logger.info(
+                                    "Flag reaction translated message %s -> %s by user %s in guild %s",
+                                    target_message.id, target_lang, payload.user_id, payload.guild_id,
+                                )
+    except Exception:
+        logger.exception("Unexpected error in flag-reaction translation for message %s", payload.message_id)
 
 
 @bot.event
@@ -13072,6 +13145,59 @@ async def on_message(message: discord.Message):
                 guild_id=message.guild.id if message.guild else None,
             ):
                 await message.channel.send(response)
+    # Auto-translate channel bridge: forward any non-trivial message in a
+    # configured source channel to its paired target channel with a translation.
+    if message.guild is not None and message.content and auto_translate_channel_store is not None:
+        try:
+            mappings = auto_translate_channel_store.list_active_for_source(
+                int(message.guild.id),
+                int(message.channel.id),
+            )
+        except Exception:
+            logger.exception("Failed loading auto-translate mappings for channel %s", message.channel.id)
+            mappings = []
+        for mapping in mappings:
+            target_channel_id = int(mapping.get("target_channel_id") or 0)
+            target_language = str(mapping.get("target_language") or "en").strip().lower() or "en"
+            source_language = str(mapping.get("source_language") or "auto").strip().lower() or "auto"
+            if target_channel_id <= 0 or target_channel_id == int(message.channel.id):
+                continue
+            target_channel = message.guild.get_channel(target_channel_id)
+            if target_channel is None or not hasattr(target_channel, "send"):
+                continue
+            raw_text = str(message.content or "").strip()
+            if not raw_text or len(raw_text) > 1900:
+                continue
+            try:
+                result = await asyncio.to_thread(translate_text, raw_text, target_language, source_language)
+            except Exception:
+                logger.exception(
+                    "Auto-translate channel bridge failed: guild=%s src=%s tgt=%s",
+                    message.guild.id, message.channel.id, target_channel_id,
+                )
+                continue
+            embed = discord.Embed(
+                description=result.text[:4096],
+                color=discord.Color.blue(),
+            )
+            author_name = message.author.display_name
+            author_icon = message.author.display_avatar.url if message.author.display_avatar else None
+            if author_icon:
+                embed.set_author(name=f"{author_name} in #{message.channel.name}", icon_url=author_icon, url=message.jump_url)
+            else:
+                embed.set_author(name=f"{author_name} in #{message.channel.name}", url=message.jump_url)
+            embed.set_footer(
+                text=f"Auto-translated from {result.source_language_name} ({result.source_language}) to {result.target_language_name}"
+            )
+            try:
+                await target_channel.send(
+                    content=f"🌐 **{message.author.mention} said in <#{message.channel.id}>:**",
+                    embed=embed,
+                )
+            except discord.Forbidden:
+                logger.warning("Auto-translate bridge: cannot post in %s (missing permissions)", target_channel_id)
+            except discord.HTTPException:
+                logger.exception("Auto-translate bridge: HTTP error posting in %s", target_channel_id)
     await bot.process_commands(message)
 
 
@@ -17331,6 +17457,125 @@ async def translate_to_english_ctx(interaction: discord.Interaction, message: di
 tree.add_command(honeypot_group)
 tree.add_command(honeypot_log_group)
 tree.add_command(honeypot_join_guard_group)
+
+
+@tree.command(
+    name="translate_channels_list",
+    description="List auto-translate channel mappings in this server (admin).",
+)
+async def translate_channels_list(interaction: discord.Interaction):
+    if not await ensure_interaction_command_access(interaction, "translate_channels_manage"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    if auto_translate_channel_store is None:
+        await interaction.response.send_message("❌ Auto-translate store not initialized.", ephemeral=True)
+        return
+    mappings = auto_translate_channel_store.list_for_guild(int(interaction.guild.id))
+    if not mappings:
+        await interaction.response.send_message(
+            "ℹ️ No auto-translate channel mappings are configured for this server.",
+            ephemeral=True,
+        )
+        return
+    lines = ["**Auto-Translate Channel Mappings**\n"]
+    for m in mappings:
+        enabled = "🟢" if m.get("enabled") else "⚫"
+        lines.append(
+            f"{enabled} <#{m['source_channel_id']}> → <#{m['target_channel_id']}> "
+            f"({m['source_language']}→**{m['target_language']}**)"
+        )
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@tree.command(
+    name="translate_channels_add",
+    description="Add an auto-translate channel mapping (admin).",
+)
+@app_commands.describe(
+    source_channel="Channel whose messages should be translated",
+    target_channel="Channel to post the translation into",
+    target_language="Target language code (e.g. en, es, fr, de)",
+    source_language="Source language code or 'auto' (default auto)",
+    enabled="Whether the mapping is active (default true)",
+)
+async def translate_channels_add(
+    interaction: discord.Interaction,
+    source_channel: discord.TextChannel,
+    target_channel: discord.TextChannel,
+    target_language: str = "en",
+    source_language: str = "auto",
+    enabled: bool = True,
+):
+    if not await ensure_interaction_command_access(interaction, "translate_channels_manage"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    if source_channel.guild.id != interaction.guild.id or target_channel.guild.id != interaction.guild.id:
+        await interaction.response.send_message("❌ Both channels must be in this server.", ephemeral=True)
+        return
+    if source_channel.id == target_channel.id:
+        await interaction.response.send_message("❌ Source and target channels must differ.", ephemeral=True)
+        return
+    if auto_translate_channel_store is None:
+        await interaction.response.send_message("❌ Auto-translate store not initialized.", ephemeral=True)
+        return
+    auto_translate_channel_store.upsert(
+        int(interaction.guild.id),
+        int(source_channel.id),
+        int(target_channel.id),
+        target_language=target_language,
+        source_language=source_language,
+        enabled=enabled,
+    )
+    state = "enabled" if enabled else "disabled"
+    await interaction.response.send_message(
+        f"✅ Auto-translate mapping saved ({state}): "
+        f"<#{source_channel.id}> → <#{target_channel.id}> "
+        f"({source_language}→**{target_language.lower()}**)",
+        ephemeral=True,
+    )
+
+
+@tree.command(
+    name="translate_channels_remove",
+    description="Remove an auto-translate channel mapping (admin).",
+)
+@app_commands.describe(
+    source_channel="Source channel of the mapping",
+    target_channel="Target channel of the mapping",
+    target_language="Target language code (e.g. en, es, fr, de)",
+)
+async def translate_channels_remove(
+    interaction: discord.Interaction,
+    source_channel: discord.TextChannel,
+    target_channel: discord.TextChannel,
+    target_language: str,
+):
+    if not await ensure_interaction_command_access(interaction, "translate_channels_manage"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command can only be used in a server.", ephemeral=True)
+        return
+    if auto_translate_channel_store is None:
+        await interaction.response.send_message("❌ Auto-translate store not initialized.", ephemeral=True)
+        return
+    removed = auto_translate_channel_store.delete(
+        int(interaction.guild.id),
+        int(source_channel.id),
+        int(target_channel.id),
+        target_language,
+    )
+    if removed:
+        await interaction.response.send_message(
+            f"✅ Removed auto-translate mapping: "
+            f"<#{source_channel.id}> → <#{target_channel.id}> ({target_language.lower()})",
+            ephemeral=True,
+        )
+    else:
+        await interaction.response.send_message("ℹ️ No matching auto-translate mapping found.", ephemeral=True)
 
 
 if __name__ == "__main__":
