@@ -16,6 +16,8 @@ os.environ.setdefault("DATA_DIR", "/tmp/bot-test-data")
 
 from app.translate import (
     TranslationResult,
+    FLAG_EMOJI_TO_LANG,
+    get_lang_for_flag,
     get_language_name,
     translate_text,
 )
@@ -29,6 +31,35 @@ def test_get_language_name():
     assert get_language_name("de") == "German"
     assert get_language_name("unknown_code") == "UNKNOWN_CODE"
     assert get_language_name("") == "Unknown"
+
+
+def test_get_lang_for_flag_known():
+    assert get_lang_for_flag("🇫🇷") == "fr"
+    assert get_lang_for_flag("🇩🇪") == "de"
+    assert get_lang_for_flag("🇪🇸") == "es"
+    assert get_lang_for_flag("🇨🇳") == "zh-cn"
+    assert get_lang_for_flag("🇯🇵") == "ja"
+    assert get_lang_for_flag("🇰🇷") == "ko"
+    assert get_lang_for_flag("🇷🇺") == "ru"
+    assert get_lang_for_flag("🇺🇸") == "en"
+    assert get_lang_for_flag("🇬🇧") == "en"
+
+
+def test_get_lang_for_flag_unknown():
+    assert get_lang_for_flag("😀") is None
+    assert get_lang_for_flag("🎉") is None
+    assert get_lang_for_flag("") is None
+    assert get_lang_for_flag(None) is None
+
+
+def test_flag_emoji_mapping_is_extensive():
+    # Sanity: at least 20 distinct languages supported via flag reactions
+    languages = set(FLAG_EMOJI_TO_LANG.values())
+    assert len(languages) >= 20
+    assert "en" in languages
+    assert "es" in languages
+    assert "fr" in languages
+    assert "de" in languages
 
 
 def test_translate_text_empty():
