@@ -130,6 +130,7 @@ from app.service_monitor import (
     normalize_service_monitor_targets,
     run_service_monitor_check,
 )
+from app.translate import translate_text
 from app.uptime_status import (
     UptimeStatusAuthError,
     build_uptime_source_config,
@@ -1140,6 +1141,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "search_iot": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_router": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "search_astrowarp": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "translate_to_english": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "honeypot_create": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "honeypot_edit": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "honeypot_list": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
@@ -1425,6 +1427,10 @@ COMMAND_PERMISSION_METADATA = {
     "search_astrowarp": {
         "label": "/search_astrowarp, !searchastrowarp",
         "description": "Search AstroWarp docs only.",
+    },
+    "translate_to_english": {
+        "label": "Apps -> Translate to English",
+        "description": "Translate a message to English via message context menu.",
     },
 }
 COMMAND_PERMISSION_POLICY_LABELS = {
@@ -17281,6 +17287,45 @@ async def freshdesk_categories(interaction: discord.Interaction):
     for cat in categories[:15]:
         lines.append(f"- **{cat['name']}** (#{cat['id']}) — {cat['url']}")
     await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+@tree.context_menu(name="Translate to English")
+async def translate_to_english_ctx(interaction: discord.Interaction, message: discord.Message):
+    logger.info("Translate to English context menu invoked by %s on message %s", f"{interaction.user} (id: {interaction.user.id})", message.id)
+    if not await ensure_interaction_command_access(interaction, "translate_to_english"):
+        return
+
+    raw_text = str(message.content or "").strip()
+    if not raw_text:
+        await interaction.response.send_message("❌ This message contains no text to translate.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=False)
+    try:
+        result = await asyncio.to_thread(translate_text, raw_text, "en", "auto")
+    except Exception as exc:
+        logger.exception("Translation failed for message %s", message.id)
+        await interaction.followup.send(f"❌ Translation failed: {exc}", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        description=result.text[:4096],
+        color=discord.Color.blue(),
+    )
+    author_name = message.author.display_name
+    author_icon = message.author.display_avatar.url if message.author.display_avatar else None
+    if author_icon:
+        embed.set_author(name=f"{author_name}'s message", icon_url=author_icon, url=message.jump_url)
+    else:
+        embed.set_author(name=f"{author_name}'s message", url=message.jump_url)
+
+    footer_text = f"Translated from {result.source_language_name} ({result.source_language}) to {result.target_language_name}"
+    embed.set_footer(text=footer_text)
+
+    await interaction.followup.send(
+        content=f"🌐 **Translation for {message.author.mention}'s [message]({message.jump_url}):**",
+        embed=embed,
+    )
 
 
 tree.add_command(honeypot_group)
