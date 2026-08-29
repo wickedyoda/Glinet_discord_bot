@@ -79,6 +79,10 @@ from app.web_moderation import process_moderation_submission, render_moderation_
 from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_reaction_roles import process_reaction_roles_submission, render_reaction_roles_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
+from app.web_translate_channels import (
+    process_translate_channels_submission,
+    render_translate_channels_body,
+)
 from app.web_user_store import (
     current_time_iso as _store_now_iso,
 )
@@ -2931,6 +2935,7 @@ def _render_layout(
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('moderation_page') }}">Moderation</option>
                 <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
+                <option value="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
@@ -2954,6 +2959,7 @@ def _render_layout(
                 <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
                 <option value="{{ url_for('moderation_page') }}">Moderation</option>
                 <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
+                <option value="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</option>
                 <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
@@ -2995,6 +3001,7 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
                 <a class="btn secondary" href="{{ url_for('honeypot_page') }}">Honeypot</a>
+                <a class="btn secondary" href="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</a>
                 <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
@@ -3006,6 +3013,7 @@ def _render_layout(
                 <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
                 <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
                 <a class="btn secondary" href="{{ url_for('honeypot_page') }}">Honeypot</a>
+                <a class="btn secondary" href="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</a>
                 <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
                 <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
                 <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
@@ -3266,6 +3274,8 @@ def create_web_app(
     on_request_restart=None,
     on_leave_guild=None,
     on_get_health_status=None,
+    on_get_translate_channels=None,
+    on_manage_translate_channels=None,
     on_get_ticket_settings=None,
     on_save_ticket_settings=None,
     logger=None,
@@ -3718,6 +3728,7 @@ def create_web_app(
             "guild_settings": "Guild Settings",
             "moderation_page": "Moderation",
             "honeypot_page": "Honeypot",
+            "translate_channels_page": "Auto-Translate Channels",
             "members_page": "Members",
             "discourse_page": "Discourse",
             "discourse_viewer_page": "Forum Viewer",
@@ -8818,6 +8829,59 @@ def create_web_app(
             render_fixed_select_input=_render_fixed_select_input,
         )
         return _render_page("Honeypot", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/translate_channels", methods=["GET", "POST"])
+    @login_required
+    def translate_channels_page():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+
+        payload = (
+            on_get_translate_channels(selected_guild_id)
+            if callable(on_get_translate_channels)
+            else {"ok": False, "error": "Translate channel callbacks are not configured."}
+        )
+
+        channel_options, _, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        text_channel_options = [
+            option for option in channel_options if str(option.get("type") or "").strip().lower() == "text"
+        ]
+
+        if request.method == "POST":
+            response, messages = process_translate_channels_submission(
+                form=request.form,
+                on_get_translate_channels_channels=on_manage_translate_channels,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                payload = response
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = (
+                str(payload.get("error") or "Unable to load translate channel settings.")
+                if isinstance(payload, dict)
+                else "Unable to load translate channel settings."
+            )
+            body = f"<div class='card'><h2>Auto-Translate Channels</h2><p class='muted'>Could not load translate channel settings: {escape(error_text)}</p></div>"
+            return _render_page("Auto-Translate Channels", body, user["email"], bool(user.get("is_admin")))
+
+        body = render_translate_channels_body(
+            guild_name=guild_name,
+            payload=payload,
+            text_channel_options=text_channel_options,
+            catalog_error=catalog_error,
+            render_select_input=_render_select_input,
+            render_fixed_select_input=_render_fixed_select_input,
+        )
+        return _render_page("Auto-Translate Channels", body, user["email"], bool(user.get("is_admin")))
 
     @app.route("/admin/members", methods=["GET", "POST"])
     @login_required
