@@ -1787,6 +1787,8 @@ def test_admin_can_import_from_testing_uptime_instance_without_typing_api_key(
 ):
     monkeypatch.delenv("UPTIME_STATUS_API_KEY", raising=False)
     monkeypatch.delenv("UPTIME_STATUS_INSTANCE_URL", raising=False)
+    test_api_key = "uk1_test_key_for_uptime_testing"
+    monkeypatch.setenv("UPK_API_KEY_RANDY", test_api_key)
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
@@ -1817,7 +1819,7 @@ def test_admin_can_import_from_testing_uptime_instance_without_typing_api_key(
 
     assert response.status_code == 200
     assert captured["instance_url"] == "https://randy.wickedyoda.com/"
-    assert captured["api_key"] == "uk1_8F5mp7aFThP-bookSOOWQLUWfcVNmHpv5UjdSyZz"
+    assert captured["api_key"] == test_api_key
 
 
 def test_admin_can_save_authenticated_uptime_kuma_settings(tmp_path: Path):

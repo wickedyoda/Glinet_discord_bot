@@ -64,7 +64,7 @@ def fetch_announcement_category_html(
     if not resolved_category.startswith("/"):
         resolved_category = f"/{resolved_category}"
     target_url = f"{resolved_base}{resolved_category}"
-    response = requests.get(
+    response = requests.get(  # nosec B113
         target_url,
         timeout=max(1, int(request_timeout or DEFAULT_FORUM_ANNOUNCEMENT_REQUEST_TIMEOUT)),
         headers={

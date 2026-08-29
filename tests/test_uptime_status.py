@@ -125,8 +125,14 @@ def test_build_uptime_source_config_prefers_authenticated_instance():
 
 
 def test_default_uptime_api_key_only_applies_to_testing_instance():
-    assert default_uptime_api_key("https://randy.wickedyoda.com/") == "uk1_8F5mp7aFThP-bookSOOWQLUWfcVNmHpv5UjdSyZz"
-    assert default_uptime_api_key("https://status.example.com/") == ""
+    import os
+    test_key = "uk1_test_key_for_testing_only"
+    os.environ["UPK_API_KEY_RANDY"] = test_key
+    try:
+        assert default_uptime_api_key("https://randy.wickedyoda.com/") == test_key
+        assert default_uptime_api_key("https://status.example.com/") == ""
+    finally:
+        del os.environ["UPK_API_KEY_RANDY"]
 
 
 def test_parse_uptime_metrics_snapshot_summarizes_monitor_statuses():

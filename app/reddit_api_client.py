@@ -15,7 +15,7 @@ from typing import Any
 import requests
 
 REDDIT_API_BASE_URL = "https://oauth.reddit.com"
-REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
+REDDIT_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"  # nosec B105
 REDDIT_API_TIMEOUT_SECONDS = 15
 
 

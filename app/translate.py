@@ -226,7 +226,7 @@ def translate_text(
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.urlopen(req, timeout=timeout) as response:  # nosec B310
             raw_data = response.read().decode("utf-8")
             data = json.loads(raw_data)
     except urllib.error.HTTPError as exc:

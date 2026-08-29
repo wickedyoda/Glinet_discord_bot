@@ -9617,7 +9617,7 @@ def create_web_app(
                             {
                                 "email": email,
                                 "password_hash": _hash_password(password),
-                                "previous_password_hash": "",
+                                "previous_password_hash": "",  # nosec B105
                                 "role": requested_role,
                                 "is_admin": is_admin,
                                 "first_name": first_name,

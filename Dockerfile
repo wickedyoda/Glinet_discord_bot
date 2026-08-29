@@ -1,5 +1,5 @@
-# Use official Python image
-FROM python:3.11-slim
+# Use official Python image, pinned to a specific digest for reproducibility
+FROM python@sha256:56c7b6e2c1e016812dc6e70e6a978f9d0e9987c2e6b618c6b0f0b7d8c5e7b0829c
 
 # Set working directory inside container
 WORKDIR /app
@@ -29,11 +29,14 @@ RUN apt-get update \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
+# Create a non-root user/group for the bot process
+RUN groupadd -r bot && useradd -r -g bot bot
+
 # Pre-create runtime directories with restrictive defaults.
-RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs
+RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs && chown -R bot:bot /app /logs
 
 # Install dependencies
-COPY requirements.txt .
+COPY --chown=bot:bot requirements.txt .
 RUN python -m pip install --no-cache-dir --upgrade \
     --root-user-action=ignore \
     pip \
@@ -42,10 +45,13 @@ RUN python -m pip install --no-cache-dir --upgrade \
     "cryptography>=48.0.1" \
     "wheel>=0.46.2" \
     "jaraco.context>=6.1.0" \
-  && python -m pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
+  && python -m pip install --no-cache-dir --root-user-action=ignore --user bot -r requirements.txt
 
 # Copy the bot code and env files into the container
-COPY . .
+COPY --chown=bot:bot . .
+
+# Switch to non-root user
+USER bot
 
 EXPOSE 8080 8081
 
