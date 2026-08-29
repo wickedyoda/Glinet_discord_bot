@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from datetime import UTC, datetime
 from urllib.parse import urlparse
@@ -7,7 +8,6 @@ from urllib.parse import urlparse
 from app.service_monitor import is_valid_service_monitor_url
 
 TEST_DEFAULT_UPTIME_INSTANCE_HOST = "randy.wickedyoda.com"
-TEST_DEFAULT_UPTIME_API_KEY = "uk1_8F5mp7aFThP-bookSOOWQLUWfcVNmHpv5UjdSyZz"
 PROMETHEUS_METRIC_LINE_PATTERN = re.compile(
     r"^([a-zA-Z_:][a-zA-Z0-9_:]*)(?:\{([^}]*)\})?\s+([^\s]+)(?:\s+([^\s]+))?$"
 )
@@ -52,7 +52,7 @@ def default_uptime_api_key(instance_url: str):
         return ""
     parsed = _validate_http_url(normalized, field_name="Uptime Kuma instance URL")
     if parsed.netloc.strip().lower() == TEST_DEFAULT_UPTIME_INSTANCE_HOST:
-        return TEST_DEFAULT_UPTIME_API_KEY
+        return os.environ.get("UPK_API_KEY_RANDY", "")
     return ""
 
 

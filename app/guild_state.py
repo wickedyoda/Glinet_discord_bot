@@ -197,14 +197,11 @@ class GuildStateManager:
                 )
                 if column in available_columns
             ]
-            row = conn.execute(
-                f"""
-                SELECT {", ".join(selected_columns)}
-                FROM guild_settings
-                WHERE guild_id = ?
-                """,
-                (safe_guild_id,),
-            ).fetchone()
+            # selected_columns is built from a hardcoded whitelist filtered
+            # against the actual DB schema (see _guild_settings_columns),
+            # so there is no injection risk here.
+            sql = f"""SELECT {", ".join(selected_columns)} FROM guild_settings WHERE guild_id = ?"""  # nosec B608
+            row = conn.execute(sql, (safe_guild_id,)).fetchone()
         if row is not None:
             settings.update(
                 {
@@ -500,15 +497,12 @@ class GuildStateManager:
                 "updated_at": updated_at,
                 "updated_by_email": actor_email or "unknown",
             }
+            # persisted_columns and update_clause are built from a hardcoded
+            # whitelist of column names, and all values use ? placeholders,
+            # so there is no injection risk here.
+            sql = f"""INSERT INTO guild_settings ({", ".join(persisted_columns)}) VALUES ({placeholders}) ON CONFLICT(guild_id) DO UPDATE SET {update_clause}"""  # nosec B608
             conn.execute(
-                f"""
-                INSERT INTO guild_settings (
-                    {", ".join(persisted_columns)}
-                )
-                VALUES ({placeholders})
-                ON CONFLICT(guild_id) DO UPDATE SET
-                    {update_clause}
-                """,
+                sql,
                 tuple(values_by_column[column] for column in persisted_columns),
             )
             conn.commit()
