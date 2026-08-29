@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import List, Optional
 
 import requests
 from bs4 import BeautifulSoup
 
 from app.discourse_api import (
-    DiscourseApiError,
-    DiscourseRateLimitError,
     build_discourse_headers,
     clean_discourse_text,
 )
@@ -88,9 +85,9 @@ def fetch_announcement_category_html(
     return response.text, target_url
 
 
-def parse_announcement_topics(page_html: str, source_url: str, max_results: int = 20) -> List[dict]:
+def parse_announcement_topics(page_html: str, source_url: str, max_results: int = 20) -> list[dict]:
     soup = BeautifulSoup(page_html, "html.parser")
-    results: List[dict] = []
+    results: list[dict] = []
     seen_topic_ids = set()
     for row in soup.select("tr.topic-list-item"):
         title_tag = row.select_one(".main-link a.title, a.title")
@@ -142,7 +139,7 @@ def resolve_announcement_web_target(guild_id: int, *, get_effective_guild_settin
     return enabled, channel_id
 
 
-def mark_announcement_topic_posted(conn, guild_id: int, topic_id: int, posted_at: Optional[str] = None) -> None:
+def mark_announcement_topic_posted(conn, guild_id: int, topic_id: int, posted_at: str | None = None) -> None:
     safe_guild_id = int(guild_id or 0)
     safe_topic_id = int(topic_id or 0)
     if safe_guild_id <= 0 or safe_topic_id <= 0:
