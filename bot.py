@@ -5914,6 +5914,83 @@ def run_web_get_honeypot(guild_id: int):
         return {"ok": False, "error": "Unexpected error while loading honeypot settings."}
 
 
+def get_auto_translate_channel_store() -> AutoTranslateChannelStore | None:
+    """Return the global auto-translate channel store, initializing it if necessary."""
+    global auto_translate_channel_store
+    if auto_translate_channel_store is None:
+        auto_translate_channel_store = AutoTranslateChannelStore(DB_FILE, db_lock)
+    return auto_translate_channel_store
+
+
+def run_web_get_translate_channels(guild_id: int):
+    """Return auto-translate channel mappings for the web admin panel."""
+    try:
+        store = get_auto_translate_channel_store()
+        mappings = store.list_for_guild(int(guild_id))
+        entries = [
+            {
+                "source_channel_id": int(m.get("source_channel_id") or 0),
+                "target_channel_id": int(m.get("target_channel_id") or 0),
+                "source_language": str(m.get("source_language") or "auto"),
+                "target_language": str(m.get("target_language") or "en"),
+                "enabled": int(m.get("enabled") or 0),
+            }
+            for m in mappings
+        ]
+        return {"ok": True, "guild_id": int(guild_id), "entries": entries}
+    except Exception:
+        logger.exception("Failed to load translate channel mappings for web admin")
+        return {"ok": False, "error": "Unexpected error while loading auto-translate settings."}
+
+
+def run_web_manage_translate_channels(payload: dict, actor_email: str, guild_id: int):
+    """Handle create/update/delete/toggle for auto-translate channel mappings."""
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid translate channels payload."}
+    store = get_auto_translate_channel_store()
+    action = str(payload.get("action") or "").strip()
+    safe_guild_id = int(guild_id)
+    try:
+        if action in ("create_entry", "update_entry"):
+            source_id = int(payload.get("source_channel_id") or 0)
+            target_id = int(payload.get("target_channel_id") or 0)
+            if source_id <= 0 or target_id <= 0:
+                return {"ok": False, "error": "Both source and target channels must be selected."}
+            if source_id == target_id:
+                return {"ok": False, "error": "Source and target channels must differ."}
+            target_lang = str(payload.get("target_language") or "en").strip().lower() or "en"
+            source_lang = str(payload.get("source_language") or "auto").strip().lower() or "auto"
+            enabled = int(payload.get("enabled", "1")) > 0
+            store.upsert(safe_guild_id, source_id, target_id,
+                         target_language=target_lang, source_language=source_lang, enabled=enabled)
+            return {"ok": True, "message": f"Mapping saved: <#{source_id}> → <#{target_id}> ({source_lang}→{target_lang})",
+                    "entries": [dict(e) for e in store.list_for_guild(safe_guild_id)]}
+        elif action == "delete_entry":
+            source_id = int(payload.get("source_channel_id") or 0)
+            target_id = int(payload.get("target_channel_id") or 0)
+            target_lang = str(payload.get("target_language") or "").strip().lower() or "en"
+            removed = store.delete(safe_guild_id, source_id, target_id, target_lang)
+            if not removed:
+                return {"ok": False, "error": "No matching mapping found to delete."}
+            return {"ok": True, "message": f"Mapping removed: <#{source_id}> → <#{target_id}> ({target_lang})",
+                    "entries": [dict(e) for e in store.list_for_guild(safe_guild_id)]}
+        elif action == "toggle_enabled":
+            source_id = int(payload.get("source_channel_id") or 0)
+            target_id = int(payload.get("target_channel_id") or 0)
+            target_lang = str(payload.get("target_language") or "").strip().lower() or "en"
+            new_enabled = int(payload.get("enabled", "1")) > 0
+            updated = store.set_enabled(safe_guild_id, source_id, target_id, target_lang, new_enabled)
+            if not updated:
+                return {"ok": False, "error": "No matching mapping found to toggle."}
+            return {"ok": True, "message": f"Mapping {'enabled' if new_enabled else 'disabled'}: <#{source_id}> → <#{target_id}> ({target_lang})",
+                    "entries": [dict(e) for e in store.list_for_guild(safe_guild_id)]}
+        else:
+            return {"ok": False, "error": f"Unknown action: {action}"}
+    except Exception:
+        logger.exception("Failed to manage translate channel mappings for guild %s", safe_guild_id)
+        return {"ok": False, "error": "Unexpected error while updating auto-translate settings."}
+
+
 def run_web_manage_honeypot(payload: dict, actor_email: str, guild_id: int):
     if not isinstance(payload, dict):
         return {"ok": False, "error": "Invalid honeypot payload."}
@@ -11634,6 +11711,8 @@ def start_web_admin_server():
                     on_update_bot_profile=run_web_update_bot_profile,
                     on_update_bot_avatar=run_web_update_bot_avatar,
                     on_get_health_status=run_web_get_health_status,
+                    on_get_translate_channels=run_web_get_translate_channels,
+                    on_manage_translate_channels=run_web_manage_translate_channels,
                     on_get_ticket_settings=run_web_get_ticket_settings,
                     on_save_ticket_settings=run_web_save_ticket_settings,
                     on_request_restart=run_web_request_restart,
@@ -12811,7 +12890,7 @@ async def _post_translation_reply(
         await target_channel.send(
             content=f"🌐 **Translation of {original_message.author.mention}'s [message]({original_message.jump_url}) to {target_lang.upper()}:**",
             embed=embed,
-            reference=original_message if hasattr(target_channel, "send") else None,
+            reference=original_message,
             mention_author=False,
         )
         return True
@@ -12871,10 +12950,12 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
     # After reaction-role processing, also try flag-based auto-translation.
     try:
-        if auto_translate_channel_store is not None:
-            emoji_str = str(payload.emoji) if payload.emoji else ""
-            target_lang = get_lang_for_flag(emoji_str)
-            if target_lang and channel is not None and hasattr(channel, "fetch_message"):
+        emoji_str = str(payload.emoji) if payload.emoji else ""
+        target_lang = get_lang_for_flag(emoji_str)
+        if target_lang:
+            guild = bot.get_guild(guild_id)
+            channel = guild.get_channel(int(payload.channel_id)) if guild else None
+            if channel is not None and hasattr(channel, "fetch_message"):
                 try:
                     target_message = await channel.fetch_message(int(payload.message_id))
                 except (discord.NotFound, discord.Forbidden, discord.HTTPException):
