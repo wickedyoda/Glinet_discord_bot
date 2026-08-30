@@ -42,19 +42,20 @@ if TYPE_CHECKING:
 
 from app.beta_programs import (
     fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
+)
+from app.beta_programs import (
     parse_beta_program_snapshot_json as parse_beta_program_snapshot_json_impl,
+)
+from app.beta_programs import (
     serialize_beta_program_snapshot as serialize_beta_program_snapshot_impl,
 )
 from app.discourse_announcements import (
     DEFAULT_FORUM_ANNOUNCEMENT_CATEGORY_PATH,
-    DEFAULT_FORUM_ANNOUNCEMENT_REQUEST_TIMEOUT,
     fetch_announcement_category_html,
     load_announcement_seen_topic_ids,
     mark_announcement_topic_posted,
     parse_announcement_topics,
-    resolve_announcement_web_target,
 )
-from app.csv_utils import parse_csv_cells
 from app.discourse_api import DiscourseApiError, DiscourseRateLimitError, search_discourse_topics
 from app.discourse_integration import (
     DISCOURSE_DEFAULT_FEATURES,
@@ -75,7 +76,6 @@ from app.guild_state import GuildStateManager
 from app.help_content import build_help_message_for_command as build_help_content_message_for_command
 from app.honeypot import (
     HONEYPOT_ACTION_BAN,
-    HONEYPOT_ACTION_CHOICES,
     HONEYPOT_ACTION_ROLE,
     HONEYPOT_ACTION_SOFTBAN,
     HONEYPOT_ACTION_TIMEOUT,
@@ -88,20 +88,52 @@ from app.honeypot import (
     clamp_honeypot_timeout_hours,
     format_honeypot_join_guard_summary,
     format_honeypot_summary,
-    honeypot_action_label,
     normalize_honeypot_action,
 )
 from app.image_metadata import (
     detect_image_metadata,
 )
+from app.irc_bridge_service import IRCBridgeService
+from app.irc_bridge_types import IRCChannelMapping
 from app.member_activity import MemberActivityManager
 from app.member_activity_backfill import (
     compute_missing_ranges as compute_member_activity_backfill_missing_ranges,
+)
+from app.member_activity_backfill import (
     extract_completed_ranges as extract_member_activity_backfill_completed_ranges,
+)
+from app.member_activity_backfill import (
     parse_backfill_since as parse_member_activity_backfill_since,
+)
+from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
 )
 from app.moderation_runtime import apply_bad_word_moderation as apply_bad_word_moderation_impl
+from app.reaction_role_web_callbacks import ReactionRolesWebCallbacks
+from app.reaction_roles import (
+    delete_reaction_role_mapping as delete_reaction_role_mapping_impl,
+)
+from app.reaction_roles import (
+    find_reaction_role_mapping as find_reaction_role_mapping_impl,
+)
+from app.reaction_roles import (
+    list_reaction_role_mappings as list_reaction_role_mappings_impl,
+)
+from app.reaction_roles import (
+    load_reaction_roles as load_reaction_roles_impl,
+)
+from app.reaction_roles import (
+    normalize_reaction_role_emoji,
+    normalize_reaction_role_message_id,
+    reaction_role_emoji_key_from_payload,
+)
+from app.reaction_roles import (
+    save_reaction_role_mapping as save_reaction_role_mapping_impl,
+)
+from app.reaction_roles import (
+    set_reaction_role_mapping_status as set_reaction_role_mapping_status_impl,
+)
+from app.reaction_roles_schema import ensure_reaction_roles_schema_locked
 from app.reddit_api_client import (
     RedditApiError,
     RedditAuthError,
@@ -109,22 +141,8 @@ from app.reddit_api_client import (
     is_reddit_oauth_configured,
     post_reddit_comment,
 )
-from app.reaction_role_web_callbacks import ReactionRolesWebCallbacks
-from app.reaction_roles import (
-    delete_reaction_role_mapping as delete_reaction_role_mapping_impl,
-    find_reaction_role_mapping as find_reaction_role_mapping_impl,
-    list_reaction_role_mappings as list_reaction_role_mappings_impl,
-    load_reaction_roles as load_reaction_roles_impl,
-    normalize_reaction_role_emoji,
-    normalize_reaction_role_message_id,
-    normalize_reaction_role_status,
-    reaction_role_emoji_key_from_payload,
-    save_reaction_role_mapping as save_reaction_role_mapping_impl,
-    set_reaction_role_mapping_status as set_reaction_role_mapping_status_impl,
-)
 from app.role_access_schema import ensure_role_access_schema_locked
 from app.role_access_web_callbacks import RoleAccessWebCallbacks
-from app.reaction_roles_schema import ensure_reaction_roles_schema_locked
 from app.service_monitor import (
     format_service_monitor_transition_message,
     normalize_service_monitor_targets,
@@ -136,13 +154,17 @@ from app.uptime_status import (
     UptimeStatusAuthError,
     build_uptime_source_config,
     default_uptime_api_key,
-    fetch_uptime_snapshot as fetch_uptime_snapshot_impl,
-    format_uptime_summary as format_uptime_summary_impl,
     raise_uptime_http_error,
+)
+from app.uptime_status import (
+    fetch_uptime_snapshot as fetch_uptime_snapshot_impl,
+)
+from app.uptime_status import (
+    format_uptime_summary as format_uptime_summary_impl,
 )
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
 from app.youtube_monitor import YouTubeFeedError, build_youtube_feed_error
-from web_admin import start_web_admin_interface
+from webui.app import start_gui2_web_admin_interface
 
 
 def ensure_process_utc_timezone():
@@ -1488,6 +1510,7 @@ command_permissions_cache = {}
 db_lock = threading.RLock()
 db_connection = None
 auto_translate_channel_store: AutoTranslateChannelStore | None = None
+irc_bridge_service: IRCBridgeService | None = None
 member_activity_recent_prune_marker = ""
 FIRMWARE_CHANNEL_WARNING_COOLDOWN_SECONDS = 3600
 FIRMWARE_NOTIFICATION_ITEM_LIMIT = 12
@@ -1932,6 +1955,39 @@ def ensure_db_schema():
                 ON linkedin_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_beta_program_subscriptions_enabled
                 ON beta_program_subscriptions(enabled);
+            CREATE TABLE IF NOT EXISTS irc_bridge_servers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL DEFAULT 6667,
+                use_tls INTEGER NOT NULL DEFAULT 0,
+                password TEXT NOT NULL DEFAULT '',
+                nickname TEXT NOT NULL DEFAULT 'BridgeBot',
+                username TEXT NOT NULL DEFAULT 'bridgebot',
+                realname TEXT NOT NULL DEFAULT 'BridgeBot',
+                reconnect_delay_seconds INTEGER NOT NULL DEFAULT 10,
+                max_reconnect_delay_seconds INTEGER NOT NULL DEFAULT 300,
+                ping_timeout_seconds INTEGER NOT NULL DEFAULT 120,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS irc_bridge_channels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                server_id INTEGER NOT NULL DEFAULT 0,
+                irc_channel TEXT NOT NULL,
+                discord_channel_id INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(guild_id, server_id, irc_channel, discord_channel_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_irc_bridge_channels_guild_id
+                ON irc_bridge_channels(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_irc_bridge_channels_server_id
+                ON irc_bridge_channels(server_id);
             CREATE TABLE IF NOT EXISTS discourse_announcement_seen (
                 topic_id INTEGER NOT NULL,
                 guild_id INTEGER NOT NULL,
@@ -5914,6 +5970,13 @@ def run_web_get_honeypot(guild_id: int):
         return {"ok": False, "error": "Unexpected error while loading honeypot settings."}
 
 
+def get_irc_bridge_service() -> IRCBridgeService | None:
+    global irc_bridge_service
+    if irc_bridge_service is None:
+        irc_bridge_service = IRCBridgeService(DB_FILE, db_lock)
+    return irc_bridge_service
+
+
 def get_auto_translate_channel_store() -> AutoTranslateChannelStore | None:
     """Return the global auto-translate channel store, initializing it if necessary."""
     global auto_translate_channel_store
@@ -5941,6 +6004,123 @@ def run_web_get_translate_channels(guild_id: int):
     except Exception:
         logger.exception("Failed to load translate channel mappings for web admin")
         return {"ok": False, "error": "Unexpected error while loading auto-translate settings."}
+
+
+def run_web_get_irc_bridges(guild_id: int):
+    """Return IRC bridge mappings for the web admin panel."""
+    try:
+        service = get_irc_bridge_service()
+        if service is None:
+            return {"ok": False, "error": "IRC bridge service is not initialized."}
+        store = service._store
+        rows = store.list_channel_mappings(int(guild_id))
+        entries = [
+            {
+                "id": int(r.get("id") or 0),
+                "server_id": int(r.get("server_id") or 0),
+                "irc_channel": str(r.get("irc_channel") or ""),
+                "discord_channel_id": int(r.get("discord_channel_id") or 0),
+                "enabled": int(r.get("enabled") or 0),
+            }
+            for r in rows
+        ]
+        servers = store.list_servers(int(guild_id))
+        return {"ok": True, "guild_id": int(guild_id), "entries": entries, "servers": servers}
+    except Exception:
+        logger.exception("Failed to load IRC bridge mappings for web admin")
+        return {"ok": False, "error": "Unexpected error while loading IRC bridge settings."}
+
+
+def run_web_manage_irc_bridges(payload: dict, actor_email: str, guild_id: int):
+    """Handle create/update/delete/toggle for IRC bridge channel mappings."""
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid IRC bridge payload."}
+    service = get_irc_bridge_service()
+    if service is None:
+        return {"ok": False, "error": "IRC bridge service is not initialized."}
+    store = service._store
+    action = str(payload.get("action") or "").strip()
+    safe_guild_id = int(guild_id)
+    try:
+        if action in ("create_entry", "update_entry"):
+            mapping_id = int(payload.get("id") or 0)
+            server_id = int(payload.get("server_id") or 0)
+            irc_channel = str(payload.get("irc_channel") or "").strip()
+            discord_channel_id = int(payload.get("discord_channel_id") or 0)
+            enabled = int(payload.get("enabled", "1")) > 0
+            if server_id <= 0 or not irc_channel or discord_channel_id <= 0:
+                return {"ok": False, "error": "Server, IRC channel, and Discord channel are required."}
+            mapping = IRCChannelMapping(
+                id=mapping_id if mapping_id > 0 else None,
+                server_id=server_id,
+                guild_id=safe_guild_id,
+                irc_channel=irc_channel,
+                discord_channel_id=discord_channel_id,
+                enabled=enabled,
+            )
+            saved = store.upsert_mapping(mapping)
+            return {
+                "ok": True,
+                "message": f"IRC bridge saved: {irc_channel} → <#{discord_channel_id}>",
+                "entries": [
+                    {
+                        "id": int(r.get("id") or 0),
+                        "server_id": int(r.get("server_id") or 0),
+                        "irc_channel": str(r.get("irc_channel") or ""),
+                        "discord_channel_id": int(r.get("discord_channel_id") or 0),
+                        "enabled": int(r.get("enabled") or 0),
+                    }
+                    for r in store.list_channel_mappings(safe_guild_id)
+                ],
+            }
+        elif action == "delete_entry":
+            mapping_id = int(payload.get("id") or 0)
+            if mapping_id <= 0:
+                return {"ok": False, "error": "Missing mapping id."}
+            removed = store.delete_mapping(mapping_id)
+            if not removed:
+                return {"ok": False, "error": "No matching IRC bridge mapping found."}
+            return {
+                "ok": True,
+                "message": "IRC bridge mapping removed.",
+                "entries": [
+                    {
+                        "id": int(r.get("id") or 0),
+                        "server_id": int(r.get("server_id") or 0),
+                        "irc_channel": str(r.get("irc_channel") or ""),
+                        "discord_channel_id": int(r.get("discord_channel_id") or 0),
+                        "enabled": int(r.get("enabled") or 0),
+                    }
+                    for r in store.list_channel_mappings(safe_guild_id)
+                ],
+            }
+        elif action == "toggle_enabled":
+            mapping_id = int(payload.get("id") or 0)
+            new_enabled = int(payload.get("enabled", "1")) > 0
+            if mapping_id <= 0:
+                return {"ok": False, "error": "Missing mapping id."}
+            updated = store.update_channel_mapping(mapping_id, enabled=new_enabled)
+            if not updated:
+                return {"ok": False, "error": "No matching IRC bridge mapping found."}
+            return {
+                "ok": True,
+                "message": f"IRC bridge {'enabled' if new_enabled else 'disabled'}.",
+                "entries": [
+                    {
+                        "id": int(r.get("id") or 0),
+                        "server_id": int(r.get("server_id") or 0),
+                        "irc_channel": str(r.get("irc_channel") or ""),
+                        "discord_channel_id": int(r.get("discord_channel_id") or 0),
+                        "enabled": int(r.get("enabled") or 0),
+                    }
+                    for r in store.list_channel_mappings(safe_guild_id)
+                ],
+            }
+        else:
+            return {"ok": False, "error": f"Unknown action: {action}"}
+    except Exception:
+        logger.exception("Failed to manage IRC bridge mappings for guild %s", safe_guild_id)
+        return {"ok": False, "error": "Unexpected error while updating IRC bridge settings."}
 
 
 def run_web_manage_translate_channels(payload: dict, actor_email: str, guild_id: int):
@@ -11667,14 +11847,13 @@ def start_web_admin_server():
         while True:
             stop_reason = "stopped"
             try:
-                start_web_admin_interface(
+                start_gui2_web_admin_interface(
                     host=WEB_BIND_HOST,
                     port=WEB_PORT,
                     https_port=WEB_HTTPS_PORT,
                     https_enabled=WEB_HTTPS_ENABLED,
                     data_dir=DATA_DIR,
                     env_file_path=WEB_ENV_FILE,
-                    tag_responses_file=TAG_RESPONSES_FILE,
                     default_admin_email=WEB_ADMIN_DEFAULT_EMAIL,
                     default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
                     on_get_guilds=run_web_get_guilds,
@@ -11717,6 +11896,8 @@ def start_web_admin_server():
                     on_save_ticket_settings=run_web_save_ticket_settings,
                     on_request_restart=run_web_request_restart,
                     on_leave_guild=run_web_leave_guild,
+                    on_get_irc_bridges=run_web_get_irc_bridges,
+                    on_manage_irc_bridges=run_web_manage_irc_bridges,
                     logger=logger,
                 )
                 stop_reason = "stopped unexpectedly without exception"
@@ -11725,7 +11906,7 @@ def start_web_admin_server():
                 stop_reason = "crashed with exception"
                 logger.exception("Web admin interface stopped unexpectedly")
 
-            stop_events = _record_web_admin_stop_event()
+            stop_events = _record_web_admin_stop_event(stop_reason)
             if stop_events > WEB_ADMIN_RESTART_MAX_ATTEMPTS:
                 critical_message = (
                     "Web admin interface stopped repeatedly and hit restart limit: "
@@ -12565,6 +12746,11 @@ async def on_ready():
             member_activity_backfill_job(),
             name="member_activity_backfill",
         )
+    try:
+        asyncio.create_task(get_irc_bridge_service().start(), name="irc_bridge")
+        logger.info("IRC bridge scheduled for startup")
+    except Exception:
+        logger.exception("Failed to start IRC bridge")
 
 
 @bot.event
@@ -17174,7 +17360,7 @@ async def search_astrowarp_prefix(ctx: commands.Context, *, query: str):
     await ctx.send(message)
 
 
-def _ticket_store() -> "TicketStore":
+def _ticket_store() -> TicketStore:
     from app.tickets import TicketStore
 
     conn = get_db_connection()
@@ -17270,7 +17456,7 @@ async def ticket_panel(interaction: discord.Interaction):
         return await interaction.response.send_message("Guild only.", ephemeral=True)
     if not _enforce_ticket_preflight(interaction):
         return await interaction.response.send_message("Ticket access roles are not configured yet.", ephemeral=True)
-    from app.tickets import TICKET_CATEGORIES_DEFAULT, build_ticket_select_options, ticket_view
+    from app.tickets import TICKET_CATEGORIES_DEFAULT, build_ticket_select_options
     categories = TICKET_CATEGORIES_DEFAULT
     options = build_ticket_select_options(categories)
     select_view = discord.ui.View(timeout=None)

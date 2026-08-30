@@ -27,7 +27,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from flask import (Flask, flash, g, jsonify, redirect, render_template_string, request, Response, send_file, session, url_for)
+from flask import Flask, Response, flash, g, redirect, render_template_string, request, send_file, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
@@ -40,6 +40,9 @@ from app.service_monitor import (
     serialize_service_monitor_targets,
     summarize_uptime_import_sources,
 )
+from app.uptime_kuma_admin import (
+    is_uptime_kuma_admin_gui_enabled,
+)
 from app.uptime_status import (
     build_uptime_instance_urls,
     build_uptime_source_config,
@@ -49,23 +52,7 @@ from app.uptime_status import (
     fetch_uptime_metrics_text,
     fetch_uptime_public_config,
 )
-from app.uptime_kuma_admin import (
-    UptimeKumaAdminError,
-    add_monitor,
-    is_uptime_kuma_admin_gui_enabled,
-    list_monitors,
-    remove_monitor,
-    update_monitor,
-)
 from app.web_audit import should_log_web_audit_event
-from app.freshdesk_api import (
-    FreshdeskApiError,
-    FreshdeskRateLimitError,
-    fetch_freshdesk_ticket,
-    list_freshdesk_solution_categories,
-    list_freshdesk_ticket_fields,
-    search_freshdesk_tickets,
-)
 from app.web_discourse import (
     process_discourse_submission,
     render_discourse_body,
@@ -76,8 +63,8 @@ from app.web_guild_settings import process_guild_settings_submission, render_gui
 from app.web_honeypot import process_honeypot_submission, render_honeypot_body
 from app.web_members import process_member_action_submission, render_members_body
 from app.web_moderation import process_moderation_submission, render_moderation_body
-from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_reaction_roles import process_reaction_roles_submission, render_reaction_roles_body
+from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
 from app.web_translate_channels import (
     process_translate_channels_submission,
@@ -6276,7 +6263,7 @@ def create_web_app(
             file_values = _parse_env_file(os.path.join(data_dir, ".env"))
         except Exception:
             file_values = {}
-        reddit_auto_reply_enabled = is_truthy_env_value(
+        reddit_auto_reply_enabled = _is_truthy_env_value(
             file_values.get("REDDIT_AUTO_REPLY_ENABLED", os.getenv("REDDIT_AUTO_REPLY_ENABLED", "false")),
             default_value=False,
         )
@@ -7398,7 +7385,7 @@ def create_web_app(
             <p class="muted">Use the dedicated Uptime Kuma page to configure the watcher, import direct checks, and remove previously imported monitor sets.</p>
             <div style="margin-top:14px;">
               <a class="btn" href="{escape(url_for('uptime_kuma_page'), quote=True)}">Open Uptime Kuma</a>
-              {f'<a class="btn secondary" href="/admin/uptime-kuma/proxy/">Admin Proxy →</a>' if page_state.get('kuma_admin_proxy_enabled') else ''}
+              {'<a class="btn secondary" href="/admin/uptime-kuma/proxy/">Admin Proxy →</a>' if page_state.get('kuma_admin_proxy_enabled') else ''}
             </div>
           </div>
         </div>
