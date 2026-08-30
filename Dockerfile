@@ -1,8 +1,5 @@
-# Use official Python image, pinned to a specific digest for reproducibility
-FROM python@sha256:56c7b6e2c1e016812dc6e70e6a978f9d0e9987c2e6b618c6b0f0b7d8c5e7b0829c
-
-# Set working directory inside container
-WORKDIR /app
+# Use official Python image for reproducibility
+FROM python:3.11-slim
 
 # Refresh base OS packages so security fixes from the Debian slim image
 # are applied even when the parent image lags behind the latest point release.
