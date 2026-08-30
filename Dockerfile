@@ -45,7 +45,7 @@ RUN python -m pip install --no-cache-dir --upgrade \
     "cryptography>=48.0.1" \
     "wheel>=0.46.2" \
     "jaraco.context>=6.1.0" \
-  && python -m pip install --no-cache-dir --root-user-action=ignore --user bot -r requirements.txt
+  && python -m pip install --no-cache-dir --user -r requirements.txt
 
 # Copy the bot code and env files into the container
 COPY --chown=bot:bot . .
