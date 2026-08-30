@@ -5970,10 +5970,12 @@ def run_web_get_honeypot(guild_id: int):
         return {"ok": False, "error": "Unexpected error while loading honeypot settings."}
 
 
-def get_irc_bridge_service() -> IRCBridgeService | None:
+def get_irc_bridge_service(bot=None) -> IRCBridgeService | None:
     global irc_bridge_service
     if irc_bridge_service is None:
-        irc_bridge_service = IRCBridgeService(DB_FILE, db_lock)
+        irc_bridge_service = IRCBridgeService(bot, DB_FILE, db_lock)
+    elif bot is not None:
+        irc_bridge_service._bot = bot
     return irc_bridge_service
 
 
@@ -12788,7 +12790,7 @@ async def on_ready():
             name="member_activity_backfill",
         )
     try:
-        asyncio.create_task(get_irc_bridge_service().start(), name="irc_bridge")
+        asyncio.create_task(get_irc_bridge_service(bot).start(), name="irc_bridge")
         logger.info("IRC bridge scheduled for startup")
     except Exception:
         logger.exception("Failed to start IRC bridge")
