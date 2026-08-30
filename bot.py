@@ -94,7 +94,7 @@ from app.image_metadata import (
     detect_image_metadata,
 )
 from app.irc_bridge_service import IRCBridgeService
-from app.irc_bridge_types import IRCChannelMapping
+from app.irc_bridge_types import IRCChannelMapping, IRCServerConfig
 from app.member_activity import MemberActivityManager
 from app.member_activity_backfill import (
     compute_missing_ranges as compute_member_activity_backfill_missing_ranges,
@@ -6032,7 +6032,7 @@ def run_web_get_irc_bridges(guild_id: int):
 
 
 def run_web_manage_irc_bridges(payload: dict, actor_email: str, guild_id: int):
-    """Handle create/update/delete/toggle for IRC bridge channel mappings."""
+    """Handle IRC bridge server and channel mapping management for the web admin."""
     if not isinstance(payload, dict):
         return {"ok": False, "error": "Invalid IRC bridge payload."}
     service = get_irc_bridge_service()
@@ -6042,6 +6042,48 @@ def run_web_manage_irc_bridges(payload: dict, actor_email: str, guild_id: int):
     action = str(payload.get("action") or "").strip()
     safe_guild_id = int(guild_id)
     try:
+        if action in ("create_server", "update_server"):
+            server_id = int(payload.get("id") or 0)
+            name = str(payload.get("server_name") or "").strip()
+            host = str(payload.get("host") or "").strip()
+            port = int(payload.get("port") or 6667)
+            use_tls = int(payload.get("use_tls", "0")) > 0
+            nickname = str(payload.get("nickname") or "").strip()
+            password = str(payload.get("password") or "")
+            if server_id <= 0:
+                server = IRCServerConfig(name=name, host=host, port=port, use_tls=use_tls, nickname=nickname, password=password)
+                created = store.create_server(server)
+                return {"ok": True, "message": f"Server added: {created.name}", "servers": store.list_servers(safe_guild_id)}
+            updated = store.update_server(
+                server_id,
+                name=name,
+                host=host,
+                port=port,
+                use_tls=int(use_tls),
+                nickname=nickname,
+                password=password,
+            )
+            if not updated:
+                return {"ok": False, "error": "No matching IRC server found."}
+            return {"ok": True, "message": f"Server updated: {updated.get('name')}", "servers": store.list_servers(safe_guild_id)}
+        if action == "delete_server":
+            server_id = int(payload.get("id") or 0)
+            if server_id <= 0:
+                return {"ok": False, "error": "Missing server id."}
+            removed = store.delete_server(server_id)
+            if not removed:
+                return {"ok": False, "error": "No matching IRC server found."}
+            return {"ok": True, "message": "IRC server removed.", "servers": store.list_servers(safe_guild_id)}
+        if action == "toggle_server":
+            server_id = int(payload.get("id") or 0)
+            if server_id <= 0:
+                return {"ok": False, "error": "Missing server id."}
+            current = store.get_server(server_id)
+            if not current:
+                return {"ok": False, "error": "No matching IRC server found."}
+            updated = store.update_server(server_id, enabled=1 - int(current.get("enabled") or 0))
+            state = "enabled" if updated.get("enabled") else "disabled"
+            return {"ok": True, "message": f"IRC server {state}.", "servers": store.list_servers(safe_guild_id)}
         if action in ("create_entry", "update_entry"):
             mapping_id = int(payload.get("id") or 0)
             server_id = int(payload.get("server_id") or 0)
@@ -6073,7 +6115,7 @@ def run_web_manage_irc_bridges(payload: dict, actor_email: str, guild_id: int):
                     for r in store.list_channel_mappings(safe_guild_id)
                 ],
             }
-        elif action == "delete_entry":
+        if action == "delete_entry":
             mapping_id = int(payload.get("id") or 0)
             if mapping_id <= 0:
                 return {"ok": False, "error": "Missing mapping id."}
@@ -6094,7 +6136,7 @@ def run_web_manage_irc_bridges(payload: dict, actor_email: str, guild_id: int):
                     for r in store.list_channel_mappings(safe_guild_id)
                 ],
             }
-        elif action == "toggle_enabled":
+        if action == "toggle_enabled":
             mapping_id = int(payload.get("id") or 0)
             new_enabled = int(payload.get("enabled", "1")) > 0
             if mapping_id <= 0:
@@ -6116,10 +6158,9 @@ def run_web_manage_irc_bridges(payload: dict, actor_email: str, guild_id: int):
                     for r in store.list_channel_mappings(safe_guild_id)
                 ],
             }
-        else:
-            return {"ok": False, "error": f"Unknown action: {action}"}
+        return {"ok": False, "error": f"Unknown action: {action}"}
     except Exception:
-        logger.exception("Failed to manage IRC bridge mappings for guild %s", safe_guild_id)
+        logger.exception("Failed to manage IRC bridge for guild %s", safe_guild_id)
         return {"ok": False, "error": "Unexpected error while updating IRC bridge settings."}
 
 

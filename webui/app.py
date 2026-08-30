@@ -496,26 +496,69 @@ def create_app(
             "<div class='card'>"
             "<h2>IRC Bridge</h2>"
             "<p class='muted'>Bridge IRC channels to Discord for guild <strong>#" + str(guild_id) + "</strong>.</p>"
+            + message_html
+            + error_html
+            + "<h3 class='mt-3'>Servers</h3>"
             "<form method='post' class='row g-2 mb-3'>"
-            "<input type='hidden' name='action' value='create_entry'>"
+            "<input type='hidden' name='action' value='create_server'>"
             "<div class='col-sm-3'><input class='form-control cc-form-control' name='server_name' placeholder='Server name' required></div>"
             "<div class='col-sm-2'><input class='form-control cc-form-control' name='host' placeholder='Host' required></div>"
             "<div class='col-sm-1'><input class='form-control cc-form-control' name='port' placeholder='Port' value='6667' required></div>"
             "<div class='col-sm-1'><input class='form-control cc-form-control' name='use_tls' placeholder='TLS 0/1' value='0' required></div>"
             "<div class='col-sm-2'><input class='form-control cc-form-control' name='nickname' placeholder='Nickname' required></div>"
-            "<div class='col-sm-1'><input class='form-control cc-form-control' name='password' placeholder='Nickserv'></div>"
-            "<div class='col-sm-2'><input class='form-control cc-form-control' name='irc_channel' placeholder='#irc-channel' required></div>"
-            "<div class='col-sm-2'><input class='form-control cc-form-control' name='discord_channel_id' placeholder='Discord channel ID' required></div>"
+            "<div class='col-sm-2'><input class='form-control cc-form-control' name='password' placeholder='Nickserv'></div>"
             "<div class='col-sm-1 d-grid'><button class='btn btn-primary cc-btn' type='submit'>Add</button></div>"
             "</form>"
-            + message_html
-            + error_html
-            + "<table class='table'>"
+            "<table class='table mb-4'>"
+            "<thead><tr><th>Name</th><th>Host</th><th>Port</th><th>TLS</th><th>Nickname</th><th>Enabled</th><th>Actions</th></tr></thead>"
+            "<tbody>"
+            + "".join(
+                "<tr><td>"
+                + str(s.get("name") or "")
+                + "</td><td>"
+                + str(s.get("host") or "")
+                + "</td><td>"
+                + str(s.get("port") or "")
+                + "</td><td>"
+                + ("Yes" if s.get("use_tls") else "No")
+                + "</td><td>"
+                + str(s.get("nickname") or "")
+                + "</td><td>"
+                + ("Yes" if s.get("enabled") else "No")
+                + "</td><td>"
+                + "<form method='post' class='d-inline'><input type='hidden' name='action' value='toggle_server'><input type='hidden' name='id' value='"
+                + str(s.get("id") or "")
+                + "'><button class='btn btn-sm btn-secondary cc-btn-secondary' type='submit'>Toggle</button></form>"
+                + "<form method='post' class='d-inline' onsubmit=\"return confirm('Delete server?')\"><input type='hidden' name='action' value='delete_server'><input type='hidden' name='id' value='"
+                + str(s.get("id") or "")
+                + "'><button class='btn btn-sm btn-danger cc-btn-danger' type='submit'>Delete</button></form>"
+                + "</td></tr>"
+                for s in servers
+            )
+            + "</tbody></table>"
+            "<h3 class='mt-3'>Channel Mappings</h3>"
+            "<form method='post' class='row g-2 mb-3'>"
+            "<input type='hidden' name='action' value='create_entry'>"
+            "<div class='col-sm-2'><select class='form-select cc-form-select' name='server_id' required><option value=''>Server</option>"
+            + "".join(
+                "<option value='"
+                + str(s.get("id") or "")
+                + "'>"
+                + str(s.get("name") or "")
+                + "</option>"
+                for s in servers
+            )
+            + "</select></div>"
+            "<div class='col-sm-2'><input class='form-control cc-form-control' name='irc_channel' placeholder='#irc-channel' required></div>"
+            "<div class='col-sm-2'><input class='form-control cc-form-control' name='discord_channel_id' placeholder='Discord channel ID' required></div>"
+            "<div class='col-sm-1'><select class='form-select cc-form-select' name='enabled'><option value='1'>Yes</option><option value='0'>No</option></select></div>"
+            "<div class='col-sm-1 d-grid'><button class='btn btn-primary cc-btn' type='submit'>Add</button></div>"
+            "</form>"
+            "<table class='table'>"
             "<thead><tr><th>Server</th><th>IRC</th><th>Discord</th><th>Enabled</th><th>Actions</th></tr></thead>"
             "<tbody>"
             + "".join(rows)
-            + "</tbody>"
-            "</table>"
+            + "</tbody></table>"
             "</div>"
         )
         return _render("irc_bridge", body, user.get("email", ""), bool(user.get("is_admin")))
