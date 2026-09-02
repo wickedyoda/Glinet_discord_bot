@@ -1,6 +1,6 @@
 # Security Scan Report — Glinet Discord Bot
 **Date:** 2026-09-02 13:30 UTC  
-**Scope:** `/root/gh/Glinet_discord_bot` (main branch, HEAD `54a3216`)
+**Scope:** repository root (main branch, HEAD `54a3216`)
 
 ---
 
