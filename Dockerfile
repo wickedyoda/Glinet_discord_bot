@@ -48,6 +48,9 @@ RUN python -m pip install --no-cache-dir --upgrade \
 # Copy the bot code and env files into the container
 COPY --chown=bot:bot . .
 
+# Set working directory so relative paths like "data" resolve to /app/data
+WORKDIR /app
+
 # Switch to non-root user
 USER bot
 
