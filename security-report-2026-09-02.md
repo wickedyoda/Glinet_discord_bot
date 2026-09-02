@@ -51,7 +51,7 @@
 | 1 | Generic API Key | `.env` | `8cb2b77d` | Discord bot token in git history |
 | 2 | Generic API Key | `.env` | `f8b4b74e` | Same token, second historical commit |
 
-**Status:** Token was **revoked earlier in this session** (prior scan at 13:24 UTC). The `.env` file is gitignored in current working tree — token survives only in dangling/dangling git objects from earlier `git filter-repo` runs that didn't fully purge.
+**Status:** Token was **revoked earlier in this session** (prior scan at 13:24 UTC). The `.env` file is gitignored in current working tree — token survives only in dangling git objects from earlier `git filter-repo` runs that didn't fully purge.
 
 **Action taken:**
 - PR #275 open from branch `security/purge-discord-token-history` (filtered history removes both commits)
