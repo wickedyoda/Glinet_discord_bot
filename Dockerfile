@@ -45,11 +45,11 @@ RUN python -m pip install --no-cache-dir --upgrade \
   && python -m pip install --no-cache-dir -r requirements.txt \
   && rm -rf /root/.cache /root/.local/share/uv
 
+# Set working directory BEFORE copy so files land in /app
+WORKDIR /app
+
 # Copy the bot code and env files into the container
 COPY --chown=bot:bot . .
-
-# Set working directory so relative paths like "data" resolve to /app/data
-WORKDIR /app
 
 # Switch to non-root user
 USER bot
