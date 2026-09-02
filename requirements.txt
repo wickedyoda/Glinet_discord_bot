@@ -11,3 +11,4 @@ wheel==0.46.2
 jaraco.context==6.1.0
 openpyxl==3.1.5
 msgpack>=1.2.1
+irc==20.5.0
