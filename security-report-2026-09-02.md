@@ -1,6 +1,6 @@
 # Security Scan Report — Glinet Discord Bot
 **Date:** 2026-09-02 13:30 UTC  
-**Scope:** `/root/gh/Glinet_discord_bot` (main branch, HEAD `54a3216`)
+**Scope:** repository root (main branch, HEAD `54a3216`)
 
 ---
 
@@ -51,7 +51,7 @@
 | 1 | Generic API Key | `.env` | `8cb2b77d` | Discord bot token in git history |
 | 2 | Generic API Key | `.env` | `f8b4b74e` | Same token, second historical commit |
 
-**Status:** Token was **revoked earlier in this session** (prior scan at 13:24 UTC). The `.env` file is gitignored in current working tree — token survives only in dangling/dangling git objects from earlier `git filter-repo` runs that didn't fully purge.
+**Status:** Token was **revoked earlier in this session** (prior scan at 13:24 UTC). The `.env` file is gitignored in current working tree — token survives only in dangling git objects from earlier `git filter-repo` runs that didn't fully purge.
 
 **Action taken:**
 - PR #275 open from branch `security/purge-discord-token-history` (filtered history removes both commits)
@@ -87,11 +87,11 @@
 1. **Merge PR #275** — purge Discord token from GitHub history (blocked by branch protection, requires PR review/approval)
 2. **Delete local scan artifacts** — `secrets-report.json` contains the raw token value:
    ```bash
-   rm /root/gh/Glinet_discord_bot/secrets-report.json
-   rm /root/gh/Glinet_discord_bot/secrets-fresh.json
-   rm /root/gh/Glinet_discord_bot/secrets-report-v2.json
+   rm ./secrets-report.json
+   rm ./secrets-fresh.json
+   rm ./secrets-report-v2.json
    ```
-3. **Verify token rotation** — confirm the revoked Discord token is replaced in deployment secrets on serv2
+3. **Verify token rotation** — confirm the revoked Discord token is replaced in your deployment/hosting environment
 4. **Address test-file MEDIUM findings** — 9 temp-file B108 issues in test fixtures (optional, test-only scope)
 
 ---

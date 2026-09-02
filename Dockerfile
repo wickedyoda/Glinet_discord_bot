@@ -33,7 +33,7 @@ RUN groupadd -r bot && useradd -r -g bot bot
 RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs && chown -R bot:bot /app /logs
 
 # Install dependencies
-COPY requirements.txt .
+COPY --chown=bot:bot requirements.txt .
 RUN python -m pip install --no-cache-dir --upgrade \
     --root-user-action=ignore \
     pip \
@@ -42,8 +42,7 @@ RUN python -m pip install --no-cache-dir --upgrade \
     "cryptography>=48.0.1" \
     "wheel>=0.46.2" \
     "jaraco.context>=6.1.0" \
-  && python -m pip install --no-cache-dir -r requirements.txt \
-  && rm -rf /root/.cache /root/.local/share/uv
+  && python -m pip install --no-cache-dir --user -r requirements.txt
 
 # Copy the bot code and env files into the container
 COPY --chown=bot:bot . .
