@@ -1,0 +1,14 @@
+title = "gitleaks config for Glinet Discord Bot"
+# https://github.com/gitleaks/gitleaks
+
+[extend]
+
+[[allowlist]]
+description = "Allowlist for false positives"
+paths = [
+  "tests/",
+  ".github/workflows/secret-leak-check.yml",
+]
+regexes = [
+  "[Ss]ample.*[Tt]oken.*",
+]
