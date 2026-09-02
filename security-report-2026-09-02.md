@@ -87,11 +87,11 @@
 1. **Merge PR #275** — purge Discord token from GitHub history (blocked by branch protection, requires PR review/approval)
 2. **Delete local scan artifacts** — `secrets-report.json` contains the raw token value:
    ```bash
-   rm /root/gh/Glinet_discord_bot/secrets-report.json
-   rm /root/gh/Glinet_discord_bot/secrets-fresh.json
-   rm /root/gh/Glinet_discord_bot/secrets-report-v2.json
+   rm ./secrets-report.json
+   rm ./secrets-fresh.json
+   rm ./secrets-report-v2.json
    ```
-3. **Verify token rotation** — confirm the revoked Discord token is replaced in deployment secrets on serv2
+3. **Verify token rotation** — confirm the revoked Discord token is replaced in your deployment/hosting environment
 4. **Address test-file MEDIUM findings** — 9 temp-file B108 issues in test fixtures (optional, test-only scope)
 
 ---
