@@ -429,7 +429,138 @@ def create_app(
         user = _current_user()
         if not user:
             return redirect(url_for("login"))
-        body = "<div class='card'><h2>IRC Bridge</h2><p class='muted'>IRC bridge mappings are managed in the Glinet bot web admin.</p></div>"
+        guild_id = int(request.args.get("guild_id") or 0)
+        if guild_id <= 0:
+            first_guild = None
+            if callable(get_managed_guilds):
+                try:
+                    guilds = get_managed_guilds() or []
+                except Exception:
+                    guilds = []
+                first_guild = next((g for g in guilds if g.get("id")), None)
+            guild_id = int(first_guild.get("id") or 0) if first_guild else 0
+        result = get_irc_bridges(guild_id) if guild_id > 0 and callable(get_irc_bridges) else {"ok": False, "error": "Select a server."}
+        message_html = ""
+        error_html = ""
+        if request.method == "POST" and callable(manage_irc_bridges):
+            action = str(request.form.get("action") or "").strip()
+            payload = {
+                "action": action,
+                "id": request.form.get("id"),
+                "server_id": request.form.get("server_id"),
+                "irc_channel": request.form.get("irc_channel"),
+                "discord_channel_id": request.form.get("discord_channel_id"),
+                "enabled": request.form.get("enabled", "1"),
+            }
+            if action in {"create_entry", "update_entry"}:
+                payload.update({
+                    "server_name": request.form.get("server_name"),
+                    "host": request.form.get("host"),
+                    "port": request.form.get("port"),
+                    "use_tls": request.form.get("use_tls", "0"),
+                    "nickname": request.form.get("nickname"),
+                    "password": request.form.get("password"),
+                })
+            post = manage_irc_bridges(payload, user.get("email", ""), guild_id)
+            message = post.get("message")
+            error = None if post.get("ok") else post.get("error")
+            result = post if post.get("ok") else result
+            if message:
+                message_html = f"<div class='cc-flash cc-flash-success'>{message}</div>"
+            if error:
+                error_html = f"<div class='cc-flash cc-flash-danger'>{error}</div>"
+        entries = result.get("entries", []) if isinstance(result, dict) else []
+        servers = result.get("servers", []) if isinstance(result, dict) else []
+        rows = []
+        for entry in entries:
+            server = next((s for s in servers if int(s.get("id") or 0) == int(entry.get("server_id") or 0)), {})
+            rows.append(
+                "<tr><td>"
+                + str(server.get("name") or "")
+                + "</td><td>"
+                + str(entry.get("irc_channel") or "")
+                + "</td><td>"
+                + str(entry.get("discord_channel_id") or "")
+                + "</td><td>"
+                + ("Yes" if entry.get("enabled") else "No")
+                + "</td><td>"
+                + "<form method='post' class='d-inline'><input type='hidden' name='action' value='toggle_enabled'><input type='hidden' name='id' value='"
+                + str(entry.get("id") or "")
+                + "'><button class='btn btn-sm btn-secondary cc-btn-secondary' type='submit'>Toggle</button></form>"
+                + "<form method='post' class='d-inline' onsubmit=\"return confirm('Delete mapping?')\"><input type='hidden' name='action' value='delete_entry'><input type='hidden' name='id' value='"
+                + str(entry.get("id") or "")
+                + "'><button class='btn btn-sm btn-danger cc-btn-danger' type='submit'>Delete</button></form>"
+                + "</td></tr>"
+            )
+        body = (
+            "<div class='card'>"
+            "<h2>IRC Bridge</h2>"
+            "<p class='muted'>Bridge IRC channels to Discord for guild <strong>#" + str(guild_id) + "</strong>.</p>"
+            + message_html
+            + error_html
+            + "<h3 class='mt-3'>Servers</h3>"
+            "<form method='post' class='row g-2 mb-3'>"
+            "<input type='hidden' name='action' value='create_server'>"
+            "<div class='col-sm-3'><input class='form-control cc-form-control' name='server_name' placeholder='Server name' required></div>"
+            "<div class='col-sm-2'><input class='form-control cc-form-control' name='host' placeholder='Host' required></div>"
+            "<div class='col-sm-1'><input class='form-control cc-form-control' name='port' placeholder='Port' value='6667' required></div>"
+            "<div class='col-sm-1'><input class='form-control cc-form-control' name='use_tls' placeholder='TLS 0/1' value='0' required></div>"
+            "<div class='col-sm-2'><input class='form-control cc-form-control' name='nickname' placeholder='Nickname' required></div>"
+            "<div class='col-sm-2'><input class='form-control cc-form-control' name='password' placeholder='Nickserv'></div>"
+            "<div class='col-sm-1 d-grid'><button class='btn btn-primary cc-btn' type='submit'>Add</button></div>"
+            "</form>"
+            "<table class='table mb-4'>"
+            "<thead><tr><th>Name</th><th>Host</th><th>Port</th><th>TLS</th><th>Nickname</th><th>Enabled</th><th>Actions</th></tr></thead>"
+            "<tbody>"
+            + "".join(
+                "<tr><td>"
+                + str(s.get("name") or "")
+                + "</td><td>"
+                + str(s.get("host") or "")
+                + "</td><td>"
+                + str(s.get("port") or "")
+                + "</td><td>"
+                + ("Yes" if s.get("use_tls") else "No")
+                + "</td><td>"
+                + str(s.get("nickname") or "")
+                + "</td><td>"
+                + ("Yes" if s.get("enabled") else "No")
+                + "</td><td>"
+                + "<form method='post' class='d-inline'><input type='hidden' name='action' value='toggle_server'><input type='hidden' name='id' value='"
+                + str(s.get("id") or "")
+                + "'><button class='btn btn-sm btn-secondary cc-btn-secondary' type='submit'>Toggle</button></form>"
+                + "<form method='post' class='d-inline' onsubmit=\"return confirm('Delete server?')\"><input type='hidden' name='action' value='delete_server'><input type='hidden' name='id' value='"
+                + str(s.get("id") or "")
+                + "'><button class='btn btn-sm btn-danger cc-btn-danger' type='submit'>Delete</button></form>"
+                + "</td></tr>"
+                for s in servers
+            )
+            + "</tbody></table>"
+            "<h3 class='mt-3'>Channel Mappings</h3>"
+            "<form method='post' class='row g-2 mb-3'>"
+            "<input type='hidden' name='action' value='create_entry'>"
+            "<div class='col-sm-2'><select class='form-select cc-form-select' name='server_id' required><option value=''>Server</option>"
+            + "".join(
+                "<option value='"
+                + str(s.get("id") or "")
+                + "'>"
+                + str(s.get("name") or "")
+                + "</option>"
+                for s in servers
+            )
+            + "</select></div>"
+            "<div class='col-sm-2'><input class='form-control cc-form-control' name='irc_channel' placeholder='#irc-channel' required></div>"
+            "<div class='col-sm-2'><input class='form-control cc-form-control' name='discord_channel_id' placeholder='Discord channel ID' required></div>"
+            "<div class='col-sm-1'><select class='form-select cc-form-select' name='enabled'><option value='1'>Yes</option><option value='0'>No</option></select></div>"
+            "<div class='col-sm-1 d-grid'><button class='btn btn-primary cc-btn' type='submit'>Add</button></div>"
+            "</form>"
+            "<table class='table'>"
+            "<thead><tr><th>Server</th><th>IRC</th><th>Discord</th><th>Enabled</th><th>Actions</th></tr></thead>"
+            "<tbody>"
+            + "".join(rows)
+            + "</tbody></table>"
+            "</div>"
+        )
         return _render("irc_bridge", body, user.get("email", ""), bool(user.get("is_admin")))
 
     @app.route("/admin/actions")
