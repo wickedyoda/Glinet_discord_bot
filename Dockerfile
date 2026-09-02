@@ -47,6 +47,9 @@ RUN python -m pip install --no-cache-dir --upgrade \
 # Set working directory BEFORE copy so files land in /app
 WORKDIR /app
 
+# Set working directory BEFORE copy so files land in /app
+WORKDIR /app
+
 # Copy the bot code and env files into the container
 COPY --chown=bot:bot . .
 
