@@ -55,7 +55,7 @@ EXPOSE 8080 8081
 
 # Healthcheck: when web admin is disabled, always pass; otherwise check the readyz endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
-  CMD python -c "import os,sys,urllib.request; we=os.getenv('WEB_ENABLED','true').strip().lower() not in {'0','false','no','off'}; sys.exit(0) if not we else (lambda r: sys.exit(0 if r.status==200 else 1))(urllib.request.urlopen(f'http://127.0.0.1:{int(os.getenv(\"WEB_PORT\",\"8080\") or \"8080\")}/readyz',timeout=8))"
+  CMD python -c "import os, urllib.request, sys; WE=os.getenv('WEB_ENABLED','true').strip().lower(); sys.exit(0) if WE in ('0','false','no','off') else None; port=int(os.getenv('WEB_PORT','8080') or '8080'); r=urllib.request.urlopen('http://127.0.0.1:'+str(port)+'/readyz',timeout=8); sys.exit(0 if r.status==200 else 1)"
 
 # Run the bot
 CMD ["python", "-u", "bot.py"]
