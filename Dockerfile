@@ -29,25 +29,27 @@ RUN apt-get update \
 # Create a non-root user/group for the bot process
 RUN groupadd -r bot && useradd -r -g bot bot
 
-# Pre-create runtime directories with restrictive defaults and set as working dir FIRST
+# Pre-create runtime directories with restrictive defaults
 RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs && chown -R bot:bot /app /logs
-WORKDIR /app
-USER bot
 
-# Install dependencies
+# Install dependencies BEFORE switching to non-root user
+# so pip can write to global site-packages
+WORKDIR /app
 COPY --chown=bot:bot requirements.txt .
 RUN python -m pip install --no-cache-dir --upgrade \
-    --root-user-action=ignore \
     pip \
     "setuptools>=78.1.1" \
     "msgpack>=1.2.1" \
     "cryptography>=48.0.1" \
     "wheel>=0.46.2" \
     "jaraco.context>=6.1.0" \
-  && python -m pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
+  && python -m pip install --no-cache-dir -r requirements.txt
 
 # Copy the bot code and env files into the container
 COPY --chown=bot:bot . .
+
+# Switch to non-root user AFTER pip install
+USER bot
 
 EXPOSE 8080 8081
 
