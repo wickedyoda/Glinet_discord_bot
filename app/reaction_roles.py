@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
-
 REACTION_ROLE_STATUSES = {"active", "paused", "disabled"}
 _CUSTOM_EMOJI_RE = re.compile(r"^<a?:([A-Za-z0-9_]{2,32}):(\d+)>$")
 _CUSTOM_EMOJI_SHORT_RE = re.compile(r"^([A-Za-z0-9_]{2,32}):(\d+)$")

@@ -91,7 +91,7 @@ def render_freshdesk_viewer_body(
         for label, value in integration_rows
     )
 
-    search_form = f"""
+    search_form = """
     <div class='card'>
       <h3 style='margin-top:0;'>Search Tickets</h3>
       <p class='muted'>Search GL.iNet Freshdesk tickets by query (e.g. <code>status:2</code>).</p>

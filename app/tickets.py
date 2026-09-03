@@ -12,13 +12,9 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
-from typing import Optional
-
 from sqlite3 import Connection, Row
 
 import discord
-from discord import app_commands
-from discord.ext import commands
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +86,7 @@ class TicketStore:
         )
         return ticket_id
 
-    def close(self, channel_id: int, *, closer_id: int, note: Optional[str] = None) -> bool:
+    def close(self, channel_id: int, *, closer_id: int, note: str | None = None) -> bool:
         now = datetime.now(UTC).isoformat()
         cur = self.conn.execute(
             "UPDATE tickets SET status='closed', closed_at=?, claimer_id=?, note=? "
@@ -113,7 +109,7 @@ class TicketStore:
         logger.debug("Reopened ticket channel=%s updated=%s", channel_id, updated)
         return updated
 
-    def get_by_channel(self, channel_id: int) -> Optional[dict]:
+    def get_by_channel(self, channel_id: int) -> dict | None:
         if not channel_id:
             return None
         row = self.conn.execute(
@@ -123,7 +119,7 @@ class TicketStore:
             return None
         return dict(row)
 
-    def get_by_number(self, guild_id: int, number: int) -> Optional[dict]:
+    def get_by_number(self, guild_id: int, number: int) -> dict | None:
         row = self.conn.execute(
             "SELECT * FROM tickets WHERE guild_id=? AND number=? LIMIT 1",
             (guild_id, number),
@@ -179,7 +175,7 @@ class TicketStore:
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
-def get_db_connection() -> Optional[Connection]:
+def get_db_connection() -> Connection | None:
     try:
         from bot import get_db_connection as _bot_get_db  # Local import avoids circular import
         return _bot_get_db()
@@ -187,7 +183,7 @@ def get_db_connection() -> Optional[Connection]:
         return None
 
 
-def _ticket_store() -> "TicketStore":
+def _ticket_store() -> TicketStore:
     conn = get_db_connection()
     if conn is None:
         raise RuntimeError("Database connection is not available.")
@@ -276,7 +272,7 @@ def require_ticket_tier(member: discord.Member | discord.User, min_tier: int = 1
     return tier >= min_tier
 
 
-def ticket_permission_denied_message(guild: Optional[discord.Guild], min_tier: int) -> str:
+def ticket_permission_denied_message(guild: discord.Guild | None, min_tier: int) -> str:
     role_map = load_ticket_role_map()
     tier_label = {1: "Search", 2: "Create/Update/Close", 3: "Reassign", 4: "Admin"}.get(min_tier, str(min_tier))
     key = {3: "reassign", 2: "create", 1: "search"}.get(min_tier, "admin")
@@ -306,7 +302,7 @@ def build_ticket_select_options(categories: list[dict]) -> list[discord.SelectOp
     ]
 
 
-def find_category(categories: list[dict], category_id: str) -> Optional[dict]:
+def find_category(categories: list[dict], category_id: str) -> dict | None:
     for category in categories:
         if category["id"] == category_id:
             return category

@@ -78,7 +78,7 @@ def render_reaction_roles_body(
         created_at = format_timestamp_display(mapping.get("created_at"))
         updated_at = format_timestamp_display(mapping.get("updated_at"))
         channel_label = channel_labels.get(channel_id, channel_id or "n/a")
-        role_label = role_labels.get(role_id, role_id or "n/a")
+        role_labels.get(role_id, role_id or "n/a")
         rows.append(
             f"""
             <tr>
