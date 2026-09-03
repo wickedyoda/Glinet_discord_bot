@@ -6,8 +6,8 @@ services:
     env_file:
       - env.env
     ports:
-      - 8088:8088
-      - 8091:8081
+      - "8090:8080"
+      - "8091:8081"
     volumes:
       - ./data:/app/data
       - ./logs:/logs
