@@ -1,0 +1,25 @@
+services:
+  discord_invite_bot:
+    image: ghcr.io/wickedyoda/discord_invite_bot:latest
+    container_name: discord_role_bot
+    pull_policy: always
+    env_file:
+      - env.env
+    ports:
+      - "8090:8080"
+      - "8091:8081"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/logs
+      - ./env.env:/app/.env:ro
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os,urllib.request,sys; port=int(os.getenv('WEB_PORT','8080') or '8080'); r=urllib.request.urlopen(f'http://127.0.0.1:{port}/readyz', timeout=8); sys.exit(0 if r.status == 200 else 1)"
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
