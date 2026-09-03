@@ -121,7 +121,7 @@ class IRCBridgeStore:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [datetime.now(UTC).isoformat(), server_id]
         with self._lock:
-            self._conn().execute(f"UPDATE irc_bridge_servers SET {set_clause}, updated_at = ? WHERE id = ?", values)
+            self._conn().execute(f"UPDATE irc_bridge_servers SET {set_clause}, updated_at = ? WHERE id = ?", values)  # nosec B608 - column names from hardcoded whitelist, values use ? placeholders
             self._conn().commit()
         return self.get_server(server_id)
 
@@ -171,7 +171,7 @@ class IRCBridgeStore:
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [datetime.now(UTC).isoformat(), mapping_id]
         with self._lock:
-            self._conn().execute(f"UPDATE irc_bridge_channels SET {set_clause}, updated_at = ? WHERE id = ?", values)
+            self._conn().execute(f"UPDATE irc_bridge_channels SET {set_clause}, updated_at = ? WHERE id = ?", values)  # nosec B608 - column names from hardcoded whitelist, values use ? placeholders
             self._conn().commit()
         row = self._conn().execute("SELECT * FROM irc_bridge_channels WHERE id = ?", (mapping_id,)).fetchone()
         return dict(row) if row else None
