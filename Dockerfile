@@ -29,8 +29,10 @@ RUN apt-get update \
 # Create a non-root user/group for the bot process
 RUN groupadd -r bot && useradd -r -g bot bot
 
-# Pre-create runtime directories with restrictive defaults.
+# Pre-create runtime directories with restrictive defaults and set as working dir FIRST
 RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs && chown -R bot:bot /app /logs
+WORKDIR /app
+USER bot
 
 # Install dependencies
 COPY --chown=bot:bot requirements.txt .
@@ -42,27 +44,16 @@ RUN python -m pip install --no-cache-dir --upgrade \
     "cryptography>=48.0.1" \
     "wheel>=0.46.2" \
     "jaraco.context>=6.1.0" \
-  && python -m pip install --no-cache-dir --user -r requirements.txt
-
-# Set working directory BEFORE copy so files land in /app
-WORKDIR /app
-
-# Set working directory BEFORE copy so files land in /app
-WORKDIR /app
-
-# Set working directory BEFORE copy so files land in /app
-WORKDIR /app
+  && python -m pip install --no-cache-dir --root-user-action=ignore -r requirements.txt
 
 # Copy the bot code and env files into the container
 COPY --chown=bot:bot . .
 
-# Switch to non-root user
-USER bot
-
 EXPOSE 8080 8081
 
+# Healthcheck: when web admin is disabled, always pass; otherwise check the readyz endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \
-  CMD python -c "import os, sys, urllib.request; port = int(os.getenv('WEB_PORT', '8080') or '8080'); url = f'http://127.0.0.1:{port}/readyz'; response = urllib.request.urlopen(url, timeout=8); sys.exit(0 if response.status == 200 else 1)"
+  CMD python -c "import os,sys,urllib.request; we=os.getenv('WEB_ENABLED','true').strip().lower() not in {'0','false','no','off'}; sys.exit(0) if not we else (lambda r: sys.exit(0 if r.status==200 else 1))(urllib.request.urlopen(f'http://127.0.0.1:{int(os.getenv(\"WEB_PORT\",\"8080\") or \"8080\")}/readyz',timeout=8))"
 
 # Run the bot
 CMD ["python", "-u", "bot.py"]
