@@ -5,7 +5,6 @@ import os
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import discord
 
 os.environ.setdefault("DISCORD_TOKEN", "mock-token-for-tests")
@@ -15,7 +14,6 @@ os.environ.setdefault("DATA_DIR", "/tmp/bot-test-data")
 from bot import (
     _resolve_role_change_actor,
     _resolve_role_create_actor,
-    _resolve_channel_create_actor,
     send_server_event_log,
 )
 

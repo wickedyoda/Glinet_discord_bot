@@ -6102,7 +6102,7 @@ def run_web_manage_irc_bridges(payload: dict, actor_email: str, guild_id: int):
                 discord_channel_id=discord_channel_id,
                 enabled=enabled,
             )
-            saved = store.upsert_mapping(mapping)
+            store.upsert_mapping(mapping)
             return {
                 "ok": True,
                 "message": f"IRC bridge saved: {irc_channel} → <#{discord_channel_id}>",
@@ -10517,7 +10517,7 @@ async def process_reddit_auto_respond_rule(rule: dict):
     subreddit = str(rule.get("subreddit") or "").strip()
     keyword_pattern = str(rule.get("keyword_pattern") or "").strip()
     response_template = str(rule.get("response_template") or "").strip()
-    checked_at = datetime.now(UTC).isoformat()
+    datetime.now(UTC).isoformat()
     if rule_id <= 0 or guild_id <= 0 or not subreddit or not keyword_pattern or not response_template:
         return
 
@@ -11227,7 +11227,7 @@ async def check_forum_announcements_once():
             api_key = str(settings.get("discourse_api_key") or "").strip()
             api_username = str(settings.get("discourse_api_username") or "").strip()
             category_path = str(settings.get("forum_announcements_category_path") or "").strip() or DEFAULT_FORUM_ANNOUNCEMENT_CATEGORY_PATH
-            refresh_minutes = max(1, int(settings.get("forum_announcements_refresh_minutes") or 60))
+            max(1, int(settings.get("forum_announcements_refresh_minutes") or 60))
             try:
                 html, source_url = await asyncio.to_thread(
                     fetch_announcement_category_html,

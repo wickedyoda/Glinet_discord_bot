@@ -8153,8 +8153,7 @@ def create_web_app(
         # Security headers are added below to prevent XSS from upstream content.
         def _proxy_body():
             try:
-                for chunk in resp.raw.stream(8192, decode_content=False):
-                    yield chunk
+                yield from resp.raw.stream(8192, decode_content=False)
             except Exception:
                 logger.exception("Error streaming upstream response for %s", target_url)
         response_body = _proxy_body()

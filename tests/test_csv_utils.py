@@ -1,8 +1,9 @@
 import csv
 import io
 
-from app.csv_utils import build_csv_bytes, parse_csv_cells, parse_xlsx_cells, parse_spreadsheet_cells
 from openpyxl import Workbook
+
+from app.csv_utils import build_csv_bytes, parse_csv_cells, parse_spreadsheet_cells, parse_xlsx_cells
 
 
 def test_parse_csv_cells_supports_utf8_bom_and_multiple_cells():
@@ -44,7 +45,7 @@ def test_parse_xlsx_cells_extracts_all_values():
 
 
 def test_parse_spreadsheet_cells_handles_csv():
-    payload = "Alpha, Beta\nGamma\n".encode()
+    payload = b"Alpha, Beta\nGamma\n"
     result = parse_spreadsheet_cells(payload, "names.csv")
     assert result == ["Alpha", "Beta", "Gamma"]
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from typing import Any
 
-
 FEATURE_FLAG = str(os.getenv("WEB_ADMIN_UPTIME_KUMA_GUI", "false")).strip().lower() in {
     "1",
     "true",

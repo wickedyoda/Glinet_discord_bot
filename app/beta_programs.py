@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import hashlib
-import uuid
 import json
 import re
 import urllib.parse
+import uuid
 
 import requests
 from bs4 import BeautifulSoup
