@@ -249,9 +249,9 @@ def render_discourse_viewer_body(
         """)
 
     forum_html = "".join(forum_sections) if forum_sections else (
-        f"<div class='card'><h3 style='margin-top:0;'>Forum Not Configured</h3>"
-        f"<p class='muted'>No Discourse base URL is configured for this guild. "
-        f"Visit the <a href='/admin/discourse'>Discourse settings</a> page to configure integration.</p></div>"
+        "<div class='card'><h3 style='margin-top:0;'>Forum Not Configured</h3>"
+        "<p class='muted'>No Discourse base URL is configured for this guild. "
+        "Visit the <a href='/admin/discourse'>Discourse settings</a> page to configure integration.</p></div>"
     )
 
     base_url_json = json.dumps(base_url or "")

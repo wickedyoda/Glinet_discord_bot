@@ -9,7 +9,6 @@ Authentication uses API-key basic auth (`api_key:X`), per the Freshdesk docs.
 """
 from __future__ import annotations
 
-import json
 import logging
 from html import unescape
 from typing import Any

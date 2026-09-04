@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import hashlib
-import uuid
 import json
+import uuid
 from datetime import UTC, datetime
 from urllib.parse import urlparse
 

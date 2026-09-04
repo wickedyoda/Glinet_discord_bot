@@ -1,24 +1,23 @@
 """Tests for app/freshdesk_api.py — read-only Freshdesk API client."""
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.freshdesk_api import (
+    FRESHDESK_ENV_KEYS,
     FreshdeskApiError,
     FreshdeskRateLimitError,
+    _build_headers,
+    _check_rate_limit,
+    build_freshdesk_config,
     clean_freshdesk_text,
     fetch_freshdesk_ticket,
+    freshdesk_configured,
     list_freshdesk_solution_categories,
     list_freshdesk_ticket_fields,
     search_freshdesk_tickets,
-    build_freshdesk_config,
-    freshdesk_configured,
-    _build_headers,
-    _check_rate_limit,
-    FRESHDESK_ENV_KEYS,
 )
 
 

@@ -64,7 +64,7 @@ def viewer_page():
         return selection_redirect
     selected_guild = _selected_guild()
     guild_name = str(selected_guild.get("name") or "Unknown")
-    selected_guild_id = str(selected_guild.get("id") or "")
+    str(selected_guild.get("id") or "")
 
     env_values = _resolve_env_values()
 
