@@ -19,9 +19,11 @@ if WEB_ENABLED in ("0", "false", "no", "off"):
     sys.exit(0)
 
 # Check Flask readyz endpoint
+WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+WEB_HOST = "127.0.0.1" if WEB_BIND_HOST in ("0.0.0.0", "::") else WEB_BIND_HOST
 WEB_PORT = int(os.getenv("WEB_PORT", "8080") or "8080")
 try:
-    r = urllib.request.urlopen(f"http://127.0.0.1:{WEB_PORT}/readyz", timeout=8)  # nosec B310 - hardcoded localhost HTTP URL, no user input
+    r = urllib.request.urlopen(f"http://{WEB_HOST}:{WEB_PORT}/readyz", timeout=8)  # nosec B310 - host is the configured web bind address
     sys.exit(0 if r.status == 200 else 1)
 except Exception:
     sys.exit(1)

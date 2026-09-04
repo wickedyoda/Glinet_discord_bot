@@ -17,8 +17,7 @@ services:
       test:
         - CMD
         - python
-        - -c
-        - "import os,urllib.request,sys; port=int(os.getenv('WEB_PORT','8080') or '8080'); r=urllib.request.urlopen(f'http://127.0.0.1:{port}/readyz', timeout=8); sys.exit(0 if r.status == 200 else 1)"
+        - /app/healthcheck.py
       interval: 30s
       timeout: 10s
       retries: 3
