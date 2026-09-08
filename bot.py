@@ -37,6 +37,8 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import dotenv_values, load_dotenv
 
+from app.http_client import get
+
 if TYPE_CHECKING:
     from app.tickets import TicketStore
 
@@ -8197,7 +8199,7 @@ async def resolve_mod_log_channel(guild: discord.Guild):
         try:
             candidate_guild = getattr(candidate, "guild", None)
             candidate_guild_id = getattr(candidate_guild, "id", None) if candidate_guild is not None else None
-            return candidate_guild_id is None or int(candidate_guild_id) == int(guild.id)
+            return candidate_guild_id is not None and int(candidate_guild_id) == int(guild.id)
         except Exception:
             return False
 
@@ -9361,7 +9363,7 @@ def uptime_request_text(url: str, *, api_key: str = ""):
             with warnings.catch_warnings():
                 if not UPTIME_STATUS_VERIFY_TLS:
                     warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-                response = requests.get(
+                response = get(
                     url,
                     timeout=UPTIME_STATUS_TIMEOUT_SECONDS,
                     allow_redirects=True,
@@ -9963,7 +9965,7 @@ def save_firmware_state(seen_ids: set[str], signature_snapshot: dict[str, str], 
 
 
 def parse_firmware_entries(page_html: str):
-    soup = BeautifulSoup(page_html, "html.parser")
+    soup = BeautifulSoup(page_html, "lxml")
     sync_line = soup.select_one(".sync-line")
     sync_label = clean_search_text(sync_line.get_text(" ", strip=True)) if sync_line else ""
     entries = []
@@ -10026,7 +10028,7 @@ def parse_firmware_entries(page_html: str):
 
 
 def fetch_firmware_entries():
-    response = requests.get(FIRMWARE_FEED_URL, timeout=FIRMWARE_REQUEST_TIMEOUT_SECONDS)
+    response = get(FIRMWARE_FEED_URL, timeout=FIRMWARE_REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     return parse_firmware_entries(response.text)
 
@@ -12098,7 +12100,7 @@ def fetch_reddit_search_posts_via_html(query: str):
         "User-Agent": REDDIT_REQUEST_USER_AGENT,
         "Connection": "close",
     }
-    response = requests.get(
+    response = get(
         f"{REDDIT_FALLBACK_BASE_URL}/r/{REDDIT_SUBREDDIT}/search/",
         params={
             "q": query,
@@ -12111,7 +12113,7 @@ def fetch_reddit_search_posts_via_html(query: str):
     )
     response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    soup = BeautifulSoup(response.text, "lxml")
     posts = []
     seen_links = set()
     for container in soup.select("div.search-result.search-result-link"):
@@ -12152,7 +12154,7 @@ def fetch_reddit_search_posts_via_atom(query: str):
     }
     for feed_url in feed_urls:
         try:
-            response = requests.get(
+            response = get(
                 feed_url,
                 params=params,
                 headers=headers,
@@ -12220,7 +12222,7 @@ def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, 
     for normalized_path in normalized_paths:
         for index, base_url in enumerate((REDDIT_BASE_URL, REDDIT_FALLBACK_BASE_URL)):
             try:
-                response = requests.get(
+                response = get(
                     f"{base_url}{normalized_path}",
                     params=params,
                     timeout=timeout_seconds,
@@ -12333,7 +12335,7 @@ def fetch_reddit_subreddit_new_posts_via_atom(subreddit: str):
     )
     for feed_url in feed_urls:
         try:
-            response = requests.get(
+            response = get(
                 feed_url,
                 headers=headers,
                 timeout=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
@@ -12462,7 +12464,7 @@ def load_docs_index(base_url: str):
 
     index_url = f"{base_url}/search/search_index.json"
     try:
-        response = requests.get(index_url, timeout=15)
+        response = get(index_url, timeout=15)
         response.raise_for_status()
         data = response.json()
         docs = data.get("docs", [])
