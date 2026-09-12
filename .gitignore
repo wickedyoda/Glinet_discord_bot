@@ -187,3 +187,8 @@ secrets-report.json
 .env
 
 
+
+# Audit/scan artifacts
+.audit_venv/
+*.json.scanned
+
