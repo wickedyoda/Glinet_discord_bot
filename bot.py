@@ -12997,7 +12997,7 @@ async def _resolve_role_change_actor(guild: discord.Guild, target_member_id: int
                             continue
                     user = entry.user
                     if user:
-                        return f"{user.mention} (`{user.id}`)"
+                        return f"{user.name} (`{user.id}`)"
                     user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
                     if user_id:
                         return f"`{user_id}`"
@@ -13028,7 +13028,7 @@ async def _resolve_role_create_actor(guild: discord.Guild, role_id: int) -> str:
                             continue
                     user = entry.user
                     if user:
-                        return f"{user.mention} (`{user.id}`)"
+                        return f"{user.name} (`{user.id}`)"
                     user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
                     if user_id:
                         return f"`{user_id}`"
@@ -13277,7 +13277,7 @@ async def _resolve_channel_create_actor(guild: discord.Guild, channel_id: int) -
                             continue
                     user = entry.user
                     if user:
-                        return f"{user.mention} (`{user.id}`)"
+                        return f"{user.name} (`{user.id}`)"
                     user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
                     if user_id:
                         return f"`{user_id}`"
