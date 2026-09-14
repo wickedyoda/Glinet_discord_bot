@@ -39,6 +39,7 @@ def test_resolve_role_change_actor_success():
         mock_mod = MagicMock(spec=discord.Member)
         mock_mod.mention = "<@99999>"
         mock_mod.id = 99999
+        mock_mod.name = "99999"
 
         mock_target = MagicMock(spec=discord.Member)
         mock_target.id = 234452991745196042
@@ -51,7 +52,7 @@ def test_resolve_role_change_actor_success():
         guild.audit_logs = MagicMock(return_value=AsyncIterator([entry]))
 
         actor_label = await _resolve_role_change_actor(guild, 234452991745196042)
-        assert actor_label == "<@99999> (`99999`)"
+        assert actor_label == "99999 (`99999`)"
 
     asyncio.run(_run())
 
@@ -86,6 +87,7 @@ def test_resolve_role_create_actor():
         mock_creator = MagicMock(spec=discord.Member)
         mock_creator.mention = "<@88888>"
         mock_creator.id = 88888
+        mock_creator.name = "88888"
 
         mock_role = MagicMock(spec=discord.Role)
         mock_role.id = 55555
@@ -98,7 +100,7 @@ def test_resolve_role_create_actor():
         guild.audit_logs = MagicMock(return_value=AsyncIterator([entry]))
 
         actor_label = await _resolve_role_create_actor(guild, 55555)
-        assert actor_label == "<@88888> (`88888`)"
+        assert actor_label == "88888 (`88888`)"
 
     asyncio.run(_run())
 
