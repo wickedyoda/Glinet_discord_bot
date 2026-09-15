@@ -66,6 +66,10 @@ from app.discourse_integration import (
     parse_discourse_features,
 )
 from app.feed_web_callbacks import FeedWebCallbacks
+from app.forum_monitor import (
+    FORUM_MONITOR_CATEGORIES,
+    search_forum,
+)
 from app.freshdesk_api import (
     FreshdeskApiError,
     FreshdeskRateLimitError,
@@ -1487,6 +1491,7 @@ youtube_monitor_task = None
 linkedin_monitor_task = None
 beta_program_monitor_task = None
 forum_announcement_task = None
+forum_monitor_task = None
 service_monitor_task = None
 uptime_status_monitor_task = None
 member_activity_backfill_task = None
@@ -11294,6 +11299,22 @@ async def check_forum_announcements_once():
         logger.exception("Unexpected failure while processing forum announcements")
 
 
+async def _forum_monitor_loop():
+    """Background loop for forum post monitoring."""
+    from app.forum_monitor import check_new_posts
+
+    poll_interval = int(os.getenv("FORUM_POLL_INTERVAL_SECONDS", "300"))
+    while True:
+        try:
+            async with asyncio.timeout(120):
+                count = await check_new_posts()
+            if count > 0:
+                logger.info("Forum monitor: posted %d new alerts", count)
+        except Exception:
+            logger.exception("Forum monitor loop iteration failed")
+        await asyncio.sleep(poll_interval)
+
+
 async def forum_announcement_monitor_loop():
     await check_forum_announcements_once()
     while not bot.is_closed():
@@ -12726,6 +12747,7 @@ async def on_ready():
     global linkedin_monitor_task
     global beta_program_monitor_task
     global forum_announcement_task
+    global forum_monitor_task
     global service_monitor_task
     global uptime_status_monitor_task
     global member_activity_backfill_task
@@ -12764,6 +12786,9 @@ async def on_ready():
         beta_program_monitor_task = asyncio.create_task(beta_program_monitor_loop(), name="beta_program_monitor")
     if forum_announcement_task is None or forum_announcement_task.done():
         forum_announcement_task = asyncio.create_task(forum_announcement_monitor_loop(), name="forum_announcement_monitor")
+    if FORUM_API_KEY and FORUM_MONITOR_CATEGORIES and (forum_monitor_task is None or forum_monitor_task.done()):
+        forum_monitor_task = asyncio.create_task(_forum_monitor_loop(), name="forum_monitor")
+        logger.info("Forum monitor task scheduled")
     if service_monitor_task is None or service_monitor_task.done():
         service_monitor_task = asyncio.create_task(service_monitor_loop(), name="service_monitor")
     if uptime_status_monitor_task is None or uptime_status_monitor_task.done():
@@ -12997,7 +13022,7 @@ async def _resolve_role_change_actor(guild: discord.Guild, target_member_id: int
                             continue
                     user = entry.user
                     if user:
-                        return f"{user.mention} (`{user.id}`)"
+                        return f"{user.name} (`{user.id}`)"
                     user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
                     if user_id:
                         return f"`{user_id}`"
@@ -13028,7 +13053,7 @@ async def _resolve_role_create_actor(guild: discord.Guild, role_id: int) -> str:
                             continue
                     user = entry.user
                     if user:
-                        return f"{user.mention} (`{user.id}`)"
+                        return f"{user.name} (`{user.id}`)"
                     user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
                     if user_id:
                         return f"`{user_id}`"
@@ -13277,7 +13302,7 @@ async def _resolve_channel_create_actor(guild: discord.Guild, channel_id: int) -
                             continue
                     user = entry.user
                     if user:
-                        return f"{user.mention} (`{user.id}`)"
+                        return f"{user.name} (`{user.id}`)"
                     user_id = getattr(entry, "user_id", None) or getattr(entry, "_user_id", None)
                     if user_id:
                         return f"`{user_id}`"
@@ -13529,6 +13554,49 @@ async def tag_slash(interaction: discord.Interaction, tag: str):
 
     await interaction.response.send_message(tag_response)
 
+
+@tree.command(
+    name="forum",
+    description="Search the GL.iNet community forum",
+)
+@app_commands.describe(query="Search terms")
+@app_commands.describe(limit="Max results (default 5)")
+async def forum_search(interaction: discord.Interaction, query: str, limit: int = 5):
+    """Search the GL.iNet Discourse forum and return matching topics."""
+    if not await ensure_interaction_command_access(interaction, "general_commands"):
+        return
+
+    if not FORUM_API_KEY:
+        await interaction.response.send_message(
+            "Forum search is not configured (FORUM_API_KEY not set).", ephemeral=True
+        )
+        return
+
+    try:
+        posts = await search_forum(query, min(limit, 10))
+        if not posts:
+            await interaction.response.send_message("No results found.", ephemeral=True)
+            return
+
+        embeds = []
+        for post in posts:
+            embed = discord.Embed(
+                title=post.title,
+                url=post.url,
+                description=post.excerpt[:200] if post.excerpt else "No excerpt",
+                colour=discord.Color.blue(),
+            )
+            embed.set_author(name=post.author)
+            embed.add_field(
+                name="Category", value=post.category_name, inline=True
+            )
+            embeds.append(embed)
+        await interaction.response.send_message(embeds=embeds, ephemeral=False)
+    except Exception:
+        logger.exception("Forum search failed for query: %s", query)
+        await interaction.response.send_message(
+            "An error occurred while searching the forum.", ephemeral=True
+        )
 
 @tree.command(
     name="submitrole",
