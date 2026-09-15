@@ -13,7 +13,6 @@ import discord
 from discord import Colour, Embed
 
 from app.http_client import get_session
-from bot import is_managed_guild_id
 
 logger = logging.getLogger(__name__)
 
@@ -182,9 +181,6 @@ async def search_forum(query: str, limit: int = 5) -> list[ForumPost]:
 
 async def post_forum_alert(post: ForumPost, guild: discord.Guild) -> bool:
     """Send a forum post notification to the appropriate Discord channel."""
-    if not is_managed_guild_id(guild.id):
-        return False
-
     # Find the configured channel for this category
     category_channel = FORUM_CATEGORY_CHANNELS.get(str(post.category_id))
     if not category_channel:
@@ -243,7 +239,7 @@ async def check_new_posts() -> int:
     # We need a guild to send to — use the first managed guild from bot
     from bot import bot as _bot_instance
 
-    guilds = [g for g in _bot_instance.guilds if is_managed_guild_id(g.id)]
+    guilds = [g for g in _bot_instance.guilds]
 
     for category_id in FORUM_MONITOR_CATEGORIES:
         posts = await fetch_latest_posts(int(category_id))
