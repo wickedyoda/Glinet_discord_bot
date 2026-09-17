@@ -7,6 +7,7 @@ FROM python:3.11-slim
 # to address Trivy container alerts for libblkid1, perl, openssl, ncurses,
 # gzip, libacl, etc.
 RUN apt-get update \
+  && apt-get upgrade -y --no-install-recommends \
   && apt-get install -y --no-install-recommends \
     libc-bin \
     libc6 \
