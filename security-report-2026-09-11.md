@@ -11,7 +11,7 @@
 | Bandit (SAST) | bot.py, app/ | 2 LOW findings (B110 try/except/pass in irc_bridge.py:140,150) |
 | pip-audit | requirements.txt | No known vulnerabilities |
 | Trivy (filesystem) | Project files | 0 vulnerabilities, 0 secrets, 0 misconfigurations |
-| Trivy (Docker image) | ghcr.io/wickedyoda/discord_invite_bot:latest | 232 vulns (base image OS packages only) |
+| Trivy (Docker image) | ghcr.io/wickedyoda/glinet_discord_bot:latest | 232 vulns (base image OS packages only) |
 | Gitleaks | Source files | 0 findings (206 in .audit_venv only - false positives) |
 
 ## Docker Image Vulnerability Summary (Base Image)
