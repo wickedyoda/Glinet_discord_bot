@@ -29,7 +29,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Build Docker image
-        run: docker build -t local/discord-invite-bot:${{ github.sha }} .
+        run: docker build -t local/Glinet_discord_bot:${{ github.sha }} .
 
       - name: Install Trivy CLI
         run: |
@@ -53,7 +53,7 @@ jobs:
             --severity HIGH,CRITICAL \
             --ignore-unfixed \
             --exit-code 0 \
-            local/discord-invite-bot:${{ github.sha }}
+            local/Glinet_discord_bot:${{ github.sha }}
 
       - name: Upload Trivy SARIF to code scanning
         if: always() && hashFiles('trivy-image.sarif') != ''
@@ -71,4 +71,4 @@ jobs:
             --severity CRITICAL \
             --ignore-unfixed \
             --exit-code 1 \
-            local/discord-invite-bot:${{ github.sha }}
+            local/Glinet_discord_bot:${{ github.sha }}

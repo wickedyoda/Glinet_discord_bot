@@ -52,7 +52,7 @@ COPY --chown=bot:bot . .
 # Switch to non-root user AFTER pip install
 USER bot
 
-EXPOSE 8080 8081
+EXPOSE 8082 8083
 
 # Healthcheck: when web admin is disabled, always pass; otherwise check the readyz endpoint
 HEALTHCHECK --interval=30s --timeout=10s --start-period=45s --retries=3 \

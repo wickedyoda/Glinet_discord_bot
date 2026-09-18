@@ -843,9 +843,9 @@ WEB_ENABLED = os.getenv("WEB_ENABLED", "true").strip().lower() not in {
 }
 WEB_BIND_HOST = os.getenv("WEB_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
 try:
-    WEB_PORT = int(os.getenv("WEB_PORT", "8080"))
+    WEB_PORT = int(os.getenv("WEB_PORT", "8082"))
 except ValueError:
-    WEB_PORT = 8080
+    WEB_PORT = 8082
 WEB_HTTPS_ENABLED = os.getenv("WEB_HTTPS_ENABLED", "true").strip().lower() not in {
     "0",
     "false",
@@ -853,9 +853,9 @@ WEB_HTTPS_ENABLED = os.getenv("WEB_HTTPS_ENABLED", "true").strip().lower() not i
     "off",
 }
 try:
-    WEB_HTTPS_PORT = int(os.getenv("WEB_HTTPS_PORT", "8081"))
+    WEB_HTTPS_PORT = int(os.getenv("WEB_HTTPS_PORT", "8083"))
 except ValueError:
-    WEB_HTTPS_PORT = 8081
+    WEB_HTTPS_PORT = 8083
 WEB_ENV_FILE = os.getenv("WEB_ENV_FILE", ".env").strip() or ".env"
 WEB_ADMIN_DEFAULT_EMAIL = os.getenv(
     "WEB_ADMIN_DEFAULT_EMAIL",
