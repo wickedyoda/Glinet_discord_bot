@@ -11913,7 +11913,7 @@ def start_web_admin_server():
         while True:
             stop_reason = "stopped"
             try:
-                start_gui2_web_admin_interface(
+                web_admin_listener = start_gui2_web_admin_interface(
                     host=WEB_BIND_HOST,
                     port=WEB_PORT,
                     https_port=WEB_HTTPS_PORT,
@@ -11951,6 +11951,10 @@ def start_web_admin_server():
                     manage_irc_bridges=run_web_manage_irc_bridges,
                     logger=logger,
                 )
+                # The bootstrap owns the daemon listener thread and returns
+                # immediately. Wait for it so a failed bind cannot cause the
+                # supervisor to launch overlapping listeners on the same port.
+                web_admin_listener.join()
                 stop_reason = "stopped unexpectedly without exception"
                 logger.error("Web admin interface stopped unexpectedly")
             except Exception:
