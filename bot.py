@@ -11955,6 +11955,13 @@ def start_web_admin_server():
                 # immediately. Wait for it so a failed bind cannot cause the
                 # supervisor to launch overlapping listeners on the same port.
                 web_admin_listener.join()
+                startup_error = getattr(web_admin_listener, "startup_error", None)
+                if startup_error is not None:
+                    logger.error(
+                        "Web admin interface could not start; automatic retries halted: %s",
+                        startup_error,
+                    )
+                    break
                 stop_reason = "stopped unexpectedly without exception"
                 logger.error("Web admin interface stopped unexpectedly")
             except Exception:
