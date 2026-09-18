@@ -682,10 +682,12 @@ def start_gui2_web_admin_interface(
     def run() -> None:
         try:
             app.run(host=host, port=port, debug=False, use_reloader=False)
-        except Exception:
+        except Exception as exc:
+            thread.startup_error = exc
             if logger:
                 logger.exception("Web admin listener failed to start on %s:%s", host, port)
 
     thread = threading.Thread(target=run, daemon=True, name="web-admin-gui2")
+    thread.startup_error = None
     thread.start()
     return thread
