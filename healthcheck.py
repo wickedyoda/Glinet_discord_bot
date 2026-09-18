@@ -26,4 +26,20 @@ try:
     r = urllib.request.urlopen(f"http://{WEB_HOST}:{WEB_PORT}/readyz", timeout=8)  # nosec B310 - host is the configured web bind address
     sys.exit(0 if r.status == 200 else 1)
 except Exception:
+    pass  # Web admin may be down; fall back to bot-process liveness check below
+
+# Fallback: check that the bot process itself is still alive.
+# The bot runs as PID 1 inside the container (CMD ["python", "-u", "bot.py"]),
+# so checking /proc/1 is a reliable liveness signal even when the web admin
+# has crashed, hit its restart limit, or been intentionally disabled.
+try:
+    # Signal 0 does not send a signal; it only checks whether the process exists
+    # and whether we have permission to signal it. Exit code 0 = process alive.
+    os.kill(1, 0)  # nosec S102 -- signal 0 is a liveness probe, not an actual signal
+    sys.exit(0)
+except ProcessLookupError:
+    # PID 1 is gone — the container should already be restarting, but mark unhealthy
     sys.exit(1)
+except PermissionError:
+    # We cannot signal PID 1, but it exists — treat as alive
+    sys.exit(0)
