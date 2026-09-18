@@ -1,6 +1,6 @@
 services:
   discord_invite_bot:
-    image: ghcr.io/wickedyoda/Glinet_discord_bot:latest
+    image: ghcr.io/wickedyoda/glinet_discord_bot:latest
     container_name: discord_role_bot
     pull_policy: always
     env_file:
