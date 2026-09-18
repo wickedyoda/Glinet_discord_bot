@@ -14,7 +14,7 @@ All notable changes to this project are documented in this file.
 - Ticket features are disabled until at least one role tier is assigned
 - GPLv3 attribution for upstream `discord-tickets/bot` in `reference/discord-tickets/NOTICE`
 - GitHub Actions workflow `.github/workflows/docker-publish-ticket-beta.yml`
-  - Publishes `ghcr.io/wickedyoda/Glinet_discord_bot-ticket-beta:YYYYMMDD-HHMMSS`
+  - Publishes `ghcr.io/wickedyoda/glinet_discord_bot-ticket-beta:YYYYMMDD-HHMMSS`
   - Publishes `latest-ticket-beta` floating tag
   - Multi-arch manifest: `linux/amd64`, `linux/arm64`
 

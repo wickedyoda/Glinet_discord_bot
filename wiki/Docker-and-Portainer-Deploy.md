@@ -27,8 +27,8 @@ When Portainer cannot read a local `.env` path:
 - Remove `env_file:`
 - Move values into `environment:`
 - Example image options:
-  - main: `ghcr.io/wickedyoda/Glinet_discord_bot:latest`
-  - ticket-beta: `ghcr.io/wickedyoda/Glinet_discord_bot-ticket-beta:latest-ticket-beta`
+  - main: `ghcr.io/wickedyoda/glinet_discord_bot:latest`
+  - ticket-beta: `ghcr.io/wickedyoda/glinet_discord_bot-ticket-beta:latest-ticket-beta`
 
 Recommended Portainer persistence:
 
@@ -56,7 +56,7 @@ Local multi-arch build example:
 ```bash
 docker buildx create --use --name glinet-multiarch-builder
 docker buildx inspect --bootstrap
-docker buildx build   --platform linux/amd64,linux/arm64   -t ghcr.io/<owner>/Glinet_discord_bot:local-multiarch   --push   .
+docker buildx build   --platform linux/amd64,linux/arm64   -t ghcr.io/<owner>/glinet_discord_bot:local-multiarch   --push   .
 ```
 
 Notes:
