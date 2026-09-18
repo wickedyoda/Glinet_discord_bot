@@ -44,7 +44,7 @@ jobs:
         id: vars
         run: |
           echo "DATE_TAG=$(date +'%Y%m%d')" >> "$GITHUB_OUTPUT"
-          echo "IMAGE=ghcr.io/${{ github.actor }}/discord_invite_bot" >> "$GITHUB_OUTPUT"
+          echo "IMAGE=ghcr.io/${{ github.actor }}/Glinet_discord_bot" >> "$GITHUB_OUTPUT"
 
       - name: Print PR info
         if: github.event_name == 'pull_request'
