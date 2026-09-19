@@ -220,7 +220,7 @@ PAGE_TEMPLATE = """\
       <header class="cc-topbar">
         <div class="cc-brand">
           <img src="{{ url_for('static', filename='favicon.png') }}" alt="logo">
-          <a class="brand" href="{{ url_for('index') }}">Glinet Bot</a>
+          <a class="brand" href="{{ url_for('home') }}">Glinet Bot</a>
         </div>
         <div class="cc-search">
           <i class="bi bi-search"></i>
@@ -340,7 +340,7 @@ PAGE_TEMPLATE = """\
                   <div class="cc-tile-desc">Bad word filter and actions.</div>
                   <span class="cc-tile-status"></span>
                 </a>
-                <a class="cc-tile" href="{{ url_for('admin_logs') }}">
+                <a class="cc-tile" href="{{ url_for('logs') }}">
                   <div class="cc-tile-title"><i class="bi bi-file-text"></i> Logs</div>
                   <div class="cc-tile-desc">Live logs and export.</div>
                   <span class="cc-tile-status"></span>
@@ -377,9 +377,9 @@ PAGE_TEMPLATE = """\
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     const PALETTE = [
-      { name: "Home", url: "{{ url_for('index') }}", icon: "bi-house" },
+      { name: "Home", url: "{{ url_for('home') }}", icon: "bi-house" },
       { name: "Dashboard", url: "{{ url_for('dashboard') }}", icon: "bi-speedometer2" },
-      { name: "Status", url: "{{ url_for('observability') }}", icon: "bi-activity" },
+      { name: "Status", url: "{{ url_for('status_page') }}", icon: "bi-activity" },
       { name: "Servers", url: "{{ url_for('guilds_page') }}", icon: "bi-hdd-rack" },
       { name: "Guild Settings", url: "{{ url_for('guild_settings') }}", icon: "bi-gear" },
       { name: "Command Permissions", url: "{{ url_for('command_permissions') }}", icon: "bi-shield-check" },
@@ -388,11 +388,9 @@ PAGE_TEMPLATE = """\
       { name: "Auto-Translate", url: "{{ url_for('translate_channels_page') }}", icon: "bi-translate" },
       { name: "IRC Bridge", url: "{{ url_for('irc_bridge_page') }}", icon: "bi-chat-dots" },
       { name: "Honeypot", url: "{{ url_for('honeypot_page') }}", icon: "bi-bug" },
-      { name: "Reaction Roles", url: "{{ url_for('reaction_roles_page') }}", icon: "bi-emoji-smile" },
-      { name: "Tag Responses", url: "{{ url_for('tag_responses') }}", icon: "bi-tags" },
       { name: "Member Activity", url: "{{ url_for('member_activity_page') }}", icon: "bi-people" },
-      { name: "Action Log", url: "{{ url_for('actions_page') }}", icon: "bi-list-ul" },
-      { name: "Logs", url: "{{ url_for('admin_logs') }}", icon: "bi-file-text" },
+      { name: "Action Log", url: "{{ url_for('actions') }}", icon: "bi-list-ul" },
+      { name: "Logs", url: "{{ url_for('logs') }}", icon: "bi-file-text" },
       { name: "My Account", url: "{{ url_for('account') }}", icon: "bi-person" },
     ];
     function openPalette() {
