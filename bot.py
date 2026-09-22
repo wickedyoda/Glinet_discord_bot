@@ -12246,7 +12246,7 @@ def fetch_reddit_json(path: str | list[str] | tuple[str, ...], *, params: dict, 
         normalized_paths = ["/" + str(path or "").lstrip("/")]
     request_headers = {
         "Accept": "application/json,text/plain,*/*",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
         "Connection": "close",
     }
     last_http_error = None
@@ -12288,7 +12288,19 @@ def fetch_reddit_subreddit_new_posts(subreddit: str):
     if not cleaned_subreddit:
         raise LookupError("Invalid subreddit.")
 
+    # Reddit now requires authentication for JSON API endpoints (/r/.../new.json
+    # and /r/.../new/.json both return 403 / redirect-to-login). The Atom/RSS
+    # feed does not require auth and is the reliable primary source. The JSON
+    # endpoint is retained as a secondary fallback in case access is restored.
     try:
+        posts = fetch_reddit_subreddit_new_posts_via_atom(cleaned_subreddit)
+        return cleaned_subreddit, posts
+    except (requests.RequestException, ET.ParseError, ValueError, RuntimeError) as exc:
+        logger.info(
+            "Reddit Atom feed fetch failed for r/%s (%s); retrying JSON feed.",
+            cleaned_subreddit,
+            exc,
+        )
         data = fetch_reddit_json(
             [
                 f"/r/{cleaned_subreddit}/new.json",
@@ -12325,14 +12337,6 @@ def fetch_reddit_subreddit_new_posts(subreddit: str):
             seen_ids.add(post_id)
 
         posts.sort(key=lambda item: (item.get("created_utc") or 0, item.get("id") or ""))
-        return cleaned_subreddit, posts
-    except (requests.HTTPError, requests.RequestException, ValueError) as exc:
-        logger.warning(
-            "Reddit JSON feed fetch failed for r/%s (%s); retrying Atom feed.",
-            cleaned_subreddit,
-            exc,
-        )
-        posts = fetch_reddit_subreddit_new_posts_via_atom(cleaned_subreddit)
         return cleaned_subreddit, posts
 
 
@@ -12376,11 +12380,11 @@ def fetch_reddit_subreddit_new_posts_via_atom(subreddit: str):
             return parse_reddit_atom_feed(response.text)
         except requests.HTTPError as exc:
             last_http_error = exc
-            logger.warning("Reddit Atom feed returned HTTP error for %s: %s", feed_url, exc)
+            logger.info("Reddit Atom feed returned HTTP error for %s: %s", feed_url, exc)
             continue
         except (requests.RequestException, ET.ParseError, ValueError) as exc:
             last_request_error = exc
-            logger.warning("Reddit Atom feed request failed for %s: %s", feed_url, exc)
+            logger.info("Reddit Atom feed request failed for %s: %s", feed_url, exc)
             continue
 
     if last_http_error is not None:
