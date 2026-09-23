@@ -21,8 +21,9 @@ def build_freshdesk_config_from_env(env_values: dict[str, Any]) -> dict[str, Any
 
 
 def freshdesk_configured(config: dict[str, Any]) -> bool:
-    """Check if Freshdesk is properly configured (base URL + API key)."""
-    return bool(str(config.get("base_url", "")).strip()) and bool(str(config.get("api_key", "")).strip())
+    """Check if Freshdesk is enabled and properly configured (base URL + API key)."""
+    from app.freshdesk_api import freshdesk_configured as _real
+    return _real(config)
 
 
 # --------------------------------------------------------------------------- #
@@ -66,19 +67,23 @@ def render_freshdesk_viewer_body(
     guild_name
         Name of the currently selected guild (for display).
     effective_settings
-        Dict with keys: ``freshdesk_base_url``, ``freshdesk_api_key``,
-        ``freshdesk_request_timeout_seconds``.
+        Dict with keys: ``FRESHDESK_ENABLED``, ``FRESHDESK_DOMAIN``,
+        ``FRESHDESK_BASE_URL``, ``FRESHDESK_API_KEY``,
+        ``FRESHDESK_POLL_INTERVAL_SECONDS``, ``FRESHDESK_REQUEST_TIMEOUT_SECONDS``.
     """
     config = build_freshdesk_config_from_env(effective_settings)
+    enabled = bool(config.get("enabled", True))
     base_url = config["base_url"]
     api_key_configured = bool(config["api_key"])
     timeout = config["timeout"]
+    enabled_label = "Enabled" if enabled else "Disabled"
 
     integration_rows = [
+        ("Enabled", enabled_label),
         ("Helpdesk URL", base_url or "Not configured"),
         ("API Key", "Configured" if api_key_configured else "Not configured"),
         ("Request Timeout", f"{timeout} second(s)"),
-        ("Scope", "Read-only (search, view, browse)"),
+        ("Scope", "Read-only (search, view, browse)" + (" + create" if enabled else "")),
     ]
 
     integration_items = "".join(

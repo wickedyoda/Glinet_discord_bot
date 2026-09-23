@@ -164,6 +164,7 @@ INT_KEYS = {
     "GUILD_ID",
     "BOT_LOG_CHANNEL_ID",
     "FORUM_MAX_RESULTS",
+    "FRESHDESK_POLL_INTERVAL_SECONDS",
     "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
     "DOCS_MAX_RESULTS_PER_SITE",
     "DOCS_INDEX_TTL_SECONDS",
@@ -309,9 +310,29 @@ ENV_FIELDS = [
         "GL.iNet Freshdesk helpdesk root URL (e.g. https://support.gl-inet.com).",
     ),
     (
+        "FRESHDESK_DOMAIN",
+        "Freshdesk Domain",
+        "Freshdesk domain such as glinetservice.freshdesk.com; https:// is added automatically unless FRESHDESK_BASE_URL is set.",
+    ),
+    (
         "FRESHDESK_API_KEY",
         "Freshdesk API Key",
-        "API key for read-only Freshdesk ticket search (never committed — use .env).",
+        "API key for Freshdesk ticket search/create (never committed — use .env).",
+    ),
+    (
+        "FRESHDESK_ENABLED",
+        "Freshdesk Enabled",
+        "Set to true/false to enable Freshdesk search and ticket creation commands.",
+    ),
+    (
+        "FRESHDESK_POLL_INTERVAL_SECONDS",
+        "Freshdesk Poll Interval",
+        "Polling interval in seconds for Freshdesk background checks, if enabled.",
+    ),
+    (
+        "FRESHDESK_TICKET_TARGET_CHANNEL_ID",
+        "Freshdesk Ticket Target Channel",
+        "Discord channel ID where /freshdesk-create opens private ticket threads (global default).",
     ),
     (
         "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
@@ -800,6 +821,19 @@ ENV_FIELD_SECTIONS = (
             "UPTIME_STATUS_TIMEOUT_SECONDS",
             "UPTIME_KUMA_ADMIN_ENABLED",
             "UPTIME_STATUS_VERIFY_TLS",
+        ),
+    ),
+    (
+        "Freshdesk",
+        "Freshdesk ticket search, viewer, and creation configuration. Per-command Discord role access is managed on Command Permissions.",
+        (
+            "FRESHDESK_ENABLED",
+            "FRESHDESK_DOMAIN",
+            "FRESHDESK_BASE_URL",
+            "FRESHDESK_API_KEY",
+            "FRESHDESK_POLL_INTERVAL_SECONDS",
+            "FRESHDESK_TICKET_TARGET_CHANNEL_ID",
+            "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
         ),
     ),
     (
@@ -8995,9 +9029,13 @@ def create_web_app(
     # Register Freshdesk Ticket Viewer blueprint (read-only, app/web_freshdesk_routes.py)
     def _on_get_freshdesk_env():
         env_vals = _load_effective_env_values(env_file, fallback_env_file)
+        freshdesk_config = build_freshdesk_config(env_vals)
         return {
-            "FRESHDESK_BASE_URL": env_vals.get("FRESHDESK_BASE_URL", ""),
+            "FRESHDESK_ENABLED": str(freshdesk_config.get("enabled", True)).lower(),
+            "FRESHDESK_BASE_URL": freshdesk_config.get("base_url", ""),
+            "FRESHDESK_DOMAIN": env_vals.get("FRESHDESK_DOMAIN", ""),
             "FRESHDESK_API_KEY": env_vals.get("FRESHDESK_API_KEY", ""),
+            "FRESHDESK_POLL_INTERVAL_SECONDS": env_vals.get("FRESHDESK_POLL_INTERVAL_SECONDS", ""),
             "FRESHDESK_REQUEST_TIMEOUT_SECONDS": env_vals.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15"),
         }
 

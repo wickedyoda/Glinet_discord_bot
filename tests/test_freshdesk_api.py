@@ -13,6 +13,7 @@ from app.freshdesk_api import (
     _check_rate_limit,
     build_freshdesk_config,
     clean_freshdesk_text,
+    create_freshdesk_ticket,
     fetch_freshdesk_ticket,
     freshdesk_configured,
     list_freshdesk_solution_categories,
@@ -265,3 +266,120 @@ def test_freshdesk_env_keys():
     assert "FRESHDESK_BASE_URL" in FRESHDESK_ENV_KEYS
     assert "FRESHDESK_API_KEY" in FRESHDESK_ENV_KEYS
     assert "FRESHDESK_REQUEST_TIMEOUT_SECONDS" in FRESHDESK_ENV_KEYS
+    assert "FRESHDESK_ENABLED" in FRESHDESK_ENV_KEYS
+    assert "FRESHDESK_DOMAIN" in FRESHDESK_ENV_KEYS
+    assert "FRESHDESK_POLL_INTERVAL_SECONDS" in FRESHDESK_ENV_KEYS
+
+
+#  build_freshdesk_config with domain/enabled
+def test_build_freshdesk_config_uses_domain_when_no_base_url():
+    config = build_freshdesk_config({
+        "FRESHDESK_DOMAIN": "glinetservice.freshdesk.com",
+        "FRESHDESK_API_KEY": "key",
+    })
+    assert config["base_url"] == "https://glinetservice.freshdesk.com"
+    assert config["api_key"] == "key"
+    assert config["enabled"] is True
+    assert config["timeout"] == 15
+
+
+def test_build_freshdesk_config_base_url_overrides_domain():
+    config = build_freshdesk_config({
+        "FRESHDESK_DOMAIN": "other.freshdesk.com",
+        "FRESHDESK_BASE_URL": "https://support.example.com",
+        "FRESHDESK_API_KEY": "key",
+    })
+    assert config["base_url"] == "https://support.example.com"
+
+
+def test_build_freshdesk_config_strips_base_url_trailing_slash():
+    config = build_freshdesk_config({
+        "FRESHDESK_BASE_URL": "https://support.example.com/",
+        "FRESHDESK_API_KEY": "key",
+    })
+    assert config["base_url"] == "https://support.example.com"
+
+
+def test_build_freshdesk_config_normalized_domain_without_scheme():
+    config = build_freshdesk_config({"FRESHDESK_DOMAIN": "a.b.c.freshdesk.com"})
+    assert config["base_url"] == "https://a.b.c.freshdesk.com"
+
+
+def test_build_freshdesk_config_disabled():
+    config = build_freshdesk_config({
+        "FRESHDESK_ENABLED": "false",
+        "FRESHDESK_DOMAIN": "x.freshdesk.com",
+        "FRESHDESK_API_KEY": "key",
+    })
+    assert config["enabled"] is False
+
+
+def test_freshdesk_configured_respects_enabled_flag():
+    assert freshdesk_configured({"enabled": False, "base_url": "https://x.com", "api_key": "k"}) is False
+    assert freshdesk_configured({"enabled": True, "base_url": "https://x.com", "api_key": "k"}) is True
+    assert freshdesk_configured({"enabled": "true", "base_url": "", "api_key": "k"}) is False
+
+
+#  create_freshdesk_ticket
+@patch("app.freshdesk_api.requests.post")
+def test_create_freshdesk_ticket_success(mock_post):
+    mock_post.return_value = MagicMock(
+        status_code=201,
+        json=lambda: {
+            "id": 42,
+            "subject": "Test subject",
+            "status": 2,
+            "priority": 1,
+            "ticket_type": "Question",
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "tags": [],
+        },
+    )
+    ticket = create_freshdesk_ticket(
+        base_url="https://glinetservice.freshdesk.com",
+        subject="Test subject",
+        description="Body text",
+        api_key="key",
+        email="user@example.com",
+        name="User",
+    )
+    assert ticket["id"] == 42
+    assert "glinetservice.freshdesk.com/helpdesk/tickets/42" in ticket["url"]
+    assert ticket["subject"] == "Test subject"
+    # Confirm requester name/email passed into payload
+    sent_payload = mock_post.call_args.kwargs.get("json", {})
+    assert sent_payload["subject"] == "Test subject"
+    assert sent_payload["description"] == "Body text"
+    assert sent_payload["requester"] == {"email": "user@example.com", "name": "User"}
+    mock_post.assert_called_once()
+
+
+@patch("app.freshdesk_api.requests.post")
+def test_create_freshdesk_ticket_auth_failure(mock_post):
+    mock_post.return_value = MagicMock(status_code=401, headers={})
+    with pytest.raises(FreshdeskApiError):
+        create_freshdesk_ticket(
+            base_url="https://x.freshdesk.com",
+            subject="s",
+            description="d",
+            api_key="bad",
+        )
+
+
+@patch("app.freshdesk_api.requests.post")
+def test_create_freshdesk_ticket_without_email_uses_name_only(mock_post):
+    mock_post.return_value = MagicMock(
+        status_code=201,
+        json=lambda: {"id": 1, "subject": "s", "status": 2, "priority": 1, "ticket_type": "Question"},
+    )
+    ticket = create_freshdesk_ticket(
+        base_url="https://x.freshdesk.com",
+        subject="s",
+        description="d",
+        api_key="key",
+        name="Discord User",
+    )
+    assert ticket["id"] == 1
+    sent_payload = mock_post.call_args.kwargs.get("json", {})
+    assert sent_payload["requester"] == {"name": "Discord User"}
