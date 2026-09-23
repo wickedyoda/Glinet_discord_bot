@@ -17840,7 +17840,7 @@ def _resolve_freshdesk_ticket_target_channel_id(
     guild_id = interaction.guild_id
     if guild_id is not None:
         try:
-            guild_cfg = get_guild_settings(guild_id) if callable(getattr(__main__, "get_guild_settings", None)) else None
+            guild_cfg = get_guild_settings(guild_id) if callable(getattr(__main__, "get_guild_settings", None)) else None  # noqa: F821
         except Exception:
             guild_cfg = None
         if not guild_cfg:
