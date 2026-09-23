@@ -73,6 +73,7 @@ from app.forum_monitor import (
 from app.freshdesk_api import (
     FreshdeskApiError,
     FreshdeskRateLimitError,
+    create_freshdesk_ticket,
     fetch_freshdesk_ticket,
     list_freshdesk_solution_categories,
     search_freshdesk_tickets,
@@ -1188,6 +1189,10 @@ COMMAND_PERMISSION_DEFAULTS = {
     "honeypot_join_guard_show": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "set_hello_channel": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "set_hello_text": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    "freshdesk_search": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "freshdesk_ticket": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "freshdesk_categories": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "freshdesk_create": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
 }
 for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
     COMMAND_PERMISSION_DEFAULTS[_command_key] = COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
@@ -1429,6 +1434,22 @@ COMMAND_PERMISSION_METADATA = {
     "random_choice": {
         "label": "/random_choice",
         "description": "Randomly pick a non-staff guild member.",
+    },
+    "freshdesk_search": {
+        "label": "/freshdesk-search",
+        "description": "Search GL.iNet Freshdesk support tickets.",
+    },
+    "freshdesk_ticket": {
+        "label": "/freshdesk-ticket",
+        "description": "View a GL.iNet Freshdesk ticket by ID.",
+    },
+    "freshdesk_categories": {
+        "label": "/freshdesk-categories",
+        "description": "List Freshdesk solution/knowledge-base categories.",
+    },
+    "freshdesk_create": {
+        "label": "/freshdesk-create",
+        "description": "Create a Freshdesk ticket from Discord.",
     },
     "search_reddit": {
         "label": "/search_reddit, !searchreddit",
@@ -17656,7 +17677,13 @@ async def ticket_stats(interaction: discord.Interaction):
 
 def resolve_freshdesk_config():
     """Build Freshdesk API config from environment values."""
+    enabled = str(os.getenv("FRESHDESK_ENABLED", "true") or "true").strip().lower() not in {"0", "false", "no", "off"}
     base_url = str(os.getenv("FRESHDESK_BASE_URL", "")).strip()
+    if not base_url:
+        base_url = str(os.getenv("FRESHDESK_DOMAIN", "")).strip().strip("/")
+    if base_url and not base_url.startswith(("http://", "https://")):
+        base_url = f"https://{base_url}"
+    base_url = base_url.rstrip("/")
     api_key = str(os.getenv("FRESHDESK_API_KEY", "")).strip()
     timeout = 15
     try:
@@ -17666,6 +17693,7 @@ def resolve_freshdesk_config():
     except (ValueError, TypeError):
         timeout = 15
     return {
+        "enabled": enabled,
         "base_url": base_url,
         "api_key": api_key,
         "timeout": timeout,
@@ -17674,8 +17702,8 @@ def resolve_freshdesk_config():
 
 def _freshdesk_not_configured_reply():
     return (
-        "❌ Freshdesk integration is not configured. "
-        "Set `FRESHDESK_BASE_URL` and `FRESHDESK_API_KEY` in the environment."
+        "❌ Freshdesk integration is not configured or disabled. "
+        "Enable `FRESHDESK_ENABLED` and set `FRESHDESK_DOMAIN` or `FRESHDESK_BASE_URL` plus `FRESHDESK_API_KEY` in the environment."
     )
 
 
@@ -17796,6 +17824,213 @@ async def freshdesk_categories(interaction: discord.Interaction):
     for cat in categories[:15]:
         lines.append(f"- **{cat['name']}** (#{cat['id']}) — {cat['url']}")
     await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
+def _resolve_freshdesk_ticket_target_channel_id(
+    interaction: discord.Interaction,
+) -> int | None:
+    """Resolve the Discord channel ID to open Freshdesk ticket threads under.
+
+    Resolution order (first match wins):
+      1. Guild override in the guild_settings DB (freshdesk_ticket_channel_id).
+      2. Global env FRESHDESK_TICKET_TARGET_CHANNEL_ID.
+    Returns the raw channel id (as int), or None if not configured.
+    """
+    resolved: int | None = None
+    guild_id = interaction.guild_id
+    if guild_id is not None:
+        try:
+            guild_cfg = get_guild_settings(guild_id) if callable(getattr(__main__, "get_guild_settings", None)) else None
+        except Exception:
+            guild_cfg = None
+        if not guild_cfg:
+            try:
+                guild_cfg = run_web_get_guild_settings(int(guild_id))  # type: ignore[arg-type]
+            except Exception:
+                guild_cfg = None
+        if isinstance(guild_cfg, dict):
+            raw = guild_cfg.get("freshdesk_ticket_channel_id") or guild_cfg.get("freshdesk_ticket_channel") or ""
+            try:
+                resolved = int(str(raw or "").strip())
+            except (TypeError, ValueError):
+                resolved = None
+    if not resolved:
+        raw_env = str(os.getenv("FRESHDESK_TICKET_TARGET_CHANNEL_ID", "")).strip()
+        try:
+            resolved = int(raw_env)
+        except (TypeError, ValueError):
+            resolved = None
+    if not resolved:
+        return None
+    channel = interaction.guild.get_channel(resolved) if interaction.guild else None
+    if channel is None:
+        return None
+    return resolved
+
+
+class FreshdeskCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"):
+    """Collect requester details for a new Freshdesk ticket."""
+
+    name = discord.ui.TextInput(
+        label="Name",
+        placeholder="Your full name",
+        required=True,
+        max_length=120,
+    )
+    email = discord.ui.TextInput(
+        label="Email",
+        placeholder="you@example.com",
+        required=True,
+        max_length=254,
+    )
+    subject = discord.ui.TextInput(
+        label="Subject",
+        placeholder="Brief summary of the issue",
+        required=True,
+        max_length=200,
+    )
+    message_body = discord.ui.TextInput(
+        label="Message Body",
+        placeholder="Describe the issue in detail...",
+        style=discord.TextStyle.paragraph,
+        required=True,
+        max_length=4000,
+    )
+
+    def __init__(self, target_channel_id: int):
+        super().__init__()
+        self._target_channel_id = target_channel_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await _freshdesk_create_on_submit(interaction, self, self._target_channel_id)
+
+    async def on_error(self, interaction: discord.Interaction, error: Exception):
+        logger.exception("Freshdesk create modal error")
+        try:
+            await interaction.response.send_message(
+                "❌ An error occurred while processing the Freshdesk ticket form.", ephemeral=True
+            )
+        except Exception:
+            await interaction.followup.send(
+                "❌ An error occurred while processing the Freshdesk ticket form.", ephemeral=True
+            )
+
+
+
+
+@tree.command(
+    name="freshdesk-create",
+    description="Create a GL.iNet Freshdesk ticket from Discord",
+)
+async def freshdesk_create(interaction: discord.Interaction):
+    logger.info("/freshdesk-create invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
+    if not await ensure_interaction_command_access(interaction, "freshdesk_create"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
+        return
+    config = resolve_freshdesk_config()
+    if not config.get("enabled") or not config["base_url"] or not config["api_key"]:
+        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
+        return
+    channel_id = _resolve_freshdesk_ticket_target_channel_id(interaction)
+    if not channel_id:
+        await interaction.response.send_message(
+            "❌ No Freshdesk intake channel configured. "
+            "Ask an admin to set `FRESHDESK_TICKET_TARGET_CHANNEL_ID` or use /ticket instead.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_modal(FreshdeskCreateModal(channel_id))
+
+
+async def _freshdesk_create_on_submit(
+    interaction: discord.Interaction,
+    modal: FreshdeskCreateModal,
+    target_channel_id: int,
+):
+    name = str(modal.name.value or "").strip()
+    email = str(modal.email.value or "").strip()
+    subject = str(modal.subject.value or "").strip()
+    message_body = str(modal.message_body.value or "").strip()
+    if not (email and "@" in email and subject and message_body):
+        await interaction.response.send_message(
+            "❌ Please complete all fields with a valid email.", ephemeral=True
+        )
+        return
+    config = resolve_freshdesk_config()
+    await interaction.response.defer(ephemeral=True)
+    try:
+        ticket = create_freshdesk_ticket(
+            base_url=config["base_url"],
+            subject=subject,
+            description=message_body,
+            timeout_seconds=config["timeout"],
+            api_key=config["api_key"],
+            email=email,
+            name=name,
+        )
+    except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
+        await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Freshdesk ticket create failed")
+        await interaction.followup.send(f"❌ Failed to create Freshdesk ticket: {exc}", ephemeral=True)
+        return
+    if not ticket.get("id"):
+        await interaction.followup.send("❌ Freshdesk ticket was not created.", ephemeral=True)
+        return
+    guild = interaction.guild
+    target_channel = guild.get_channel(target_channel_id) if guild else None
+    if target_channel is None:
+        await interaction.followup.send(
+            f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
+            "but the configured intake channel could not be found.",
+            ephemeral=True,
+        )
+        return
+    overwrites: dict = {}
+    if guild and guild.default_role:
+        overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
+    overwrites[interaction.user] = discord.PermissionOverwrite(
+        view_channel=True, send_messages=True, read_message_history=True
+    )
+    try:
+        thread = await target_channel.create_thread(
+            name=f"freshdesk-{ticket['id']}",
+            message=None,
+            type=discord.ChannelType.private_thread,
+            overwrite=overwrites,
+            reason=f"Freshdesk ticket #{ticket['id']} created by {interaction.user}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to create Freshdesk ticket thread")
+        await interaction.followup.send(
+            f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
+            f"but the Discord thread could not be created: {exc}",
+            ephemeral=True,
+        )
+        return
+    ticket_url = ticket.get("url", "")
+    body = (
+        f"**Freshdesk ticket #{ticket['id']} — {subject}**\n\n"
+        f"**Requester:** {name} ({email})\n"
+        f"**Status:** {ticket.get('status', '')} · **Priority:** {ticket.get('priority', '')}\n\n"
+        f"**Message body:**\n{message_body}\n\n"
+        f"<{ticket_url}>"
+    )
+    await thread.send(
+        body,
+        allowed_mentions=discord.AllowedMentions(users=[interaction.user]),
+    )
+    await interaction.followup.send(
+        f"✅ Created Freshdesk ticket #{ticket['id']} in a private thread: {thread.mention}\n"
+        f"{ticket_url}",
+        ephemeral=True,
+    )
+
 
 
 @tree.context_menu(name="Translate to English")

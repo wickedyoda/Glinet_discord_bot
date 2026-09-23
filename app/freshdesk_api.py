@@ -256,6 +256,63 @@ def list_freshdesk_ticket_fields(
 # --------------------------------------------------------------------------- #
 #  List solution categories (knowledge base)
 # --------------------------------------------------------------------------- #
+def create_freshdesk_ticket(
+    *,
+    base_url: str,
+    subject: str,
+    description: str,
+    timeout_seconds: int = 15,
+    api_key: str = "",
+    email: str = "",
+    name: str = "",
+    priority: int = 1,
+    status: int = 2,
+    ticket_type: str = "Question",
+) -> dict[str, Any]:
+    """Create a Freshdesk ticket via POST /api/v2/tickets.
+
+    See https://developer.freshdesk.com/api/#create_ticket
+    """
+    endpoint = f"{base_url.rstrip('/')}/api/v2/tickets"
+    payload: dict[str, Any] = {
+        "subject": subject[:200],
+        "description": description[:4000],
+        "status": status,
+        "priority": priority,
+        "ticket_type": ticket_type,
+    }
+    if email.strip():
+        payload["requester"] = {"email": email.strip(), "name": name.strip() or email.strip().split("@", 1)[0]}
+    else:
+        payload["requester"] = {"name": name.strip() or "Discord User"}
+    response = requests.post(
+        endpoint,
+        json=payload,
+        timeout=timeout_seconds,
+        headers=_build_headers(api_key),
+    )
+    _check_rate_limit(response, "Freshdesk ticket create")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise FreshdeskApiError("Freshdesk returned invalid JSON for ticket create.") from exc
+    try:
+        ticket_id = int(data.get("id", 0))
+    except (TypeError, ValueError):
+        ticket_id = 0
+    return {
+        "id": ticket_id,
+        "subject": clean_freshdesk_text(data.get("subject", subject))[:200],
+        "url": f"{base_url.rstrip('/')}/helpdesk/tickets/{ticket_id}" if ticket_id else "",
+        "status": str(data.get("status", status)),
+        "priority": str(data.get("priority", priority)),
+        "type": str(data.get("ticket_type", ticket_type)).strip() or "N/A",
+        "created_at": str(data.get("created_at", "")),
+        "updated_at": str(data.get("updated_at", "")),
+        "tags": [str(t) for t in (data.get("tags") or []) if str(t).strip()],
+    }
+
+
 def list_freshdesk_solution_categories(
     *,
     base_url: str,
@@ -291,15 +348,30 @@ def list_freshdesk_solution_categories(
 #  Configuration helpers
 # --------------------------------------------------------------------------- #
 FRESHDESK_ENV_KEYS = {
+    "FRESHDESK_ENABLED",
     "FRESHDESK_BASE_URL",
+    "FRESHDESK_DOMAIN",
     "FRESHDESK_API_KEY",
+    "FRESHDESK_POLL_INTERVAL_SECONDS",
     "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
 }
 
 
+def _normalize_freshdesk_base_url(env_values: dict[str, str]) -> str:
+    base_url = str(env_values.get("FRESHDESK_BASE_URL", "")).strip()
+    if not base_url:
+        domain = str(env_values.get("FRESHDESK_DOMAIN", "")).strip().strip("/")
+        if domain:
+            base_url = domain
+    if base_url and not base_url.startswith(("http://", "https://")):
+        base_url = f"https://{base_url}"
+    return base_url.rstrip("/")
+
+
 def build_freshdesk_config(env_values: dict[str, str]) -> dict[str, Any]:
     """Build effective Freshdesk config from environment values."""
-    base_url = str(env_values.get("FRESHDESK_BASE_URL", "")).strip()
+    enabled = str(env_values.get("FRESHDESK_ENABLED", "true") or "true").strip().lower() not in {"0", "false", "no", "off"}
+    base_url = _normalize_freshdesk_base_url(env_values)
     api_key = str(env_values.get("FRESHDESK_API_KEY", "")).strip()
     timeout = 15
     try:
@@ -309,6 +381,7 @@ def build_freshdesk_config(env_values: dict[str, str]) -> dict[str, Any]:
     except (ValueError, TypeError):
         timeout = 15
     return {
+        "enabled": enabled,
         "base_url": base_url,
         "api_key": api_key,
         "timeout": timeout,
@@ -316,5 +389,9 @@ def build_freshdesk_config(env_values: dict[str, str]) -> dict[str, Any]:
 
 
 def freshdesk_configured(config: dict[str, Any]) -> bool:
-    """Check if Freshdesk is properly configured (base URL + API key)."""
-    return bool(str(config.get("base_url", "")).strip()) and bool(str(config.get("api_key", "")).strip())
+    """Check if Freshdesk is enabled and properly configured (base URL + API key)."""
+    return (
+        bool(config.get("enabled", True))
+        and bool(str(config.get("base_url", "")).strip())
+        and bool(str(config.get("api_key", "")).strip())
+    )
