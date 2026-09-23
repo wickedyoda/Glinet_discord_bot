@@ -32,6 +32,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
+from app.freshdesk_api import build_freshdesk_config
 from app.service_monitor import (
     annotate_uptime_import_targets,
     build_glinet_domain_monitor_targets,

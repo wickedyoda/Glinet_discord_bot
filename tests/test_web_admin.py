@@ -8,6 +8,8 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 
 import web_admin
+import bot
+from app.freshdesk_api import freshdesk_configured
 from app.service_monitor import GLINET_DOMAIN_MONITOR_PRESETS, normalize_service_monitor_targets
 from web_admin import create_web_app
 
@@ -3226,3 +3228,89 @@ def test_admin_logs_export_prunes_old_archives(tmp_path: Path, monkeypatch):
 
     assert response.status_code == 200
     assert not stale_export.exists()
+
+
+def test_freshdesk_settings_are_editable_in_web_gui(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("FRESHDESK_ENABLED", raising=False)
+    monkeypatch.delenv("FRESHDESK_DOMAIN", raising=False)
+    monkeypatch.delenv("FRESHDESK_API_KEY", raising=False)
+    monkeypatch.delenv("FRESHDESK_POLL_INTERVAL_SECONDS", raising=False)
+    monkeypatch.delenv("FRESHDESK_TICKET_TARGET_CHANNEL_ID", raising=False)
+
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    payload = _form_payload(client, "/admin/settings")
+    payload["FRESHDESK_ENABLED"] = "false"
+    payload["FRESHDESK_DOMAIN"] = "glinetservice.freshdesk.com"
+    payload["FRESHDESK_POLL_INTERVAL_SECONDS"] = "120"
+    payload["FRESHDESK_TICKET_TARGET_CHANNEL_ID"] = "9999"
+
+    response = client.post(
+        "/admin/settings",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    env_values = web_admin._load_effective_env_values(tmp_path / "env.env", tmp_path / "web-settings.env")
+    assert env_values.get("FRESHDESK_ENABLED") == "false"
+    assert env_values.get("FRESHDESK_DOMAIN") == "glinetservice.freshdesk.com"
+    assert env_values.get("FRESHDESK_POLL_INTERVAL_SECONDS") == "120"
+    assert env_values.get("FRESHDESK_TICKET_TARGET_CHANNEL_ID") == "9999"
+
+
+def test_freshdesk_api_key_is_not_written_to_fallback_env_file(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("FRESHDESK_API_KEY", raising=False)
+
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    payload = _form_payload(client, "/admin/settings")
+    payload["FRESHDESK_API_KEY"] = "super-secret-key"
+
+    response = client.post(
+        "/admin/settings",
+        data=payload,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    fallback_env = tmp_path / "web-settings.env"
+    if fallback_env.exists():
+        fallback_text = fallback_env.read_text()
+        assert "super-secret-key" not in fallback_text
+        assert "FRESHDESK_API_KEY" not in fallback_text
+
+
+def test_command_permissions_page_lists_freshdesk_commands(tmp_path: Path):
+    payload = bot.build_command_permissions_web_payload(1234567890)
+    assert payload["ok"] is True
+    commands = {entry["key"]: entry for entry in payload["commands"]}
+    assert "freshdesk_search" in commands
+    assert "freshdesk_ticket" in commands
+    assert "freshdesk_categories" in commands
+    assert "freshdesk_create" in commands
+    assert commands["freshdesk_create"]["label"] == "/freshdesk-create"
+    assert commands["freshdesk_create"]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
+
+
+def test_freshdesk_configured_checks_enabled_flag(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("FRESHDESK_ENABLED", "false")
+    monkeypatch.setenv("FRESHDESK_DOMAIN", "glinetservice.freshdesk.com")
+    monkeypatch.setenv("FRESHDESK_API_KEY", "key")
+    config = bot.resolve_freshdesk_config()
+    assert config["enabled"] is False
+    assert freshdesk_configured(config) is False
+
+    monkeypatch.setenv("FRESHDESK_ENABLED", "true")
+    config = bot.resolve_freshdesk_config()
+    assert config["enabled"] is True
+    assert config["base_url"] == "https://glinetservice.freshdesk.com"
+    assert freshdesk_configured(config) is True
