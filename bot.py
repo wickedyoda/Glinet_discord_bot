@@ -170,7 +170,7 @@ from app.uptime_status import (
 )
 from app.welcome_messages import send_configured_welcome_messages as send_configured_welcome_messages_impl
 from app.youtube_monitor import YouTubeFeedError, build_youtube_feed_error
-from webui.app import start_gui2_web_admin_interface
+from web_admin import start_web_admin_interface
 
 
 def ensure_process_utc_timezone():
@@ -11913,55 +11913,58 @@ def start_web_admin_server():
         while True:
             stop_reason = "stopped"
             try:
-                web_admin_listener = start_gui2_web_admin_interface(
+                start_web_admin_interface(
                     host=WEB_BIND_HOST,
                     port=WEB_PORT,
                     https_port=WEB_HTTPS_PORT,
                     https_enabled=WEB_HTTPS_ENABLED,
                     data_dir=DATA_DIR,
                     env_file_path=WEB_ENV_FILE,
+                    tag_responses_file=TAG_RESPONSES_FILE,
                     default_admin_email=WEB_ADMIN_DEFAULT_EMAIL,
                     default_admin_password=WEB_ADMIN_DEFAULT_PASSWORD,
-                    get_managed_guilds=run_web_get_guilds,
-                    get_guild_settings=run_web_get_guild_settings,
-                    save_guild_settings=run_web_save_guild_settings,
-                    get_tag_responses=run_web_get_tag_responses,
-                    save_tag_responses=run_web_save_tag_responses,
-                    get_discord_catalog=run_web_get_discord_catalog,
-                    get_command_permissions=run_web_get_command_permissions,
-                    save_command_permissions=run_web_update_command_permissions,
-                    get_honeypot=run_web_get_honeypot,
-                    manage_honeypot=run_web_manage_honeypot,
-                    get_member_activity=run_web_get_member_activity,
-                    export_member_activity=run_web_export_member_activity,
-                    get_reddit_feeds=run_web_get_reddit_feeds,
-                    manage_reddit_feeds=run_web_manage_reddit_feeds,
-                    get_youtube_subscriptions=run_web_get_youtube_subscriptions,
-                    manage_youtube_subscriptions=run_web_manage_youtube_subscriptions,
-                    get_role_access=run_web_get_role_access_mappings,
-                    manage_role_access=run_web_manage_role_access_mappings,
-                    get_reaction_roles=run_web_get_reaction_roles,
-                    manage_reaction_roles=run_web_manage_reaction_roles,
-                    get_bot_profile=run_web_get_bot_profile,
-                    update_bot_profile=run_web_update_bot_profile,
-                    update_bot_avatar=run_web_update_bot_avatar,
-                    get_translate_channels=run_web_get_translate_channels,
-                    manage_translate_channels=run_web_manage_translate_channels,
-                    get_irc_bridges=run_web_get_irc_bridges,
-                    manage_irc_bridges=run_web_manage_irc_bridges,
+                    on_get_guilds=run_web_get_guilds,
+                    on_get_guild_settings=run_web_get_guild_settings,
+                    on_save_guild_settings=run_web_save_guild_settings,
+                    on_get_tag_responses=run_web_get_tag_responses,
+                    on_save_tag_responses=run_web_save_tag_responses,
+                    on_bulk_assign_role_csv=run_web_bulk_role_assignment,
+                    on_get_discord_catalog=run_web_get_discord_catalog,
+                    on_get_command_permissions=run_web_get_command_permissions,
+                    on_save_command_permissions=run_web_update_command_permissions,
+                    on_get_honeypot=run_web_get_honeypot,
+                    on_manage_honeypot=run_web_manage_honeypot,
+                    on_get_actions=run_web_get_actions,
+                    on_get_members=run_web_get_members,
+                    on_manage_member=run_web_manage_member,
+                    on_get_member_activity=run_web_get_member_activity,
+                    on_export_member_activity=run_web_export_member_activity,
+                    on_get_reddit_feeds=run_web_get_reddit_feeds,
+                    on_manage_reddit_feeds=run_web_manage_reddit_feeds,
+                    on_get_reddit_auto_responds=run_web_get_reddit_auto_responds,
+                    on_manage_reddit_auto_responds=run_web_manage_reddit_auto_responds,
+                    on_get_youtube_subscriptions=run_web_get_youtube_subscriptions,
+                    on_manage_youtube_subscriptions=run_web_manage_youtube_subscriptions,
+                    on_get_linkedin_subscriptions=run_web_get_linkedin_subscriptions,
+                    on_manage_linkedin_subscriptions=run_web_manage_linkedin_subscriptions,
+                    on_get_beta_program_subscriptions=run_web_get_beta_program_subscriptions,
+                    on_manage_beta_program_subscriptions=run_web_manage_beta_program_subscriptions,
+                    on_get_role_access_mappings=run_web_get_role_access_mappings,
+                    on_manage_role_access_mappings=run_web_manage_role_access_mappings,
+                    on_get_reaction_roles=run_web_get_reaction_roles,
+                    on_manage_reaction_roles=run_web_manage_reaction_roles,
+                    on_get_bot_profile=run_web_get_bot_profile,
+                    on_update_bot_profile=run_web_update_bot_profile,
+                    on_update_bot_avatar=run_web_update_bot_avatar,
+                    on_get_health_status=run_web_get_health_status,
+                    on_get_translate_channels=run_web_get_translate_channels,
+                    on_manage_translate_channels=run_web_manage_translate_channels,
+                    on_get_ticket_settings=run_web_get_ticket_settings,
+                    on_save_ticket_settings=run_web_save_ticket_settings,
+                    on_request_restart=run_web_request_restart,
+                    on_leave_guild=run_web_leave_guild,
                     logger=logger,
                 )
-                # The bootstrap owns the daemon listener thread and returns
-                # immediately. Wait for it so a failed bind cannot cause the
-                # supervisor to launch overlapping listeners on the same port.
-                web_admin_listener.join()
-                startup_error = getattr(web_admin_listener, "startup_error", None)
-                if startup_error is not None:
-                    logger.error(
-                        "Web admin interface could not start; automatic retries halted: %s",
-                        startup_error,
-                    )
-                    break
                 stop_reason = "stopped unexpectedly without exception"
                 logger.error("Web admin interface stopped unexpectedly")
             except Exception:
