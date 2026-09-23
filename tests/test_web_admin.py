@@ -2204,6 +2204,31 @@ def test_dashboard_quick_notes_include_recent_page_links(tmp_path: Path):
     assert b">Action History<" in response.data
 
 
+def test_legacy_gui2_main_links_redirect_to_full_admin_pages(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    home_response = client.get("/admin/home", base_url="https://docker.example:8443", follow_redirects=False)
+    reddit_response = client.get("/admin/reddit", base_url="https://docker.example:8443", follow_redirects=False)
+
+    assert home_response.status_code == 302
+    assert home_response.headers["Location"].endswith("/admin/dashboard")
+    assert reddit_response.status_code == 302
+    assert reddit_response.headers["Location"].endswith("/admin/reddit-feeds")
+
+    home_followed = client.get("/admin/home", base_url="https://docker.example:8443", follow_redirects=True)
+    reddit_followed = client.get("/admin/reddit", base_url="https://docker.example:8443", follow_redirects=True)
+
+    assert home_followed.status_code == 200
+    assert b"Dashboard" in home_followed.data
+    assert b"available in the Glinet bot web admin" not in home_followed.data
+    assert reddit_followed.status_code == 200
+    assert b"Reddit Feeds" in reddit_followed.data
+    assert b"available in the Glinet bot web admin" not in reddit_followed.data
+
+
 def test_admin_can_update_command_status_page(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()

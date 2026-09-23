@@ -4274,6 +4274,11 @@ def create_web_app(
             return redirect(url_for("guilds_page"))
         return redirect(url_for("login"))
 
+    @app.route("/admin/home", methods=["GET"])
+    @login_required
+    def legacy_gui2_home():
+        return redirect(url_for("dashboard"))
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         client_ip = _client_ip()
@@ -5915,6 +5920,12 @@ def create_web_app(
         </div>
         """
         return _render_page("Bot Profile", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/reddit", methods=["GET", "POST"])
+    @login_required
+    def legacy_gui2_reddit_feeds():
+        redirect_code = 307 if request.method == "POST" else 302
+        return redirect(url_for("reddit_feeds"), code=redirect_code)
 
     @app.route("/admin/reddit-feeds", methods=["GET", "POST"])
     @login_required
