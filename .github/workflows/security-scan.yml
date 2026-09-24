@@ -1,0 +1,87 @@
+name: Security Scan
+
+on:
+  push:
+    branches:
+      - main
+      - beta
+  pull_request:
+    branches:
+      - main
+      - beta
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  bandit:
+    name: Bandit Python Security
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit (SARIF)
+        run: |
+          bandit \
+            -r app/ bot.py web_admin.py \
+            -f sarif \
+            -o bandit-results.sarif \
+            -x tests/ \
+            --severity-level medium \
+            --confidence-level medium
+
+      - name: Upload Bandit SARIF
+        if: always() && hashFiles('bandit-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: bandit-results.sarif
+
+      - name: Enforce Bandit (fail on HIGH)
+        run: |
+          bandit \
+            -r app/ bot.py web_admin.py \
+            -x tests/ \
+            --severity-level high \
+            --confidence-level high
+
+  semgrep:
+    name: Semgrep Security Analysis
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Run Semgrep
+        run: |
+          semgrep \
+            --config=auto \
+            --config=p/security-audit \
+            --config=p/secrets \
+            --sarif \
+            --output=semgrep-results.sarif \
+            --error \
+            .
+
+      - name: Upload Semgrep SARIF
+        if: always() && hashFiles('semgrep-results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: semgrep-results.sarif
