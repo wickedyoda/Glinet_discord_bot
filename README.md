@@ -78,27 +78,33 @@ The bot integrates with GL.iNet Discourse forums (e.g., `https://forum.gl-inet.c
 
 Detailed documentation: [`wiki/Discourse-Integration.md`](./wiki/Discourse-Integration.md)
 
-## Freshdesk Ticket Viewer Integration (Read-Only)
+## Freshdesk Ticket Viewer & Creation
 
-The bot provides a **read-only** Freshdesk ticket viewer for GL.iNet support tickets, accessible from both the Discord bot and the Web Admin GUI.
+The bot provides integrated Freshdesk support for viewing and creating tickets from both the Discord bot and the Web Admin GUI.
 
 **Web Admin interface:**
-- `/admin/freshdesk/viewer` — read-only Freshdesk ticket viewer showing live categories and a search page
-- `/admin/freshdesk/viewer/search?q=...` — search Freshdesk tickets
-- `/admin/freshdesk/viewer/ticket/<id>` — view a single ticket by ID
-- `/admin/freshdesk/viewer/api/categories` — backing AJAX endpoint
+- `/admin/freshdesk/viewer` — read-only Freshdesk ticket viewer with search, category browser, and ticket detail view
+- `/admin/freshdesk/viewer` also includes a "Freshdesk Command Permissions" panel for role-based access control
+- `/admin/command-permissions` — manage role restrictions per Freshdesk command
+- `/admin/freshdesk/settings` — configure Freshdesk integration settings
 
 **Discord commands:**
-- `/freshdesk-search query:<query>` — search Freshdesk tickets (e.g. `status:2`)
-- `/freshdesk-ticket ticket_id:<id>` — view a ticket by ID
-- `/freshdesk-categories` — list knowledge-base solution categories
+| Command | Description |
+|---|---|
+| `/freshdesk-search query:<query>` | Search tickets (e.g. `status:2`, `priority:4`) |
+| `/freshdesk-ticket ticket_id:<id>` | View a ticket by ID |
+| `/freshdesk-categories` | List knowledge-base solution categories |
+| `/freshdesk-create` | Create a new ticket via modal (Name, Email, Subject, Message) |
 
 **Environment variables:**
-- `FRESHDESK_BASE_URL` — Freshdesk helpdesk root URL (e.g. `https://support.gl-inet.com`)
-- `FRESHDESK_API_KEY` — Freshdesk API key (read-only scope recommended)
-- `FRESHDESK_REQUEST_TIMEOUT_SECONDS` — request timeout (default: `15`)
+- `FRESHDESK_ENABLED` — Enable Freshdesk integration (`true`/`false`)
+- `FRESHDESK_BASE_URL` — Freshdesk root URL (auto-derived from `FRESHDESK_DOMAIN`)
+- `FRESHDESK_DOMAIN` — Freshdesk domain (e.g. `glinetservice.freshdesk.com`)
+- `FRESHDESK_API_KEY` — Read/write API key
+- `FRESHDESK_POLL_INTERVAL_SECONDS` — Sync interval (default: 300)
+- `FRESHDESK_TICKET_TARGET_CHANNEL_ID` — Channel for ticket webhook messages
 
-Detailed documentation: [`wiki/Freshdesk-Integration.md`](./wiki/Freshdesk-Integration.md)
+Role-based restrictions are configured in the Web Admin GUI's Freshdesk Viewer or Command Permissions pages.
 
 ## Reddit Auto-Responder
 
