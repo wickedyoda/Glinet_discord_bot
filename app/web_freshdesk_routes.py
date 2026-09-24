@@ -15,7 +15,7 @@ import logging
 from html import escape
 from typing import Any
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, flash, jsonify, request
 
 from app.freshdesk_api import (
     FreshdeskApiError,
@@ -32,6 +32,11 @@ bp = Blueprint("freshdesk_viewer", __name__, url_prefix="/admin/freshdesk/viewer
 
 # These are injected by ``register_freshdesk_viewer_blueprint``.
 _h = {}  # type: dict[str, object]
+
+# --------------------------------------------------------------------------- #
+#  Freshdesk-specific command permission keys
+# --------------------------------------------------------------------------- #
+FRESHDESK_COMMAND_KEYS = ("freshdesk_search", "freshdesk_ticket", "freshdesk_categories", "freshdesk_create")
 
 
 # --------------------------------------------------------------------------- #
@@ -56,21 +61,81 @@ def _render_page(title: str, body: str, email: str, is_admin: bool):
 # --------------------------------------------------------------------------- #
 #  Page routes
 # --------------------------------------------------------------------------- #
-@bp.route("/", methods=["GET"], endpoint="freshdesk_viewer_page")
+@bp.route("/", methods=["GET", "POST"], endpoint="freshdesk_viewer_page")
 def viewer_page():
     user = _current_user()
     selection_redirect = _require_selected_guild_redirect()
     if selection_redirect is not None:
         return selection_redirect
     selected_guild = _selected_guild()
+    guild_id = str(selected_guild.get("id") or "0")
     guild_name = str(selected_guild.get("name") or "Unknown")
-    str(selected_guild.get("id") or "")
 
     env_values = _resolve_env_values()
+
+    # Fetch Freshdesk command permissions
+    command_permissions = []
+    allowed_role_names = []
+    moderator_role_ids = []
+    discord_role_options = []
+    on_get = _h.get("on_get_command_permissions")
+    if callable(on_get):
+        payload = on_get(guild_id)
+        if isinstance(payload, dict) and payload.get("ok"):
+            all_commands = payload.get("commands", []) or []
+            command_permissions = [c for c in all_commands if c.get("key") in FRESHDESK_COMMAND_KEYS]
+            allowed_role_names = payload.get("allowed_role_names", []) or []
+            moderator_role_ids = payload.get("moderator_role_ids", []) or []
+
+    # Fetch Discord role catalog for multi-select dropdown
+    load_catalog = _h.get("load_discord_catalog")
+    if callable(load_catalog):
+        try:
+            _, role_options, _catalog_error = load_catalog(guild_id, channel_type=None)
+            discord_role_options = role_options or []
+        except Exception:  # noqa: BLE001
+            discord_role_options = []
+
+    if request.method == "POST":
+        on_save = _h.get("on_save_command_permissions")
+        if callable(on_save):
+            command_updates = {}
+            for command_key in request.form.getlist("command_key"):
+                enabled = request.form.get(f"enabled__{command_key}") == "1"
+                if not enabled:
+                    next_mode = "disabled"
+                else:
+                    current_mode = str(request.form.get(f"mode__{command_key}", "default") or "default").strip()
+                    next_mode = current_mode
+                selected_role_ids = request.form.getlist(f"role_ids__{command_key}")
+                role_ids = [int(x) for x in selected_role_ids if str(x).strip().isdigit()]
+                if not role_ids:
+                    role_ids_text = str(request.form.get(f"role_ids_text__{command_key}", "") or "").strip()
+                    role_ids = [int(x) for x in role_ids_text.split(",") if x.strip().isdigit()]
+                command_updates[command_key] = {
+                    "mode": next_mode,
+                    "role_ids": role_ids,
+                }
+            response = on_save({"commands": command_updates}, user["email"], guild_id)
+            if isinstance(response, dict) and response.get("ok"):
+                flash(str(response.get("message", "Freshdesk command permissions updated.")), "success")
+                # Refresh permissions after save
+                payload = on_get(guild_id)
+                if isinstance(payload, dict) and payload.get("ok"):
+                    all_commands = payload.get("commands", []) or []
+                    command_permissions = [c for c in all_commands if c.get("key") in FRESHDESK_COMMAND_KEYS]
+                    allowed_role_names = payload.get("allowed_role_names", []) or []
+                    moderator_role_ids = payload.get("moderator_role_ids", []) or []
+            else:
+                flash(str(response.get("error", "Failed to save Freshdesk command permissions.")) if isinstance(response, dict) else "Failed to save Freshdesk command permissions.", "error")
 
     body = render_freshdesk_viewer_body(
         guild_name=guild_name,
         effective_settings=env_values,
+        command_permissions=command_permissions,
+        allowed_role_names=allowed_role_names,
+        moderator_role_ids=moderator_role_ids,
+        discord_role_options=discord_role_options,
     )
     return _render_page("Freshdesk Viewer", body, user["email"], bool(user.get("is_admin")))
 
@@ -249,6 +314,10 @@ def register_freshdesk_viewer_blueprint(app, **helpers):
         - ``require_selected_guild_redirect`` – callable, returns redirect or None
         - ``render_page`` – callable(title, body, email, is_admin) -> Response
         - ``on_get_env`` – callable, returns dict of env values for Freshdesk
+        - ``on_get_command_permissions`` – callable(guild_id) -> dict, returns command
+          permissions payload (same shape as ``build_command_permissions_web_payload``).
+        - ``on_save_command_permissions`` – callable(payload, actor_email, guild_id) -> dict,
+          saves command permission updates.
     """
     global _h
     _h = {
@@ -257,5 +326,8 @@ def register_freshdesk_viewer_blueprint(app, **helpers):
         "require_selected_guild_redirect": helpers.get("require_selected_guild_redirect"),
         "render_page": helpers.get("render_page"),
         "on_get_env": helpers.get("on_get_env"),
+        "on_get_command_permissions": helpers.get("on_get_command_permissions"),
+        "on_save_command_permissions": helpers.get("on_save_command_permissions"),
+        "load_discord_catalog": helpers.get("load_discord_catalog"),
     }
     app.register_blueprint(bp)

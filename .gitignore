@@ -192,3 +192,5 @@ secrets-report.json
 .audit_venv/
 *.json.scanned
 
+data/bot_data.db*
+env.env

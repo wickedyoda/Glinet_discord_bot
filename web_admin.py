@@ -9047,6 +9047,9 @@ def create_web_app(
         require_selected_guild_redirect=_require_selected_guild_redirect,
         render_page=_render_page,
         on_get_env=_on_get_freshdesk_env,
+        on_get_command_permissions=on_get_command_permissions,
+        on_save_command_permissions=on_save_command_permissions,
+        load_discord_catalog=_load_discord_catalog_options,
     )
 
     @app.route("/admin/settings", methods=["GET", "POST"])
