@@ -222,6 +222,7 @@ if os.path.abspath(BOOTSTRAP_WEB_ENV_FALLBACK_FILE) != os.path.abspath(BOOTSTRAP
 VALID_LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "NOTSET"}
 SENSITIVE_LOG_VALUE_PATTERN = re.compile(r"(?i)\b(password|token|secret|authorization|cookie)\b\s*[:=]\s*([^\s,;]+)")
 REDDIT_SUBREDDIT_PATTERN = re.compile(r"^[A-Za-z0-9_]{2,21}$")
+REDDIT_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 FALSY_ENV_VALUES = {"0", "false", "no", "off"}
 SHORT_CODE_REGEX = re.compile(r"/(\d+)(?:/)?$")
@@ -328,24 +329,70 @@ def normalize_http_url_setting(raw_value: str, fallback_value: str, setting_name
     return normalized
 
 
-def normalize_reddit_subreddit_name(raw_value: str):
+def normalize_reddit_source(raw_value: str) -> tuple[str, str]:
+    """Parse a Reddit source into (type, name).
+
+    Returns:
+        (source_type, normalized_name) — source_type is 'subreddit' or 'user'.
+        Returns ('', '') on invalid input.
+
+    Accepts:
+        - r/subreddit or /r/subreddit
+        - https://reddit.com/r/subreddit
+        - u/username or /u/username
+        - https://reddit.com/user/username or https://reddit.com/u/username
+    """
     candidate = str(raw_value or "").strip()
     if not candidate:
-        return ""
+        return "", ""
 
     lower_candidate = candidate.lower()
-    if lower_candidate.startswith(("http://", "https://")):
-        match = re.search(r"/r/([A-Za-z0-9_]{2,21})(?:/|$)", candidate)
-        candidate = match.group(1) if match else ""
-    elif lower_candidate.startswith("r/"):
-        candidate = candidate[2:]
-    elif lower_candidate.startswith("/r/"):
-        candidate = candidate[3:]
 
+    if lower_candidate.startswith(("http://", "https://")):
+        # Try r/ URL
+        match = re.search(r"/r/([A-Za-z0-9_]{2,21})(?:/|$)", candidate)
+        if match:
+            return "subreddit", match.group(1)
+        # Try u/ URL
+        match = re.search(r"/u(?:ser)?/([A-Za-z0-9_]{3,20})(?:/|$)", candidate)
+        if match:
+            return "user", match.group(1)
+        return "", ""
+
+    if lower_candidate.startswith("r/"):
+        name = candidate[2:].strip().strip("/")
+        if REDDIT_SUBREDDIT_PATTERN.fullmatch(name):
+            return "subreddit", name
+        return "", ""
+
+    if lower_candidate.startswith("/r/"):
+        name = candidate[3:].strip().strip("/")
+        if REDDIT_SUBREDDIT_PATTERN.fullmatch(name):
+            return "subreddit", name
+        return "", ""
+
+    if lower_candidate.startswith("u/"):
+        name = candidate[2:].strip().strip("/")
+        if REDDIT_USERNAME_PATTERN.fullmatch(name):
+            return "user", name
+        return "", ""
+
+    if lower_candidate.startswith("/u/"):
+        name = candidate[3:].strip().strip("/")
+        if REDDIT_USERNAME_PATTERN.fullmatch(name):
+            return "user", name
+        return "", ""
+
+    # Bare name — could be either subreddit or user; default to subreddit
     candidate = candidate.strip().strip("/")
     if REDDIT_SUBREDDIT_PATTERN.fullmatch(candidate):
-        return candidate
-    return ""
+        return "subreddit", candidate
+    return "", ""
+
+
+def normalize_reddit_subreddit_name(raw_value: str):
+    source_type, name = normalize_reddit_source(raw_value)
+    return name if source_type == "subreddit" else ""
 
 
 def normalize_reddit_subreddit_setting(raw_value: str, fallback_value: str = "GlInet", setting_name: str = "REDDIT_SUBREDDIT"):
@@ -1834,6 +1881,7 @@ def ensure_db_schema():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL DEFAULT 0,
                 subreddit TEXT NOT NULL,
+                source_type TEXT NOT NULL DEFAULT 'subreddit',
                 channel_id INTEGER NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
@@ -2302,6 +2350,25 @@ def ensure_db_schema():
                 ON actions(guild_id)
             """
         )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_moderation_warnings_guild_id
+                ON moderation_warnings(guild_id)
+            """
+        )
+
+        # Migration: add source_type column to reddit_feed_subscriptions if missing
+        reddit_feed_columns = {
+            str(row["name"])
+            for row in conn.execute(
+                "PRAGMA table_info(reddit_feed_subscriptions)"
+            ).fetchall()
+        }
+        if "source_type" not in reddit_feed_columns:
+            conn.execute(
+                "ALTER TABLE reddit_feed_subscriptions "
+                "ADD COLUMN source_type TEXT NOT NULL DEFAULT 'subreddit'"
+            )
 
         conn.execute(
             """
@@ -3863,7 +3930,7 @@ def update_beta_program_subscription_runtime_state(
 
 def list_reddit_feed_subscriptions(enabled_only: bool = False, guild_id: int | None = None):
     query = (
-        "SELECT id, guild_id, subreddit, channel_id, enabled, created_at, updated_at, "
+        "SELECT id, guild_id, subreddit, source_type, channel_id, enabled, created_at, updated_at, "
         "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error "
         "FROM reddit_feed_subscriptions"
     )
@@ -3886,6 +3953,7 @@ def list_reddit_feed_subscriptions(enabled_only: bool = False, guild_id: int | N
                 "id": int(row["id"]),
                 "guild_id": int(row["guild_id"] or 0),
                 "subreddit": str(row["subreddit"] or ""),
+                "source_type": str(row["source_type"] or "subreddit"),
                 "channel_id": int(row["channel_id"] or 0),
                 "enabled": bool(row["enabled"]),
                 "created_at": str(row["created_at"] or ""),
@@ -3904,7 +3972,7 @@ def get_reddit_feed_subscription(feed_id: int):
     with with_db() as conn:
         row = conn.execute(
             """
-            SELECT id, guild_id, subreddit, channel_id, enabled, created_at, updated_at,
+            SELECT id, guild_id, subreddit, source_type, channel_id, enabled, created_at, updated_at,
                    created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error
             FROM reddit_feed_subscriptions
             WHERE id = ?
@@ -3917,6 +3985,7 @@ def get_reddit_feed_subscription(feed_id: int):
         "id": int(row["id"]),
         "guild_id": int(row["guild_id"] or 0),
         "subreddit": str(row["subreddit"] or ""),
+        "source_type": str(row["source_type"] or "subreddit"),
         "channel_id": int(row["channel_id"] or 0),
         "enabled": bool(row["enabled"]),
         "created_at": str(row["created_at"] or ""),
@@ -3929,10 +3998,12 @@ def get_reddit_feed_subscription(feed_id: int):
     }
 
 
-def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: int, actor_email: str):
-    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold()
+def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: int, actor_email: str, source_type: str = "subreddit"):
+    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold() if source_type == "subreddit" else subreddit.casefold()
     if not cleaned_subreddit:
-        raise ValueError("Enter a valid subreddit name or /r/ URL.")
+        raise ValueError("Enter a valid subreddit name, username, or URL.")
+    if source_type not in ("subreddit", "user"):
+        raise ValueError("Invalid source type. Must be 'subreddit' or 'user'.")
     safe_guild_id = normalize_target_guild_id(guild_id)
     safe_channel_id = int(channel_id)
     if safe_channel_id <= 0:
@@ -3944,6 +4015,7 @@ def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: i
             INSERT INTO reddit_feed_subscriptions (
                 guild_id,
                 subreddit,
+                source_type,
                 channel_id,
                 enabled,
                 created_at,
@@ -3956,6 +4028,7 @@ def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: i
             (
                 safe_guild_id,
                 cleaned_subreddit,
+                source_type,
                 safe_channel_id,
                 now_iso,
                 now_iso,
@@ -3965,10 +4038,12 @@ def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: i
         )
 
 
-def update_reddit_feed_subscription(feed_id: int, guild_id: int, subreddit: str, channel_id: int, actor_email: str):
-    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold()
+def update_reddit_feed_subscription(feed_id: int, guild_id: int, subreddit: str, channel_id: int, actor_email: str, source_type: str = "subreddit"):
+    cleaned_subreddit = normalize_reddit_subreddit_name(subreddit).casefold() if source_type == "subreddit" else subreddit.casefold()
     if not cleaned_subreddit:
-        raise ValueError("Enter a valid subreddit name or /r/ URL.")
+        raise ValueError("Enter a valid subreddit name, username, or URL.")
+    if source_type not in ("subreddit", "user"):
+        raise ValueError("Invalid source type. Must be 'subreddit' or 'user'.")
     safe_guild_id = normalize_target_guild_id(guild_id)
     safe_channel_id = int(channel_id)
     if safe_channel_id <= 0:
@@ -3979,6 +4054,7 @@ def update_reddit_feed_subscription(feed_id: int, guild_id: int, subreddit: str,
             """
             UPDATE reddit_feed_subscriptions
             SET subreddit = ?,
+                source_type = ?,
                 channel_id = ?,
                 enabled = 1,
                 updated_at = ?,
@@ -3990,6 +4066,7 @@ def update_reddit_feed_subscription(feed_id: int, guild_id: int, subreddit: str,
             """,
             (
                 cleaned_subreddit,
+                source_type,
                 safe_channel_id,
                 now_iso,
                 str(actor_email or "").strip().lower(),
@@ -10288,25 +10365,29 @@ async def process_reddit_feed_subscription(feed: dict):
     feed_id = int(feed.get("id") or 0)
     guild_id = int(feed.get("guild_id") or 0)
     subreddit = str(feed.get("subreddit") or "").strip()
+    source_type = str(feed.get("source_type") or "subreddit")
     channel_id = int(feed.get("channel_id") or 0)
     checked_at = datetime.now(UTC).isoformat()
     if guild_id <= 0 or not get_effective_guild_feature_enabled(guild_id, "reddit_feed_notify_enabled", REDDIT_FEED_NOTIFY_ENABLED):
         return
 
     try:
-        normalized_subreddit, posts = await asyncio.to_thread(fetch_reddit_subreddit_new_posts, subreddit)
+        if source_type == "user":
+            normalized_subreddit, posts = await asyncio.to_thread(fetch_reddit_user_new_posts, subreddit)
+        else:
+            normalized_subreddit, posts = await asyncio.to_thread(fetch_reddit_subreddit_new_posts, subreddit)
     except LookupError:
         update_reddit_feed_runtime_status(
             feed_id,
             last_checked_at=checked_at,
-            last_error="Invalid subreddit value.",
+            last_error="Invalid subreddit/user value.",
         )
-        logger.warning("Reddit feed %s has invalid subreddit value '%s'", feed_id, subreddit)
+        logger.warning("Reddit feed %s has invalid subreddit/user value '%s'", feed_id, subreddit)
         return
     except requests.HTTPError as exc:
         status_code = getattr(exc.response, "status_code", None)
         error_text = (
-            "Subreddit not found."
+            f"{'User' if source_type == 'user' else 'Subreddit'} not found."
             if status_code == 404
             else "Reddit is rate limiting requests."
             if status_code == 429
@@ -10403,7 +10484,7 @@ async def process_reddit_feed_subscription(feed: dict):
     posted_ids = []
     try:
         for post in new_posts[:REDDIT_FEED_MAX_POSTS_PER_RUN]:
-            await channel.send(format_reddit_feed_post_message(normalized_subreddit, post))
+            await channel.send(format_reddit_feed_post_message(normalized_subreddit, source_type, post))
             posted_ids.append(str(post.get("id") or "").strip())
     except discord.Forbidden:
         merge_reddit_feed_seen_post_ids(feed_id, posted_ids)
@@ -12294,6 +12375,76 @@ def fetch_reddit_subreddit_new_posts(subreddit: str):
         return cleaned_subreddit, posts
 
 
+def fetch_reddit_user_new_posts(username: str):
+    """Fetch recent posts by a Reddit user via their submitted Atom feed.
+
+    Uses /user/<username>/submitted.rss which is the user's post history.
+    Falls back to JSON API if Atom fails.
+    """
+    cleaned_username = normalize_reddit_source(username)
+    if cleaned_username[0] != "user":
+        # Try normalizing as user if it's a bare name
+        candidate = str(username or "").strip().strip("/")
+        lower_candidate = candidate.lower()
+        if lower_candidate.startswith(("u/", "/u/")):
+            candidate = candidate[2:] if lower_candidate.startswith("u/") else candidate[3:]
+        candidate = candidate.strip().strip("/")
+        if not REDDIT_USERNAME_PATTERN.fullmatch(candidate):
+            raise LookupError("Invalid Reddit username.")
+        cleaned_username = ("user", candidate.casefold())
+    _, user_name = cleaned_username
+    if not user_name:
+        raise LookupError("Invalid Reddit username.")
+
+    try:
+        posts = fetch_reddit_user_new_posts_via_atom(user_name)
+        return user_name, posts
+    except (requests.RequestException, ET.ParseError, ValueError, RuntimeError) as exc:
+        logger.info(
+            "Reddit Atom feed fetch failed for u/%s (%s); retrying JSON feed.",
+            user_name,
+            exc,
+        )
+        data = fetch_reddit_json(
+            [
+                f"/user/{user_name}/submitted.json",
+                f"/user/{user_name}/submitted/.json",
+                f"/u/{user_name}/submitted.json",
+            ],
+            params={"limit": REDDIT_FEED_FETCH_LIMIT, "raw_json": 1},
+            timeout_seconds=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
+        )
+        children = ((data or {}).get("data") or {}).get("children", [])
+    if not isinstance(children, list):
+        children = []
+
+    posts = []
+    seen_ids = set()
+    for item in children:
+        if not isinstance(item, dict):
+            continue
+        payload = item.get("data", {})
+        if not isinstance(payload, dict):
+            continue
+        post_id = str(payload.get("id") or "").strip()
+        permalink = str(payload.get("permalink") or "").strip()
+        if not post_id or not permalink or post_id in seen_ids:
+            continue
+        posts.append(
+            {
+                "id": post_id,
+                "title": make_discord_safe_text(clean_search_text(str(payload.get("title") or "")).strip() or "Untitled post"),
+                "link": urljoin(REDDIT_BASE_URL, permalink),
+                "author": make_discord_safe_text(clean_search_text(str(payload.get("author") or "unknown")).strip() or "unknown"),
+                "created_utc": int(float(payload.get("created_utc") or 0.0)),
+            }
+        )
+        seen_ids.add(post_id)
+
+    posts.sort(key=lambda item: (item.get("created_utc") or 0, item.get("id") or ""))
+    return user_name, posts
+
+
 def parse_reddit_atom_timestamp(raw_value: str) -> int:
     text = str(raw_value or "").strip()
     if not text:
@@ -12348,6 +12499,47 @@ def fetch_reddit_subreddit_new_posts_via_atom(subreddit: str):
     raise RuntimeError(f"Reddit Atom feed request failed for r/{subreddit}.")
 
 
+def fetch_reddit_user_new_posts_via_atom(username: str):
+    headers = {
+        "Accept": "application/atom+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+        "User-Agent": REDDIT_REQUEST_USER_AGENT,
+        "Connection": "close",
+    }
+    last_http_error = None
+    last_request_error = None
+    feed_urls = (
+        f"{REDDIT_BASE_URL}/user/{username}/submitted.rss",
+        f"{REDDIT_BASE_URL}/user/{username}/submitted/.rss",
+        f"{REDDIT_BASE_URL}/u/{username}/submitted.rss",
+        f"{REDDIT_BASE_URL}/u/{username}/submitted/.rss",
+        f"{REDDIT_FALLBACK_BASE_URL}/user/{username}/submitted.rss",
+        f"{REDDIT_FALLBACK_BASE_URL}/u/{username}/submitted.rss",
+    )
+    for feed_url in feed_urls:
+        try:
+            response = get(
+                feed_url,
+                headers=headers,
+                timeout=REDDIT_FEED_REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            return parse_reddit_atom_feed(response.text)
+        except requests.HTTPError as exc:
+            last_http_error = exc
+            logger.info("Reddit user Atom feed returned HTTP error for %s: %s", feed_url, exc)
+            continue
+        except (requests.RequestException, ET.ParseError, ValueError) as exc:
+            last_request_error = exc
+            logger.info("Reddit user Atom feed request failed for %s: %s", feed_url, exc)
+            continue
+
+    if last_http_error is not None:
+        raise last_http_error
+    if last_request_error is not None:
+        raise last_request_error
+    raise RuntimeError(f"Reddit user Atom feed request failed for u/{username}.")
+
+
 def parse_reddit_atom_feed(feed_text: str):
     root = ET.fromstring(feed_text)
     namespace = {"atom": "http://www.w3.org/2005/Atom"}
@@ -12389,14 +12581,14 @@ def parse_reddit_atom_feed(feed_text: str):
     return posts
 
 
-def format_reddit_feed_post_message(subreddit: str, post: dict):
+def format_reddit_feed_post_message(source_key: str, source_type: str, post: dict):
     title = str(post.get("title") or "Untitled post").strip()
     author = str(post.get("author") or "unknown").strip() or "unknown"
     link = str(post.get("link") or "").strip()
     created_utc = int(post.get("created_utc") or 0)
     timestamp_text = f"<t:{created_utc}:R>" if created_utc > 0 else "just now"
     lines = [
-        f"**New Reddit post in r/{subreddit}**",
+        f"**New Reddit post {'in r/' if source_type == 'subreddit' else 'from u/'}{source_key}**",
         title,
         f"Posted by `u/{author}` {timestamp_text}",
     ]
