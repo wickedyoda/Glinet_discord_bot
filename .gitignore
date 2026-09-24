@@ -194,3 +194,5 @@ secrets-report.json
 
 data/bot_data.db*
 env.env
+*.db-wal
+*.db-shm
