@@ -59,8 +59,13 @@ def render_freshdesk_viewer_body(
     *,
     guild_name: str,
     effective_settings: dict[str, Any],
+    command_permissions: list[dict[str, Any]] | None = None,
+    allowed_role_names: list[str] | None = None,
+    moderator_role_ids: list[int] | None = None,
+    discord_role_options: list[dict[str, Any]] | None = None,
 ) -> str:
-    """Render the read-only Freshdesk viewer page showing integration settings and live ticket data.
+    """Render the Freshdesk viewer page showing integration settings, live ticket data,
+    and Freshdesk command role restrictions.
 
     Parameters
     ----------
@@ -70,6 +75,14 @@ def render_freshdesk_viewer_body(
         Dict with keys: ``FRESHDESK_ENABLED``, ``FRESHDESK_DOMAIN``,
         ``FRESHDESK_BASE_URL``, ``FRESHDESK_API_KEY``,
         ``FRESHDESK_POLL_INTERVAL_SECONDS``, ``FRESHDESK_REQUEST_TIMEOUT_SECONDS``.
+    command_permissions
+        List of command permission dicts from ``build_command_permissions_web_payload``,
+        filtered to Freshdesk command keys. Each dict has keys: key, label, description,
+        default_policy, default_policy_label, mode, role_ids.
+    allowed_role_names
+        List of allowed role names (from the payload).
+    discord_role_options
+        List of role option dicts from the Discord catalog, each with ``id`` and ``name``.
     """
     config = build_freshdesk_config_from_env(effective_settings)
     enabled = bool(config.get("enabled", True))
@@ -118,15 +131,112 @@ def render_freshdesk_viewer_body(
     available_options = """
     <div class='card'>
       <h3 style='margin-top:0;'>Available Actions</h3>
+      <p class='muted'>Use <a href='/admin/command-permissions'>Command Permissions</a> to restrict role access for these commands.</p>
       <ul>
         <li><strong>/freshdesk search &lt;query&gt;</strong> — Discord command to search Freshdesk tickets</li>
         <li><strong>/freshdesk ticket &lt;id&gt;</strong> — Discord command to view ticket details</li>
         <li><strong>/freshdesk categories</strong> — Discord command to list solution categories</li>
+        <li><strong>/freshdesk-create &lt;subject&gt; &lt;message&gt;</strong> — Discord command to create a new ticket (requires role permission)</li>
       </ul>
     </div>
     """
 
     forum_html = "".join([search_form, categories_card, available_options])
+
+    # Freshdesk command permissions section
+    permissions_rows = ""
+    if command_permissions:
+        for entry in command_permissions:
+            command_key = str(entry.get("key") or "").strip()
+            if not command_key:
+                continue
+            label = str(entry.get("label") or command_key)
+            description = str(entry.get("description") or "").strip()
+            default_policy_label = str(entry.get("default_policy_label") or "").strip()
+            mode = str(entry.get("mode") or "default").strip()
+            role_ids = entry.get("role_ids", []) or []
+            role_ids_value = ",".join(str(v) for v in role_ids)
+            default_selected = " selected" if mode == "default" else ""
+            public_selected = " selected" if mode == "public" else ""
+            custom_selected = " selected" if mode == "custom_roles" else ""
+            enabled_checked = "" if mode == "disabled" else " checked"
+
+            # Build multi-select role dropdown from Discord catalog
+            if discord_role_options:
+                option_tags = []
+                for opt in discord_role_options:
+                    opt_id = str(opt.get("id", "")).strip()
+                    opt_label = str(opt.get("name", opt.get("label", opt_id))).strip()
+                    if not opt_id:
+                        continue
+                    selected = " selected" if any(str(rid) == opt_id for rid in role_ids) else ""
+                    option_tags.append(f"<option value='{escape(opt_id, quote=True)}'{selected}>{escape(opt_label)} ({escape(opt_id)})</option>")
+                # Always include a "no selection" placeholder option
+                role_selector = (
+                    f"<select name='role_ids__{escape(command_key, quote=True)}' "
+                    f"multiple size='6' style='width:100%;'>"
+                    f"<option value=''>— none —</option>"
+                    + "".join(option_tags)
+                    + "</select>"
+                )
+            else:
+                # Fallback: text input for role IDs
+                role_selector = (
+                    f"<input type='text' name='role_ids_text__{escape(command_key, quote=True)}' "
+                    f"value='{escape(role_ids_value, quote=True)}' "
+                    f"placeholder='Comma-separated role IDs' style='width:180px;' />"
+                )
+            permissions_rows += f"""
+            <tr>
+              <td>
+                <strong>{escape(label)}</strong>
+                <div class="muted mono">{escape(command_key)}</div>
+                <div class="muted">{escape(description)}</div>
+                <input type="hidden" name="command_key" value="{escape(command_key, quote=True)}" />
+              </td>
+              <td class="muted">{escape(default_policy_label)}</td>
+              <td>
+                <label><input type="checkbox" name="enabled__{escape(command_key, quote=True)}" value="1"{enabled_checked} /> Enabled</label>
+              </td>
+              <td>
+                <select name="mode__{escape(command_key, quote=True)}">
+                  <option value="default"{default_selected}>Default rule</option>
+                  <option value="public"{public_selected}>Public (any member)</option>
+                  <option value="custom_roles"{custom_selected}>Custom roles</option>
+                </select>
+              </td>
+              <td>
+                {role_selector}
+              </td>
+            </tr>
+            """
+    permissions_card = ""
+    if command_permissions:
+        permissions_card = f"""
+    <div class="card" style="margin-top:16px;">
+      <h3 style="margin-top:0;">Freshdesk Command Permissions</h3>
+      <p class="muted">Restrict which Discord roles can use Freshdesk commands. Changes are saved to the bot's command permission store.</p>
+      <form method="post" action="/admin/freshdesk/viewer/">
+        <table class="table-scroll">
+          <thead>
+            <tr>
+              <th>Command</th>
+              <th>Default</th>
+              <th>Enabled</th>
+              <th>Mode</th>
+              <th>Role IDs</th>
+            </tr>
+          </thead>
+          <tbody>
+            {permissions_rows}
+          </tbody>
+        </table>
+        <div style="margin-top:10px;">
+          <button class="btn" type="submit">Save Command Permissions</button>
+        </div>
+      </form>
+    </div>
+    """
 
     return f"""
     <div class='card'>
@@ -137,7 +247,7 @@ def render_freshdesk_viewer_body(
       </p>
 
       <div class='card' style='margin:16px 0 0 0;'>
-        <h3 style='margin-top:0;'>Integration Settings</h3>
+        <h3 style="margin-top:0;">Integration Settings</h3>
         <table>
           <thead><tr><th>Setting</th><th>Value</th></tr></thead>
           <tbody>
@@ -146,6 +256,8 @@ def render_freshdesk_viewer_body(
         </table>
       </div>
     </div>
+
+    {permissions_card}
 
     {forum_html}
 

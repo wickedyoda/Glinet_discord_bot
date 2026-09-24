@@ -846,7 +846,25 @@ def _make_app(tmp_path: Path):
                     "default_policy_label": "Public",
                     "mode": "public",
                     "role_ids": [],
-                }
+                },
+                {
+                    "key": "freshdesk_search",
+                    "label": "/freshdesk-search",
+                    "description": "Search Freshdesk tickets.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Moderator/Admin role IDs (env)",
+                    "mode": "default",
+                    "role_ids": [],
+                },
+                {
+                    "key": "freshdesk_create",
+                    "label": "/freshdesk-create",
+                    "description": "Create a Freshdesk ticket from Discord.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Moderator/Admin role IDs (env)",
+                    "mode": "public",
+                    "role_ids": [111],
+                },
             ],
             "allowed_role_names": ["Employee"],
             "moderator_role_ids": [123],
@@ -881,6 +899,24 @@ def _make_app(tmp_path: Path):
                     "default_policy_label": "Public",
                     "mode": payload.get("commands", {}).get("help", {}).get("mode", "public"),
                     "role_ids": [],
+                },
+                {
+                    "key": "freshdesk_search",
+                    "label": "/freshdesk-search",
+                    "description": "Search Freshdesk tickets.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Moderator/Admin role IDs (env)",
+                    "mode": payload.get("commands", {}).get("freshdesk_search", {}).get("mode", "default"),
+                    "role_ids": payload.get("commands", {}).get("freshdesk_search", {}).get("role_ids", []),
+                },
+                {
+                    "key": "freshdesk_create",
+                    "label": "/freshdesk-create",
+                    "description": "Create a Freshdesk ticket from Discord.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Moderator/Admin role IDs (env)",
+                    "mode": payload.get("commands", {}).get("freshdesk_create", {}).get("mode", "public"),
+                    "role_ids": payload.get("commands", {}).get("freshdesk_create", {}).get("role_ids", []),
                 },
             ],
             "allowed_role_names": ["Employee"],
@@ -3314,3 +3350,48 @@ def test_freshdesk_configured_checks_enabled_flag(tmp_path: Path, monkeypatch):
     assert config["enabled"] is True
     assert config["base_url"] == "https://glinetservice.freshdesk.com"
     assert freshdesk_configured(config) is True
+
+
+def test_freshdesk_viewer_page_renders_command_permissions_with_roles(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/freshdesk/viewer/", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Freshdesk Command Permissions" in response.data
+    assert b"/freshdesk-create" in response.data
+    assert b"/freshdesk-search" in response.data
+    assert b"<select" in response.data
+    assert b"Member" in response.data
+    assert b"Employee" in response.data
+
+
+def test_freshdesk_viewer_page_save_command_permissions(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    csrf = _page_csrf_token(client, "/admin/freshdesk/viewer/")
+
+    response = client.post(
+        "/admin/freshdesk/viewer/",
+        data={
+            "csrf_token": csrf,
+            "action": "save_permissions",
+            "command_key": ["freshdesk_create", "freshdesk_search"],
+            "enabled__freshdesk_create": "1",
+            "mode__freshdesk_create": "custom_roles",
+            "role_ids__freshdesk_create": ["111", "222"],
+            "enabled__freshdesk_search": "1",
+            "mode__freshdesk_search": "disabled",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Command permissions updated" in response.data
