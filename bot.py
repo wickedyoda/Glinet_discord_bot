@@ -17862,7 +17862,11 @@ def _resolve_freshdesk_ticket_target_channel_id(
             resolved = None
     if not resolved:
         return None
-    channel = interaction.guild.get_channel(resolved) if interaction.guild else None
+    # Search across all guilds the bot is in (not just the interaction's guild)
+    # so the target channel may live in any managed guild.
+    channel = bot.get_channel(resolved) if bot else None
+    if channel is None and interaction.guild:
+        channel = interaction.guild.get_channel(resolved)
     if channel is None:
         return None
     return resolved
