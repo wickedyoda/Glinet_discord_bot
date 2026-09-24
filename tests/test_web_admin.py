@@ -848,8 +848,8 @@ def _make_app(tmp_path: Path):
                     "role_ids": [],
                 },
                 {
-                    "key": "freshdesk_search",
-                    "label": "/freshdesk-search",
+                    "key": "support_ticket_search",
+                    "label": "/support-ticket-search",
                     "description": "Search Freshdesk tickets.",
                     "default_policy": "moderator_role_ids",
                     "default_policy_label": "Moderator/Admin role IDs (env)",
@@ -857,8 +857,26 @@ def _make_app(tmp_path: Path):
                     "role_ids": [],
                 },
                 {
-                    "key": "freshdesk_create",
-                    "label": "/freshdesk-create",
+                    "key": "support_ticket_view",
+                    "label": "/support-ticket-view",
+                    "description": "View a Freshdesk ticket by ID.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Moderator/Admin role IDs (env)",
+                    "mode": "default",
+                    "role_ids": [],
+                },
+                {
+                    "key": "support_ticket_categories",
+                    "label": "/support-ticket-categories",
+                    "description": "List Freshdesk solution/knowledge-base categories.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Moderator/Admin role IDs (env)",
+                    "mode": "default",
+                    "role_ids": [],
+                },
+                {
+                    "key": "support_ticket_create",
+                    "label": "/support-ticket-create",
                     "description": "Create a Freshdesk ticket from Discord.",
                     "default_policy": "moderator_role_ids",
                     "default_policy_label": "Moderator/Admin role IDs (env)",
@@ -901,22 +919,40 @@ def _make_app(tmp_path: Path):
                     "role_ids": [],
                 },
                 {
-                    "key": "freshdesk_search",
-                    "label": "/freshdesk-search",
+                    "key": "support_ticket_search",
+                    "label": "/support-ticket-search",
                     "description": "Search Freshdesk tickets.",
                     "default_policy": "moderator_role_ids",
                     "default_policy_label": "Moderator/Admin role IDs (env)",
-                    "mode": payload.get("commands", {}).get("freshdesk_search", {}).get("mode", "default"),
-                    "role_ids": payload.get("commands", {}).get("freshdesk_search", {}).get("role_ids", []),
+                    "mode": payload.get("commands", {}).get("support_ticket_search", {}).get("mode", "default"),
+                    "role_ids": payload.get("commands", {}).get("support_ticket_search", {}).get("role_ids", []),
                 },
                 {
-                    "key": "freshdesk_create",
-                    "label": "/freshdesk-create",
+                    "key": "support_ticket_view",
+                    "label": "/support-ticket-view",
+                    "description": "View a Freshdesk ticket by ID.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Mod Only",
+                    "mode": payload.get("commands", {}).get("support_ticket_view", {}).get("mode", "default"),
+                    "role_ids": payload.get("commands", {}).get("support_ticket_view", {}).get("role_ids", []),
+                },
+                {
+                    "key": "support_ticket_categories",
+                    "label": "/support-ticket-categories",
+                    "description": "List Freshdesk solution/knowledge-base categories.",
+                    "default_policy": "moderator_role_ids",
+                    "default_policy_label": "Mod Only",
+                    "mode": payload.get("commands", {}).get("support_ticket_categories", {}).get("mode", "default"),
+                    "role_ids": payload.get("commands", {}).get("support_ticket_categories", {}).get("role_ids", []),
+                },
+                {
+                    "key": "support_ticket_create",
+                    "label": "/support-ticket-create",
                     "description": "Create a Freshdesk ticket from Discord.",
                     "default_policy": "moderator_role_ids",
                     "default_policy_label": "Moderator/Admin role IDs (env)",
-                    "mode": payload.get("commands", {}).get("freshdesk_create", {}).get("mode", "public"),
-                    "role_ids": payload.get("commands", {}).get("freshdesk_create", {}).get("role_ids", []),
+                    "mode": payload.get("commands", {}).get("support_ticket_create", {}).get("mode", "public"),
+                    "role_ids": payload.get("commands", {}).get("support_ticket_create", {}).get("role_ids", []),
                 },
             ],
             "allowed_role_names": ["Employee"],
@@ -3329,12 +3365,12 @@ def test_command_permissions_page_lists_freshdesk_commands(tmp_path: Path):
     payload = bot.build_command_permissions_web_payload(1234567890)
     assert payload["ok"] is True
     commands = {entry["key"]: entry for entry in payload["commands"]}
-    assert "freshdesk_search" in commands
-    assert "freshdesk_ticket" in commands
-    assert "freshdesk_categories" in commands
-    assert "freshdesk_create" in commands
-    assert commands["freshdesk_create"]["label"] == "/freshdesk-create"
-    assert commands["freshdesk_create"]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
+    assert "support_ticket_search" in commands
+    assert "support_ticket_view" in commands
+    assert "support_ticket_categories" in commands
+    assert "support_ticket_create" in commands
+    assert commands["support_ticket_create"]["label"] == "/support-ticket-create"
+    assert commands["support_ticket_create"]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
 
 
 def test_freshdesk_configured_checks_enabled_flag(tmp_path: Path, monkeypatch):
@@ -3362,8 +3398,8 @@ def test_freshdesk_viewer_page_renders_command_permissions_with_roles(tmp_path: 
 
     assert response.status_code == 200
     assert b"Freshdesk Command Permissions" in response.data
-    assert b"/freshdesk-create" in response.data
-    assert b"/freshdesk-search" in response.data
+    assert b"/support-ticket-create" in response.data
+    assert b"/support-ticket-search" in response.data
     assert b"<select" in response.data
     assert b"Member" in response.data
     assert b"Employee" in response.data

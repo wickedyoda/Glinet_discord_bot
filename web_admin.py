@@ -341,6 +341,16 @@ ENV_FIELDS = [
         "HTTP timeout in seconds for Freshdesk API calls.",
     ),
     (
+        "FRESHDESK_TECH_SUPPORT_GROUP_NAME",
+        "Freshdesk Tech Support Group",
+        "Name of the Freshdesk group for technical support tickets.",
+    ),
+    (
+        "FRESHDESK_CUSTOMER_SERVICE_GROUP_NAME",
+        "Freshdesk Customer Service Group",
+        "Name of the Freshdesk group for customer service tickets.",
+    ),
+    (
         "DOCS_MAX_RESULTS_PER_SITE",
         "Docs Max/Site",
         "Max docs results for each docs source.",
@@ -834,6 +844,8 @@ ENV_FIELD_SECTIONS = (
             "FRESHDESK_API_KEY",
             "FRESHDESK_POLL_INTERVAL_SECONDS",
             "FRESHDESK_TICKET_TARGET_CHANNEL_ID",
+            "FRESHDESK_TECH_SUPPORT_GROUP_NAME",
+            "FRESHDESK_CUSTOMER_SERVICE_GROUP_NAME",
             "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
         ),
     ),

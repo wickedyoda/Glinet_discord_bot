@@ -254,6 +254,99 @@ def list_freshdesk_ticket_fields(
 
 
 # --------------------------------------------------------------------------- #
+#  List Freshdesk groups (for ticket routing)
+# --------------------------------------------------------------------------- #
+def list_freshdesk_groups(
+    *,
+    base_url: str,
+    timeout_seconds: int = 15,
+    api_key: str = "",
+) -> list[dict[str, Any]]:
+    """List Freshdesk groups for ticket routing.
+
+    Uses GET /api/v2/groups
+    """
+    endpoint = f"{base_url.rstrip('/')}/api/v2/groups"
+    response = requests.get(endpoint, timeout=timeout_seconds, headers=_build_headers(api_key))
+    _check_rate_limit(response, "Freshdesk groups")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise FreshdeskApiError("Freshdesk returned invalid JSON for groups.") from exc
+    if not isinstance(data, list):
+        return []
+    return [
+        {
+            "id": int(group.get("id", 0) or 0),
+            "name": str(group.get("name", "")) or "",
+            "description": str(group.get("description_text", "")) or "",
+            "escalate_to": group.get("escalate_to", 0),
+            "agent_ids": [int(a) for a in (group.get("agent_ids") or []) if a],
+        }
+        for group in data
+        if isinstance(group, dict) and group.get("id")
+    ]
+
+
+def find_freshdesk_group_by_name(
+    *,
+    base_url: str,
+    group_name: str,
+    timeout_seconds: int = 15,
+    api_key: str = "",
+    groups_cache: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Find a Freshdesk group by case-insensitive name match.
+
+    If *groups_cache* is provided, search it instead of hitting the API.
+    """
+    if groups_cache is None:
+        groups_cache = list_freshdesk_groups(
+            base_url=base_url, timeout_seconds=timeout_seconds, api_key=api_key
+        )
+    target = (group_name or "").strip().lower()
+    if not target:
+        return None
+    for g in groups_cache:
+        if g.get("name", "").strip().lower() == target:
+            return g
+    return None
+
+
+def list_freshdesk_agents(
+    *,
+    base_url: str,
+    timeout_seconds: int = 15,
+    api_key: str = "",
+) -> list[dict[str, Any]]:
+    """List Freshdesk agents (employees).
+
+    Uses GET /api/v2/agents
+    """
+    endpoint = f"{base_url.rstrip('/')}/api/v2/agents"
+    response = requests.get(endpoint, timeout=timeout_seconds, headers=_build_headers(api_key))
+    _check_rate_limit(response, "Freshdesk agents")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise FreshdeskApiError("Freshdesk returned invalid JSON for agents.") from exc
+    if not isinstance(data, list):
+        return []
+    return [
+        {
+            "id": int(agent.get("id", 0) or 0),
+            "contact_id": agent.get("contact_id", 0),
+            "email": str(agent.get("contact", {}).get("email", "")) if isinstance(agent.get("contact"), dict) else "",
+            "name": str(agent.get("contact", {}).get("name", "")) if isinstance(agent.get("contact"), dict) else str(agent.get("name", "")),
+            "role": str(agent.get("role", "")),
+            "group_id": agent.get("group_id", 0),
+        }
+        for agent in data
+        if isinstance(agent, dict) and agent.get("id")
+    ]
+
+
+# --------------------------------------------------------------------------- #
 #  List solution categories (knowledge base)
 # --------------------------------------------------------------------------- #
 def create_freshdesk_ticket(
@@ -268,6 +361,8 @@ def create_freshdesk_ticket(
     priority: int = 1,
     status: int = 2,
     ticket_type: str = "Question",
+    group_id: int = 0,
+    custom_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Create a Freshdesk ticket via POST /api/v2/tickets.
 
@@ -281,6 +376,10 @@ def create_freshdesk_ticket(
         "priority": priority,
         "ticket_type": ticket_type,
     }
+    if group_id:
+        payload["group_id"] = int(group_id)
+    if custom_fields:
+        payload["custom_fields"] = custom_fields
     if email.strip():
         payload["requester"] = {"email": email.strip(), "name": name.strip() or email.strip().split("@", 1)[0]}
     else:
@@ -354,6 +453,9 @@ FRESHDESK_ENV_KEYS = {
     "FRESHDESK_API_KEY",
     "FRESHDESK_POLL_INTERVAL_SECONDS",
     "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
+    "FRESHDESK_TICKET_TARGET_CHANNEL_ID",
+    "FRESHDESK_TECH_SUPPORT_GROUP_NAME",
+    "FRESHDESK_CUSTOMER_SERVICE_GROUP_NAME",
 }
 
 
@@ -385,6 +487,9 @@ def build_freshdesk_config(env_values: dict[str, str]) -> dict[str, Any]:
         "base_url": base_url,
         "api_key": api_key,
         "timeout": timeout,
+        "ticket_target_channel_id": str(env_values.get("FRESHDESK_TICKET_TARGET_CHANNEL_ID", "")).strip(),
+        "tech_support_group_name": str(env_values.get("FRESHDESK_TECH_SUPPORT_GROUP_NAME", "")).strip(),
+        "customer_service_group_name": str(env_values.get("FRESHDESK_CUSTOMER_SERVICE_GROUP_NAME", "")).strip(),
     }
 
 
