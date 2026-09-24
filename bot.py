@@ -6277,8 +6277,8 @@ def run_web_get_reddit_feeds(guild_id: int):
     return get_feed_web_callbacks().run_web_get_reddit_feeds(guild_id)
 
 
-def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int):
-    return get_feed_web_callbacks().run_web_manage_reddit_feeds(payload, actor_email, guild_id)
+def run_web_manage_reddit_feeds(payload: dict, actor_email: str, guild_id: int, actor_display_name: str = ""):
+    return get_feed_web_callbacks().run_web_manage_reddit_feeds(payload, actor_email, guild_id, actor_display_name)
 
 
 def build_reddit_auto_responds_web_payload(guild_id: int):
