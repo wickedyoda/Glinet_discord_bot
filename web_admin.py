@@ -6062,6 +6062,7 @@ def create_web_app(
                     else:
                         callback_payload["subreddit"] = request.form.get("subreddit", "")
                         callback_payload["channel_id"] = selected_channel_id
+                        callback_payload["source_type"] = request.form.get("source_type", "subreddit")
                 elif action == "edit":
                     selected_channel_id = str(request.form.get("channel_id", "")).strip()
                     valid_text_channel_ids = {
@@ -6074,6 +6075,7 @@ def create_web_app(
                         callback_payload["feed_id"] = request.form.get("feed_id", "")
                         callback_payload["subreddit"] = request.form.get("subreddit", "")
                         callback_payload["channel_id"] = selected_channel_id
+                        callback_payload["source_type"] = request.form.get("source_type", "subreddit")
                 elif action == "toggle":
                     callback_payload["feed_id"] = request.form.get("feed_id", "")
                     callback_payload["enabled"] = request.form.get("enabled", "")
@@ -6123,6 +6125,7 @@ def create_web_app(
         for feed in feeds:
             feed_id = str(feed.get("id") or "")
             subreddit = str(feed.get("subreddit") or "").strip()
+            source_type = str(feed.get("source_type") or "subreddit")
             channel_id = str(feed.get("channel_id") or "").strip()
             enabled = bool(feed.get("enabled"))
             last_checked_at = format_timestamp_display(feed.get("last_checked_at"), blank="Never")
@@ -6132,6 +6135,7 @@ def create_web_app(
             if last_error:
                 status_label = f"{status_label} | {last_error}"
             channel_label = channel_labels.get(channel_id, f"Unknown channel ({channel_id or 'not set'})")
+            prefix = "u/" if source_type == "user" else "r/"
             action_html = ""
             if is_admin:
                 toggle_label = "Disable" if enabled else "Enable"
@@ -6142,12 +6146,22 @@ def create_web_app(
                     text_channel_options,
                     placeholder="Select a Discord text channel...",
                 )
+                edit_source_select_html = _render_fixed_select_input(
+                    "source_type",
+                    source_type,
+                    [
+                        {"value": "subreddit", "label": "Subreddit (r/)"},
+                        {"value": "user", "label": "User (u/)"},
+                    ],
+                    placeholder="Source type...",
+                )
                 action_html = f"""
                 <div class="dash-actions">
                   <form method="post" style="display:inline-block;min-width:260px;">
                     <input type="hidden" name="action" value="edit" />
                     <input type="hidden" name="feed_id" value="{escape(feed_id, quote=True)}" />
-                    <input type="text" name="subreddit" value="{escape(subreddit, quote=True)}" placeholder="Subreddit" required style="margin-bottom:8px;" />
+                    <input type="text" name="subreddit" value="{escape(subreddit, quote=True)}" placeholder="Subreddit or username" required style="margin-bottom:8px;" />
+                    {edit_source_select_html}
                     {edit_channel_select_html}
                     <button class="btn" type="submit" style="margin-top:8px;">Save</button>
                   </form>
@@ -6175,7 +6189,7 @@ def create_web_app(
             feed_rows.append(
                 f"""
                 <tr>
-                  <td><strong>r/{escape(subreddit)}</strong></td>
+                  <td><strong>{escape(prefix)}{escape(subreddit)}</strong></td>
                   <td>{escape(channel_label)}<div class="muted mono">{escape(channel_id)}</div></td>
                   <td>{"Yes" if enabled else "No"}</td>
                   <td class="muted">{escape(last_checked_at)}</td>
@@ -6205,6 +6219,16 @@ def create_web_app(
             add_disabled_attr = " disabled"
             add_disabled_note = "<p class='muted'>A Discord text channel must be available before you can add a Reddit feed.</p>"
 
+        source_type_select_html = _render_fixed_select_input(
+            "source_type",
+            "subreddit",
+            [
+                {"value": "subreddit", "label": "Subreddit (r/)"},
+                {"value": "user", "label": "User (u/)"},
+            ],
+            placeholder="Source type...",
+        )
+
         body = f"""
         <div class="grid">
           <div class="card">
@@ -6227,8 +6251,10 @@ def create_web_app(
             {add_disabled_note}
             <form method="post">
               <input type="hidden" name="action" value="add" />
-              <label>Subreddit</label>
-              <input type="text" name="subreddit" placeholder="GlInet or https://www.reddit.com/r/GlInet/" required{add_disabled_attr} />
+              <label>Source Type</label>
+              {source_type_select_html}
+              <label style="margin-top:10px;display:block;">Subreddit / Username</label>
+              <input type="text" name="subreddit" placeholder="GlInet or spez (or paste r/ /u/ URL)" required{add_disabled_attr} />
               <label style="margin-top:10px;display:block;">Discord channel</label>
               {channel_select_html}
               <div style="margin-top:14px;">

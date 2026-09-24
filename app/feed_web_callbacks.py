@@ -109,9 +109,11 @@ class FeedWebCallbacks:
             if action == "add":
                 subreddit = str(payload.get("subreddit") or "")
                 channel_id = int(str(payload.get("channel_id") or "0").strip())
-                self.create_reddit_feed_subscription(safe_guild_id, subreddit, channel_id, actor_email)
-                self.record_action_safe(action="reddit_feed_add", status="success", moderator=audit_actor, target=self.normalize_reddit_subreddit_name(subreddit), reason="Added via web admin", guild_id=safe_guild_id)
-                message = f"Reddit feed added for r/{self.normalize_reddit_subreddit_name(subreddit)}."
+                source_type = str(payload.get("source_type") or "subreddit").strip().lower()
+                self.create_reddit_feed_subscription(safe_guild_id, subreddit, channel_id, actor_email, source_type)
+                self.record_action_safe(action="reddit_feed_add", status="success", moderator=audit_actor, target=subreddit, reason="Added via web admin", guild_id=safe_guild_id)
+                label = "u/" if source_type == "user" else "r/"
+                message = f"Reddit feed added for {label}{subreddit}."
             elif action == "edit":
                 feed_id = int(str(payload.get("feed_id") or "0").strip())
                 feed = self.get_reddit_feed_subscription(feed_id)
@@ -119,10 +121,12 @@ class FeedWebCallbacks:
                     return {"ok": False, "error": "Reddit feed entry was not found."}
                 subreddit = str(payload.get("subreddit") or "")
                 channel_id = int(str(payload.get("channel_id") or "0").strip())
-                if not self.update_reddit_feed_subscription(feed_id, safe_guild_id, subreddit, channel_id, actor_email):
+                source_type = str(payload.get("source_type") or "subreddit").strip().lower()
+                if not self.update_reddit_feed_subscription(feed_id, safe_guild_id, subreddit, channel_id, actor_email, source_type):
                     return {"ok": False, "error": "Reddit feed entry was not found."}
-                self.record_action_safe(action="reddit_feed_edit", status="success", moderator=audit_actor, target=self.normalize_reddit_subreddit_name(subreddit), reason="Edited via web admin", guild_id=safe_guild_id)
-                message = f"Reddit feed updated for r/{self.normalize_reddit_subreddit_name(subreddit)}."
+                self.record_action_safe(action="reddit_feed_edit", status="success", moderator=audit_actor, target=subreddit, reason="Edited via web admin", guild_id=safe_guild_id)
+                label = "u/" if source_type == "user" else "r/"
+                message = f"Reddit feed updated for {label}{subreddit}."
             elif action == "toggle":
                 feed_id = int(str(payload.get("feed_id") or "0").strip())
                 feed = self.get_reddit_feed_subscription(feed_id)
