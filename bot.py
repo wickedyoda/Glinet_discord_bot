@@ -10611,7 +10611,8 @@ async def process_reddit_auto_respond_rule(rule: dict):
 
             # Post the comment to Reddit
             try:
-                result = post_reddit_comment(
+                result = await asyncio.to_thread(
+                    post_reddit_comment,
                     normalized_subreddit,
                     post_id,
                     response_body,
@@ -17669,7 +17670,8 @@ async def support_ticket_search(interaction: discord.Interaction, query: str):
 
     await interaction.response.defer(ephemeral=True)
     try:
-        tickets = search_freshdesk_tickets(
+        tickets = await asyncio.to_thread(
+            search_freshdesk_tickets,
             base_url=config["base_url"],
             query=query,
             max_results=20,
@@ -17710,7 +17712,8 @@ async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
 
     await interaction.response.defer(ephemeral=True)
     try:
-        ticket = fetch_freshdesk_ticket(
+        ticket = await asyncio.to_thread(
+            fetch_freshdesk_ticket,
             base_url=config["base_url"],
             ticket_id=ticket_id,
             timeout_seconds=config["timeout"],
@@ -17755,7 +17758,8 @@ async def support_ticket_categories(interaction: discord.Interaction):
 
     await interaction.response.defer(ephemeral=True)
     try:
-        categories = list_freshdesk_solution_categories(
+        categories = await asyncio.to_thread(
+            list_freshdesk_solution_categories,
             base_url=config["base_url"],
             timeout_seconds=config["timeout"],
             api_key=config["api_key"],
@@ -17983,7 +17987,8 @@ async def _freshdesk_create_on_submit(
             logger.warning("Could not resolve Freshdesk group %s", group_name)
     
     try:
-        ticket = create_freshdesk_ticket(
+        ticket = await asyncio.to_thread(
+            create_freshdesk_ticket,
             base_url=config["base_url"],
             subject=subject,
             description=message_body,

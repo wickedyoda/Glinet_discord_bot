@@ -193,7 +193,9 @@ secrets-report.json
 *.json.scanned
 
 data/bot_data.db*
+data/*.key
+data/member_activity.key
+.env
 env.env
-*.db-wal
-*.db-shm
 _build_version.txt
+.security-reports/
