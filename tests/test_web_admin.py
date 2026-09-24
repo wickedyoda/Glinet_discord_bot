@@ -875,8 +875,8 @@ def _make_app(tmp_path: Path):
                     "role_ids": [],
                 },
                 {
-                    "key": "support_ticket_create",
-                    "label": "/support-ticket-create",
+                    "key": "create_ticket",
+                    "label": "/create-ticket",
                     "description": "Create a Freshdesk ticket from Discord.",
                     "default_policy": "moderator_role_ids",
                     "default_policy_label": "Moderator/Admin role IDs (env)",
@@ -946,13 +946,13 @@ def _make_app(tmp_path: Path):
                     "role_ids": payload.get("commands", {}).get("support_ticket_categories", {}).get("role_ids", []),
                 },
                 {
-                    "key": "support_ticket_create",
-                    "label": "/support-ticket-create",
+                    "key": "create_ticket",
+                    "label": "/create-ticket",
                     "description": "Create a Freshdesk ticket from Discord.",
                     "default_policy": "moderator_role_ids",
                     "default_policy_label": "Moderator/Admin role IDs (env)",
-                    "mode": payload.get("commands", {}).get("support_ticket_create", {}).get("mode", "public"),
-                    "role_ids": payload.get("commands", {}).get("support_ticket_create", {}).get("role_ids", []),
+                    "mode": payload.get("commands", {}).get("create_ticket", {}).get("mode", "public"),
+                    "role_ids": payload.get("commands", {}).get("create_ticket", {}).get("role_ids", []),
                 },
             ],
             "allowed_role_names": ["Employee"],
@@ -3368,9 +3368,9 @@ def test_command_permissions_page_lists_freshdesk_commands(tmp_path: Path):
     assert "support_ticket_search" in commands
     assert "support_ticket_view" in commands
     assert "support_ticket_categories" in commands
-    assert "support_ticket_create" in commands
-    assert commands["support_ticket_create"]["label"] == "/support-ticket-create"
-    assert commands["support_ticket_create"]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
+    assert "create_ticket" in commands
+    assert commands["create_ticket"]["label"] == "/create-ticket"
+    assert commands["create_ticket"]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
 
 
 def test_freshdesk_configured_checks_enabled_flag(tmp_path: Path, monkeypatch):
@@ -3398,7 +3398,7 @@ def test_freshdesk_viewer_page_renders_command_permissions_with_roles(tmp_path: 
 
     assert response.status_code == 200
     assert b"Freshdesk Command Permissions" in response.data
-    assert b"/support-ticket-create" in response.data
+    assert b"/create-ticket" in response.data
     assert b"/support-ticket-search" in response.data
     assert b"<select" in response.data
     assert b"Member" in response.data

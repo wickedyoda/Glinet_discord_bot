@@ -36,7 +36,7 @@ _h = {}  # type: dict[str, object]
 # --------------------------------------------------------------------------- #
 #  Freshdesk-specific command permission keys
 # --------------------------------------------------------------------------- #
-FRESHDESK_COMMAND_KEYS = ("support_ticket_search", "support_ticket_view", "support_ticket_categories", "support_ticket_create")
+FRESHDESK_COMMAND_KEYS = ("support_ticket_search", "support_ticket_view", "support_ticket_categories", "create_ticket")
 
 
 # --------------------------------------------------------------------------- #

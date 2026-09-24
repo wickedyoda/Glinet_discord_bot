@@ -1196,7 +1196,7 @@ COMMAND_PERMISSION_DEFAULTS = {
     "support_ticket_search": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "support_ticket_view": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "support_ticket_categories": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
-    "support_ticket_create": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "create_ticket": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
 }
 for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
     COMMAND_PERMISSION_DEFAULTS[_command_key] = COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
@@ -1451,8 +1451,8 @@ COMMAND_PERMISSION_METADATA = {
         "label": "/support-ticket-categories",
         "description": "List Freshdesk solution/knowledge-base categories.",
     },
-    "support_ticket_create": {
-        "label": "/support-ticket-create",
+    "create_ticket": {
+        "label": "/create-ticket",
         "description": "Create a Freshdesk support ticket from Discord.",
     },
     "search_reddit": {
@@ -17591,60 +17591,7 @@ class _ReassignModal(discord.ui.Modal, title="Reassign ticket"):
             await interaction.response.send_message("Failed to reassign; ticket may be closed.", ephemeral=True)
 
 
-@tree.command(name="ticket", description="Open a support ticket")
-async def ticket_panel(interaction: discord.Interaction):
-    if not interaction.guild:
-        return await interaction.response.send_message("Guild only.", ephemeral=True)
-    if not _enforce_ticket_preflight(interaction):
-        return await interaction.response.send_message("Ticket access roles are not configured yet.", ephemeral=True)
-    from app.tickets import TICKET_CATEGORIES_DEFAULT, build_ticket_select_options
-    categories = TICKET_CATEGORIES_DEFAULT
-    options = build_ticket_select_options(categories)
-    select_view = discord.ui.View(timeout=None)
 
-    class _Select(discord.ui.Select):
-        async def callback(inter, interaction: discord.Interaction):
-            category = next((c for c in categories if c["id"] == inter.values[0]), None)
-            if not category:
-                return await interaction.response.send_message("Invalid category.", ephemeral=True)
-            questions = category.get("questions") or []
-            modal = discord.ui.Modal(title=f"{category['name']} ticket")
-
-            class _Q(discord.ui.TextInput):
-                def __init__(self, label: str, required: bool = False):
-                    super().__init__(label=label, style=discord.TextStyle.paragraph, required=required)
-
-            for q in questions:
-                modal.add_item(_Q(q, required=True))
-
-            async def on_submit(modal_interaction: discord.Interaction):
-                answers = "\n".join(f"- {item.value}" for item in modal.children if isinstance(item, discord.ui.TextInput))
-                overwrites: dict = {}
-                if interaction.guild.default_role:
-                    overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-                overwrites[interaction.user] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                category_channel = next((cat for cat in interaction.guild.categories if cat.name.lower() == "tickets"), None)
-                try:
-                    channel = await interaction.guild.create_text_channel(
-                        name=f"ticket-{category['id']}",
-                        overwrites=overwrites,
-                        category=category_channel,
-                        reason="ticket created",
-                    )
-                except Exception as exc:
-                    return await modal_interaction.response.send_message(f"Failed: {exc}", ephemeral=True)
-                store = _ticket_store()
-                store.create(channel_id=channel.id, owner_id=interaction.user.id, category_id=category["id"], guild_id=interaction.guild.id)
-                from app.tickets import ticket_embed
-                await channel.send(embed=ticket_embed(f"{category['name']}", answers), view=_TicketView())
-                await modal_interaction.response.send_message(f"Created {channel.mention}", ephemeral=True)
-
-            modal.on_submit = on_submit  # type: ignore[method-assign]
-            await interaction.response.send_modal(modal)
-
-    select = _Select(placeholder="Choose a category...", options=options, min_values=1, max_values=1)
-    select_view.add_item(select)
-    await interaction.response.send_message("Open a ticket:", view=select_view, ephemeral=True)
 
 
 @tree.command(name="ticket-search", description="Search tickets by number or owner email")
@@ -17966,12 +17913,12 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
 
 
 @tree.command(
-    name="support-ticket-create",
+    name="create-ticket",
     description="Create a GL.iNet Freshdesk ticket from Discord",
 )
-async def support_ticket_create(interaction: discord.Interaction):
-    logger.info("/support-ticket-create invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
-    if not await ensure_interaction_command_access(interaction, "support_ticket_create"):
+async def create_ticket(interaction: discord.Interaction):
+    logger.info("/create-ticket invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
+    if not await ensure_interaction_command_access(interaction, "create_ticket"):
         return
     if interaction.guild is None:
         await interaction.response.send_message(

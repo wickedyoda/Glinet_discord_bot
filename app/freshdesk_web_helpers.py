@@ -136,7 +136,7 @@ def render_freshdesk_viewer_body(
         <li><strong>/support-ticket-search &lt;query&gt;</strong> — Discord command to search Freshdesk tickets</li>
         <li><strong>/support-ticket-view &lt;id&gt;</strong> — Discord command to view ticket details</li>
         <li><strong>/support-ticket-categories</strong> — Discord command to list solution categories</li>
-        <li><strong>/support-ticket-create</strong> — Discord command to create a new ticket (requires role permission)</li>
+        <li><strong>/create-ticket</strong> — Discord command to create a new ticket (requires role permission)</li>
       </ul>
     </div>
     """
