@@ -18023,7 +18023,7 @@ class SupportTicketCategoryView(discord.ui.View):
         ],
     )
     async def category_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        category = select.value
+        category = select.values[0] if select.values else ""
         config = self.config
         # send_modal must be called on the original response, not after defer()
         await interaction.response.send_modal(
