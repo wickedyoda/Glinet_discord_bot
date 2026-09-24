@@ -452,8 +452,10 @@ class MemberActivityManager:
             return False
 
         conn = self.get_db_connection()
+        # Schema (and the one-time identity encryption migration) is ensured
+        # once at startup via initialize_storage() in bot.py; keep DDL off the
+        # per-message hot path.
         with self.db_lock:
-            self.ensure_member_activity_schema_locked(conn)
             changed = self.record_member_message_activity_locked(
                 conn,
                 guild_id=message.guild.id,

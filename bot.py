@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import concurrent.futures
+import contextlib
 import hashlib
 import http.client
 import io
@@ -1509,6 +1510,10 @@ tree = bot.tree
 tag_response_cache = {}
 tag_command_names_by_guild = {}
 guild_settings_cache = {}
+# guild_id -> {channel_id: entry} — populated by load_honeypot_entries, invalidated by
+# save_honeypot_entry / delete_honeypot_entry / delete_all_honeypot_entries. All
+# honeypot_channels writers are in-process, so no version key is needed.
+honeypot_entries_cache = {}
 docs_index_cache = {}
 firmware_monitor_task = None
 reddit_feed_monitor_task = None
@@ -1641,9 +1646,27 @@ def get_db_connection():
         return conn
 
 
-def ensure_db_schema():
+@contextlib.contextmanager
+def with_db(commit: bool = False):
+    """Yield the shared SQLite connection while holding db_lock.
+
+    Replaces the repeated ``conn = get_db_connection(); with db_lock:`` boilerplate.
+    With ``commit=True`` the transaction is committed on clean exit; on exception the
+    connection is left untouched (sqlite rolls back open transactions on the next
+    rollback/commit cycle, matching the previous explicit-commit code paths).
+    """
     conn = get_db_connection()
-    with db_lock:
+    db_lock.acquire()
+    try:
+        yield conn
+        if commit:
+            conn.commit()
+    finally:
+        db_lock.release()
+
+
+def ensure_db_schema():
+    with with_db(commit=True) as conn:
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS role_codes (
@@ -2607,12 +2630,10 @@ def ensure_db_schema():
             "UPDATE member_activity_seen_messages SET guild_id = ? WHERE guild_id = 0",
             (GUILD_ID,),
         )
-        conn.commit()
 
 
 def db_kv_get(key: str):
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         row = conn.execute(
             "SELECT value FROM kv_store WHERE key = ?",
             (key,),
@@ -2621,9 +2642,8 @@ def db_kv_get(key: str):
 
 
 def db_kv_set(key: str, value: str):
-    conn = get_db_connection()
     now_iso = datetime.now(UTC).isoformat()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO kv_store (key, value, updated_at)
@@ -2632,14 +2652,11 @@ def db_kv_set(key: str, value: str):
             """,
             (key, value, now_iso),
         )
-        conn.commit()
 
 
 def db_kv_delete(key: str):
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute("DELETE FROM kv_store WHERE key = ?", (key,))
-        conn.commit()
 
 
 def default_guild_settings():
@@ -2712,8 +2729,7 @@ def record_moderation_warning(
     action_taken: str = "",
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO moderation_warnings (
@@ -2737,15 +2753,13 @@ def record_moderation_warning(
                 truncate_log_text(str(action_taken or "").strip(), max_length=120),
             ),
         )
-        conn.commit()
 
 
 def count_recent_moderation_warnings(guild_id: int | None, user_id: int, *, within_hours: int = 72) -> int:
     safe_guild_id = normalize_target_guild_id(guild_id)
     safe_hours = max(1, int(within_hours or 72))
     cutoff = (datetime.now(UTC) - timedelta(hours=safe_hours)).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         row = conn.execute(
             """
             SELECT COUNT(*) AS total
@@ -3214,8 +3228,7 @@ async def member_activity_backfill_job():
                     async for message in channel.history(limit=None, after=range_start, before=range_end, oldest_first=True):
                         if message.author.bot or message.guild is None:
                             continue
-                        conn = get_db_connection()
-                        with db_lock:
+                        with with_db() as conn:
                             changed = _record_member_message_activity_locked(
                                 conn,
                                 guild_id=message.guild.id,
@@ -3315,16 +3328,14 @@ def list_youtube_subscriptions(
     if enabled_only:
         query += " AND enabled = 1"
     query += " ORDER BY channel_title COLLATE NOCASE ASC, target_channel_name COLLATE NOCASE ASC, id ASC"
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(row) for row in rows]
 
 
 def get_youtube_subscription(subscription_id: int, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         row = conn.execute(
             """
             SELECT id, guild_id, source_url, channel_id, channel_title, target_channel_id,
@@ -3354,8 +3365,7 @@ def create_or_update_youtube_subscription(
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO youtube_subscriptions (
@@ -3395,7 +3405,6 @@ def create_or_update_youtube_subscription(
                 str(actor_email or "").strip().lower(),
             ),
         )
-        conn.commit()
 
 
 def update_youtube_subscription(
@@ -3414,8 +3423,7 @@ def update_youtube_subscription(
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             """
             UPDATE youtube_subscriptions
@@ -3450,19 +3458,16 @@ def update_youtube_subscription(
                 safe_guild_id,
             ),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
 def delete_youtube_subscription(subscription_id: int, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             "DELETE FROM youtube_subscriptions WHERE id = ? AND guild_id = ?",
             (int(subscription_id), safe_guild_id),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
@@ -3490,8 +3495,7 @@ def update_youtube_subscription_runtime_state(
         and enabled is None
     ):
         return
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             UPDATE youtube_subscriptions
@@ -3518,7 +3522,6 @@ def update_youtube_subscription_runtime_state(
                 safe_guild_id,
             ),
         )
-        conn.commit()
 
 
 def list_linkedin_subscriptions(
@@ -3536,16 +3539,14 @@ def list_linkedin_subscriptions(
     if enabled_only:
         query += " AND enabled = 1"
     query += " ORDER BY profile_name COLLATE NOCASE ASC, target_channel_name COLLATE NOCASE ASC, id ASC"
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(query, tuple(params)).fetchall()
     return [dict(row) for row in rows]
 
 
 def get_linkedin_subscription(subscription_id: int, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         row = conn.execute(
             """
             SELECT id, guild_id, source_url, profile_name, target_channel_id, target_channel_name,
@@ -3574,8 +3575,7 @@ def create_or_update_linkedin_subscription(
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO linkedin_subscriptions (
@@ -3611,7 +3611,6 @@ def create_or_update_linkedin_subscription(
                 str(actor_email or "").strip().lower(),
             ),
         )
-        conn.commit()
 
 
 def update_linkedin_subscription(
@@ -3630,8 +3629,7 @@ def update_linkedin_subscription(
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             """
             UPDATE linkedin_subscriptions
@@ -3666,19 +3664,16 @@ def update_linkedin_subscription(
                 safe_guild_id,
             ),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
 def delete_linkedin_subscription(subscription_id: int, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             "DELETE FROM linkedin_subscriptions WHERE id = ? AND guild_id = ?",
             (int(subscription_id), safe_guild_id),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
@@ -3705,8 +3700,7 @@ def update_linkedin_subscription_runtime_state(
     last_posted_at_value = str(last_posted_at or "").strip() if last_posted_at is not None else None
     last_error_value = clip_text(str(last_error or "").strip(), max_chars=500) if last_error is not None else None
     updated_at_value = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             UPDATE linkedin_subscriptions
@@ -3736,7 +3730,6 @@ def update_linkedin_subscription_runtime_state(
                 safe_guild_id,
             ),
         )
-        conn.commit()
 
 
 def parse_beta_program_snapshot_json(raw_value) -> list[dict]:
@@ -3762,8 +3755,7 @@ def list_beta_program_subscriptions(
     if enabled_only:
         query += " AND enabled = 1"
     query += " ORDER BY target_channel_name COLLATE NOCASE ASC, id ASC"
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(query, tuple(params)).fetchall()
     subscriptions = []
     for row in rows:
@@ -3785,8 +3777,7 @@ def create_or_update_beta_program_subscription(
 ):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO beta_program_subscriptions (
@@ -3815,18 +3806,15 @@ def create_or_update_beta_program_subscription(
                 str(actor_email or "").strip().lower(),
             ),
         )
-        conn.commit()
 
 
 def delete_beta_program_subscription(subscription_id: int, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             "DELETE FROM beta_program_subscriptions WHERE id = ? AND guild_id = ?",
             (int(subscription_id), safe_guild_id),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
@@ -3847,8 +3835,7 @@ def update_beta_program_subscription_runtime_state(
     last_posted_at_value = str(last_posted_at or "").strip() if last_posted_at is not None else None
     last_error_value = clip_text(str(last_error or "").strip(), max_chars=500) if last_error is not None else None
     updated_at_value = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             UPDATE beta_program_subscriptions
@@ -3872,11 +3859,9 @@ def update_beta_program_subscription_runtime_state(
                 safe_guild_id,
             ),
         )
-        conn.commit()
 
 
 def list_reddit_feed_subscriptions(enabled_only: bool = False, guild_id: int | None = None):
-    conn = get_db_connection()
     query = (
         "SELECT id, guild_id, subreddit, channel_id, enabled, created_at, updated_at, "
         "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error "
@@ -3892,7 +3877,7 @@ def list_reddit_feed_subscriptions(enabled_only: bool = False, guild_id: int | N
     if where_clauses:
         query += " WHERE " + " AND ".join(where_clauses)
     query += " ORDER BY subreddit COLLATE NOCASE ASC, channel_id ASC, id ASC"
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(query, tuple(params)).fetchall()
     feeds = []
     for row in rows:
@@ -3916,8 +3901,7 @@ def list_reddit_feed_subscriptions(enabled_only: bool = False, guild_id: int | N
 
 
 def get_reddit_feed_subscription(feed_id: int):
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         row = conn.execute(
             """
             SELECT id, guild_id, subreddit, channel_id, enabled, created_at, updated_at,
@@ -3954,8 +3938,7 @@ def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: i
     if safe_channel_id <= 0:
         raise ValueError("Choose a valid Discord channel.")
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO reddit_feed_subscriptions (
@@ -3980,7 +3963,6 @@ def create_reddit_feed_subscription(guild_id: int, subreddit: str, channel_id: i
                 str(actor_email or "").strip().lower(),
             ),
         )
-        conn.commit()
 
 
 def update_reddit_feed_subscription(feed_id: int, guild_id: int, subreddit: str, channel_id: int, actor_email: str):
@@ -3992,8 +3974,7 @@ def update_reddit_feed_subscription(feed_id: int, guild_id: int, subreddit: str,
     if safe_channel_id <= 0:
         raise ValueError("Choose a valid Discord channel.")
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             """
             UPDATE reddit_feed_subscriptions
@@ -4023,14 +4004,12 @@ def update_reddit_feed_subscription(feed_id: int, guild_id: int, subreddit: str,
             "DELETE FROM reddit_feed_seen_posts WHERE feed_id = ?",
             (int(feed_id),),
         )
-        conn.commit()
     return True
 
 
 def set_reddit_feed_subscription_enabled(feed_id: int, enabled: bool, actor_email: str):
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             """
             UPDATE reddit_feed_subscriptions
@@ -4044,25 +4023,21 @@ def set_reddit_feed_subscription_enabled(feed_id: int, enabled: bool, actor_emai
                 int(feed_id),
             ),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
 def delete_reddit_feed_subscription(feed_id: int):
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             "DELETE FROM reddit_feed_subscriptions WHERE id = ?",
             (int(feed_id),),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
 def get_reddit_auto_respond_rule(rule_id: int, guild_id: int | str | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         query = "SELECT id, guild_id, subreddit, keyword_pattern, response_template, enabled, created_at, updated_at, created_by_email, updated_by_email, last_matched_post_id, last_reply_posted_at, last_error FROM reddit_auto_respond_rules WHERE id = ?"
         params = [int(rule_id)]
         if safe_guild_id is not None:
@@ -4089,7 +4064,6 @@ def get_reddit_auto_respond_rule(rule_id: int, guild_id: int | str | None = None
 
 
 def list_reddit_auto_respond_rules(guild_id: int | str | None = None, enabled_only: bool = False):
-    conn = get_db_connection()
     safe_guild_id = normalize_target_guild_id(guild_id)
     query = """
         SELECT id, guild_id, subreddit, keyword_pattern, response_template,
@@ -4107,7 +4081,7 @@ def list_reddit_auto_respond_rules(guild_id: int | str | None = None, enabled_on
     if where_clauses:
         query += " WHERE " + " AND ".join(where_clauses)
     query += " ORDER BY subreddit COLLATE NOCASE ASC, keyword_pattern ASC, id ASC"
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(query, tuple(params)).fetchall()
     rules = []
     for row in rows:
@@ -4142,8 +4116,7 @@ def create_reddit_auto_respond_rule(guild_id: int, subreddit: str, keyword_patte
     if not response_template.strip():
         raise ValueError("Response template is required.")
     actor_email_str = str(actor_email or "").strip().lower()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             """
             INSERT INTO reddit_auto_respond_rules (
@@ -4162,7 +4135,6 @@ def create_reddit_auto_respond_rule(guild_id: int, subreddit: str, keyword_patte
                 actor_email_str,
             ),
         )
-        conn.commit()
     return cursor.lastrowid
 
 
@@ -4176,8 +4148,7 @@ def update_reddit_auto_respond_rule(rule_id: int, guild_id: int, subreddit: str,
         raise ValueError("Keyword pattern is required.")
     if not response_template.strip():
         raise ValueError("Response template is required.")
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             """
             UPDATE reddit_auto_respond_rules
@@ -4195,15 +4166,13 @@ def update_reddit_auto_respond_rule(rule_id: int, guild_id: int, subreddit: str,
                 safe_guild_id,
             ),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
 def set_reddit_auto_respond_rule_enabled(rule_id: int, guild_id: int, enabled: bool, actor_email: str):
     now_iso = datetime.now(UTC).isoformat()
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             """
             UPDATE reddit_auto_respond_rules
@@ -4218,25 +4187,21 @@ def set_reddit_auto_respond_rule_enabled(rule_id: int, guild_id: int, enabled: b
                 safe_guild_id,
             ),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
 def delete_reddit_auto_respond_rule(rule_id: int, guild_id: int):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             "DELETE FROM reddit_auto_respond_rules WHERE id = ? AND guild_id = ?",
             (int(rule_id), safe_guild_id),
         )
-        conn.commit()
     return cursor.rowcount > 0
 
 
 def load_reddit_auto_respond_seen_reply_ids(rule_id: int):
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(
             "SELECT post_id FROM reddit_auto_respond_seen_replies WHERE rule_id = ?",
             (int(rule_id),),
@@ -4257,8 +4222,7 @@ def merge_reddit_auto_respond_seen_reply_ids(rule_id: int, post_ids):
         return
 
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.executemany(
             """
             INSERT OR IGNORE INTO reddit_auto_respond_seen_replies (rule_id, post_id, created_at)
@@ -4280,12 +4244,10 @@ def merge_reddit_auto_respond_seen_reply_ids(rule_id: int, post_ids):
             """,
             (int(rule_id), int(rule_id), REDDIT_AUTO_REPLY_SEEN_REPLY_RETENTION_LIMIT),
         )
-        conn.commit()
 
 
 def load_reddit_feed_seen_post_ids(feed_id: int):
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(
             "SELECT post_id FROM reddit_feed_seen_posts WHERE feed_id = ?",
             (int(feed_id),),
@@ -4306,8 +4268,7 @@ def merge_reddit_feed_seen_post_ids(feed_id: int, post_ids):
         return
 
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         for post_id in normalized_ids:
             conn.execute(
                 """
@@ -4334,7 +4295,6 @@ def merge_reddit_feed_seen_post_ids(feed_id: int, post_ids):
                 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT,
             ),
         )
-        conn.commit()
 
 
 def update_reddit_feed_runtime_status(
@@ -4345,8 +4305,7 @@ def update_reddit_feed_runtime_status(
     last_error: str = "",
 ):
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             UPDATE reddit_feed_subscriptions
@@ -4366,7 +4325,6 @@ def update_reddit_feed_runtime_status(
                 int(feed_id),
             ),
         )
-        conn.commit()
 
 
 def update_reddit_auto_respond_rule_runtime_status(
@@ -4377,8 +4335,7 @@ def update_reddit_auto_respond_rule_runtime_status(
     last_error: str = "",
 ):
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             UPDATE reddit_auto_respond_rules
@@ -4398,14 +4355,12 @@ def update_reddit_auto_respond_rule_runtime_status(
                 int(rule_id),
             ),
         )
-        conn.commit()
 
 
 def migrate_legacy_files_to_db():
-    conn = get_db_connection()
     now_iso = datetime.now(UTC).isoformat()
 
-    with db_lock:
+    with with_db(commit=True) as conn:
 
         def kv_exists(key: str):
             row = conn.execute("SELECT 1 FROM kv_store WHERE key = ?", (key,)).fetchone()
@@ -4620,8 +4575,6 @@ def migrate_legacy_files_to_db():
             except Exception:
                 logger.exception("Failed migrating legacy access role from %s", ROLE_FILE)
 
-        conn.commit()
-
 
 def initialize_storage():
     ensure_db_schema()
@@ -4632,6 +4585,14 @@ def initialize_storage():
         _ticket_store.ensure_schema()
     except Exception:
         logger.exception("Failed initializing ticket schema")
+    try:
+        with with_db(commit=True) as conn:
+            # Ensure member activity schema (including the one-time identity
+            # encryption migration) once at startup instead of on every
+            # recorded Discord message.
+            _get_member_activity_manager().ensure_member_activity_schema_locked(conn)
+    except Exception:
+        logger.exception("Failed initializing member activity schema")
 
 
 def tag_to_command_name(tag: str) -> str:
@@ -4645,8 +4606,7 @@ def tag_to_command_name(tag: str) -> str:
 
 def load_tag_responses(guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(
             "SELECT tag, response FROM tag_responses WHERE guild_id = ?",
             (safe_guild_id,),
@@ -4659,10 +4619,9 @@ def load_tag_responses(guild_id: int | None = None):
 
 def save_tag_responses(mapping, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
     now_iso = datetime.now(UTC).isoformat()
     normalized = {normalize_tag(k): str(v) for k, v in (mapping or {}).items() if normalize_tag(k)}
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute("DELETE FROM tag_responses WHERE guild_id = ?", (safe_guild_id,))
         for tag, response in normalized.items():
             conn.execute(
@@ -4672,7 +4631,6 @@ def save_tag_responses(mapping, guild_id: int | None = None):
                 """,
                 (safe_guild_id, tag, response, now_iso),
             )
-        conn.commit()
     db_kv_set(f"tag_responses_updated_at:{safe_guild_id}", now_iso)
 
 
@@ -4850,8 +4808,7 @@ def save_role_access_mapping(
     normalized_status = normalize_role_access_status(status)
     now_iso = datetime.now(UTC).isoformat()
     created_iso = str(created_at or now_iso)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         existing_role_row = conn.execute(
             "SELECT created_at FROM role_codes WHERE guild_id = ? AND code = ?",
             (safe_guild_id, normalized_code),
@@ -4892,7 +4849,6 @@ def save_role_access_mapping(
                 normalized_status,
             ),
         )
-        conn.commit()
     _refresh_invite_role_cache_for_guild(safe_guild_id)
     logger.info(
         "Saved role access mapping code=%s invite=%s role=%s guild=%s status=%s",
@@ -4907,8 +4863,7 @@ def save_role_access_mapping(
 def save_role_code(code, role_id, guild_id: int | None = None, *, invite_code: str = "", status: str = "active"):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         existing = conn.execute(
             "SELECT created_at, invite_code FROM role_codes WHERE guild_id = ? AND code = ?",
             (safe_guild_id, str(code)),
@@ -4930,7 +4885,6 @@ def save_role_code(code, role_id, guild_id: int | None = None, *, invite_code: s
                 normalize_role_access_status(status),
             ),
         )
-        conn.commit()
     if preserved_invite:
         _refresh_invite_role_cache_for_guild(safe_guild_id)
     logger.info("Saved code %s for role %s in guild %s", code, role_id, safe_guild_id)
@@ -4938,8 +4892,7 @@ def save_role_code(code, role_id, guild_id: int | None = None, *, invite_code: s
 
 def get_role_id_by_code(code, guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         row = conn.execute(
             """
             SELECT role_id
@@ -4956,8 +4909,7 @@ def get_role_id_by_code(code, guild_id: int | None = None):
 
 
 def load_invite_roles(guild_id: int | None = None):
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         if guild_id is None:
             rows = conn.execute(
                 """
@@ -4986,8 +4938,7 @@ def load_invite_roles(guild_id: int | None = None):
 def save_invite_role(invite_code, role_id, guild_id: int | None = None, *, code: str = "", status: str = "active"):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         existing = conn.execute(
             "SELECT created_at, code FROM invite_roles WHERE guild_id = ? AND invite_code = ?",
             (safe_guild_id, str(invite_code)),
@@ -5009,7 +4960,6 @@ def save_invite_role(invite_code, role_id, guild_id: int | None = None, *, code:
                 normalize_role_access_status(status),
             ),
         )
-        conn.commit()
     _refresh_invite_role_cache_for_guild(safe_guild_id)
     logger.info(
         "Saved invite %s for role %s in guild %s",
@@ -5021,8 +4971,7 @@ def save_invite_role(invite_code, role_id, guild_id: int | None = None, *, code:
 
 def list_role_access_mappings(guild_id: int | None = None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         role_rows = conn.execute(
             """
             SELECT guild_id, code, role_id, created_at, updated_at, invite_code, status
@@ -5139,8 +5088,7 @@ def set_role_access_mapping_status(
     safe_guild_id = normalize_target_guild_id(guild_id)
     normalized_status = normalize_role_access_status(status)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         role_result = conn.execute(
             """
             UPDATE role_codes
@@ -5157,7 +5105,6 @@ def set_role_access_mapping_status(
             """,
             (normalized_status, now_iso, str(code), safe_guild_id, str(invite_code)),
         )
-        conn.commit()
     found = bool(role_result.rowcount or invite_result.rowcount)
     if found:
         _refresh_invite_role_cache_for_guild(safe_guild_id)
@@ -5352,8 +5299,7 @@ def load_command_permission_rules(guild_id: int | None = None):
         if cache_entry.get("mtime") == version:
             return cache_entry.get("rules", {})
 
-        conn = get_db_connection()
-        with db_lock:
+        with with_db() as conn:
             rows = conn.execute(
                 """
                 SELECT command_key, mode, role_ids_json
@@ -5392,9 +5338,8 @@ def save_command_permission_rules(rules: dict, actor_email: str = "", guild_id: 
         safe_rules[command_key] = normalized_rule
 
     updated_at = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
     with command_permissions_lock:
-        with db_lock:
+        with with_db(commit=True) as conn:
             conn.execute(
                 "DELETE FROM command_permissions WHERE guild_id = ?",
                 (safe_guild_id,),
@@ -5419,7 +5364,6 @@ def save_command_permission_rules(rules: dict, actor_email: str = "", guild_id: 
                         updated_at,
                     ),
                 )
-            conn.commit()
         db_kv_set(f"command_permissions_updated_at:{safe_guild_id}", updated_at)
         db_kv_set(
             f"command_permissions_updated_by:{safe_guild_id}",
@@ -5727,8 +5671,7 @@ def normalize_honeypot_record(raw_entry: dict | sqlite3.Row | None):
 
 def load_honeypot_entries(guild_id: int | None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute(
             """
             SELECT id, guild_id, channel_id, action, delete_message_days, timeout_hours,
@@ -5739,7 +5682,9 @@ def load_honeypot_entries(guild_id: int | None):
             """,
             (safe_guild_id,),
         ).fetchall()
-    return [normalize_honeypot_record(row) for row in rows]
+    entries = [normalize_honeypot_record(row) for row in rows]
+    honeypot_entries_cache[safe_guild_id] = {int(entry["channel_id"] or 0): entry for entry in entries}
+    return entries
 
 
 def load_honeypot_entry(guild_id: int | None, channel_id: int | None):
@@ -5747,18 +5692,12 @@ def load_honeypot_entry(guild_id: int | None, channel_id: int | None):
     safe_channel_id = parse_int_setting(channel_id, 0, minimum=1)
     if safe_channel_id <= 0:
         return None
-    conn = get_db_connection()
-    with db_lock:
-        row = conn.execute(
-            """
-            SELECT id, guild_id, channel_id, action, delete_message_days, timeout_hours,
-                   role_id, enabled, created_at, updated_at, created_by_email, updated_by_email
-            FROM honeypot_channels
-            WHERE guild_id = ? AND channel_id = ?
-            """,
-            (safe_guild_id, safe_channel_id),
-        ).fetchone()
-    return normalize_honeypot_record(row) if row is not None else None
+    cached = honeypot_entries_cache.get(safe_guild_id)
+    if cached is None:
+        load_honeypot_entries(safe_guild_id)
+        cached = honeypot_entries_cache.get(safe_guild_id) or {}
+    entry = cached.get(safe_channel_id)
+    return dict(entry) if entry is not None else None
 
 
 def save_honeypot_entry(guild_id: int | None, payload: dict, actor_email: str = ""):
@@ -5774,8 +5713,7 @@ def save_honeypot_entry(guild_id: int | None, payload: dict, actor_email: str = 
     if action == HONEYPOT_ACTION_ROLE and role_id <= 0:
         raise ValueError("A role honeypot requires a role.")
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         existing = conn.execute(
             "SELECT created_at, created_by_email FROM honeypot_channels WHERE guild_id = ? AND channel_id = ?",
             (safe_guild_id, safe_channel_id),
@@ -5812,36 +5750,33 @@ def save_honeypot_entry(guild_id: int | None, payload: dict, actor_email: str = 
                 actor_email or "unknown",
             ),
         )
-        conn.commit()
+    honeypot_entries_cache.pop(safe_guild_id, None)
     return load_honeypot_entry(safe_guild_id, safe_channel_id)
 
 
 def delete_honeypot_entry(guild_id: int | None, channel_id: int | None):
     safe_guild_id = normalize_target_guild_id(guild_id)
     safe_channel_id = parse_int_setting(channel_id, 0, minimum=1)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute(
             "DELETE FROM honeypot_channels WHERE guild_id = ? AND channel_id = ?",
             (safe_guild_id, safe_channel_id),
         )
-        conn.commit()
+    honeypot_entries_cache.pop(safe_guild_id, None)
     return cursor.rowcount
 
 
 def delete_all_honeypot_entries(guild_id: int | None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         cursor = conn.execute("DELETE FROM honeypot_channels WHERE guild_id = ?", (safe_guild_id,))
-        conn.commit()
+    honeypot_entries_cache.pop(safe_guild_id, None)
     return cursor.rowcount
 
 
 def load_honeypot_logging_settings(guild_id: int | None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         row = conn.execute(
             """
             SELECT guild_id, channel_id, role_id, updated_at, updated_by_email
@@ -5873,8 +5808,7 @@ def save_honeypot_logging_settings(guild_id: int | None, *, channel_id: int | No
     next_channel_id = current["channel_id"] if channel_id is None else parse_int_setting(channel_id, 0, minimum=0)
     next_role_id = current["role_id"] if role_id is None else parse_int_setting(role_id, 0, minimum=0)
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO honeypot_logging_settings (guild_id, channel_id, role_id, updated_at, updated_by_email)
@@ -5887,14 +5821,12 @@ def save_honeypot_logging_settings(guild_id: int | None, *, channel_id: int | No
             """,
             (safe_guild_id, next_channel_id, next_role_id, now_iso, actor_email or "unknown"),
         )
-        conn.commit()
     return load_honeypot_logging_settings(safe_guild_id)
 
 
 def load_honeypot_join_guard_settings(guild_id: int | None):
     safe_guild_id = normalize_target_guild_id(guild_id)
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         row = conn.execute(
             """
             SELECT guild_id, enabled, min_account_age_hours, action, delete_message_days,
@@ -5948,8 +5880,7 @@ def save_honeypot_join_guard_settings(guild_id: int | None, payload: dict, actor
         source.get("timeout_hours", current.get("timeout_hours", HONEYPOT_DEFAULT_TIMEOUT_HOURS))
     )
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO honeypot_join_guard_settings (
@@ -5979,7 +5910,6 @@ def save_honeypot_join_guard_settings(guild_id: int | None, payload: dict, actor
                 actor_email or "unknown",
             ),
         )
-        conn.commit()
     return load_honeypot_join_guard_settings(safe_guild_id)
 
 
@@ -9904,8 +9834,7 @@ def load_firmware_seen_ids():
     initialized = db_kv_get("firmware_seen_initialized")
     if initialized != "1":
         return None
-    conn = get_db_connection()
-    with db_lock:
+    with with_db() as conn:
         rows = conn.execute("SELECT entry_id FROM firmware_seen").fetchall()
     return {str(row["entry_id"]) for row in rows if row["entry_id"]}
 
@@ -9967,8 +9896,7 @@ def build_firmware_signature_snapshot(entries: list[dict]):
 
 def save_firmware_state(seen_ids: set[str], signature_snapshot: dict[str, str], sync_label: str = ""):
     now_iso = datetime.now(UTC).isoformat()
-    conn = get_db_connection()
-    with db_lock:
+    with with_db(commit=True) as conn:
         conn.execute("DELETE FROM firmware_seen")
         for entry_id in sorted(seen_ids):
             cleaned = str(entry_id or "").strip()
@@ -9981,7 +9909,6 @@ def save_firmware_state(seen_ids: set[str], signature_snapshot: dict[str, str], 
                 """,
                 (cleaned, now_iso),
             )
-        conn.commit()
     db_kv_set("firmware_seen_initialized", "1")
     db_kv_set("firmware_source_url", FIRMWARE_FEED_URL)
     db_kv_set(
@@ -11278,13 +11205,11 @@ async def check_forum_announcements_once():
             topics = parse_announcement_topics(html, source_url=source_url)
             if not topics:
                 continue
-            conn = get_db_connection()
-            with db_lock:
+            with with_db(commit=True) as conn:
                 seen_ids = load_announcement_seen_topic_ids(conn, guild.id)
                 new_topics = [topic for topic in topics if int(topic.get("id") or 0) not in seen_ids]
                 for topic in new_topics:
                     mark_announcement_topic_posted(conn, guild.id, int(topic.get("id") or 0))
-                conn.commit()
             if not new_topics:
                 continue
             channel = bot.get_channel(channel_id)
@@ -12901,6 +12826,29 @@ async def on_error(event_method: str, *args, **kwargs):
     logger.exception("Unhandled exception in event '%s'", event_method)
 
 
+@bot.event
+async def on_command_error(ctx: commands.Context, error: commands.CommandError):
+    """Handle prefix command errors, including per-user cooldowns."""
+    if isinstance(error, commands.CommandOnCooldown):
+        try:
+            await ctx.send(f"⏳ You're using this command too quickly. Try again in {error.retry_after:.1f}s.")
+        except discord.HTTPException:
+            logger.warning(
+                "Could not send cooldown notice for prefix command %s to %s",
+                ctx.command,
+                f"{ctx.author} (id: {ctx.author.id})",
+            )
+        return
+    if isinstance(error, commands.CommandNotFound):
+        return
+    logger.error(
+        "Unhandled error in prefix command %s invoked by %s",
+        ctx.command.qualified_name if ctx.command else "unknown",
+        f"{ctx.author} (id: {ctx.author.id})",
+        exc_info=(type(error), error, error.__traceback__),
+    )
+
+
 @tree.error
 async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     command_name = interaction.command.name if interaction.command else "unknown"
@@ -12914,6 +12862,13 @@ async def on_tree_error(interaction: discord.Interaction, error: app_commands.Ap
         await send_safe_interaction_message(
             interaction,
             "❌ This command is still syncing. Please wait 30-60 seconds and try again.",
+            ephemeral=True,
+        )
+        return
+    if isinstance(error, app_commands.CommandOnCooldown):
+        await send_safe_interaction_message(
+            interaction,
+            f"⏳ You're using this command too quickly. Try again in {error.retry_after:.1f}s.",
             ephemeral=True,
         )
         return
@@ -13605,6 +13560,7 @@ async def tag_slash(interaction: discord.Interaction, tag: str):
 )
 @app_commands.describe(query="Search terms")
 @app_commands.describe(limit="Max results (default 5)")
+@app_commands.checks.cooldown(1, 5.0)
 async def forum_search(interaction: discord.Interaction, query: str, limit: int = 5):
     """Search the GL.iNet Discourse forum and return matching topics."""
     if not await ensure_interaction_command_access(interaction, "general_commands"):
@@ -16463,6 +16419,7 @@ async def sayhi_slash(interaction: discord.Interaction):
     name="happy",
     description="Post a random puppy picture.",
 )
+@app_commands.checks.cooldown(1, 5.0)
 async def happy_slash(interaction: discord.Interaction):
     logger.info("/happy invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "happy"):
@@ -16559,6 +16516,7 @@ async def eight_ball_slash(interaction: discord.Interaction, question: str):
     name="meme",
     description="Post a random meme.",
 )
+@app_commands.checks.cooldown(1, 5.0)
 async def meme_slash(interaction: discord.Interaction):
     logger.info("/meme invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "meme"):
@@ -16600,6 +16558,7 @@ async def meme_slash(interaction: discord.Interaction):
     name="dad_joke",
     description="Post a dad joke.",
 )
+@app_commands.checks.cooldown(1, 5.0)
 async def dad_joke_slash(interaction: discord.Interaction):
     logger.info("/dad_joke invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "dad_joke"):
@@ -16635,6 +16594,7 @@ async def dad_joke_slash(interaction: discord.Interaction):
     description="Create a short URL.",
 )
 @app_commands.describe(url="URL to shorten using the configured shortener")
+@app_commands.checks.cooldown(1, 5.0)
 async def shorten_slash(interaction: discord.Interaction, url: str):
     logger.info("/shorten invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "shorten"):
@@ -16690,6 +16650,7 @@ async def shorten_slash(interaction: discord.Interaction, url: str):
     description="Expand a short code or short URL.",
 )
 @app_commands.describe(value="Short code or full short URL")
+@app_commands.checks.cooldown(1, 5.0)
 async def expand_slash(interaction: discord.Interaction, value: str):
     logger.info("/expand invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "expand"):
@@ -16744,6 +16705,7 @@ async def expand_slash(interaction: discord.Interaction, value: str):
     name="uptime",
     description="Show current uptime monitor status.",
 )
+@app_commands.checks.cooldown(1, 5.0)
 async def uptime_slash(interaction: discord.Interaction):
     logger.info("/uptime invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "uptime"):
@@ -17262,6 +17224,7 @@ async def honeypot_join_guard_show_slash(interaction: discord.Interaction):
     description="Search r/GlInet and return top 5 matching posts",
 )
 @app_commands.describe(query="Enter search keywords")
+@app_commands.checks.cooldown(1, 5.0)
 async def search_reddit_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_reddit invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_reddit"):
@@ -17293,6 +17256,7 @@ async def search_reddit_slash(interaction: discord.Interaction, query: str):
 
 
 @bot.command(name="searchreddit")
+@commands.cooldown(1, 5.0, commands.BucketType.user)
 async def search_reddit_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchreddit invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_reddit"):
@@ -17315,6 +17279,7 @@ async def search_reddit_prefix(ctx: commands.Context, *, query: str):
     description="Search the GL.iNet forum only",
 )
 @app_commands.describe(query="Enter search keywords")
+@app_commands.checks.cooldown(1, 5.0)
 async def search_forum_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_forum invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_forum"):
@@ -17329,6 +17294,7 @@ async def search_forum_slash(interaction: discord.Interaction, query: str):
 
 
 @bot.command(name="searchforum")
+@commands.cooldown(1, 5.0, commands.BucketType.user)
 async def search_forum_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchforum invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_forum"):
@@ -17347,6 +17313,7 @@ async def search_forum_prefix(ctx: commands.Context, *, query: str):
     description="Search the OpenWrt forum and return top 10 links",
 )
 @app_commands.describe(query="Enter search keywords")
+@app_commands.checks.cooldown(1, 5.0)
 async def search_openwrt_forum_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_openwrt_forum invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_openwrt_forum"):
@@ -17361,6 +17328,7 @@ async def search_openwrt_forum_slash(interaction: discord.Interaction, query: st
 
 
 @bot.command(name="searchopenwrtforum")
+@commands.cooldown(1, 5.0, commands.BucketType.user)
 async def search_openwrt_forum_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchopenwrtforum invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_openwrt_forum"):
@@ -17379,6 +17347,7 @@ async def search_openwrt_forum_prefix(ctx: commands.Context, *, query: str):
     description="Search KVM docs only",
 )
 @app_commands.describe(query="Enter search keywords")
+@app_commands.checks.cooldown(1, 5.0)
 async def search_kvm_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_kvm invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_kvm"):
@@ -17393,6 +17362,7 @@ async def search_kvm_slash(interaction: discord.Interaction, query: str):
 
 
 @bot.command(name="searchkvm")
+@commands.cooldown(1, 5.0, commands.BucketType.user)
 async def search_kvm_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchkvm invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_kvm"):
@@ -17411,6 +17381,7 @@ async def search_kvm_prefix(ctx: commands.Context, *, query: str):
     description="Search IoT docs only",
 )
 @app_commands.describe(query="Enter search keywords")
+@app_commands.checks.cooldown(1, 5.0)
 async def search_iot_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_iot invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_iot"):
@@ -17425,6 +17396,7 @@ async def search_iot_slash(interaction: discord.Interaction, query: str):
 
 
 @bot.command(name="searchiot")
+@commands.cooldown(1, 5.0, commands.BucketType.user)
 async def search_iot_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchiot invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_iot"):
@@ -17443,6 +17415,7 @@ async def search_iot_prefix(ctx: commands.Context, *, query: str):
     description="Search Router v4 docs only",
 )
 @app_commands.describe(query="Enter search keywords")
+@app_commands.checks.cooldown(1, 5.0)
 async def search_router_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_router invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_router"):
@@ -17457,6 +17430,7 @@ async def search_router_slash(interaction: discord.Interaction, query: str):
 
 
 @bot.command(name="searchrouter")
+@commands.cooldown(1, 5.0, commands.BucketType.user)
 async def search_router_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchrouter invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_router"):
@@ -17475,6 +17449,7 @@ async def search_router_prefix(ctx: commands.Context, *, query: str):
     description="Search AstroWarp docs only",
 )
 @app_commands.describe(query="Enter search keywords")
+@app_commands.checks.cooldown(1, 5.0)
 async def search_astrowarp_slash(interaction: discord.Interaction, query: str):
     logger.info("/search_astrowarp invoked by %s with query %s", f"{interaction.user} (id: {interaction.user.id})", query)
     if not await ensure_interaction_command_access(interaction, "search_astrowarp"):
@@ -17489,6 +17464,7 @@ async def search_astrowarp_slash(interaction: discord.Interaction, query: str):
 
 
 @bot.command(name="searchastrowarp")
+@commands.cooldown(1, 5.0, commands.BucketType.user)
 async def search_astrowarp_prefix(ctx: commands.Context, *, query: str):
     logger.info("!searchastrowarp invoked by %s with query %s", f"{ctx.author} (id: {ctx.author.id})", query)
     if not await ensure_prefix_command_access(ctx, "search_astrowarp"):
@@ -17661,6 +17637,7 @@ def _freshdesk_not_configured_reply():
 
 @tree.command(name="support-ticket-search", description="Search GL.iNet Freshdesk support tickets")
 @app_commands.describe(query="Search query (e.g. status:2, priority:4)")
+@app_commands.checks.cooldown(1, 5.0)
 async def support_ticket_search(interaction: discord.Interaction, query: str):
     logger.info("/support-ticket-search invoked by %s with query: %s", f"{interaction.user} (id: {interaction.user.id})", query)
     config = resolve_freshdesk_config()
@@ -17703,6 +17680,7 @@ async def support_ticket_search(interaction: discord.Interaction, query: str):
 
 @tree.command(name="support-ticket-view", description="View a GL.iNet Freshdesk ticket by ID")
 @app_commands.describe(ticket_id="Freshdesk ticket ID (e.g. 12345)")
+@app_commands.checks.cooldown(1, 5.0)
 async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
     logger.info("/support-ticket-view invoked by %s for ticket: %s", f"{interaction.user} (id: {interaction.user.id})", ticket_id)
     config = resolve_freshdesk_config()
@@ -17749,6 +17727,7 @@ async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
 
 
 @tree.command(name="support-ticket-categories", description="List Freshdesk solution/knowledge-base categories")
+@app_commands.checks.cooldown(1, 5.0)
 async def support_ticket_categories(interaction: discord.Interaction):
     logger.info("/support-ticket-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     config = resolve_freshdesk_config()
@@ -17920,6 +17899,7 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
     name="create-ticket",
     description="Create a GL.iNet Freshdesk ticket from Discord",
 )
+@app_commands.checks.cooldown(1, 5.0)
 async def create_ticket(interaction: discord.Interaction):
     logger.info("/create-ticket invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     if not await ensure_interaction_command_access(interaction, "create_ticket"):
@@ -18062,6 +18042,7 @@ async def _freshdesk_create_on_submit(
 
 
 @tree.context_menu(name="Translate to English")
+@app_commands.checks.cooldown(1, 5.0)
 async def translate_to_english_ctx(interaction: discord.Interaction, message: discord.Message):
     logger.info("Translate to English context menu invoked by %s on message %s", f"{interaction.user} (id: {interaction.user.id})", message.id)
     if not await ensure_interaction_command_access(interaction, "translate_to_english"):
