@@ -63,7 +63,7 @@ def _normalize_timestamp(value=None):
 
 def build_manager(*, conn=None):
     connection = conn
-    return MemberActivityManager(
+    manager = MemberActivityManager(
         get_db_connection=lambda: connection,
         db_lock=DummyLock(),
         require_managed_guild_id=lambda guild_id, context="": int(guild_id or 1),
@@ -83,6 +83,11 @@ def build_manager(*, conn=None):
         moderator_role_ids=[1, 2],
         default_allowed_role_names={"Admin", "Employee"},
     )
+    if connection is not None:
+        # Mirror production startup: ensure the schema once (initialize_storage
+        # in bot.py) before any message activity is recorded.
+        manager.ensure_member_activity_schema_locked(connection)
+    return manager
 
 
 def test_compute_member_activity_metrics_returns_expected_values():

@@ -72,9 +72,8 @@ def render_freshdesk_viewer_body(
     guild_name
         Name of the currently selected guild (for display).
     effective_settings
-        Dict with keys: ``FRESHDESK_ENABLED``, ``FRESHDESK_DOMAIN``,
-        ``FRESHDESK_BASE_URL``, ``FRESHDESK_API_KEY``,
-        ``FRESHDESK_POLL_INTERVAL_SECONDS``, ``FRESHDESK_REQUEST_TIMEOUT_SECONDS``.
+        Dict with keys: ``FRESHDESK_ENABLED``, ``FRESHDESK_BASE_URL``, ``FRESHDESK_API_KEY``,
+        ``FRESHDESK_REQUEST_TIMEOUT_SECONDS``.
     command_permissions
         List of command permission dicts from ``build_command_permissions_web_payload``,
         filtered to Freshdesk command keys. Each dict has keys: key, label, description,
@@ -84,30 +83,33 @@ def render_freshdesk_viewer_body(
     discord_role_options
         List of role option dicts from the Discord catalog, each with ``id`` and ``name``.
     """
-    config = build_freshdesk_config_from_env(effective_settings)
-    enabled = bool(config.get("enabled", True))
-    base_url = config["base_url"]
-    api_key_configured = bool(config["api_key"])
-    timeout = config["timeout"]
-    enabled_label = "Enabled" if enabled else "Disabled"
+    enabled = str(effective_settings.get("FRESHDESK_ENABLED", "true")).strip().lower() in {"1", "true", "yes", "on"}
+    base_url = str(effective_settings.get("FRESHDESK_BASE_URL", "")).strip()
+    api_key = str(effective_settings.get("FRESHDESK_API_KEY", "")).strip()
+    api_key_configured = bool(api_key)
+    timeout = int(str(effective_settings.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15") or "15").strip())
 
-    integration_rows = [
-        ("Enabled", enabled_label),
-        ("Helpdesk URL", base_url or "Not configured"),
-        ("API Key", "Configured" if api_key_configured else "Not configured"),
-        ("Request Timeout", f"{timeout} second(s)"),
-        ("Scope", "Read-only (search, view, browse)" + (" + create" if enabled else "")),
-    ]
+    enabled_checked = " checked" if enabled else ""
+    api_key_placeholder = "••••••••••••••••" if api_key_configured else ""
 
-    integration_items = "".join(
-        f"""
+    integration_items = f"""
         <tr>
-          <td><strong>{escape(label)}</strong></td>
-          <td class='muted mono'>{escape(value)}</td>
+          <td><strong>Enabled</strong></td>
+          <td><label><input type="checkbox" name="FRESHDESK_ENABLED" value="true"{enabled_checked} /> Enable Freshdesk</label></td>
         </tr>
-        """
-        for label, value in integration_rows
-    )
+        <tr>
+          <td><strong>Helpdesk URL</strong></td>
+          <td><input type="text" name="FRESHDESK_BASE_URL" value="{escape(base_url, quote=True)}" placeholder="https://glinetservice.freshdesk.com" style="width:350px;" /></td>
+        </tr>
+        <tr>
+          <td><strong>API Key</strong></td>
+          <td><input type="password" name="FRESHDESK_API_KEY" value="" placeholder="{api_key_placeholder}" style="width:350px;" /> <small class="muted">Leave blank to keep existing</small></td>
+        </tr>
+        <tr>
+          <td><strong>Request Timeout</strong></td>
+          <td><input type="number" name="FRESHDESK_REQUEST_TIMEOUT_SECONDS" value="{escape(str(timeout), quote=True)}" min="5" max="120" style="width:80px;" /> seconds</td>
+        </tr>
+    """
 
     search_form = """
     <div class='card'>
@@ -246,20 +248,22 @@ def render_freshdesk_viewer_body(
          {'' if api_key_configured else ' <span class="warning">API key is not configured — live data may be unavailable.</span>'}
       </p>
 
-      <div class='card' style='margin:16px 0 0 0;'>
-        <h3 style="margin-top:0;">Integration Settings</h3>
-        <table>
-          <thead><tr><th>Setting</th><th>Value</th></tr></thead>
-          <tbody>
-            {integration_items}
-          </tbody>
-        </table>
-      </div>
-    </div>
+      <form method="post" action="/admin/freshdesk/viewer/">
+        <div class='card' style='margin:16px 0 0 0;'>
+          <h3 style="margin-top:0;">Integration Settings</h3>
+          <table>
+            <tbody>
+              {integration_items}
+            </tbody>
+          </table>
+          <button class="btn" type="submit" style="margin-top:12px;">Save Integration Settings</button>
+        </div>
+      </form>
 
-    {permissions_card}
+      {permissions_card}
 
-    {forum_html}
+      {forum_html}
+    </form>
 
     <script>
     (function() {{

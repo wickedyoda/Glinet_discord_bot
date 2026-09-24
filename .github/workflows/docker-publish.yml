@@ -17,8 +17,47 @@ permissions:
   packages: write
 
 jobs:
+  # --------------------------------------------------------------------------- #
+  #  GATE 1: Security scans — MUST PASS before build
+  # --------------------------------------------------------------------------- #
+  bandit:
+    name: Bandit Python Security
+    uses: ./.github/workflows/security-scan.yml
+
+  secret-scan:
+    name: Secret Scan
+    uses: ./.github/workflows/secret-scan.yml
+
+  python-vuln-scan:
+    name: Python Vulnerability Scan
+    uses: ./.github/workflows/python-vulnerability-scan.yml
+
+  dependency-review:
+    name: Dependency Review
+    uses: ./.github/workflows/dependency-review.yml
+
+  ci-integrity:
+    name: CI Integrity
+    uses: ./.github/workflows/ci-integrity.yml
+
+  container-security-scan:
+    name: Container Security Scan
+    uses: ./.github/workflows/container-security-scan.yml
+
+  # --------------------------------------------------------------------------- #
+  #  GATE 2: Build — only runs if all gates above pass
+  # --------------------------------------------------------------------------- #
   build:
+    name: Build and Push
+    needs:
+      - bandit
+      - secret-scan
+      - python-vuln-scan
+      - dependency-review
+      - ci-integrity
+      - container-security-scan
     runs-on: ubuntu-latest
+    if: always() && needs.bandit.result == 'success' && needs.secret-scan.result == 'success' && needs.python-vuln-scan.result == 'success' && needs.dependency-review.result == 'success' && needs.ci-integrity.result == 'success' && needs.container-security-scan.result == 'success'
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 

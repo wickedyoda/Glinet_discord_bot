@@ -9052,6 +9052,29 @@ def create_web_app(
             "FRESHDESK_REQUEST_TIMEOUT_SECONDS": env_vals.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15"),
         }
 
+    def _on_save_freshdesk_env(updates: dict, actor_email: str, guild_id: str) -> dict:
+        """Save Freshdesk-specific env settings."""
+        file_values = _load_effective_env_values(env_file, fallback_env_file)
+        final_values = dict(file_values)
+        for key, value in updates.items():
+            if value == "":
+                final_values.pop(key, None)
+            else:
+                final_values[key] = value
+        saved, save_error, saved_env_file, skipped_keys = _try_write_env_file_with_fallback(
+            env_file, fallback_env_file, final_values,
+        )
+        if not saved:
+            return {"ok": False, "error": save_error}
+        for key, value in updates.items():
+            if key in skipped_keys:
+                continue
+            if value == "":
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return {"ok": True, "message": "Freshdesk settings saved."}
+
     register_freshdesk_viewer_blueprint(
         app,
         current_user=_current_user,
@@ -9059,6 +9082,7 @@ def create_web_app(
         require_selected_guild_redirect=_require_selected_guild_redirect,
         render_page=_render_page,
         on_get_env=_on_get_freshdesk_env,
+        on_save_env=_on_save_freshdesk_env,
         on_get_command_permissions=on_get_command_permissions,
         on_save_command_permissions=on_save_command_permissions,
         load_discord_catalog=_load_discord_catalog_options,

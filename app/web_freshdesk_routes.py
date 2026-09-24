@@ -97,6 +97,30 @@ def viewer_page():
             discord_role_options = []
 
     if request.method == "POST":
+        # Handle Freshdesk integration settings updates
+        on_save_env = _h.get("on_save_env")
+        if callable(on_save_env):
+            enabled = request.form.get("FRESHDESK_ENABLED") == "true"
+            base_url = str(request.form.get("FRESHDESK_BASE_URL", "")).strip().rstrip("/")
+            api_key = str(request.form.get("FRESHDESK_API_KEY", "")).strip()
+            timeout = str(request.form.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15")).strip()
+
+            updates = {
+                "FRESHDESK_ENABLED": str(enabled).lower(),
+                "FRESHDESK_BASE_URL": base_url,
+                "FRESHDESK_REQUEST_TIMEOUT_SECONDS": timeout,
+            }
+            # Only update API key if provided
+            if api_key:
+                updates["FRESHDESK_API_KEY"] = api_key
+
+            response = on_save_env(updates, user["email"], guild_id)
+            if isinstance(response, dict) and response.get("ok"):
+                flash("Freshdesk integration settings updated.", "success")
+            else:
+                flash(str(response.get("error", "Failed to update Freshdesk settings.")) if isinstance(response, dict) else "Failed to update Freshdesk settings.", "error")
+
+        # Handle command permissions updates
         on_save = _h.get("on_save_command_permissions")
         if callable(on_save):
             command_updates = {}
@@ -292,6 +316,7 @@ def _resolve_env_values() -> dict[str, Any]:
     on_get_env = _h.get("on_get_env")
     if callable(on_get_env):
         result = on_get_env() or {}
+        # Return the raw env values, not the processed config
         return result if isinstance(result, dict) else {}
     return {}
 
@@ -326,6 +351,7 @@ def register_freshdesk_viewer_blueprint(app, **helpers):
         "require_selected_guild_redirect": helpers.get("require_selected_guild_redirect"),
         "render_page": helpers.get("render_page"),
         "on_get_env": helpers.get("on_get_env"),
+        "on_save_env": helpers.get("on_save_env"),
         "on_get_command_permissions": helpers.get("on_get_command_permissions"),
         "on_save_command_permissions": helpers.get("on_save_command_permissions"),
         "load_discord_catalog": helpers.get("load_discord_catalog"),
