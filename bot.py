@@ -17901,16 +17901,10 @@ class SupportTicketCategoryView(discord.ui.View):
         ],
     )
     async def category_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        await interaction.response.defer(ephemeral=True)
         category = select.value
-        
-        # Determine group_id based on category
         config = self.config
-        await interaction.followup.send(
-            f"Selected: {category.replace('_', ' ').title()}. Opening ticket form...",
-            ephemeral=True,
-        )
-        await interaction.followup.send_modal(
+        # send_modal must be called on the original response, not after defer()
+        await interaction.response.send_modal(
             SupportTicketCreateModal(
                 target_channel_id=self.target_channel_id,
                 ticket_category=category,
