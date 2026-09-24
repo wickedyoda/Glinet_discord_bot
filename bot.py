@@ -17912,14 +17912,14 @@ class SupportTicketCategoryView(discord.ui.View):
         )
         await interaction.followup.send_modal(
             SupportTicketCreateModal(
-                channel_id=self.target_channel_id,
+                target_channel_id=self.target_channel_id,
                 ticket_category=category,
                 config=config,
             )
         )
 
 
-class FreshdeskCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"):
+class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"):
     """Collect requester details for a new Freshdesk ticket."""
 
     name = discord.ui.TextInput(
@@ -18008,7 +18008,7 @@ async def support_ticket_create(interaction: discord.Interaction):
 
 async def _freshdesk_create_on_submit(
     interaction: discord.Interaction,
-    modal: FreshdeskCreateModal,
+    modal: SupportTicketCreateModal,
     target_channel_id: int,
     ticket_category: str = "technical",
     config: dict | None = None,
