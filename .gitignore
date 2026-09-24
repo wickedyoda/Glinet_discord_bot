@@ -196,3 +196,4 @@ data/bot_data.db*
 env.env
 *.db-wal
 *.db-shm
+_build_version.txt

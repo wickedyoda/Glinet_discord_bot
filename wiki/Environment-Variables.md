@@ -136,6 +136,18 @@ This page reflects the current environment behavior in bot.py and .env.example.
 | `UPTIME_STATUS_TIMEOUT_SECONDS` | `10` | Uptime fetch timeout |
 | `UPTIME_STATUS_VERIFY_TLS` | `true` | Uptime TLS verification |
 
+## Freshdesk Ticket Integration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FRESHDESK_ENABLED` | `false` | Enable Freshdesk integration |
+| `FRESHDESK_BASE_URL` | Auto-derived | Freshdesk API root URL |
+| `FRESHDESK_DOMAIN` | empty | Freshdesk domain (e.g. `glinetservice.freshdesk.com`) |
+| `FRESHDESK_API_KEY` | empty | Read/write API key |
+| `FRESHDESK_POLL_INTERVAL_SECONDS` | `300` | Sync interval |
+| `FRESHDESK_TICKET_TARGET_CHANNEL_ID` | empty | Channel for webhook messages |
+| `FRESHDESK_REQUEST_TIMEOUT_SECONDS` | `15` | HTTP timeout |
+
 ## Search and Docs
 
 | Variable | Default | Notes |

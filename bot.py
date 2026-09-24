@@ -71,10 +71,14 @@ from app.forum_monitor import (
     search_forum,
 )
 from app.freshdesk_api import (
+    FRESHDESK_ENV_KEYS,
     FreshdeskApiError,
     FreshdeskRateLimitError,
     create_freshdesk_ticket,
     fetch_freshdesk_ticket,
+    find_freshdesk_group_by_name,
+    list_freshdesk_agents,
+    list_freshdesk_groups,
     list_freshdesk_solution_categories,
     search_freshdesk_tickets,
 )
@@ -1189,10 +1193,10 @@ COMMAND_PERMISSION_DEFAULTS = {
     "honeypot_join_guard_show": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "set_hello_channel": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
     "set_hello_text": COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
-    "freshdesk_search": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
-    "freshdesk_ticket": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
-    "freshdesk_categories": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
-    "freshdesk_create": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "support_ticket_search": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "support_ticket_view": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "support_ticket_categories": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "create_ticket": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
 }
 for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
     COMMAND_PERMISSION_DEFAULTS[_command_key] = COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
@@ -1435,21 +1439,21 @@ COMMAND_PERMISSION_METADATA = {
         "label": "/random_choice",
         "description": "Randomly pick a non-staff guild member.",
     },
-    "freshdesk_search": {
-        "label": "/freshdesk-search",
+    "support_ticket_search": {
+        "label": "/support-ticket-search",
         "description": "Search GL.iNet Freshdesk support tickets.",
     },
-    "freshdesk_ticket": {
-        "label": "/freshdesk-ticket",
+    "support_ticket_view": {
+        "label": "/support-ticket-view",
         "description": "View a GL.iNet Freshdesk ticket by ID.",
     },
-    "freshdesk_categories": {
-        "label": "/freshdesk-categories",
+    "support_ticket_categories": {
+        "label": "/support-ticket-categories",
         "description": "List Freshdesk solution/knowledge-base categories.",
     },
-    "freshdesk_create": {
-        "label": "/freshdesk-create",
-        "description": "Create a Freshdesk ticket from Discord.",
+    "create_ticket": {
+        "label": "/create-ticket",
+        "description": "Create a Freshdesk support ticket from Discord.",
     },
     "search_reddit": {
         "label": "/search_reddit, !searchreddit",
@@ -17587,60 +17591,7 @@ class _ReassignModal(discord.ui.Modal, title="Reassign ticket"):
             await interaction.response.send_message("Failed to reassign; ticket may be closed.", ephemeral=True)
 
 
-@tree.command(name="ticket", description="Open a support ticket")
-async def ticket_panel(interaction: discord.Interaction):
-    if not interaction.guild:
-        return await interaction.response.send_message("Guild only.", ephemeral=True)
-    if not _enforce_ticket_preflight(interaction):
-        return await interaction.response.send_message("Ticket access roles are not configured yet.", ephemeral=True)
-    from app.tickets import TICKET_CATEGORIES_DEFAULT, build_ticket_select_options
-    categories = TICKET_CATEGORIES_DEFAULT
-    options = build_ticket_select_options(categories)
-    select_view = discord.ui.View(timeout=None)
 
-    class _Select(discord.ui.Select):
-        async def callback(inter, interaction: discord.Interaction):
-            category = next((c for c in categories if c["id"] == inter.values[0]), None)
-            if not category:
-                return await interaction.response.send_message("Invalid category.", ephemeral=True)
-            questions = category.get("questions") or []
-            modal = discord.ui.Modal(title=f"{category['name']} ticket")
-
-            class _Q(discord.ui.TextInput):
-                def __init__(self, label: str, required: bool = False):
-                    super().__init__(label=label, style=discord.TextStyle.paragraph, required=required)
-
-            for q in questions:
-                modal.add_item(_Q(q, required=True))
-
-            async def on_submit(modal_interaction: discord.Interaction):
-                answers = "\n".join(f"- {item.value}" for item in modal.children if isinstance(item, discord.ui.TextInput))
-                overwrites: dict = {}
-                if interaction.guild.default_role:
-                    overwrites[interaction.guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-                overwrites[interaction.user] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
-                category_channel = next((cat for cat in interaction.guild.categories if cat.name.lower() == "tickets"), None)
-                try:
-                    channel = await interaction.guild.create_text_channel(
-                        name=f"ticket-{category['id']}",
-                        overwrites=overwrites,
-                        category=category_channel,
-                        reason="ticket created",
-                    )
-                except Exception as exc:
-                    return await modal_interaction.response.send_message(f"Failed: {exc}", ephemeral=True)
-                store = _ticket_store()
-                store.create(channel_id=channel.id, owner_id=interaction.user.id, category_id=category["id"], guild_id=interaction.guild.id)
-                from app.tickets import ticket_embed
-                await channel.send(embed=ticket_embed(f"{category['name']}", answers), view=_TicketView())
-                await modal_interaction.response.send_message(f"Created {channel.mention}", ephemeral=True)
-
-            modal.on_submit = on_submit  # type: ignore[method-assign]
-            await interaction.response.send_modal(modal)
-
-    select = _Select(placeholder="Choose a category...", options=options, min_values=1, max_values=1)
-    select_view.add_item(select)
-    await interaction.response.send_message("Open a ticket:", view=select_view, ephemeral=True)
 
 
 @tree.command(name="ticket-search", description="Search tickets by number or owner email")
@@ -17707,10 +17658,10 @@ def _freshdesk_not_configured_reply():
     )
 
 
-@tree.command(name="freshdesk-search", description="Search GL.iNet Freshdesk support tickets")
+@tree.command(name="support-ticket-search", description="Search GL.iNet Freshdesk support tickets")
 @app_commands.describe(query="Search query (e.g. status:2, priority:4)")
-async def freshdesk_search(interaction: discord.Interaction, query: str):
-    logger.info("/freshdesk-search invoked by %s with query: %s", f"{interaction.user} (id: {interaction.user.id})", query)
+async def support_ticket_search(interaction: discord.Interaction, query: str):
+    logger.info("/support-ticket-search invoked by %s with query: %s", f"{interaction.user} (id: {interaction.user.id})", query)
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
@@ -17748,10 +17699,10 @@ async def freshdesk_search(interaction: discord.Interaction, query: str):
     await interaction.followup.send("\n".join(lines), ephemeral=True)
 
 
-@tree.command(name="freshdesk-ticket", description="View a GL.iNet Freshdesk ticket by ID")
+@tree.command(name="support-ticket-view", description="View a GL.iNet Freshdesk ticket by ID")
 @app_commands.describe(ticket_id="Freshdesk ticket ID (e.g. 12345)")
-async def freshdesk_ticket(interaction: discord.Interaction, ticket_id: int):
-    logger.info("/freshdesk-ticket invoked by %s for ticket: %s", f"{interaction.user} (id: {interaction.user.id})", ticket_id)
+async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
+    logger.info("/support-ticket-view invoked by %s for ticket: %s", f"{interaction.user} (id: {interaction.user.id})", ticket_id)
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
@@ -17794,9 +17745,9 @@ async def freshdesk_ticket(interaction: discord.Interaction, ticket_id: int):
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@tree.command(name="freshdesk-categories", description="List Freshdesk solution/knowledge-base categories")
-async def freshdesk_categories(interaction: discord.Interaction):
-    logger.info("/freshdesk-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
+@tree.command(name="support-ticket-categories", description="List Freshdesk solution/knowledge-base categories")
+async def support_ticket_categories(interaction: discord.Interaction):
+    logger.info("/support-ticket-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
@@ -17872,7 +17823,44 @@ def _resolve_freshdesk_ticket_target_channel_id(
     return resolved
 
 
-class FreshdeskCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"):
+
+class SupportTicketCategoryView(discord.ui.View):
+    """View for selecting ticket category (tech support vs customer service)."""
+
+    def __init__(self, config: dict, target_channel_id: int):
+        super().__init__(timeout=120)
+        self.config = config
+        self.target_channel_id = target_channel_id
+
+    @discord.ui.select(
+        placeholder="Select ticket type...",
+        options=[
+            discord.SelectOption(
+                label="Technical Support",
+                value="technical",
+                description="Hardware, firmware, routing, OpenWrt issues",
+            ),
+            discord.SelectOption(
+                label="Customer Service",
+                value="customer_service",
+                description="Account questions, billing, general inquiries",
+            ),
+        ],
+    )
+    async def category_select(self, interaction: discord.Interaction, select: discord.ui.Select):
+        category = select.value
+        config = self.config
+        # send_modal must be called on the original response, not after defer()
+        await interaction.response.send_modal(
+            SupportTicketCreateModal(
+                target_channel_id=self.target_channel_id,
+                ticket_category=category,
+                config=config,
+            )
+        )
+
+
+class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"):
     """Collect requester details for a new Freshdesk ticket."""
 
     name = discord.ui.TextInput(
@@ -17901,12 +17889,14 @@ class FreshdeskCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"):
         max_length=4000,
     )
 
-    def __init__(self, target_channel_id: int):
+    def __init__(self, target_channel_id: int, ticket_category: str = "technical", config: dict | None = None):
         super().__init__()
         self._target_channel_id = target_channel_id
+        self._ticket_category = ticket_category
+        self._config = config or {}
 
     async def on_submit(self, interaction: discord.Interaction):
-        await _freshdesk_create_on_submit(interaction, self, self._target_channel_id)
+        await _freshdesk_create_on_submit(interaction, self, self._target_channel_id, self._ticket_category, self._config)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logger.exception("Freshdesk create modal error")
@@ -17923,12 +17913,12 @@ class FreshdeskCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"):
 
 
 @tree.command(
-    name="freshdesk-create",
+    name="create-ticket",
     description="Create a GL.iNet Freshdesk ticket from Discord",
 )
-async def freshdesk_create(interaction: discord.Interaction):
-    logger.info("/freshdesk-create invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
-    if not await ensure_interaction_command_access(interaction, "freshdesk_create"):
+async def create_ticket(interaction: discord.Interaction):
+    logger.info("/create-ticket invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
+    if not await ensure_interaction_command_access(interaction, "create_ticket"):
         return
     if interaction.guild is None:
         await interaction.response.send_message(
@@ -17947,13 +17937,22 @@ async def freshdesk_create(interaction: discord.Interaction):
             ephemeral=True,
         )
         return
-    await interaction.response.send_modal(FreshdeskCreateModal(channel_id))
+
+    # Show category selection view first
+    view = SupportTicketCategoryView(config, channel_id)
+    await interaction.response.send_message(
+        "Please select the ticket type:",
+        view=view,
+        ephemeral=True,
+    )
 
 
 async def _freshdesk_create_on_submit(
     interaction: discord.Interaction,
-    modal: FreshdeskCreateModal,
+    modal: SupportTicketCreateModal,
     target_channel_id: int,
+    ticket_category: str = "technical",
+    config: dict | None = None,
 ):
     name = str(modal.name.value or "").strip()
     email = str(modal.email.value or "").strip()
@@ -17964,8 +17963,25 @@ async def _freshdesk_create_on_submit(
             "❌ Please complete all fields with a valid email.", ephemeral=True
         )
         return
-    config = resolve_freshdesk_config()
+    if config is None:
+        config = resolve_freshdesk_config()
     await interaction.response.defer(ephemeral=True)
+    
+    # Determine group_id based on category
+    group_id = None
+    group_name_env_key = "FRESHDESK_TECH_SUPPORT_GROUP_NAME" if ticket_category == "technical" else "FRESHDESK_CUSTOMER_SERVICE_GROUP_NAME"
+    group_name = str(os.getenv(group_name_env_key, "")).strip()
+    if group_name and config.get("base_url") and config.get("api_key"):
+        try:
+            group_id = find_freshdesk_group_by_name(
+                base_url=config["base_url"],
+                group_name=group_name,
+                api_key=config["api_key"],
+                timeout_seconds=config["timeout"],
+            )
+        except Exception:
+            logger.warning("Could not resolve Freshdesk group %s", group_name)
+    
     try:
         ticket = create_freshdesk_ticket(
             base_url=config["base_url"],
@@ -17975,6 +17991,7 @@ async def _freshdesk_create_on_submit(
             api_key=config["api_key"],
             email=email,
             name=name,
+            group_id=group_id,
         )
     except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
         await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
@@ -18003,7 +18020,7 @@ async def _freshdesk_create_on_submit(
     )
     try:
         thread = await target_channel.create_thread(
-            name=f"freshdesk-{ticket['id']}",
+            name=f"support-ticket-{ticket['id']}",
             message=None,
             type=discord.ChannelType.private_thread,
             overwrite=overwrites,
@@ -18018,9 +18035,11 @@ async def _freshdesk_create_on_submit(
         )
         return
     ticket_url = ticket.get("url", "")
+    category_label = "Technical Support" if ticket_category == "technical" else "Customer Service"
     body = (
         f"**Freshdesk ticket #{ticket['id']} — {subject}**\n\n"
         f"**Requester:** {name} ({email})\n"
+        f"**Category:** {category_label}\n"
         f"**Status:** {ticket.get('status', '')} · **Priority:** {ticket.get('priority', '')}\n\n"
         f"**Message body:**\n{message_body}\n\n"
         f"<{ticket_url}>"

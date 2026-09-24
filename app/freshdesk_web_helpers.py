@@ -133,10 +133,10 @@ def render_freshdesk_viewer_body(
       <h3 style='margin-top:0;'>Available Actions</h3>
       <p class='muted'>Use <a href='/admin/command-permissions'>Command Permissions</a> to restrict role access for these commands.</p>
       <ul>
-        <li><strong>/freshdesk search &lt;query&gt;</strong> — Discord command to search Freshdesk tickets</li>
-        <li><strong>/freshdesk ticket &lt;id&gt;</strong> — Discord command to view ticket details</li>
-        <li><strong>/freshdesk categories</strong> — Discord command to list solution categories</li>
-        <li><strong>/freshdesk-create &lt;subject&gt; &lt;message&gt;</strong> — Discord command to create a new ticket (requires role permission)</li>
+        <li><strong>/support-ticket-search &lt;query&gt;</strong> — Discord command to search Freshdesk tickets</li>
+        <li><strong>/support-ticket-view &lt;id&gt;</strong> — Discord command to view ticket details</li>
+        <li><strong>/support-ticket-categories</strong> — Discord command to list solution categories</li>
+        <li><strong>/create-ticket</strong> — Discord command to create a new ticket (requires role permission)</li>
       </ul>
     </div>
     """

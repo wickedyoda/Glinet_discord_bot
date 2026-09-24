@@ -51,6 +51,17 @@ Web variation:
 
 All ticket search and stats responses are **ephemeral**; only the command user can see them.
 
+## Freshdesk Ticket Commands
+
+| Command | Type | Default Access | Description |
+|---|---|---|---|
+| `/freshdesk-search` | Slash | Moderator | Search Freshdesk tickets (e.g. `status:2`, `priority:4`) |
+| `/freshdesk-ticket` | Slash | Moderator | View a single ticket by ID |
+| `/freshdesk-categories` | Slash | Moderator | List knowledge-base solution categories |
+| `/freshdesk-create` | Slash | Moderator | Create a new ticket via modal (Name, Email, Subject, Message) |
+
+All Freshdesk command responses are **ephemeral**. Role-based restrictions for these commands are configurable in `/admin/command-permissions` or directly on `/admin/freshdesk/viewer`.
+
 ## Tag and Auto-Reply Commands
 
 | Command | Type | Default Access | Parameters | Notes |
