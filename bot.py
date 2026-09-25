@@ -17827,22 +17827,96 @@ def _freshdesk_not_configured_reply():
     )
 
 
-@tree.command(name="support-ticket-search", description="Search GL.iNet Freshdesk support tickets")
-@app_commands.describe(query="Search query (e.g. status:2, priority:4)")
+def _build_ticket_embed(ticket: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"#{ticket['id']} — {ticket['subject']}",
+        url=ticket.get("url", ""),
+        color=0x0099FF,
+    )
+    embed.add_field(name="Status", value=ticket.get("status", "Unknown"), inline=True)
+    embed.add_field(name="Priority", value=ticket.get("priority", "Unknown"), inline=True)
+    embed.add_field(name="Type", value=ticket.get("type", "N/A"), inline=True)
+    requester = ticket.get("requester", {})
+    if isinstance(requester, dict) and requester.get("email"):
+        embed.add_field(name="Requester", value=requester["email"], inline=True)
+    if ticket.get("description"):
+        desc = ticket["description"][:1024] if len(ticket["description"]) > 1024 else ticket["description"]
+        embed.add_field(name="Description", value=desc, inline=False)
+    if ticket.get("tags"):
+        embed.add_field(name="Tags", value=", ".join(ticket["tags"][:10]), inline=False)
+    if ticket.get("created_at"):
+        embed.set_footer(text=f"Created: {ticket['created_at']} | Updated: {ticket.get('updated_at', 'N/A')}")
+    return embed
+
+
+@tree.command(name="support-ticket-search", description="Search GL.iNet Freshdesk tickets by email and ticket number")
+@app_commands.describe(
+    email="Requester email to filter by",
+    ticket_id="Specific ticket ID to find (optional — omit to list all tickets for this email)",
+)
 @app_commands.checks.cooldown(1, 5.0)
-async def support_ticket_search(interaction: discord.Interaction, query: str):
-    logger.info("/support-ticket-search invoked by %s with query: %s", f"{interaction.user} (id: {interaction.user.id})", query)
+async def support_ticket_search(interaction: discord.Interaction, email: str, ticket_id: str | None = None):
+    logger.info(
+        "/support-ticket-search invoked by %s for email: %s ticket: %s",
+        f"{interaction.user} (id: {interaction.user.id})",
+        email,
+        ticket_id,
+    )
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
+
+    # If ticket_id is provided, first validate it is numeric and belongs to this email
+    if ticket_id is not None:
+        if not ticket_id.strip().isdigit():
+            await interaction.followup.send("❌ Ticket ID must be a number.", ephemeral=True)
+            return
+
+        try:
+            ticket = await asyncio.to_thread(
+                fetch_freshdesk_ticket,
+                base_url=config["base_url"],
+                ticket_id=int(ticket_id),
+                timeout_seconds=config["timeout"],
+                api_key=config["api_key"],
+            )
+        except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
+            await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
+            return
+        except Exception as exc:
+            await interaction.followup.send(f"❌ Error fetching ticket: {exc}", ephemeral=True)
+            return
+
+        if not ticket:
+            await interaction.followup.send(f"❌ Ticket #{ticket_id} not found.", ephemeral=True)
+            return
+
+        # Check the requester email matches
+        requester = ticket.get("requester", {})
+        requester_email = str(
+            requester.get("email", "") if isinstance(requester, dict) else ""
+        ).strip().lower()
+        if requester_email != email.strip().lower():
+            await interaction.followup.send(
+                "❌ Access denied: this ticket does not belong to the specified email.",
+                ephemeral=True,
+            )
+            return
+
+        # Show single ticket
+        embed = _build_ticket_embed(ticket)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    # No ticket ID — list all tickets for this email
     try:
         tickets = await asyncio.to_thread(
             search_freshdesk_tickets,
             base_url=config["base_url"],
-            query=query,
+            query=f'requester_email:"{email.strip()}"',
             max_results=20,
             timeout_seconds=config["timeout"],
             api_key=config["api_key"],
@@ -17850,18 +17924,18 @@ async def support_ticket_search(interaction: discord.Interaction, query: str):
     except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
         await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
         return
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await interaction.followup.send(f"❌ Error searching Freshdesk: {exc}", ephemeral=True)
         return
 
     if not tickets:
         await interaction.followup.send(
-            f"🔎 No tickets found for `{query}` on `{config['base_url']}`.",
+            f"🔎 No tickets found for `{email}`.",
             ephemeral=True,
         )
         return
 
-    lines = [f"**Freshdesk search: `{query}`**\n"]
+    lines = [f"**Freshdesk tickets for `{email}`**\n"]
     for t in tickets[:15]:
         lines.append(
             f"- **#{t['id']}** [{t['status']}] {t['subject']}\n"
@@ -17900,21 +17974,7 @@ async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
         await interaction.followup.send(f"❌ Ticket #{ticket_id} not found.", ephemeral=True)
         return
 
-    embed = discord.Embed(
-        title=f"#{ticket['id']} — {ticket['subject']}",
-        url=ticket.get("url", ""),
-        color=0x0099FF,
-    )
-    embed.add_field(name="Status", value=ticket.get("status", "Unknown"), inline=True)
-    embed.add_field(name="Priority", value=ticket.get("priority", "Unknown"), inline=True)
-    embed.add_field(name="Type", value=ticket.get("type", "N/A"), inline=True)
-    if ticket.get("description"):
-        desc = ticket["description"][:1024] if len(ticket["description"]) > 1024 else ticket["description"]
-        embed.add_field(name="Description", value=desc, inline=False)
-    if ticket.get("tags"):
-        embed.add_field(name="Tags", value=", ".join(ticket["tags"][:10]), inline=False)
-    if ticket.get("created_at"):
-        embed.set_footer(text=f"Created: {ticket['created_at']} | Updated: {ticket.get('updated_at', 'N/A')}")
+    embed = _build_ticket_embed(ticket)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
