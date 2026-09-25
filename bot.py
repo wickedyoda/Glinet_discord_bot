@@ -817,6 +817,38 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 FORUM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FORUM_REQUEST_TIMEOUT_SECONDS", "10"))
 FORUM_API_KEY = str(os.getenv("FORUM_API_KEY", "") or "").strip()
 FORUM_API_USERNAME = str(os.getenv("FORUM_API_USERNAME", "") or "").strip()
+FRESHDESK_ADMIN_raw = os.getenv("FRESHDESK_ADMIN", "0").strip()
+FRESHDESK_ADMIN_ROLE_ID = int(FRESHDESK_ADMIN_raw) if FRESHDESK_ADMIN_raw.isdigit() else 0
+FRESHDESK_USER_raw = os.getenv("FRESHDESK_USER", "0").strip()
+FRESHDESK_USER_ROLE_ID = int(FRESHDESK_USER_raw) if FRESHDESK_USER_raw.isdigit() else 0
+
+
+def can_use_freshdesk_admin(interaction: discord.Interaction) -> bool:
+    """Check if user has Freshdesk admin or moderator role."""
+    if not interaction.guild or not interaction.user:
+        return False
+    member = interaction.guild.get_member(interaction.user.id)
+    if not member:
+        return False
+    return any(
+        role.id in {FRESHDESK_ADMIN_ROLE_ID, *MODERATOR_ROLE_IDS}
+        for role in member.roles
+    )
+
+
+def can_use_freshdesk_user(interaction: discord.Interaction) -> bool:
+    """Check if user has Freshdesk user, admin, or moderator role."""
+    if not interaction.guild or not interaction.user:
+        return False
+    member = interaction.guild.get_member(interaction.user.id)
+    if not member:
+        return False
+    return any(
+        role.id in {FRESHDESK_USER_ROLE_ID, FRESHDESK_ADMIN_ROLE_ID, *MODERATOR_ROLE_IDS}
+        for role in member.roles
+    )
+
+
 OPENWRT_FORUM_BASE_URL = "https://forum.openwrt.org"
 OPENWRT_FORUM_MAX_RESULTS = 10
 OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS", "10"))
@@ -17827,22 +17859,110 @@ def _freshdesk_not_configured_reply():
     )
 
 
-@tree.command(name="support-ticket-search", description="Search GL.iNet Freshdesk support tickets")
-@app_commands.describe(query="Search query (e.g. status:2, priority:4)")
+def _build_ticket_embed(ticket: dict) -> discord.Embed:
+    embed = discord.Embed(
+        title=f"#{ticket['id']} — {ticket['subject']}",
+        url=ticket.get("url", ""),
+        color=0x0099FF,
+    )
+    embed.add_field(name="Status", value=ticket.get("status", "Unknown"), inline=True)
+    embed.add_field(name="Priority", value=ticket.get("priority", "Unknown"), inline=True)
+    embed.add_field(name="Type", value=ticket.get("type", "N/A"), inline=True)
+    requester = ticket.get("requester", {})
+    if isinstance(requester, dict) and requester.get("email"):
+        embed.add_field(name="Requester", value=requester["email"], inline=True)
+    if ticket.get("description"):
+        desc = ticket["description"][:1024] if len(ticket["description"]) > 1024 else ticket["description"]
+        embed.add_field(name="Description", value=desc, inline=False)
+    if ticket.get("tags"):
+        embed.add_field(name="Tags", value=", ".join(ticket["tags"][:10]), inline=False)
+    if ticket.get("created_at"):
+        embed.set_footer(text=f"Created: {ticket['created_at']} | Updated: {ticket.get('updated_at', 'N/A')}")
+    return embed
+
+
+@tree.command(name="support-ticket-search", description="Search GL.iNet Freshdesk tickets by email and ticket number")
+@app_commands.describe(
+    email="Requester email to filter by",
+    ticket_id="Specific ticket ID to find (optional — omit to list all tickets for this email)",
+)
 @app_commands.checks.cooldown(1, 5.0)
-async def support_ticket_search(interaction: discord.Interaction, query: str):
-    logger.info("/support-ticket-search invoked by %s with query: %s", f"{interaction.user} (id: {interaction.user.id})", query)
+async def support_ticket_search(interaction: discord.Interaction, email: str, ticket_id: str | None = None):
+    if not can_use_freshdesk_user(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk User or Admin role to search tickets.", ephemeral=True
+        )
+        return
+    if not can_use_freshdesk_admin(interaction):
+        # User role can only search their own email
+        member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        user_email = getattr(member, 'email', '') or ''
+        if not user_email or user_email.strip().lower() != email.strip().lower():
+            await interaction.response.send_message(
+                "❌ You can only view your own tickets.", ephemeral=True
+            )
+            return
+    logger.info(
+        "/support-ticket-search invoked by %s for email: %s ticket: %s",
+        f"{interaction.user} (id: {interaction.user.id})",
+        email,
+        ticket_id,
+    )
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
+
+    # If ticket_id is provided, first validate it is numeric and belongs to this email
+    if ticket_id is not None:
+        if not ticket_id.strip().isdigit():
+            await interaction.followup.send("❌ Ticket ID must be a number.", ephemeral=True)
+            return
+
+        try:
+            ticket = await asyncio.to_thread(
+                fetch_freshdesk_ticket,
+                base_url=config["base_url"],
+                ticket_id=int(ticket_id),
+                timeout_seconds=config["timeout"],
+                api_key=config["api_key"],
+            )
+        except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
+            await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
+            return
+        except Exception as exc:
+            await interaction.followup.send(f"❌ Error fetching ticket: {exc}", ephemeral=True)
+            return
+
+        if not ticket:
+            await interaction.followup.send(f"❌ Ticket #{ticket_id} not found.", ephemeral=True)
+            return
+
+        # Check the requester email matches
+        requester = ticket.get("requester", {})
+        requester_email = str(
+            requester.get("email", "") if isinstance(requester, dict) else ""
+        ).strip().lower()
+        if requester_email != email.strip().lower():
+            await interaction.followup.send(
+                "❌ Access denied: this ticket does not belong to the specified email.",
+                ephemeral=True,
+            )
+            return
+
+        # Show single ticket
+        embed = _build_ticket_embed(ticket)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return
+
+    # No ticket ID — list all tickets for this email
     try:
         tickets = await asyncio.to_thread(
             search_freshdesk_tickets,
             base_url=config["base_url"],
-            query=query,
+            query=f'requester_email:"{email.strip()}"',
             max_results=20,
             timeout_seconds=config["timeout"],
             api_key=config["api_key"],
@@ -17850,18 +17970,18 @@ async def support_ticket_search(interaction: discord.Interaction, query: str):
     except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
         await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
         return
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         await interaction.followup.send(f"❌ Error searching Freshdesk: {exc}", ephemeral=True)
         return
 
     if not tickets:
         await interaction.followup.send(
-            f"🔎 No tickets found for `{query}` on `{config['base_url']}`.",
+            f"🔎 No tickets found for `{email}`.",
             ephemeral=True,
         )
         return
 
-    lines = [f"**Freshdesk search: `{query}`**\n"]
+    lines = [f"**Freshdesk tickets for `{email}`**\n"]
     for t in tickets[:15]:
         lines.append(
             f"- **#{t['id']}** [{t['status']}] {t['subject']}\n"
@@ -17874,6 +17994,11 @@ async def support_ticket_search(interaction: discord.Interaction, query: str):
 @app_commands.describe(ticket_id="Freshdesk ticket ID (e.g. 12345)")
 @app_commands.checks.cooldown(1, 5.0)
 async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
+    if not can_use_freshdesk_user(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk User or Admin role to view tickets.", ephemeral=True
+        )
+        return
     logger.info("/support-ticket-view invoked by %s for ticket: %s", f"{interaction.user} (id: {interaction.user.id})", ticket_id)
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
@@ -17900,31 +18025,21 @@ async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
         await interaction.followup.send(f"❌ Ticket #{ticket_id} not found.", ephemeral=True)
         return
 
-    embed = discord.Embed(
-        title=f"#{ticket['id']} — {ticket['subject']}",
-        url=ticket.get("url", ""),
-        color=0x0099FF,
-    )
-    embed.add_field(name="Status", value=ticket.get("status", "Unknown"), inline=True)
-    embed.add_field(name="Priority", value=ticket.get("priority", "Unknown"), inline=True)
-    embed.add_field(name="Type", value=ticket.get("type", "N/A"), inline=True)
-    if ticket.get("description"):
-        desc = ticket["description"][:1024] if len(ticket["description"]) > 1024 else ticket["description"]
-        embed.add_field(name="Description", value=desc, inline=False)
-    if ticket.get("tags"):
-        embed.add_field(name="Tags", value=", ".join(ticket["tags"][:10]), inline=False)
-    if ticket.get("created_at"):
-        embed.set_footer(text=f"Created: {ticket['created_at']} | Updated: {ticket.get('updated_at', 'N/A')}")
+    embed = _build_ticket_embed(ticket)
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 @tree.command(name="support-ticket-categories", description="List Freshdesk solution/knowledge-base categories")
 @app_commands.checks.cooldown(1, 5.0)
 async def support_ticket_categories(interaction: discord.Interaction):
+    if not can_use_freshdesk_user(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk User or Admin role to view categories.", ephemeral=True
+        )
+        return
     logger.info("/support-ticket-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
-        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -18094,7 +18209,10 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
 @app_commands.checks.cooldown(1, 5.0)
 async def create_ticket(interaction: discord.Interaction):
     logger.info("/create-ticket invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
-    if not await ensure_interaction_command_access(interaction, "create_ticket"):
+    if not can_use_freshdesk_admin(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk Admin role to create tickets.", ephemeral=True
+        )
         return
     if interaction.guild is None:
         await interaction.response.send_message(

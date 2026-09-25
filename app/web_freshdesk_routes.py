@@ -104,11 +104,15 @@ def viewer_page():
             base_url = str(request.form.get("FRESHDESK_BASE_URL", "")).strip().rstrip("/")
             api_key = str(request.form.get("FRESHDESK_API_KEY", "")).strip()
             timeout = str(request.form.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15")).strip()
+            admin_role_id = str(request.form.get("FRESHDESK_ADMIN", "0")).strip()
+            user_role_id = str(request.form.get("FRESHDESK_USER", "0")).strip()
 
             updates = {
                 "FRESHDESK_ENABLED": str(enabled).lower(),
                 "FRESHDESK_BASE_URL": base_url,
                 "FRESHDESK_REQUEST_TIMEOUT_SECONDS": timeout,
+                "FRESHDESK_ADMIN": admin_role_id,
+                "FRESHDESK_USER": user_role_id,
             }
             # Only update API key if provided
             if api_key:
