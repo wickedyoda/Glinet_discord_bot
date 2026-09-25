@@ -7,8 +7,47 @@ from datetime import UTC, datetime
 
 import discord
 
-if False:
-    pass  # was: if TYPE_CHECKING: pass
+__all__ = [
+    "ADMIN_ONLY_COMMAND_KEYS",
+    "DEFAULT_ALLOWED_ROLE_NAMES",
+    "MODERATOR_ONLY_COMMAND_KEYS",
+    "COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR",
+    "COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES",
+    "COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS",
+    "COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC",
+    "COMMAND_PERMISSION_DEFAULTS",
+    "COMMAND_PERMISSION_MODE_CUSTOM_ROLES",
+    "COMMAND_PERMISSION_MODE_DEFAULT",
+    "COMMAND_PERMISSION_MODE_DISABLED",
+    "COMMAND_PERMISSION_MODE_PUBLIC",
+    "COMMAND_PERMISSION_METADATA",
+    "COMMAND_PERMISSION_POLICY_LABELS",
+    "has_allowed_role",
+    "has_moderator_access",
+    "has_admin_access",
+    "is_random_choice_eligible",
+    "normalize_permission_mode",
+    "normalize_role_ids",
+    "normalize_command_permission_rule",
+    "load_command_permission_rules",
+    "save_command_permission_rules",
+    "resolve_command_permission_state",
+    "member_has_any_role_id",
+    "can_use_command",
+    "build_command_permission_denied_message",
+    "ensure_interaction_command_access",
+    "ensure_prefix_command_access",
+    "send_safe_interaction_message",
+    "send_safe_interaction_modal",
+    "reply_with_default_visibility",
+    "get_text_channel",
+    "log_interaction",
+    "build_command_permissions_web_payload",
+    "run_web_get_command_permissions",
+    "run_web_update_command_permissions",
+    "normalize_honeypot_record",
+    "load_honeypot_entries",
+]
 
 # ---------------------------------------------------------------------------
 # Constants — defined in dependency order so names are available when used
@@ -243,32 +282,6 @@ command_permissions_cache: dict = {}
 # ---------------------------------------------------------------------------
 # Permission check functions
 # ---------------------------------------------------------------------------
-from __future__ import annotations
-
-import json
-import re
-import threading
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
-
-import discord
-
-if TYPE_CHECKING:
-    from discord import Guild
-    from discord.ext import commands
-
-from app.command_permissions import (
-    ADMIN_ONLY_COMMAND_KEYS,
-    COMMAND_PERMISSION_MODE_CUSTOM_ROLES,
-    COMMAND_PERMISSION_MODE_DEFAULT,
-    COMMAND_PERMISSION_MODE_DISABLED,
-    COMMAND_PERMISSION_MODE_PUBLIC,
-    COMMAND_PERMISSION_METADATA,
-    COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
-    COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
-    COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
-    COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
-)
 
 
 def has_allowed_role(member: discord.Member) -> bool:
