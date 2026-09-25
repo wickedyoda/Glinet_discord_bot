@@ -137,8 +137,8 @@ class IRCBridge:
                 if server_id not in desired:
                     try:
                         self._clients[server_id].disconnect("Removed")
-                    except Exception:  # noqa: BLE001
-                        pass
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("Failed to disconnect removed IRC server: %s", e)
                     self._clients.pop(server_id, None)
 
     def _connect_server(self, server: IRCServerConfig) -> None:
@@ -147,8 +147,8 @@ class IRCBridge:
             if old is not None:
                 try:
                     old.disconnect("Reconnecting")
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Failed to disconnect old IRC bridge: %s", e)
             now = time.time()
             last = self._last_connect_attempt.get(server.id, 0.0)
             delay = self._next_backoff(server.id)
