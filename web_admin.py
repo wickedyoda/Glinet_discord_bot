@@ -167,8 +167,8 @@ INT_KEYS = {
     "FORUM_MAX_RESULTS",
     "FRESHDESK_POLL_INTERVAL_SECONDS",
     "FRESHDESK_REQUEST_TIMEOUT_SECONDS",
-    "FRESHDESK_ADMIN_ROLE_ID",
-    "FRESHDESK_USER_ROLE_ID",
+    "FRESHDESK_ADMIN",
+    "FRESHDESK_USER",
     "DOCS_MAX_RESULTS_PER_SITE",
     "DOCS_INDEX_TTL_SECONDS",
     "SEARCH_RESPONSE_MAX_CHARS",
@@ -375,12 +375,12 @@ ENV_FIELDS = [
     ),
     ("ADMIN_ROLE_ID", "Admin Role ID", "Additional role ID allowed to moderate."),
     (
-        "FRESHDESK_ADMIN_ROLE_ID",
+        "FRESHDESK_ADMIN",
         "Freshdesk Admin Role ID",
         "Role ID allowed to run all Freshdesk support commands (search, view, create).",
     ),
     (
-        "FRESHDESK_USER_ROLE_ID",
+        "FRESHDESK_USER",
         "Freshdesk User Role ID",
         "Role ID allowed to view their own tickets only (view/search restricted to own email).",
     ),
@@ -9088,8 +9088,8 @@ def create_web_app(
             "FRESHDESK_API_KEY": env_vals.get("FRESHDESK_API_KEY", ""),
             "FRESHDESK_POLL_INTERVAL_SECONDS": env_vals.get("FRESHDESK_POLL_INTERVAL_SECONDS", ""),
             "FRESHDESK_REQUEST_TIMEOUT_SECONDS": env_vals.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15"),
-            "FRESHDESK_ADMIN_ROLE_ID": env_vals.get("FRESHDESK_ADMIN_ROLE_ID", "0"),
-            "FRESHDESK_USER_ROLE_ID": env_vals.get("FRESHDESK_USER_ROLE_ID", "0"),
+            "FRESHDESK_ADMIN": env_vals.get("FRESHDESK_ADMIN", "0"),
+            "FRESHDESK_USER": env_vals.get("FRESHDESK_USER", "0"),
         }
 
     def _on_save_freshdesk_env(updates: dict, actor_email: str, guild_id: str) -> dict:

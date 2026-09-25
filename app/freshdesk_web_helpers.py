@@ -111,11 +111,11 @@ def render_freshdesk_viewer_body(
         </tr>
         <tr>
           <td><strong>Admin Role ID</strong></td>
-          <td><input type="text" name="FRESHDESK_ADMIN_ROLE_ID" value="{escape(str(effective_settings.get('FRESHDESK_ADMIN_ROLE_ID', 0)), quote=True)}" placeholder="e.g. 1234567890123456789" style="width:350px;" /> <small class="muted">Required for /create-ticket and /support-ticket-view</small></td>
+          <td><input type="text" name="FRESHDESK_ADMIN" value="{escape(str(effective_settings.get('FRESHDESK_ADMIN', 0)), quote=True)}" placeholder="e.g. 1234567890123456789" style="width:350px;" /> <small class="muted">Required for /create-ticket and /support-ticket-view</small></td>
         </tr>
         <tr>
           <td><strong>User Role ID</strong></td>
-          <td><input type="text" name="FRESHDESK_USER_ROLE_ID" value="{escape(str(effective_settings.get('FRESHDESK_USER_ROLE_ID', 0)), quote=True)}" placeholder="e.g. 1234567890123456789" style="width:350px;" /> <small class="muted">Required for /support-ticket-search and /support-ticket-view (own tickets only)</small></td>
+          <td><input type="text" name="FRESHDESK_USER" value="{escape(str(effective_settings.get('FRESHDESK_USER', 0)), quote=True)}" placeholder="e.g. 1234567890123456789" style="width:350px;" /> <small class="muted">Required for /support-ticket-search and /support-ticket-view (own tickets only)</small></td>
         </tr>
     """
 

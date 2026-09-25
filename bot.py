@@ -817,10 +817,10 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 FORUM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FORUM_REQUEST_TIMEOUT_SECONDS", "10"))
 FORUM_API_KEY = str(os.getenv("FORUM_API_KEY", "") or "").strip()
 FORUM_API_USERNAME = str(os.getenv("FORUM_API_USERNAME", "") or "").strip()
-FRESHDESK_ADMIN_ROLE_ID_raw = os.getenv("FRESHDESK_ADMIN_ROLE_ID", "0").strip()
-FRESHDESK_ADMIN_ROLE_ID = int(FRESHDESK_ADMIN_ROLE_ID_raw) if FRESHDESK_ADMIN_ROLE_ID_raw.isdigit() else 0
-FRESHDESK_USER_ROLE_ID_raw = os.getenv("FRESHDESK_USER_ROLE_ID", "0").strip()
-FRESHDESK_USER_ROLE_ID = int(FRESHDESK_USER_ROLE_ID_raw) if FRESHDESK_USER_ROLE_ID_raw.isdigit() else 0
+FRESHDESK_ADMIN_raw = os.getenv("FRESHDESK_ADMIN", "0").strip()
+FRESHDESK_ADMIN_ROLE_ID = int(FRESHDESK_ADMIN_raw) if FRESHDESK_ADMIN_raw.isdigit() else 0
+FRESHDESK_USER_raw = os.getenv("FRESHDESK_USER", "0").strip()
+FRESHDESK_USER_ROLE_ID = int(FRESHDESK_USER_raw) if FRESHDESK_USER_raw.isdigit() else 0
 
 
 def can_use_freshdesk_admin(interaction: discord.Interaction) -> bool:
