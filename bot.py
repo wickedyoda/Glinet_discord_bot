@@ -18186,7 +18186,33 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
         self._config = config or {}
 
     async def on_submit(self, interaction: discord.Interaction):
-        await _freshdesk_create_on_submit(interaction, self, self._target_channel_id, self._ticket_category, self._config)
+        # Manually populate values from interaction data.
+        # discord.py 2.3.x does not reliably populate TextInput._value on modal
+        # submit, so we extract from the raw component data instead.
+        data = interaction.data
+        components = data.get("components", [])
+        extracted: list[str] = []
+        for comp_group in components:
+            for comp in comp_group.get("components", []):
+                if comp.get("type") == 3:  # text_input
+                    extracted.append(comp.get("value", "") or "")
+        # Assign in definition order: name, email, subject, message_body
+        if len(extracted) >= 4:
+            self.name._value = extracted[0]
+            self.email._value = extracted[1]
+            self.subject._value = extracted[2]
+            self.message_body._value = extracted[3]
+        elif len(extracted) >= 1:
+            self.name._value = extracted[0]
+            if len(extracted) >= 2:
+                self.email._value = extracted[1]
+            if len(extracted) >= 3:
+                self.subject._value = extracted[2]
+            if len(extracted) >= 4:
+                self.message_body._value = extracted[3]
+        await _freshdesk_create_on_submit(
+            interaction, self, self._target_channel_id, self._ticket_category, self._config
+        )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
         logger.exception("Freshdesk create modal error")
