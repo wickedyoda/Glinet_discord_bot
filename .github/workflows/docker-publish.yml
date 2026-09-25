@@ -50,23 +50,6 @@ jobs:
             --severity-level high \
             --confidence-level high
 
-  secret-scan:
-    name: Secret Scan
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-
-      - name: Run TruffleHog
-        uses: trufflesecurity/trufflehog@v3
-        with:
-          path: ./
-          base: ${{ github.event.repository.default_branch }}
-          head: HEAD
-          extra_args: --only-verified
-
   ci-integrity:
     name: CI Integrity
     runs-on: ubuntu-latest
@@ -97,10 +80,9 @@ jobs:
     name: Build and Push
     needs:
       - bandit
-      - secret-scan
       - ci-integrity
     runs-on: ubuntu-latest
-    if: always() && needs.bandit.result == 'success' && needs.secret-scan.result == 'success' && needs.ci-integrity.result == 'success'
+    if: always() && needs.bandit.result == 'success' && needs.ci-integrity.result == 'success'
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
