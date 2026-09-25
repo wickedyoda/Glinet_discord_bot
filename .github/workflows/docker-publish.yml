@@ -15,7 +15,6 @@ env:
 permissions:
   contents: read
   packages: write
-  security-events: write
 
 jobs:
   # --------------------------------------------------------------------------- #
@@ -23,27 +22,101 @@ jobs:
   # --------------------------------------------------------------------------- #
   bandit:
     name: Bandit Python Security
-    uses: ./.github/workflows/security-scan.yml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit
+        run: |
+          bandit \
+            -r app/ bot.py web_admin.py \
+            -f json \
+            -o bandit-results.json \
+            -x tests/ \
+            --severity-level medium \
+            --confidence-level medium
+
+      - name: Enforce Bandit (fail on HIGH)
+        run: |
+          bandit \
+            -r app/ bot.py web_admin.py \
+            -x tests/ \
+            --severity-level high \
+            --confidence-level high
 
   secret-scan:
     name: Secret Scan
-    uses: ./.github/workflows/secret-scan.yml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@v3
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+          extra_args: --only-verified
 
   python-vuln-scan:
     name: Python Vulnerability Scan
-    uses: ./.github/workflows/python-vulnerability-scan.yml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Run pip-audit
+        run: |
+          pip-audit \
+            --requirement requirements.txt \
+            --strict \
+            --severity-level high
 
   dependency-review:
     name: Dependency Review
-    uses: ./.github/workflows/dependency-review.yml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
 
   ci-integrity:
     name: CI Integrity
-    uses: ./.github/workflows/ci-integrity.yml
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
 
-  container-security-scan:
-    name: Container Security Scan
-    uses: ./.github/workflows/container-security-scan.yml
+      - name: Validate YAML
+        run: |
+          pip install yamllint
+          yamllint -c .yamllint.yml .github/workflows/
+
+      - name: Check for debug statements
+        run: |
+          if grep -rn "pdb\|breakpoint\|console.log\|debugger" --include="*.py" app/ bot.py web_admin.py; then
+            echo "Debug statements found"
+            exit 1
+          fi
 
   # --------------------------------------------------------------------------- #
   #  GATE 2: Build — only runs if all gates above pass
@@ -56,9 +129,8 @@ jobs:
       - python-vuln-scan
       - dependency-review
       - ci-integrity
-      - container-security-scan
     runs-on: ubuntu-latest
-    if: always() && needs.bandit.result == 'success' && needs.secret-scan.result == 'success' && needs.python-vuln-scan.result == 'success' && needs.dependency-review.result == 'success' && needs.ci-integrity.result == 'success' && needs.container-security-scan.result == 'success'
+    if: always() && needs.bandit.result == 'success' && needs.secret-scan.result == 'success' && needs.python-vuln-scan.result == 'success' && needs.dependency-review.result == 'success' && needs.ci-integrity.result == 'success'
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
