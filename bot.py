@@ -817,6 +817,38 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 FORUM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FORUM_REQUEST_TIMEOUT_SECONDS", "10"))
 FORUM_API_KEY = str(os.getenv("FORUM_API_KEY", "") or "").strip()
 FORUM_API_USERNAME = str(os.getenv("FORUM_API_USERNAME", "") or "").strip()
+FRESHDESK_ADMIN_ROLE_ID_raw = os.getenv("FRESHDESK_ADMIN_ROLE_ID", "0").strip()
+FRESHDESK_ADMIN_ROLE_ID = int(FRESHDESK_ADMIN_ROLE_ID_raw) if FRESHDESK_ADMIN_ROLE_ID_raw.isdigit() else 0
+FRESHDESK_USER_ROLE_ID_raw = os.getenv("FRESHDESK_USER_ROLE_ID", "0").strip()
+FRESHDESK_USER_ROLE_ID = int(FRESHDESK_USER_ROLE_ID_raw) if FRESHDESK_USER_ROLE_ID_raw.isdigit() else 0
+
+
+def can_use_freshdesk_admin(interaction: discord.Interaction) -> bool:
+    """Check if user has Freshdesk admin or moderator role."""
+    if not interaction.guild or not interaction.user:
+        return False
+    member = interaction.guild.get_member(interaction.user.id)
+    if not member:
+        return False
+    return any(
+        role.id in {FRESHDESK_ADMIN_ROLE_ID, *MODERATOR_ROLE_IDS}
+        for role in member.roles
+    )
+
+
+def can_use_freshdesk_user(interaction: discord.Interaction) -> bool:
+    """Check if user has Freshdesk user, admin, or moderator role."""
+    if not interaction.guild or not interaction.user:
+        return False
+    member = interaction.guild.get_member(interaction.user.id)
+    if not member:
+        return False
+    return any(
+        role.id in {FRESHDESK_USER_ROLE_ID, FRESHDESK_ADMIN_ROLE_ID, *MODERATOR_ROLE_IDS}
+        for role in member.roles
+    )
+
+
 OPENWRT_FORUM_BASE_URL = "https://forum.openwrt.org"
 OPENWRT_FORUM_MAX_RESULTS = 10
 OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("OPENWRT_FORUM_REQUEST_TIMEOUT_SECONDS", "10"))
@@ -17856,6 +17888,20 @@ def _build_ticket_embed(ticket: dict) -> discord.Embed:
 )
 @app_commands.checks.cooldown(1, 5.0)
 async def support_ticket_search(interaction: discord.Interaction, email: str, ticket_id: str | None = None):
+    if not can_use_freshdesk_user(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk User or Admin role to search tickets.", ephemeral=True
+        )
+        return
+    if not can_use_freshdesk_admin(interaction):
+        # User role can only search their own email
+        member = interaction.guild.get_member(interaction.user.id) if interaction.guild else None
+        user_email = getattr(member, 'email', '') or ''
+        if not user_email or user_email.strip().lower() != email.strip().lower():
+            await interaction.response.send_message(
+                "❌ You can only view your own tickets.", ephemeral=True
+            )
+            return
     logger.info(
         "/support-ticket-search invoked by %s for email: %s ticket: %s",
         f"{interaction.user} (id: {interaction.user.id})",
@@ -17948,6 +17994,11 @@ async def support_ticket_search(interaction: discord.Interaction, email: str, ti
 @app_commands.describe(ticket_id="Freshdesk ticket ID (e.g. 12345)")
 @app_commands.checks.cooldown(1, 5.0)
 async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
+    if not can_use_freshdesk_user(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk User or Admin role to view tickets.", ephemeral=True
+        )
+        return
     logger.info("/support-ticket-view invoked by %s for ticket: %s", f"{interaction.user} (id: {interaction.user.id})", ticket_id)
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
@@ -17981,10 +18032,14 @@ async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
 @tree.command(name="support-ticket-categories", description="List Freshdesk solution/knowledge-base categories")
 @app_commands.checks.cooldown(1, 5.0)
 async def support_ticket_categories(interaction: discord.Interaction):
+    if not can_use_freshdesk_user(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk User or Admin role to view categories.", ephemeral=True
+        )
+        return
     logger.info("/support-ticket-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
-        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -18154,7 +18209,10 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
 @app_commands.checks.cooldown(1, 5.0)
 async def create_ticket(interaction: discord.Interaction):
     logger.info("/create-ticket invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
-    if not await ensure_interaction_command_access(interaction, "create_ticket"):
+    if not can_use_freshdesk_admin(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk Admin role to create tickets.", ephemeral=True
+        )
         return
     if interaction.guild is None:
         await interaction.response.send_message(
