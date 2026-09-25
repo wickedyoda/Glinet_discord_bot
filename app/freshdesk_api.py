@@ -381,9 +381,10 @@ def create_freshdesk_ticket(
     if custom_fields:
         payload["custom_fields"] = custom_fields
     if email.strip():
-        payload["requester"] = {"email": email.strip(), "name": name.strip() or email.strip().split("@", 1)[0]}
+        payload["email"] = email.strip()
+        payload["name"] = name.strip() or email.strip().split("@", 1)[0]
     else:
-        payload["requester"] = {"name": name.strip() or "Discord User"}
+        payload["name"] = name.strip() or "Discord User"
     response = requests.post(
         endpoint,
         json=payload,

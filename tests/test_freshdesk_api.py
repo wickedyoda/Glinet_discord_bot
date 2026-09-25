@@ -347,11 +347,12 @@ def test_create_freshdesk_ticket_success(mock_post):
     assert ticket["id"] == 42
     assert "glinetservice.freshdesk.com/helpdesk/tickets/42" in ticket["url"]
     assert ticket["subject"] == "Test subject"
-    # Confirm requester name/email passed into payload
+    # Confirm email/name passed into payload as top-level fields
     sent_payload = mock_post.call_args.kwargs.get("json", {})
     assert sent_payload["subject"] == "Test subject"
     assert sent_payload["description"] == "Body text"
-    assert sent_payload["requester"] == {"email": "user@example.com", "name": "User"}
+    assert sent_payload["email"] == "user@example.com"
+    assert sent_payload["name"] == "User"
     mock_post.assert_called_once()
 
 
@@ -382,4 +383,4 @@ def test_create_freshdesk_ticket_without_email_uses_name_only(mock_post):
     )
     assert ticket["id"] == 1
     sent_payload = mock_post.call_args.kwargs.get("json", {})
-    assert sent_payload["requester"] == {"name": "Discord User"}
+    assert sent_payload["name"] == "Discord User"
