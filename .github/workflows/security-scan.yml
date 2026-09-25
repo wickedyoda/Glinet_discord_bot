@@ -34,7 +34,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Bandit
-        run: pip install bandit
+        run: pip install bandit bandit-sarif-formatter
 
       - name: Run Bandit (SARIF)
         run: |
