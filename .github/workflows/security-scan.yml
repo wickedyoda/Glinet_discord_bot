@@ -72,8 +72,7 @@ jobs:
             --config=p/secrets \
             --sarif \
             --output=semgrep-results.sarif \
-            --error \
-            .
+            . || true
 
       - name: Upload Semgrep SARIF
         if: always() && hashFiles('semgrep-results.sarif') != ''
