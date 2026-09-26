@@ -18194,7 +18194,7 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
         extracted: list[str] = []
         for comp_group in components:
             for comp in comp_group.get("components", []):
-                if comp.get("type") == 3:  # text_input
+                if comp.get("type") == discord.ComponentType.text_input.value:
                     extracted.append(comp.get("value", "") or "")
         # Assign in definition order: name, email, subject, message_body
         if len(extracted) >= 4:

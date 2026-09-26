@@ -78,15 +78,15 @@ def get_tag_responses(guild_id: int | None = None):
 
 
 def load_tag_responses(guild_id: int | None = None):
-    from bot import _load_tag_responses_impl
+    from bot import load_tag_responses as _load_tag_responses
 
-    return _load_tag_responses_impl(guild_id)
+    return _load_tag_responses(guild_id)
 
 
 def upgrade_legacy_default_tag_responses(guild_id: int | None = None) -> None:
-    from bot import upgrade_legacy_default_tag_responses_impl
+    from bot import upgrade_legacy_default_tag_responses as _upgrade_legacy_default_tag_responses
 
-    return upgrade_legacy_default_tag_responses_impl(guild_id)
+    return _upgrade_legacy_default_tag_responses(guild_id)
 
 
 def build_command_list(guild_id: int | None = None) -> str:
@@ -141,8 +141,11 @@ def register_tag_commands_for_guild(guild_id: int | None) -> None:
 
 
 async def sync_commands_for_guild(guild: discord.Guild):
-    from bot import logger, register_tag_commands_for_guild, tree
+    from bot import logger, register_tag_commands_for_guild
 
+    if tree is None:
+        logger.warning("Command tree is not initialized; skipping guild sync for %s", guild.id)
+        return []
     guild_obj = discord.Object(id=guild.id)
     tree.clear_commands(guild=guild_obj)
     tree.copy_global_to(guild=guild_obj)
@@ -177,7 +180,7 @@ async def reload_tag_commands_runtime(guild_id: int | None = None) -> None:
 
 
 def schedule_tag_command_refresh(guild_id: int | None = None) -> bool:
-    from bot import bot as _bot
+    from bot import bot as _bot, logger
 
     loop = getattr(_bot, "loop", None)
     if loop is None or not loop.is_running():
