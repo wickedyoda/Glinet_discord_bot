@@ -143,15 +143,16 @@ def register_tag_commands_for_guild(guild_id: int | None) -> None:
 async def sync_commands_for_guild(guild: discord.Guild):
     from bot import logger, register_tag_commands_for_guild
 
-    if tree is None:
+    command_tree = tree
+    if command_tree is None:
         logger.warning("Command tree is not initialized; skipping guild sync for %s", guild.id)
         return []
     guild_obj = discord.Object(id=guild.id)
-    tree.clear_commands(guild=guild_obj)
-    tree.copy_global_to(guild=guild_obj)
+    command_tree.clear_commands(guild=guild_obj)
+    command_tree.copy_global_to(guild=guild_obj)
     register_tag_commands_for_guild(guild.id)
     try:
-        synced = await tree.sync(guild=guild_obj)
+        synced = await command_tree.sync(guild=guild_obj)
     except TimeoutError:
         logger.warning("Timed out syncing commands to guild %s", guild.id)
         return []
