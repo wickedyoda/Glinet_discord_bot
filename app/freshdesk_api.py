@@ -360,7 +360,6 @@ def create_freshdesk_ticket(
     name: str = "",
     priority: int = 1,
     status: int = 2,
-    ticket_type: str = "Question",
     group_id: int = 0,
     custom_fields: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -374,17 +373,14 @@ def create_freshdesk_ticket(
         "description": description[:4000],
         "status": status,
         "priority": priority,
-        "ticket_type": ticket_type,
+        "name": name.strip() or (email.strip().split("@", 1)[0] if email.strip() else "Discord User"),
     }
+    if email.strip():
+        payload["email"] = email.strip()
     if group_id:
         payload["group_id"] = int(group_id)
     if custom_fields:
         payload["custom_fields"] = custom_fields
-    if email.strip():
-        payload["email"] = email.strip()
-        payload["name"] = name.strip() or email.strip().split("@", 1)[0]
-    else:
-        payload["name"] = name.strip() or "Discord User"
     response = requests.post(
         endpoint,
         json=payload,
@@ -406,7 +402,7 @@ def create_freshdesk_ticket(
         "url": f"{base_url.rstrip('/')}/helpdesk/tickets/{ticket_id}" if ticket_id else "",
         "status": str(data.get("status", status)),
         "priority": str(data.get("priority", priority)),
-        "type": str(data.get("ticket_type", ticket_type)).strip() or "N/A",
+        "type": str(data.get("ticket_type", "")).strip() or "N/A",
         "created_at": str(data.get("created_at", "")),
         "updated_at": str(data.get("updated_at", "")),
         "tags": [str(t) for t in (data.get("tags") or []) if str(t).strip()],
