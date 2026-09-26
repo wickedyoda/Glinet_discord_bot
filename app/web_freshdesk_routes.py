@@ -104,8 +104,20 @@ def viewer_page():
             base_url = str(request.form.get("FRESHDESK_BASE_URL", "")).strip().rstrip("/")
             api_key = str(request.form.get("FRESHDESK_API_KEY", "")).strip()
             timeout = str(request.form.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15")).strip()
-            admin_role_id = str(request.form.get("FRESHDESK_ADMIN", "0")).strip()
-            user_role_id = str(request.form.get("FRESHDESK_USER", "0")).strip()
+            # Support multi-select: get all selected admin role IDs
+            admin_role_ids = request.form.getlist("FRESHDESK_ADMIN")
+            if not admin_role_ids:
+                # Fallback to text input for comma-separated values
+                admin_role_text = str(request.form.get("FRESHDESK_ADMIN", "0")).strip()
+                admin_role_ids = [x for x in admin_role_text.split(",") if x.strip().isdigit()]
+            admin_role_id = ",".join(sorted(set(admin_role_ids))) if admin_role_ids else "0"
+            # Support multi-select: get all selected user role IDs
+            user_role_ids = request.form.getlist("FRESHDESK_USER")
+            if not user_role_ids:
+                # Fallback to text input for comma-separated values
+                user_role_text = str(request.form.get("FRESHDESK_USER", "0")).strip()
+                user_role_ids = [x for x in user_role_text.split(",") if x.strip().isdigit()]
+            user_role_id = ",".join(sorted(set(user_role_ids))) if user_role_ids else "0"
 
             updates = {
                 "FRESHDESK_ENABLED": str(enabled).lower(),

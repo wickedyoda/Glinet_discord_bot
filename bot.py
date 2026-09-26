@@ -814,10 +814,19 @@ FORUM_MAX_RESULTS = int(os.getenv("FORUM_MAX_RESULTS", "5"))
 FORUM_REQUEST_TIMEOUT_SECONDS = int(os.getenv("FORUM_REQUEST_TIMEOUT_SECONDS", "10"))
 FORUM_API_KEY = str(os.getenv("FORUM_API_KEY", "") or "").strip()
 FORUM_API_USERNAME = str(os.getenv("FORUM_API_USERNAME", "") or "").strip()
-FRESHDESK_ADMIN_raw = os.getenv("FRESHDESK_ADMIN", "0").strip()
-FRESHDESK_ADMIN_ROLE_ID = int(FRESHDESK_ADMIN_raw) if FRESHDESK_ADMIN_raw.isdigit() else 0
-FRESHDESK_USER_raw = os.getenv("FRESHDESK_USER", "0").strip()
-FRESHDESK_USER_ROLE_ID = int(FRESHDESK_USER_raw) if FRESHDESK_USER_raw.isdigit() else 0
+# Freshdesk admin roles - supports comma-separated role IDs for multi-role selection
+_FRESHDESK_ADMIN_raw = os.getenv("FRESHDESK_ADMIN", "0,0").strip()
+FRESHDESK_ADMIN_ROLE_IDS = frozenset(
+    int(x) for x in _FRESHDESK_ADMIN_raw.split(",") if x.strip().isdigit()
+)
+FRESHDESK_ADMIN_ROLE_IDS = FRESHDESK_ADMIN_ROLE_IDS or frozenset({0})
+
+# Freshdesk user roles - supports comma-separated role IDs for multi-role selection
+_FRESHDESK_USER_raw = os.getenv("FRESHDESK_USER", "0,0").strip()
+FRESHDESK_USER_ROLE_IDS = frozenset(
+    int(x) for x in _FRESHDESK_USER_raw.split(",") if x.strip().isdigit()
+)
+FRESHDESK_USER_ROLE_IDS = FRESHDESK_USER_ROLE_IDS or frozenset({0})
 
 
 def can_use_freshdesk_admin(interaction: discord.Interaction) -> bool:
@@ -828,7 +837,7 @@ def can_use_freshdesk_admin(interaction: discord.Interaction) -> bool:
     if not member:
         return False
     return any(
-        role.id in {FRESHDESK_ADMIN_ROLE_ID, *MODERATOR_ROLE_IDS}
+        role.id in FRESHDESK_ADMIN_ROLE_IDS | MODERATOR_ROLE_IDS
         for role in member.roles
     )
 
@@ -841,7 +850,7 @@ def can_use_freshdesk_user(interaction: discord.Interaction) -> bool:
     if not member:
         return False
     return any(
-        role.id in {FRESHDESK_USER_ROLE_ID, FRESHDESK_ADMIN_ROLE_ID, *MODERATOR_ROLE_IDS}
+        role.id in (FRESHDESK_USER_ROLE_IDS | FRESHDESK_ADMIN_ROLE_IDS | MODERATOR_ROLE_IDS)
         for role in member.roles
     )
 
@@ -18330,27 +18339,30 @@ async def _freshdesk_create_on_submit(
             ephemeral=True,
         )
         return
-    overwrites: dict = {}
-    if guild and guild.default_role:
-        overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-    overwrites[interaction.user] = discord.PermissionOverwrite(
-        view_channel=True, send_messages=True, read_message_history=True
-    )
     try:
+        # For discord.py 2.3.2+, create_thread no longer accepts 'overwrite' parameter
+        # Private threads have automatic permission handling
         thread = await target_channel.create_thread(
             name=f"support-ticket-{ticket['id']}",
             message=None,
             type=discord.ChannelType.private_thread,
             reason=f"Freshdesk ticket #{ticket['id']} created by {interaction.user}",
         )
-        # Set thread permissions after creation (discord.py 2.3.x doesn't accept overwrite param)
-        for user_or_role, overwrite in overwrites.items():
-            await thread.set_permissions(user_or_role, overwrite=overwrite)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to create Freshdesk ticket thread")
         await interaction.followup.send(
             f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
             f"but the Discord thread could not be created: {exc}",
+            ephemeral=True,
+        )
+        return
+    try:
+        await thread.add_user(interaction.user)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to add requester to Freshdesk ticket thread")
+        await interaction.followup.send(
+            f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
+            f"but you could not be added to the Discord thread: {exc}",
             ephemeral=True,
         )
         return
