@@ -143,7 +143,7 @@ def register_tag_commands_for_guild(guild_id: int | None) -> None:
 async def sync_commands_for_guild(guild: discord.Guild):
     from bot import logger, register_tag_commands_for_guild
 
-    command_tree = tree
+    command_tree = globals().get("tree")
     if command_tree is None:
         logger.warning("Command tree is not initialized; skipping guild sync for %s", guild.id)
         return []
