@@ -18348,6 +18348,9 @@ async def _freshdesk_create_on_submit(
             type=discord.ChannelType.private_thread,
             reason=f"Freshdesk ticket #{ticket['id']} created by {interaction.user}",
         )
+        # Set thread permissions after creation (discord.py 2.3.x doesn't accept overwrite param)
+        for user_or_role, overwrite in overwrites.items():
+            await thread.set_permissions(user_or_role, overwrite=overwrite)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to create Freshdesk ticket thread")
         await interaction.followup.send(
