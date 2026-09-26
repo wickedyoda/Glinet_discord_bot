@@ -4,8 +4,13 @@ import json
 import re
 import threading
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
 import discord
+from discord.ext import commands
+
+if TYPE_CHECKING:
+    from discord import Guild
 
 __all__ = [
     "ADMIN_ONLY_COMMAND_KEYS",

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import discord
+    from discord import app_commands
     from discord.ext import commands
 
 __all__ = [
@@ -177,7 +178,7 @@ async def reload_tag_commands_runtime(guild_id: int | None = None) -> None:
 
 
 def schedule_tag_command_refresh(guild_id: int | None = None) -> bool:
-    from bot import bot as _bot
+    from bot import bot as _bot, logger
 
     loop = getattr(_bot, "loop", None)
     if loop is None or not loop.is_running():
