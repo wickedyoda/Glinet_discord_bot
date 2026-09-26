@@ -18346,8 +18346,7 @@ async def _freshdesk_create_on_submit(
         view_channel=True, send_messages=True, read_message_history=True
     )
     try:
-        # For discord.py 2.3.2+, create_thread no longer accepts 'overwrite' parameter
-        # Private threads have automatic permission handling
+        # create_thread does not accept overwrite mappings; apply permission overwrites after creation
         thread = await target_channel.create_thread(
             name=f"support-ticket-{ticket['id']}",
             message=None,
