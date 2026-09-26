@@ -72,14 +72,11 @@ from app.forum_monitor import (
     search_forum,
 )
 from app.freshdesk_api import (
-    FRESHDESK_ENV_KEYS,
     FreshdeskApiError,
     FreshdeskRateLimitError,
     create_freshdesk_ticket,
     fetch_freshdesk_ticket,
     find_freshdesk_group_by_name,
-    list_freshdesk_agents,
-    list_freshdesk_groups,
     list_freshdesk_solution_categories,
     search_freshdesk_tickets,
 )
