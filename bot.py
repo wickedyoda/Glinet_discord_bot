@@ -18367,7 +18367,7 @@ async def _freshdesk_create_on_submit(
         return
     try:
         await thread.add_user(interaction.user)
-    except Exception as exc:  # noqa: BLE001
+    except (discord.Forbidden, discord.HTTPException) as exc:
         logger.exception("Failed to add requester to Freshdesk ticket thread")
         await interaction.followup.send(
             f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
