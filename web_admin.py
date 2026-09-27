@@ -5483,17 +5483,31 @@ def create_web_app(
             "",
         )
 
+    def _redirect_to_observability():
+        """Redirect to the observability view, forwarding only the known
+        ``refresh`` query parameter.
+
+        Splatting ``request.args.to_dict()`` into ``url_for`` lets a caller
+        inject arbitrary endpoint values (including ones that make Flask
+        build a URL for a different endpoint), so the parameters are
+        allow-listed here instead.
+        """
+        refresh = _parse_auto_refresh_seconds(request.args.get("refresh", "0"))
+        if refresh:
+            return redirect(url_for("public_observability", refresh=refresh))
+        return redirect(url_for("public_observability"))
+
     @app.route("/staus", methods=["GET"])
     def public_observability_alias():
-        return redirect(url_for("public_observability", **request.args.to_dict(flat=True)))
+        return _redirect_to_observability()
 
     @app.route("/status/everything", methods=["GET"])
     def public_observability_everything():
-        return redirect(url_for("public_observability", **request.args.to_dict(flat=True)))
+        return _redirect_to_observability()
 
     @app.route("/admin/observability", methods=["GET"])
     def observability():
-        return redirect(url_for("public_observability", **request.args.to_dict(flat=True)))
+        return _redirect_to_observability()
 
     @app.route("/admin/logs", methods=["GET"])
     @login_required
