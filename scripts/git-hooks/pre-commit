@@ -1,0 +1,49 @@
+#!/bin/sh
+# Pre-commit guard: block secrets and credential files from being committed.
+#
+# Why this exists: a real DISCORD_TOKEN was committed to .env in July 2025
+# (commits 8cb2b77d21, f8b4b74e37) and sat fetchable by SHA for ~14 months.
+# The gitleaks CI job catches this only after the commit exists, and the
+# "Main Protection" ruleset currently requires no status checks, so CI cannot
+# block a merge. This hook is the first line of defence.
+#
+# It also refuses .env outright, which gitleaks treats as a filename heuristic
+# rather than a hard rule.
+
+set -eu
+
+RED=$(printf '\033[31m'); GRN=$(printf '\033[32m'); YLW=$(printf '\033[33m'); RST=$(printf '\033[0m')
+
+# --- 1. Refuse credential/env files outright ---------------------------------
+STAGED=$(git diff --cached --name-only --diff-filter=ACM)
+BLOCKED=$(printf '%s\n' "$STAGED" | grep -E '(^|/)\.env$|(^|/)env\.env$|(^|/)\.env\.[a-z]+$|\.pem$|\.key$|(^|/)id_rsa|(^|/)credentials?\.json$' || true)
+
+if [ -n "$BLOCKED" ]; then
+  echo "${RED}BLOCKED: credential file(s) staged:${RST}"
+  printf '%s\n' "$BLOCKED" | sed 's/^/    /'
+  echo
+  echo "${YLW}If one of these is a template (.env.example), unstage it and re-add:${RST}"
+  echo "    git restore --staged <file> && git add <file>"
+  exit 1
+fi
+
+# --- 2. Scan staged content for high-confidence secret patterns ---------------
+# Only new/changed lines are scanned, to avoid re-flagging existing history.
+DIFF=$(git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' || true)
+
+if [ -n "$DIFF" ]; then
+  MATCHES=$(printf '%s\n' "$DIFF" | grep -nE \
+    '(DISCORD_TOKEN|BOT_TOKEN|API_KEY|SECRET_KEY|SESSION_SECRET|PRIVATE_KEY|ACCESS_KEY)[\"'"'"']?\s*[:=]\s*[\"'"'"']?[A-Za-z0-9_./+-]{24,}' \
+    | grep -vE 'your_|example|placeholder|changeme|replace_with|xxxxx|\.\.\.|<.*>|getenv|os\.environ' || true)
+
+  if [ -n "$MATCHES" ]; then
+    echo "${RED}BLOCKED: possible secret in staged content:${RST}"
+    printf '%s\n' "$MATCHES" | cut -c1-140 | sed 's/^/    /'
+    echo
+    echo "${YLW}If this is a false positive, commit with:${RST}  git commit --no-verify"
+    exit 1
+  fi
+fi
+
+echo "${GRN}pre-commit: no credential files or obvious secrets staged.${RST}"
+exit 0
