@@ -74,8 +74,34 @@ jobs:
             --output=semgrep-results.sarif \
             . || true
 
+      - name: Apply reviewed false-positive suppressions
+        # .semgrepignore.yml documents each suppression with the reasoning and
+        # the exact call sites that were manually verified. Rules that were
+        # genuinely fixed (action pinning, open-redirect) are intentionally
+        # NOT listed there, so they keep being enforced.
+        run: |
+          semgrep \
+            --config=.semgrepignore.yml \
+            --sarif \
+            --output=semgrep-suppressions.sarif \
+            --metrics=off \
+            --disable-version-check \
+            --no-git-ignore \
+            . || true
+
       - name: Upload Semgrep SARIF
         if: always() && hashFiles('semgrep-results.sarif') != ''
         uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # 4
         with:
           sarif_file: semgrep-results.sarif
+          category: semgrep
+
+      - name: Upload reviewed suppressions
+        # Uploaded as its own SARIF so GitHub records the suppressions as
+        # accepted/dismissed state on the code-scanning page, rather than
+        # silently dropping the findings.
+        if: always() && hashFiles('semgrep-suppressions.sarif') != ''
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # 4
+        with:
+          sarif_file: semgrep-suppressions.sarif
+          category: semgrep-reviewed-suppressions
