@@ -18376,19 +18376,15 @@ async def _freshdesk_create_on_submit(
             ephemeral=True,
         )
         return
-    add_user_error_message = (
-        f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
-        "but you could not be added to the Discord thread."
-    )
     try:
         await thread.add_user(interaction.user)
-    except (discord.Forbidden, discord.HTTPException):
+    except (discord.Forbidden, discord.HTTPException) as exc:
         logger.exception("Failed to add requester to Freshdesk ticket thread")
-        await interaction.followup.send(add_user_error_message, ephemeral=True)
-        return
-    except Exception:  # noqa: BLE001
-        logger.exception("Unexpected failure while adding requester to Freshdesk ticket thread")
-        await interaction.followup.send(add_user_error_message, ephemeral=True)
+        await interaction.followup.send(
+            f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
+            f"but you could not be added to the Discord thread: {exc}",
+            ephemeral=True,
+        )
         return
     ticket_url = ticket.get("url", "")
     category_label = "Technical Support" if ticket_category == "technical" else "Customer Service"
