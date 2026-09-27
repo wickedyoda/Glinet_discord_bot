@@ -18339,23 +18339,15 @@ async def _freshdesk_create_on_submit(
             ephemeral=True,
         )
         return
-    overwrites: dict = {}
-    if guild and guild.default_role:
-        overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-    overwrites[interaction.user] = discord.PermissionOverwrite(
-        view_channel=True, send_messages=True, read_message_history=True
-    )
     try:
-        # create_thread does not accept overwrite mappings; apply permission overwrites after creation
+        # For discord.py 2.3.2+, create_thread no longer accepts 'overwrite' parameter
+        # Private threads have automatic permission handling
         thread = await target_channel.create_thread(
             name=f"support-ticket-{ticket['id']}",
             message=None,
             type=discord.ChannelType.private_thread,
             reason=f"Freshdesk ticket #{ticket['id']} created by {interaction.user}",
         )
-        # Set thread permissions after creation (discord.py 2.3.x doesn't accept overwrite param)
-        for user_or_role, overwrite in overwrites.items():
-            await thread.set_permissions(user_or_role, overwrite=overwrite)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to create Freshdesk ticket thread")
         await interaction.followup.send(
@@ -18366,7 +18358,7 @@ async def _freshdesk_create_on_submit(
         return
     try:
         await thread.add_user(interaction.user)
-    except (discord.Forbidden, discord.HTTPException) as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to add requester to Freshdesk ticket thread")
         await interaction.followup.send(
             f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
