@@ -27,7 +27,7 @@ jobs:
       TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # 5
 
       - name: Build Docker image
         run: docker build -t local/glinet_discord_bot:${{ github.sha }} .
@@ -58,7 +58,7 @@ jobs:
 
       - name: Upload Trivy SARIF to code scanning
         if: always() && hashFiles('trivy-image.sarif') != ''
-        uses: github/codeql-action/upload-sarif@v4
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2  # 4
         with:
           sarif_file: trivy-image.sarif
 
