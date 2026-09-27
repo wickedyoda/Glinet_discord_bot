@@ -829,6 +829,18 @@ FRESHDESK_USER_ROLE_IDS = frozenset(
 FRESHDESK_USER_ROLE_IDS = FRESHDESK_USER_ROLE_IDS or frozenset({0})
 
 
+def _get_freshdesk_admin_role_ids() -> frozenset[int]:
+    """Get Freshdesk admin role IDs from environment at runtime."""
+    raw = os.getenv("FRESHDESK_ADMIN", "0,0").strip()
+    return frozenset(int(x) for x in raw.split(",") if x.strip().isdigit()) or frozenset({0})
+
+
+def _get_freshdesk_user_role_ids() -> frozenset[int]:
+    """Get Freshdesk user role IDs from environment at runtime."""
+    raw = os.getenv("FRESHDESK_USER", "0,0").strip()
+    return frozenset(int(x) for x in raw.split(",") if x.strip().isdigit()) or frozenset({0})
+
+
 def can_use_freshdesk_admin(interaction: discord.Interaction) -> bool:
     """Check if user has Freshdesk admin or moderator role."""
     if not interaction.guild or not interaction.user:
@@ -837,7 +849,7 @@ def can_use_freshdesk_admin(interaction: discord.Interaction) -> bool:
     if not member:
         return False
     return any(
-        role.id in FRESHDESK_ADMIN_ROLE_IDS | MODERATOR_ROLE_IDS
+        role.id in _get_freshdesk_admin_role_ids() | MODERATOR_ROLE_IDS
         for role in member.roles
     )
 
@@ -850,7 +862,7 @@ def can_use_freshdesk_user(interaction: discord.Interaction) -> bool:
     if not member:
         return False
     return any(
-        role.id in (FRESHDESK_USER_ROLE_IDS | FRESHDESK_ADMIN_ROLE_IDS | MODERATOR_ROLE_IDS)
+        role.id in (_get_freshdesk_user_role_ids() | _get_freshdesk_admin_role_ids() | MODERATOR_ROLE_IDS)
         for role in member.roles
     )
 
