@@ -18351,14 +18351,9 @@ async def _freshdesk_create_on_submit(
             ephemeral=True,
         )
         return
-    overwrites: dict = {}
-    if guild and guild.default_role:
-        overwrites[guild.default_role] = discord.PermissionOverwrite(view_channel=False)
-    overwrites[interaction.user] = discord.PermissionOverwrite(
-        view_channel=True, send_messages=True, read_message_history=True
-    )
     try:
-        # create_thread does not accept overwrite mappings; apply permission overwrites after creation
+        # For discord.py 2.3.2+, create_thread no longer accepts 'overwrite' parameter
+        # Private threads have automatic permission handling
         thread = await target_channel.create_thread(
             name=f"support-ticket-{ticket['id']}",
             message=None,
