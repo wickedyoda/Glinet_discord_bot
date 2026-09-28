@@ -45,22 +45,38 @@ Web variation:
 
 | Command | Type | Default Access | Parameters | Notes |
 |---|---|---|---|---|
-| `/ticket` | Slash | Tier 2+ | category | Opens ticket creation modal |
-| `/ticket-search` | Slash | Tier 1+ | query | Search by ticket number or owner email |
+| `/ticket-search` | Slash | Tier 1+ | `query` | Search by ticket number or owner email |
 | `/ticket-stats` | Slash | Tier 1+ | none | Shows open/closed counts |
 
 All ticket search and stats responses are **ephemeral**; only the command user can see them.
 
+> `/ticket` is not currently registered as a command. The supporting store and
+> tier logic live in `app/tickets.py` and are used by the commands above, but
+> there is no registered command that opens a new role-tier ticket.
+
 ## Freshdesk Ticket Commands
 
-| Command | Type | Default Access | Description |
-|---|---|---|---|
-| `/freshdesk-search` | Slash | Moderator | Search Freshdesk tickets (e.g. `status:2`, `priority:4`) |
-| `/freshdesk-ticket` | Slash | Moderator | View a single ticket by ID |
-| `/freshdesk-categories` | Slash | Moderator | List knowledge-base solution categories |
-| `/freshdesk-create` | Slash | Moderator | Create a new ticket via modal (Name, Email, Subject, Message) |
+| Command | Type | Default Access | Parameters | Description |
+|---|---|---|---|---|
+| `/create-ticket` | Slash | Freshdesk Admin | none | Create a Freshdesk ticket via category picker and modal (Name, Email, Subject, Message) |
+| `/support-ticket-search` | Slash | Freshdesk Admin | `email`, `ticket_id` (optional) | Search Freshdesk tickets by email and ticket number |
+| `/support-ticket-view` | Slash | Freshdesk User or Admin | `ticket_id` | View a single ticket by ID |
+| `/support-ticket-categories` | Slash | Freshdesk User or Admin | none | List knowledge-base solution categories |
 
-All Freshdesk command responses are **ephemeral**. Role-based restrictions for these commands are configurable in `/admin/command-permissions` or directly on `/admin/freshdesk/viewer`.
+All Freshdesk command responses are **ephemeral**, and each is rate-limited to one
+use per 5 seconds per user. Role restrictions for these commands are configurable
+in `/admin/command-permissions` or on `/admin/freshdesk/viewer`.
+
+These commands are registered whether or not Freshdesk is enabled, but they refuse
+to run until `FRESHDESK_DOMAIN` (or `FRESHDESK_BASE_URL`) and `FRESHDESK_API_KEY`
+are set. `/create-ticket` additionally requires `FRESHDESK_ENABLED=true` and a
+resolvable `FRESHDESK_TICKET_TARGET_CHANNEL_ID`.
+
+## Search and Forum Commands
+
+| Command | Type | Default Access | Parameters | Description |
+|---|---|---|---|---|
+| `/forum` | Slash | Tier 1+ | `query`, `limit` (optional) | Search the GL.iNet community forum |
 
 ## Tag and Auto-Reply Commands
 
@@ -105,6 +121,13 @@ All Freshdesk command responses are **ephemeral**. Role-based restrictions for t
 | `/expand` | Slash | Member/Public | shortened URL or code | Expands a shortened URL |
 | `/uptime` | Slash | Member/Public | none | Reads the configured uptime/status summary when enabled |
 | `/stats` | Slash | Member/Public | none | Sends your private member-activity summary for last 90 days, last 30 days, last 7 days, and last 24 hours |
+
+| `/diagnose_log_target` | Slash | Tier 1+ | none | Show the effective guild log channel target for this server |
+| `/set_hello_channel` | Slash | Admin | `channel` | Set or disable the hello-only channel |
+| `/set_hello_text` | Slash | Admin | `text` | Set the hello-only reply text |
+| `/translate_channels_add` | Slash | Admin | `source_channel`, `target_channel`, `target_language`, `source_language`, `enabled` | Add an auto-translate channel mapping |
+| `/translate_channels_list` | Slash | Admin | none | List auto-translate channel mappings in this server |
+| `/translate_channels_remove` | Slash | Admin | `source_channel`, `target_channel`, `target_language` | Remove an auto-translate channel mapping |
 
 ## Country Nickname Commands
 
