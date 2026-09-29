@@ -18161,11 +18161,16 @@ class SupportTicketCategoryView(discord.ui.View):
         category = select.values[0] if select.values else ""
         config = self.config
         # send_modal must be called on the original response, not after defer()
+        
+        # Pre-populate the message body with stored Discord message content
+        message_body = getattr(self, 'message_content', '')
+        
         await interaction.response.send_modal(
             SupportTicketCreateModal(
                 target_channel_id=self.target_channel_id,
                 ticket_category=category,
                 config=config,
+                message_body=message_body,  # Pass pre-populated message body
             )
         )
 
@@ -18199,11 +18204,12 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
         max_length=4000,
     )
 
-    def __init__(self, target_channel_id: int, ticket_category: str = "technical", config: dict | None = None):
+    def __init__(self, target_channel_id: int, ticket_category: str = "technical", config: dict | None = None, message_body: str = ""):
         super().__init__()
         self._target_channel_id = target_channel_id
         self._ticket_category = ticket_category
         self._config = config or {}
+        self._pre_populated_message_body = message_body  # Store pre-populated message body
 
     async def on_submit(self, interaction: discord.Interaction):
         # Manually populate values from interaction data.
@@ -18230,6 +18236,11 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
                 self.subject._value = extracted[2]
             if len(extracted) >= 4:
                 self.message_body._value = extracted[3]
+        
+        # If there's a pre-populated message body, use it instead of the extracted one
+        if self._pre_populated_message_body:
+            self.message_body._value = self._pre_populated_message_body
+        
         await _freshdesk_create_on_submit(
             interaction, self, self._target_channel_id, self._ticket_category, self._config
         )
@@ -18287,6 +18298,55 @@ async def create_ticket(interaction: discord.Interaction):
         ephemeral=True,
     )
 
+
+
+@tree.command(
+    name="create-ticket-from-message",
+    description="Create a Freshdesk ticket from a Discord message (pre-populates message body)",
+)
+@app_commands.checks.cooldown(1, 5.0)
+@app_commands.describe(message_id="The Discord message ID to forward")
+async def create_ticket_from_message(interaction: discord.Interaction, message_id: str):
+    logger.info("/create-ticket-from-message invoked by %s for message %s", f"{interaction.user} (id: {interaction.user.id})", message_id)
+    
+    # Check permissions
+    if not can_use_freshdesk_admin(interaction):
+        await interaction.response.send_message(
+            "❌ You need the Freshdesk Admin role to create tickets.", ephemeral=True
+        )
+        return
+    
+    if interaction.guild is None:
+        await interaction.response.send_message(
+            "❌ This command can only be used in a server.", ephemeral=True
+        )
+        return
+    
+    config = resolve_freshdesk_config()
+    if not config.get("enabled") or not config["base_url"] or not config["api_key"]:
+        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
+        return
+    
+    channel_id = _resolve_freshdesk_ticket_target_channel_id(interaction)
+    if not channel_id:
+        await interaction.response.send_message(
+            "❌ No Freshdesk intake channel configured. "
+            "Ask an admin to set `FRESHDESK_TICKET_TARGET_CHANNEL_ID`. "
+            "Use `/ticket` for the SQLite tier or use Freshdesk commands only in designated channels.",
+            ephemeral=True,
+        )
+        return
+    
+    # Show category selection view with pre-populated message body
+    view = SupportTicketCategoryView(config, channel_id)
+    # Store the message content for later use
+    view.message_content = ""
+    
+    await interaction.response.send_message(
+        "Please select the ticket type (message body will be pre-populated from Discord message):",
+        view=view,
+        ephemeral=True,
+    )
 
 async def _freshdesk_create_on_submit(
     interaction: discord.Interaction,
