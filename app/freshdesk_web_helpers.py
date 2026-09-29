@@ -92,6 +92,7 @@ def render_freshdesk_viewer_body(
     api_key = str(effective_settings.get("FRESHDESK_API_KEY", "")).strip()
     api_key_configured = bool(api_key)
     timeout = int(str(effective_settings.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15") or "15").strip())
+    wrong_channel_message = str(effective_settings.get("FRESHDESK_WRONG_CHANNEL_MESSAGE", "") or "").strip()
 
     enabled_checked = " checked" if enabled else ""
     api_key_placeholder = "••••••••••••••••" if api_key_configured else ""
@@ -165,6 +166,18 @@ def render_freshdesk_viewer_body(
         <tr>
           <td><strong>User Role(s)</strong></td>
           <td>{user_role_selector}<br/><small class="muted">Required for /support-ticket-search and /support-ticket-view (own tickets only)</small></td>
+        </tr>
+        <tr>
+          <td><strong>Wrong Channel Message</strong></td>
+          <td>
+            <textarea name="FRESHDESK_WRONG_CHANNEL_MESSAGE" rows="3" style="width:350px;"
+                      placeholder="Leave blank to use the default message.">{escape(wrong_channel_message, quote=False)}</textarea>
+            <br/><small class="muted">
+              Shown when a user runs a Freshdesk command outside the intake channel.
+              Placeholders: <code>{{wrong_channel}}</code>, <code>{{right_channel}}</code>.
+              Leave blank for the built-in default.
+            </small>
+          </td>
         </tr>
     """
 
