@@ -17873,7 +17873,8 @@ def resolve_freshdesk_config():
 def _freshdesk_not_configured_reply():
     return (
         "❌ Freshdesk integration is not configured or disabled. "
-        "Enable `FRESHDESK_ENABLED` and set `FRESHDESK_DOMAIN` or `FRESHDESK_BASE_URL` plus `FRESHDESK_API_KEY` in the environment."
+        "Ask a server admin to enable Freshdesk and configure `FRESHDESK_DOMAIN` (or `FRESHDESK_BASE_URL`) and `FRESHDESK_API_KEY`. "
+        "You can use `/ticket` for the SQLite role-tier ticket system in the meantime."
     )
 
 
@@ -18057,7 +18058,8 @@ async def support_ticket_categories(interaction: discord.Interaction):
         return
     logger.info("/support-ticket-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     config = resolve_freshdesk_config()
-    if not config["base_url"] or not config["api_key"]:
+    if not config.get("enabled") or not config["base_url"] or not config["api_key"]:
+        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
 
     await interaction.response.defer(ephemeral=True)
@@ -18271,7 +18273,8 @@ async def create_ticket(interaction: discord.Interaction):
     if not channel_id:
         await interaction.response.send_message(
             "❌ No Freshdesk intake channel configured. "
-            "Ask an admin to set `FRESHDESK_TICKET_TARGET_CHANNEL_ID` or use /ticket instead.",
+            "Ask an admin to set `FRESHDESK_TICKET_TARGET_CHANNEL_ID`. "
+            "Use `/ticket` for the SQLite tier or use Freshdesk commands only in designated channels.",
             ephemeral=True,
         )
         return
