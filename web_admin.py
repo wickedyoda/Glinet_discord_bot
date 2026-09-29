@@ -4534,6 +4534,48 @@ def create_web_app(
                     session.pop("force_password_change_notice_shown", None)
                     flash("Password updated successfully.", "success")
 
+            elif action == "password_forgotten":
+                new_password = request.form.get("new_password", "")
+                confirm_password = request.form.get("confirm_password", "")
+                confirm_email = _normalize_email(request.form.get("confirm_email", ""))
+
+                validation_errors = []
+                if not str(new_password or ""):
+                    validation_errors.append("New password is required.")
+                if not str(confirm_password or ""):
+                    validation_errors.append("Confirm new password is required.")
+                if str(new_password or "") and str(confirm_password or "") and new_password != confirm_password:
+                    validation_errors.append("New password and confirmation must match.")
+                if not confirm_email:
+                    validation_errors.append("Confirm your account email address to continue.")
+                elif confirm_email != _normalize_email(entry.get("email", "")):
+                    validation_errors.append("Confirmation email does not match your account email address.")
+                if str(new_password or ""):
+                    validation_errors.extend(_password_policy_errors(new_password))
+                if str(new_password or "") and check_password_hash(entry["password_hash"], new_password):
+                    validation_errors.append("New password must be different from the current password.")
+                previous_password_hash = str(entry.get("previous_password_hash") or "").strip()
+                if str(new_password or "") and previous_password_hash and check_password_hash(previous_password_hash, new_password):
+                    validation_errors.append("New password must not match your previous password.")
+
+                if validation_errors:
+                    for message in validation_errors:
+                        flash(message, "error")
+                else:
+                    now_iso = _now_iso()
+                    entry["previous_password_hash"] = str(entry.get("password_hash") or "").strip()
+                    entry["password_hash"] = _hash_password(new_password)
+                    entry["password_changed_at"] = now_iso
+                    _save_users(users_file, users_data)
+                    session.pop("force_password_change_notice_shown", None)
+                    if logger:
+                        logger.warning(
+                            "Password for %s changed without current password (email confirmation). ip=%s",
+                            entry.get("email"),
+                            _client_ip(),
+                        )
+                    flash("Password updated successfully.", "success")
+
             else:
                 flash("Invalid account action.", "error")
 
@@ -4603,6 +4645,54 @@ def create_web_app(
               function validateAccountPasswordChangeForm() {{
                 var nextInput = document.getElementById('account_password_new');
                 var confirmInput = document.getElementById('account_password_confirm');
+                if (!nextInput || !confirmInput) {{
+                  return true;
+                }}
+                if (confirmInput.value && nextInput.value !== confirmInput.value) {{
+                  confirmInput.setCustomValidity('New password and confirmation must match.');
+                }} else {{
+                  confirmInput.setCustomValidity('');
+                }}
+                return true;
+              }}
+            </script>
+          </div>
+          <div class="card">
+            <h2>Set New Password (Forgot Current Password)</h2>
+            <p class="muted">
+              Use this only if you cannot remember your current password. You are already signed in,
+              so confirm your account email address to prove ownership. All other password rules still apply.
+            </p>
+            <p class="muted">Password policy: 6-16 characters, at least 2 numbers, 1 uppercase letter, and 1 symbol.</p>
+            <form method="post" onsubmit="return validateAccountForgottenPasswordForm();">
+              <input type="hidden" name="action" value="password_forgotten" />
+              <label>Confirm Your Account Email</label>
+              <input
+                id="account_password_forgotten_email"
+                type="email"
+                name="confirm_email"
+                value="{escape(str(user.get("email", "")), quote=True)}"
+                autocomplete="email"
+                autocapitalize="none"
+                spellcheck="false"
+                required />
+              <label style="margin-top:10px;display:block;">New Password</label>
+              <input id="account_password_forgotten_new" type="password" name="new_password" autocomplete="new-password" required oninput="validateAccountForgottenPasswordForm();" />
+              <label style="margin-top:10px;display:block;">Confirm New Password</label>
+              <input id="account_password_forgotten_confirm" type="password" name="confirm_password" autocomplete="new-password" required oninput="validateAccountForgottenPasswordForm();" />
+              <label style="margin-top:8px;display:block;">
+                <input type="checkbox"
+                  onchange="document.getElementById('account_password_forgotten_new').type=this.checked?'text':'password';document.getElementById('account_password_forgotten_confirm').type=this.checked?'text':'password';" />
+                Show passwords
+              </label>
+              <div style="margin-top:14px;">
+                <button class="btn" type="submit">Set New Password</button>
+              </div>
+            </form>
+            <script>
+              function validateAccountForgottenPasswordForm() {{
+                var nextInput = document.getElementById('account_password_forgotten_new');
+                var confirmInput = document.getElementById('account_password_forgotten_confirm');
                 if (!nextInput || !confirmInput) {{
                   return true;
                 }}
