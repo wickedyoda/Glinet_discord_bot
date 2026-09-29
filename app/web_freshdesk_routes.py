@@ -119,12 +119,20 @@ def viewer_page():
                 user_role_ids = [x for x in user_role_text.split(",") if x.strip().isdigit()]
             user_role_id = ",".join(sorted(set(user_role_ids))) if user_role_ids else "0"
 
+            wrong_channel_message = str(request.form.get("FRESHDESK_WRONG_CHANNEL_MESSAGE", "") or "").strip()
+            # Discord rejects messages over 2000 characters; reject longer at save
+            # time rather than silently truncating the admin's wording.
+            if len(wrong_channel_message) > 2000:
+                flash("Wrong channel message must be 2000 characters or fewer.", "error")
+                wrong_channel_message = ""
+
             updates = {
                 "FRESHDESK_ENABLED": str(enabled).lower(),
                 "FRESHDESK_BASE_URL": base_url,
                 "FRESHDESK_REQUEST_TIMEOUT_SECONDS": timeout,
                 "FRESHDESK_ADMIN": admin_role_id,
                 "FRESHDESK_USER": user_role_id,
+                "FRESHDESK_WRONG_CHANNEL_MESSAGE": wrong_channel_message,
             }
             # Only update API key if provided
             if api_key:

@@ -17862,11 +17862,13 @@ def resolve_freshdesk_config():
             timeout = 15
     except (ValueError, TypeError):
         timeout = 15
+    wrong_channel_message = str(os.getenv("FRESHDESK_WRONG_CHANNEL_MESSAGE", "")).strip()
     return {
         "enabled": enabled,
         "base_url": base_url,
         "api_key": api_key,
         "timeout": timeout,
+        "wrong_channel_message": wrong_channel_message,
     }
 
 
@@ -17878,37 +17880,72 @@ def _freshdesk_not_configured_reply():
     )
 
 
-def _freshdesk_wrong_channel_reply(interaction) -> str | None:
+FRESHDESK_WRONG_CHANNEL_PLACEHOLDERS = ("{wrong_channel}", "{right_channel}")
+
+
+def _freshdesk_wrong_channel_reply(
+    interaction: discord.Interaction,
+    config: dict | None = None,
+) -> str | None:
     """Return a friendly 'wrong channel' message, or None if the channel is acceptable.
 
     Freshdesk commands are only meaningful inside the configured Freshdesk intake
     channel. When a target channel is configured and the user invoked the command
     somewhere else, point them at the right channel instead of letting them hit a
     confusing downstream error.
+
+    An admin can override the wording via ``FRESHDESK_WRONG_CHANNEL_MESSAGE``. The
+    custom text may contain the placeholders ``{wrong_channel}`` and
+    ``{right_channel}``, which are substituted with the current and expected channel
+    names. Substitution is a plain string replace rather than ``str.format`` so that
+    Discord markdown, JSON snippets or stray braces in admin-authored text cannot
+    raise ``KeyError``/``IndexError`` at runtime.
     """
+    if config is None:
+        config = resolve_freshdesk_config()
+
     expected_channel_id = _resolve_freshdesk_ticket_target_channel_id(interaction)
     # Nothing configured -> there is no "right" channel to point at. Let the caller
     # fall through to its existing not-configured handling.
     if not expected_channel_id:
         return None
+
     invoked_channel_id = getattr(interaction, "channel_id", None)
     if invoked_channel_id is None or int(invoked_channel_id) == int(expected_channel_id):
         return None
+
+    # Resolve the expected channel so we can name it rather than print a bare ID.
     expected_channel = None
     try:
         expected_channel = bot.get_channel(int(expected_channel_id))
         if expected_channel is None and getattr(interaction, "guild", None) is not None:
             expected_channel = interaction.guild.get_channel(int(expected_channel_id))
-    except Exception:
+    except Exception:  # noqa: BLE001 - never let a lookup failure break the command
         expected_channel = None
-    where = expected_channel.mention if expected_channel is not None else f"<#{expected_channel_id}>"
+    where = (
+        expected_channel.mention
+        if expected_channel is not None
+        else f"<#{expected_channel_id}>"
+    )
+
     current_channel = getattr(interaction, "channel", None)
     current_name = getattr(current_channel, "name", None)
-    here = f"You ran this in **#{current_name}**. " if current_name else ""
-    return (
-        f"❌ Wrong channel. {here}Freshdesk commands only work in {where}.\n"
-        f"Head there and run the command again — nothing was submitted."
-    )
+    here = f"#{current_name}" if current_name else f"<#{invoked_channel_id}>"
+
+    custom_message = str(config.get("wrong_channel_message") or "").strip()
+    if custom_message:
+        text = custom_message.replace("{wrong_channel}", here).replace("{right_channel}", where)
+    else:
+        text = (
+            f"❌ Wrong channel. You ran this in **{here}**. "
+            f"Freshdesk commands only work in {where}.\n"
+            f"Head there and run the command again — nothing was submitted."
+        )
+
+    # Discord rejects messages over 2000 characters.
+    if len(text) > 2000:
+        text = text[:1997].rstrip() + "..."
+    return text
 
 
 def _build_ticket_embed(ticket: dict) -> discord.Embed:
@@ -17960,11 +17997,11 @@ async def support_ticket_search(interaction: discord.Interaction, email: str, ti
         email,
         ticket_id,
     )
-    wrong_channel = _freshdesk_wrong_channel_reply(interaction)
+    config = resolve_freshdesk_config()
+    wrong_channel = _freshdesk_wrong_channel_reply(interaction, config)
     if wrong_channel:
         await interaction.response.send_message(wrong_channel, ephemeral=True)
         return
-    config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
@@ -18056,11 +18093,11 @@ async def support_ticket_view(interaction: discord.Interaction, ticket_id: int):
         )
         return
     logger.info("/support-ticket-view invoked by %s for ticket: %s", f"{interaction.user} (id: {interaction.user.id})", ticket_id)
-    wrong_channel = _freshdesk_wrong_channel_reply(interaction)
+    config = resolve_freshdesk_config()
+    wrong_channel = _freshdesk_wrong_channel_reply(interaction, config)
     if wrong_channel:
         await interaction.response.send_message(wrong_channel, ephemeral=True)
         return
-    config = resolve_freshdesk_config()
     if not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
@@ -18098,11 +18135,11 @@ async def support_ticket_categories(interaction: discord.Interaction):
         )
         return
     logger.info("/support-ticket-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
-    wrong_channel = _freshdesk_wrong_channel_reply(interaction)
+    config = resolve_freshdesk_config()
+    wrong_channel = _freshdesk_wrong_channel_reply(interaction, config)
     if wrong_channel:
         await interaction.response.send_message(wrong_channel, ephemeral=True)
         return
-    config = resolve_freshdesk_config()
     if not config.get("enabled") or not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
@@ -18321,13 +18358,10 @@ async def create_ticket(interaction: discord.Interaction):
             "❌ This command can only be used in a server.", ephemeral=True
         )
         return
-    wrong_channel = _freshdesk_wrong_channel_reply(interaction)
+    config = resolve_freshdesk_config()
+    wrong_channel = _freshdesk_wrong_channel_reply(interaction, config)
     if wrong_channel:
         await interaction.response.send_message(wrong_channel, ephemeral=True)
-        return
-    config = resolve_freshdesk_config()
-    if not config.get("enabled") or not config["base_url"] or not config["api_key"]:
-        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
     channel_id = _resolve_freshdesk_ticket_target_channel_id(interaction)
     if not channel_id:
@@ -18337,6 +18371,9 @@ async def create_ticket(interaction: discord.Interaction):
             "Use `/ticket` for the SQLite tier or use Freshdesk commands only in designated channels.",
             ephemeral=True,
         )
+        return
+    if not config.get("enabled") or not config["base_url"] or not config["api_key"]:
+        await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
 
     # Show category selection view first
