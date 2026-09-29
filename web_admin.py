@@ -4569,7 +4569,17 @@ def create_web_app(
                     _save_users(users_file, users_data)
                     session.pop("force_password_change_notice_shown", None)
                     if logger:
+                        # Audit record for a password change made without the current
+                        # password. The literal word "Password" below trips
+                        # python-logger-credential-disclosure (Semgrep alert 275), but
+                        # the only values interpolated are the account email and the
+                        # client IP. No password, hash, or other credential is ever
+                        # passed here -- see tests/test_password_audit_log.py, which
+                        # fails if that ever changes. The suppression is placed last so
+                        # it sits on the line immediately above the call, and is
+                        # line-scoped so the rule stays active everywhere else.
                         logger.warning(
+                            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                             "Password for %s changed without current password (email confirmation). ip=%s",
                             entry.get("email"),
                             _client_ip(),

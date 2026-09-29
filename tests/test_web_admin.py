@@ -14,7 +14,7 @@ from app.service_monitor import GLINET_DOMAIN_MONITOR_PRESETS, normalize_service
 from web_admin import create_web_app
 
 
-def _make_app(tmp_path: Path):
+def _make_app(tmp_path: Path, logger=None):
     env_file = tmp_path / "env.env"
     env_file.write_text(
         "\n".join(
@@ -750,6 +750,7 @@ def _make_app(tmp_path: Path):
         tag_responses_file=str(tmp_path / "tags.json"),
         default_admin_email="admin@example.com",
         default_admin_password="Ab!12xy",
+        logger=logger,
         on_get_guilds=guilds,
         on_get_discord_catalog=catalog,
         on_get_guild_settings=get_guild_settings,
