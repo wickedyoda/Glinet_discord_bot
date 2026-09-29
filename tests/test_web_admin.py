@@ -2019,6 +2019,123 @@ def test_password_change_rejects_previous_password(tmp_path: Path):
     assert b"New password must not match your previous password." in second_change.data
 
 
+def test_account_forgotten_password_sets_new_password_without_current(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    response = client.post(
+        "/admin/account",
+        data={
+            "action": "password_forgotten",
+            "csrf_token": _page_csrf_token(client, "/admin/account"),
+            "confirm_email": "admin@example.com",
+            "new_password": "Zz!99qq",
+            "confirm_password": "Zz!99qq",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Password updated successfully." in response.data
+
+    # The new password works for a fresh login; the old one no longer does.
+    client.post("/logout", base_url="https://docker.example:8443")
+    relogin = _login_as(client, "admin@example.com", "Zz!99qq")
+    assert relogin.status_code == 200
+
+
+def test_account_forgotten_password_rejects_wrong_confirmation_email(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    response = client.post(
+        "/admin/account",
+        data={
+            "action": "password_forgotten",
+            "csrf_token": _page_csrf_token(client, "/admin/account"),
+            "confirm_email": "someone-else@example.com",
+            "new_password": "Zz!99qq",
+            "confirm_password": "Zz!99qq",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert b"Confirmation email does not match your account email address." in response.data
+
+    # Password unchanged.
+    client.post("/logout", base_url="https://docker.example:8443")
+    _login_as(client, "admin@example.com", "Ab!12xy")
+
+
+def test_account_forgotten_password_still_enforces_policy_and_history(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    weak = client.post(
+        "/admin/account",
+        data={
+            "action": "password_forgotten",
+            "csrf_token": _page_csrf_token(client, "/admin/account"),
+            "confirm_email": "admin@example.com",
+            "new_password": "weak",
+            "confirm_password": "weak",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert b"Password must be at least 6 characters long." in weak.data
+
+    same_as_current = client.post(
+        "/admin/account",
+        data={
+            "action": "password_forgotten",
+            "csrf_token": _page_csrf_token(client, "/admin/account"),
+            "confirm_email": "admin@example.com",
+            "new_password": "Ab!12xy",
+            "confirm_password": "Ab!12xy",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert b"New password must be different from the current password." in same_as_current.data
+
+
+def test_account_forgotten_password_requires_login(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+
+    response = client.post(
+        "/admin/account",
+        data={
+            "action": "password_forgotten",
+            "csrf_token": _page_csrf_token(client, "/login"),
+            "confirm_email": "admin@example.com",
+            "new_password": "Zz!99qq",
+            "confirm_password": "Zz!99qq",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    # Redirected to login, password untouched.
+    _login_as(client, "admin@example.com", "Ab!12xy")
+
+
+def test_account_page_renders_forgotten_password_form(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    response = client.get("/admin/account", base_url="https://docker.example:8443")
+    assert response.status_code == 200
+    assert b'name="action" value="password_forgotten"' in response.data
+    assert b"Set New Password (Forgot Current Password)" in response.data
+
+
 def test_admin_reset_rejects_users_previous_password(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
