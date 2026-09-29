@@ -2136,6 +2136,23 @@ def _safe_outbound_get(url: str, *, headers: dict[str, str], timeout: int, verif
     raise ValueError("Outbound request exceeded the maximum redirect limit.")
 
 
+def _discord_role_option_sort_key(option: dict):
+    """Sort key placing role dropdown options in case-insensitive A-Z name order.
+
+    Renderers label a role with ``name`` falling back to ``label`` falling back to
+    the id, so the sort must use the same precedence to stay consistent with what
+    the user actually reads in the list. The id is a final tiebreaker so roles
+    sharing a display name keep a stable, deterministic order across requests.
+    """
+    if not isinstance(option, dict):
+        return ("", "")
+    name = str(option.get("name") or option.get("label") or "").strip()
+    role_id = str(option.get("id") or "").strip()
+    # Strip a leading '@' so "@Admin" and "Admin" sort as the same word.
+    display = name.lstrip("@").casefold()
+    return (display, role_id)
+
+
 def _render_multi_select_input(name: str, selected_values, options: list[dict], size: int = 8):
     selected_set = set()
     if isinstance(selected_values, str):
@@ -4224,7 +4241,14 @@ def create_web_app(
         if isinstance(discord_catalog, dict):
             if discord_catalog.get("ok"):
                 channel_options = discord_catalog.get("channels", []) or []
-                role_options = discord_catalog.get("roles", []) or []
+                # Sort roles by name (case-insensitive) so every role dropdown in the
+                # web GUI lists them A-Z. Discord returns roles in hierarchy/position
+                # order, which is neither stable nor easy to scan. Sorting centrally
+                # here means every consumer benefits without touching each renderer.
+                role_options = sorted(
+                    discord_catalog.get("roles", []) or [],
+                    key=_discord_role_option_sort_key,
+                )
             else:
                 catalog_error = str(discord_catalog.get("error") or "")
         if channel_type is not None:
