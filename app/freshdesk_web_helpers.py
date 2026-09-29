@@ -10,6 +10,20 @@ from html import escape
 from typing import Any
 
 
+def _discord_role_option_sort_key(option: dict):
+    """Sort key placing role dropdown options in case-insensitive A-Z name order.
+
+    Mirrors ``web_admin._discord_role_option_sort_key``. It is duplicated rather
+    than imported because ``web_admin`` imports this module's renderer, so a
+    top-level import would be circular.
+    """
+    if not isinstance(option, dict):
+        return ("", "")
+    name = str(option.get("name") or option.get("label") or "").strip()
+    role_id = str(option.get("id") or "").strip()
+    return (name.lstrip("@").casefold(), role_id)
+
+
 def build_freshdesk_config_from_env(env_values: dict[str, Any]) -> dict[str, Any]:
     """Extract Freshdesk API config from environment values.
 
@@ -107,7 +121,13 @@ def render_freshdesk_viewer_body(
         user_role_ids = {int(x) for x in user_raw.split(',') if x.strip().isdigit()}
 
     # Build multi-select role dropdowns for Freshdesk roles (use discord_role_options if available)
-    role_options = discord_role_options or []
+    # Sort defensively as well as in the catalog loader: this module is also called
+    # directly (tests, other blueprints) with an unsorted list, and a dropdown that
+    # is alphabetical on one page and not the next is worse than either.
+    role_options = sorted(
+        (discord_role_options or []),
+        key=_discord_role_option_sort_key,
+    )
     def _build_role_select(name: str, selected_ids: set[int]) -> str:
         option_tags = []
         for opt in role_options:
@@ -223,7 +243,10 @@ def render_freshdesk_viewer_body(
             # Build multi-select role dropdown from Discord catalog
             if discord_role_options:
                 option_tags = []
-                for opt in discord_role_options:
+                for opt in sorted(
+                    discord_role_options,
+                    key=_discord_role_option_sort_key,
+                ):
                     opt_id = str(opt.get("id", "")).strip()
                     opt_label = str(opt.get("name", opt.get("label", opt_id))).strip()
                     if not opt_id:
