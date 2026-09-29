@@ -18058,7 +18058,7 @@ async def support_ticket_categories(interaction: discord.Interaction):
         return
     logger.info("/support-ticket-categories invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
     config = resolve_freshdesk_config()
-    if not config["base_url"] or not config["api_key"]:
+    if not config.get("enabled") or not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
 
