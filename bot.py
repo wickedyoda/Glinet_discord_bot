@@ -1003,6 +1003,14 @@ LINKEDIN_NOTIFY_ENABLED = is_truthy_env_value(
 )
 LINKEDIN_POLL_INTERVAL_SECONDS = parse_positive_int_env("LINKEDIN_POLL_INTERVAL_SECONDS", 900, minimum=60)
 LINKEDIN_REQUEST_TIMEOUT_SECONDS = parse_positive_int_env("LINKEDIN_REQUEST_TIMEOUT_SECONDS", 15, minimum=5)
+# Backoff applied when LinkedIn answers HTTP 429. The wait is the larger of the
+# server's Retry-After hint and the exponential floor below, capped at the max.
+LINKEDIN_RATE_LIMIT_BACKOFF_BASE_SECONDS = parse_positive_int_env(
+    "LINKEDIN_RATE_LIMIT_BACKOFF_BASE_SECONDS", 900, minimum=60
+)
+LINKEDIN_RATE_LIMIT_BACKOFF_MAX_SECONDS = parse_positive_int_env(
+    "LINKEDIN_RATE_LIMIT_BACKOFF_MAX_SECONDS", 21600, minimum=60
+)
 BETA_PROGRAM_PAGE_URL = normalize_http_url_setting(
     os.getenv("BETA_PROGRAM_PAGE_URL", ""),
     "https://www.gl-inet.com/beta-testing/#register",
@@ -9025,6 +9033,46 @@ def _clean_linkedin_post_text(raw_text: str):
     return re.sub(r"\s+", " ", text).strip()
 
 
+class LinkedInRateLimitedError(RuntimeError):
+    """Raised when LinkedIn answers with HTTP 429 (Too Many Requests).
+
+    Carries the server's ``Retry-After`` hint in seconds when one is supplied, so
+    the poller can wait exactly as long as LinkedIn asks instead of guessing.
+    ``retry_after_seconds`` is ``None`` when the header was absent or unparseable.
+    Subclasses RuntimeError so existing handlers keep catching it.
+    """
+
+    def __init__(self, retry_after_seconds: float | None = None, status_code: int = 429):
+        self.retry_after_seconds = retry_after_seconds
+        self.status_code = int(status_code)
+        if retry_after_seconds is not None:
+            message = f"LinkedIn rate limited the request (HTTP 429); retry after {retry_after_seconds:.0f}s."
+        else:
+            message = "LinkedIn rate limited the request (HTTP 429)."
+        super().__init__(message)
+
+
+def _parse_retry_after_seconds(raw_value: str | None) -> float | None:
+    """Parse a ``Retry-After`` header into seconds, or None if unusable.
+
+    The header is either delta-seconds or an HTTP-date. Only the numeric form is
+    honoured here; an HTTP-date needs a clock comparison that the sleep path does
+    not use, and LinkedIn sends the numeric form.
+    """
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    try:
+        seconds = float(text)
+    except (TypeError, ValueError):
+        return None
+    if seconds != seconds or seconds in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    if seconds < 0:
+        return None
+    return seconds
+
+
 def _fetch_with_retry(url: str, *, timeout: int, max_retries: int = 3):
     """Fetch a URL with automatic retry on transient DNS/network errors.
 
@@ -9061,6 +9109,13 @@ def fetch_linkedin_profile_posts(source_url: str):
         normalized_url,
         timeout=LINKEDIN_REQUEST_TIMEOUT_SECONDS,
     )
+    if response.status_code == 429:
+        raise LinkedInRateLimitedError(
+            retry_after_seconds=_parse_retry_after_seconds(
+                response.headers.get("Retry-After")
+            ),
+            status_code=response.status_code,
+        )
     if response.status_code >= 400:
         raise RuntimeError(f"LinkedIn profile page returned HTTP {response.status_code}.")
     final_url = str(response.url or "")
@@ -11086,18 +11141,64 @@ async def process_linkedin_subscription(subscription: dict):
     )
 
 
+# Retry-After hint from the most recent LinkedIn 429, consumed by the monitor loop.
+_LINKEDIN_RETRY_AFTER_HINT: float | None = None
+
+
 async def poll_linkedin_subscriptions():
+    """Poll every enabled LinkedIn subscription once.
+
+    Returns True when at least one subscription was rate limited (HTTP 429), which
+    the monitor loop uses to decide whether to back off. A 429 is logged as a
+    warning rather than an exception with a full traceback: it is an expected,
+    self-healing condition, and a traceback per poll buries real faults.
+    """
+    global _LINKEDIN_RETRY_AFTER_HINT
+
     subscriptions = list_linkedin_subscriptions(enabled_only=True)
     if not subscriptions:
-        return
+        return False
+    rate_limited = False
     for subscription in subscriptions:
         try:
             await process_linkedin_subscription(subscription)
+        except LinkedInRateLimitedError as exc:
+            rate_limited = True
+            if exc.retry_after_seconds is not None:
+                _LINKEDIN_RETRY_AFTER_HINT = exc.retry_after_seconds
+            logger.warning(
+                "LinkedIn subscription rate limited for id=%s (HTTP %s)%s; will back off.",
+                subscription.get("id"),
+                exc.status_code,
+                f", retry after {exc.retry_after_seconds:.0f}s"
+                if exc.retry_after_seconds is not None
+                else "",
+            )
         except Exception:
             logger.exception(
                 "LinkedIn subscription poll failed for id=%s",
                 subscription.get("id"),
             )
+    return rate_limited
+
+
+def _linkedin_backoff_seconds(consecutive_rate_limits: int, retry_after_seconds: float | None) -> int:
+    """Seconds to wait after ``consecutive_rate_limits`` consecutive HTTP 429s.
+
+    Uses the larger of LinkedIn's ``Retry-After`` hint and an exponential floor
+    (``base * 2**(n-1)``), so we never poll sooner than the server asked and never
+    retry a throttled host faster than our own ramp. The result is capped so a bad
+    or hostile header cannot park the monitor indefinitely.
+    """
+    attempts = max(1, int(consecutive_rate_limits or 1))
+    # Cap the exponent before shifting so a long outage cannot build a huge int.
+    exponent = min(attempts - 1, 16)
+    exponential = int(LINKEDIN_RATE_LIMIT_BACKOFF_BASE_SECONDS) * (2**exponent)
+    candidates = [exponential]
+    if retry_after_seconds is not None:
+        candidates.append(int(retry_after_seconds))
+    wait_seconds = max(candidates)
+    return max(1, min(wait_seconds, int(LINKEDIN_RATE_LIMIT_BACKOFF_MAX_SECONDS)))
 
 
 async def linkedin_monitor_loop():
@@ -11105,10 +11206,43 @@ async def linkedin_monitor_loop():
         "LinkedIn monitor active: polling every %s seconds",
         LINKEDIN_POLL_INTERVAL_SECONDS,
     )
-    await poll_linkedin_subscriptions()
+    # Declared global because the loop both reads and clears the hint; without
+    # this, the assignment below makes the name local and the read above raises
+    # UnboundLocalError on the very first 429.
+    global _LINKEDIN_RETRY_AFTER_HINT
+
+    consecutive_rate_limits = 0
     while not bot.is_closed():
-        await asyncio.sleep(LINKEDIN_POLL_INTERVAL_SECONDS)
-        await poll_linkedin_subscriptions()
+        if consecutive_rate_limits > 0:
+            wait_seconds = _linkedin_backoff_seconds(
+                consecutive_rate_limits,
+                _LINKEDIN_RETRY_AFTER_HINT,
+            )
+            logger.warning(
+                "LinkedIn monitor backing off for %ds after %d consecutive rate limit(s).",
+                wait_seconds,
+                consecutive_rate_limits,
+            )
+            # Sleep in bounded slices so a long backoff still notices shutdown.
+            remaining = wait_seconds
+            while remaining > 0 and not bot.is_closed():
+                slice_seconds = min(remaining, 30)
+                await asyncio.sleep(slice_seconds)
+                remaining -= slice_seconds
+            if bot.is_closed():
+                break
+            _LINKEDIN_RETRY_AFTER_HINT = None
+        else:
+            await asyncio.sleep(LINKEDIN_POLL_INTERVAL_SECONDS)
+
+        rate_limited = await poll_linkedin_subscriptions()
+        if rate_limited:
+            # Retained across iterations so the ramp actually escalates; cleared
+            # only once a poll comes back clean.
+            consecutive_rate_limits += 1
+        else:
+            consecutive_rate_limits = 0
+            _LINKEDIN_RETRY_AFTER_HINT = None
 
 
 def restart_linkedin_monitor_task():
