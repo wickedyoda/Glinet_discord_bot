@@ -990,6 +990,35 @@ def _normalize_session_cookie_samesite(raw_value, default_value: str = "Lax") ->
     return mapping.get(candidate, fallback)
 
 
+def _js_confirm_dialog(message: str) -> str:
+    """Render a confirm() dialog body as a safely-quoted JavaScript string.
+
+    Returns the quoted literal *including* its surrounding single quotes, ready
+    to interpolate into a double-quoted HTML attribute::
+
+        onsubmit="return confirm(<here>);"
+
+    Two separate encodings are in play here, and both matter:
+
+    * HTML escaping alone is not enough. ``escape()`` turns an apostrophe into
+      ``&#x27;``, which the HTML parser decodes back to ``'`` before the
+      attribute is evaluated as JavaScript -- so an address like
+      o'brien@example.com would terminate the JS string early.
+    * A double-quoted literal would be worse still: the surrounding HTML
+      attribute is itself double-quoted, so the attribute would terminate at
+      the first inner quote and the rest of the form would be parsed as
+      garbage.
+
+    So: emit single-quoted JavaScript, escape any embedded single quote and
+    backslash the way JavaScript requires, and HTML-escape the result so the
+    attribute itself stays intact. The output is valid in both layers.
+    """
+    # JavaScript single-quoted string literal.
+    literal = "'" + str(message or "").replace("\\", "\\\\").replace("'", "\\'") + "'"
+    # Safe inside the surrounding double-quoted HTML attribute.
+    return escape(literal, quote=True)
+
+
 def _clean_profile_text(value: str, max_length: int = 80) -> str:
     normalized = " ".join(str(value or "").strip().split())
     if len(normalized) > max_length:
@@ -9854,7 +9883,13 @@ def create_web_app(
                 target_email = _normalize_email(request.form.get("email", ""))
                 candidate = [entry for entry in users_data if entry["email"] != target_email]
                 admin_count = sum(1 for entry in candidate if entry.get("is_admin"))
-                if target_email == user["email"]:
+                if request.form.get("confirm", "").strip().lower() != "yes":
+                    # Deleting a user is irreversible from the web GUI, so require an
+                    # explicit confirmation. The Delete button also carries a
+                    # client-side confirm(); this is the server-side enforcement that
+                    # makes it non-bypassable.
+                    flash("User deletion confirmation is required.", "error")
+                elif target_email == user["email"]:
                     flash("You cannot delete your own account.", "error")
                 elif admin_count < 1:
                     flash("At least one admin account must remain.", "error")
@@ -10039,10 +10074,11 @@ def create_web_app(
                       <button class="btn secondary" type="submit">Set Role</button>
                     </form>
                     <a class="btn secondary" style="margin-left:6px;" href="#edit-user-{escape(email, quote=True)}">Edit</a>
-                    <form method="post" style="display:inline;margin-left:6px;">
+                    <form method="post" style="display:inline;margin-left:6px;" onsubmit="return confirm({_js_confirm_dialog(f'Delete user {email}? This permanently removes the account and its access. It cannot be undone from the web GUI.')});">
                       <input type="hidden" name="action" value="delete" />
                       <input type="hidden" name="email" value="{escape(email, quote=True)}" />
-                      <button class="btn secondary" type="submit">Delete</button>
+                      <input type="hidden" name="confirm" value="yes" />
+                      <button class="btn danger" type="submit">Delete</button>
                     </form>
                   </td>
                 </tr>
