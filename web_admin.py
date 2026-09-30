@@ -209,6 +209,27 @@ SENSITIVE_KEYS = {
 }
 FALLBACK_PROTECTED_ENV_KEYS = SENSITIVE_KEYS | {"WEB_ENV_FILE"}
 
+# Credentials that the Web GUI itself collects and must be able to persist to
+# the fallback file. The fallback is written with mode 0600 on the same
+# persistent volume as the primary, so withholding these buys no security --
+# it only guarantees the setting silently fails to persist.
+#
+# Without FRESHDESK_API_KEY here, enabling Freshdesk from the Web GUI writes
+# FRESHDESK_ENABLED and FRESHDESK_BASE_URL but silently drops the credential,
+# so a container restart reverts the integration to a broken half-configured
+# state while the UI reports success.
+FALLBACK_ALLOWED_CREDENTIAL_KEYS = {
+    "FRESHDESK_API_KEY",
+}
+
+
+def _is_fallback_protected_key(key: str) -> bool:
+    """True when a key must never be copied into the fallback env file."""
+    normalized = str(key)
+    if normalized in FALLBACK_ALLOWED_CREDENTIAL_KEYS:
+        return False
+    return normalized in FALLBACK_PROTECTED_ENV_KEYS
+
 
 def _resolve_web_gui_version_label() -> str:
     explicit = str(os.getenv("WEB_GUI_VERSION", "")).strip()
@@ -1617,7 +1638,7 @@ def _filter_fallback_env_values(values: dict) -> tuple[dict, tuple[str, ...]]:
     filtered = {}
     skipped = []
     for key, value in values.items():
-        if key in FALLBACK_PROTECTED_ENV_KEYS:
+        if _is_fallback_protected_key(key):
             skipped.append(str(key))
             continue
         filtered[key] = value
