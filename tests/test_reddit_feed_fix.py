@@ -11,18 +11,15 @@ Verifies that:
 """
 from __future__ import annotations
 
-import json
 import logging
 from unittest.mock import patch
 
 import pytest
 
 from bot import (
-    fetch_reddit_subreddit_new_posts,
-    fetch_reddit_json,
     REDDIT_REQUEST_USER_AGENT,
-    REDDIT_BASE_URL,
-    REDDIT_FALLBACK_BASE_URL,
+    fetch_reddit_json,
+    fetch_reddit_subreddit_new_posts,
 )
 
 # ---------------------------------------------------------------------------
@@ -174,7 +171,7 @@ class TestFetchRedditSubredditNewPosts:
 
     def test_falls_back_to_json_when_atom_fails(self, caplog):
         """When Atom fails, the function should fall back to JSON silently (INFO)."""
-        with make_mock_atom_failure_json_success() as mock_get:
+        with make_mock_atom_failure_json_success():
             with caplog.at_level(logging.INFO):
                 subreddit, posts = fetch_reddit_subreddit_new_posts("glinet")
         assert subreddit == "glinet"
@@ -203,7 +200,7 @@ class TestFetchRedditSubredditNewPosts:
 
     def test_no_403_warning_when_atom_works(self, caplog):
         """The primary fix: no 403/WARNING should appear when Atom works."""
-        with make_mock_atom_success() as mock_get:
+        with make_mock_atom_success():
             with caplog.at_level(logging.WARNING):
                 fetch_reddit_subreddit_new_posts("glinet")
             reddit_warnings = [

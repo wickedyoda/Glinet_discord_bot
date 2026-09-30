@@ -133,7 +133,6 @@ def test_settings_page_role_dropdown_lists_roles_alphabetically(tmp_path):
     alphabetical — so asserting Employee precedes Member proves the central sort in
     _load_discord_catalog_options actually reaches the rendered HTML.
     """
-    import re
 
     from test_web_admin import _login, _make_app, _select_guild  # noqa: PLC0415
 

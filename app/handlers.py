@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import TYPE_CHECKING
 
 import discord
@@ -14,8 +13,9 @@ if TYPE_CHECKING:
         Member,
         Message,
         RawReactionActionEvent,
-        TextChannel,
         User,
+    )
+    from discord import (
         abc as discord_abc,
     )
     from discord.ext import commands

@@ -24,7 +24,6 @@ import pytest
 import bot as bot_module
 from bot import _log_freshdesk_startup_status
 
-
 FRESHDESK_ENV_VARS = (
     "FRESHDESK_ENABLED",
     "FRESHDESK_DOMAIN",

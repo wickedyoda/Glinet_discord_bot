@@ -18061,6 +18061,14 @@ def _log_freshdesk_startup_status() -> None:
             intake = f"intake channel <#{target_channel_id}>"
         else:
             intake = "intake channel not set (commands work in any channel)"
+        # The "api_key=" token in the format string below trips
+        # python-logger-credential-disclosure, but the argument is the
+        # boolean-derived word "configured"/"missing": has_api_key is
+        # bool(str(config.get("api_key"))), so the credential is reduced to a
+        # truth value before it reaches the logger. tests/
+        # test_freshdesk_startup_no_key_leak.py fails if the key itself is ever
+        # passed instead.
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.info(
             "Freshdesk integration enabled: base_url=%s api_key=%s %s",
             base_url,
@@ -18616,7 +18624,7 @@ async def create_ticket_from_message(interaction: discord.Interaction, message_i
     if not config.get("enabled") or not config["base_url"] or not config["api_key"]:
         await interaction.response.send_message(_freshdesk_not_configured_reply(), ephemeral=True)
         return
-    
+
     channel_id = _resolve_freshdesk_ticket_target_channel_id(interaction)
     if not channel_id:
         await interaction.response.send_message(
@@ -18626,14 +18634,78 @@ async def create_ticket_from_message(interaction: discord.Interaction, message_i
             ephemeral=True,
         )
         return
-    
-    # Show category selection view with pre-populated message body
+
+    # Resolve the message to carry into the ticket. Discord IDs are snowflakes;
+    # a non-numeric value can never name a message, so reject it before the
+    # fetch rather than letting the API raise something opaque.
+    try:
+        resolved_message_id = int(str(message_id or "").strip())
+    except (TypeError, ValueError):
+        await interaction.response.send_message(
+            "❌ That message ID is not valid. Copy the message ID from the "
+            "message's URL (right-click the message → Copy Message Link).",
+            ephemeral=True,
+        )
+        return
+    if resolved_message_id <= 0:
+        await interaction.response.send_message(
+            "❌ That message ID is not valid.", ephemeral=True
+        )
+        return
+
+    # The message may live in any channel -- that is the point of this command --
+    # so it is resolved through the guild, not through the intake channel.
+    message_content = ""
+    source_label = ""
+    try:
+        source_message = await interaction.guild.get_message(resolved_message_id)
+        message_content = str(getattr(source_message, "content", "") or "").strip()
+        source_channel = getattr(source_message, "channel", None)
+        source_label = f"#{getattr(source_channel, 'name', '')}".strip() or "an unknown channel"
+    except discord.NotFound:
+        await interaction.response.send_message(
+            "❌ That message could not be found. It may have been deleted, or the "
+            "bot may not be able to see the channel it is in.",
+            ephemeral=True,
+        )
+        return
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I cannot read the channel that message is in. Ask an admin to grant "
+            "the bot access, or use `/create-ticket` in the intake channel instead.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException as exc:
+        logger.warning(
+            "Could not fetch Discord message %s for %s: %s",
+            resolved_message_id,
+            f"{interaction.user} (id: {interaction.user.id})",
+            exc,
+        )
+        await interaction.response.send_message(
+            "❌ That message could not be read just now. Try again shortly.",
+            ephemeral=True,
+        )
+        return
+
+    if not message_content:
+        await interaction.response.send_message(
+            "❌ That message has no text content to build a ticket from. "
+            "Use `/create-ticket` in the intake channel to write the details yourself.",
+            ephemeral=True,
+        )
+        return
+
+    # Discord text inputs cap at 4000; trim rather than let the modal reject.
+    message_content = message_content[:4000]
+
+    # Show category selection view with the fetched message body.
     view = SupportTicketCategoryView(config, channel_id)
-    # Store the message content for later use
-    view.message_content = ""
-    
+    view.message_content = message_content
     await interaction.response.send_message(
-        "Please select the ticket type (message body will be pre-populated from Discord message):",
+        f"Escalating the message from {source_label} into a Freshdesk ticket. "
+        "Please select the ticket type:",
         view=view,
         ephemeral=True,
     )
