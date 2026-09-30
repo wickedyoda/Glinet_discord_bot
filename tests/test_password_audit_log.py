@@ -18,16 +18,12 @@ neither the new password, the old password, nor their hashes.
 
 from __future__ import annotations
 
-import logging
 import re
 from pathlib import Path
 
-import pytest
+from test_web_admin import _login, _make_app, _page_csrf_token
 
 import web_admin
-from web_admin import create_web_app
-
-from test_web_admin import _login, _make_app, _page_csrf_token
 
 NEW_PASSWORD = "Zz!99qq"
 CONFIRM_EMAIL = "admin@example.com"
@@ -46,7 +42,6 @@ class _RecordingLogger:
         return _log
 
     def __getattr__(self, name):
-        level = name.split("_", 1)[-1] if name.startswith("_") else name
         return self._record(name)
 
     @property

@@ -65,7 +65,8 @@ def normalize_tag(tag: str) -> str:
 
 
 def get_tag_responses(guild_id: int | None = None):
-    from bot import tag_response_cache, db_kv_get, load_tag_responses as _load, normalize_target_guild_id
+    from bot import db_kv_get, normalize_target_guild_id, tag_response_cache
+    from bot import load_tag_responses as _load
 
     safe_guild_id = normalize_target_guild_id(guild_id)
     current_version = db_kv_get(f"tag_responses_updated_at:{safe_guild_id}") or "bootstrap"
@@ -98,7 +99,8 @@ def build_command_list(guild_id: int | None = None) -> str:
 
 
 def find_tag_response_key(raw_value: str, guild_id: int | None = None):
-    from bot import normalize_tag as _normalize, get_tag_responses
+    from bot import get_tag_responses
+    from bot import normalize_tag as _normalize
 
     requested = _normalize(raw_value)
     if not requested:
@@ -114,7 +116,8 @@ def find_tag_response_key(raw_value: str, guild_id: int | None = None):
 
 
 async def autocomplete_tag_response_name(interaction: discord.Interaction, current: str):
-    from bot import get_tag_responses, normalize_tag as _normalize, GUILD_ID, logger
+    from bot import GUILD_ID, get_tag_responses
+    from bot import normalize_tag as _normalize
 
     guild_id = interaction.guild.id if interaction.guild else GUILD_ID
     requested = _normalize(current or "").lstrip("!")
@@ -178,7 +181,8 @@ async def reload_tag_commands_runtime(guild_id: int | None = None) -> None:
 
 
 def schedule_tag_command_refresh(guild_id: int | None = None) -> bool:
-    from bot import bot as _bot, logger
+    from bot import bot as _bot
+    from bot import logger
 
     loop = getattr(_bot, "loop", None)
     if loop is None or not loop.is_running():
@@ -188,7 +192,7 @@ def schedule_tag_command_refresh(guild_id: int | None = None) -> bool:
     def _start_refresh() -> None:
         import asyncio
 
-        from bot import reload_tag_commands_runtime, normalize_target_guild_id
+        from bot import normalize_target_guild_id, reload_tag_commands_runtime
 
         asyncio.create_task(
             reload_tag_commands_runtime(guild_id),
@@ -200,8 +204,8 @@ def schedule_tag_command_refresh(guild_id: int | None = None) -> bool:
 
 
 def generate_code() -> str:
-    import secrets
     import logging
+    import secrets
 
     logger = logging.getLogger("invite_bot")
     while True:
@@ -224,7 +228,7 @@ def generate_code() -> str:
 
 
 async def refresh_invite_cache_for_guild(guild: discord.Guild) -> None:
-    from bot import invite_uses_by_guild, invite_roles_by_guild, logger
+    from bot import invite_roles_by_guild, invite_uses_by_guild, logger
 
     guild_invite_uses = invite_uses_by_guild.setdefault(guild.id, {})
     invite_roles = invite_roles_by_guild.get(guild.id) or {}
@@ -244,7 +248,7 @@ async def refresh_invite_cache_for_guild(guild: discord.Guild) -> None:
 
 
 async def sync_commands_for_all_guilds() -> int:
-    from bot import get_managed_guilds, get_tag_responses, logger, sync_commands_for_guild
+    from bot import get_managed_guilds, get_tag_responses, sync_commands_for_guild
 
     total_synced = 0
     for guild in get_managed_guilds():
@@ -257,7 +261,7 @@ async def sync_commands_for_all_guilds() -> int:
 
 
 def build_docs_site_search_message(query: str, site_key: str) -> str:
-    from bot import DOCS_SITE_MAP, search_docs_site_links, trim_search_message, suppress_discord_link_embed
+    from bot import DOCS_SITE_MAP, search_docs_site_links, suppress_discord_link_embed, trim_search_message
 
     site_info = DOCS_SITE_MAP.get(site_key)
     if not site_info:

@@ -15,15 +15,13 @@ self-delete, always keep one admin) still take precedence and still work.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from bs4 import BeautifulSoup
 import pytest
+from bs4 import BeautifulSoup
+from test_web_admin import _login, _login_as, _make_app, _page_csrf_token
 
 from web_admin import _read_users
-
-from test_web_admin import _login, _login_as, _make_app, _page_csrf_token
 
 BASE_URL = "https://docker.example:8443"
 NEW_USER_EMAIL = "victim@example.com"

@@ -26,7 +26,6 @@ how each body is factored internally.
 
 from __future__ import annotations
 
-import inspect
 import re
 from pathlib import Path
 

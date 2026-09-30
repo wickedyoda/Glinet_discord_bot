@@ -370,7 +370,6 @@ def load_command_permission_rules(guild_id: int | None = None) -> dict:
         command_permissions_cache,
         command_permissions_lock,
         db_kv_get,
-        logger,
         with_db,
     )
 
@@ -420,7 +419,6 @@ def save_command_permission_rules(
         command_permissions_cache,
         command_permissions_lock,
         db_kv_set,
-        logger,
         normalize_target_guild_id,
         with_db,
     )
@@ -699,7 +697,7 @@ async def log_interaction(
     reason: str | None = None,
     success: bool = True,
 ) -> None:
-    from bot import GUILD_ID, logger, record_action_safe, truncate_log_text
+    from bot import GUILD_ID, record_action_safe, truncate_log_text
 
     guild_id = interaction.guild.id if interaction.guild else GUILD_ID
     status = "success" if success else "failed"

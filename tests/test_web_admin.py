@@ -7,8 +7,8 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-import web_admin
 import bot
+import web_admin
 from app.freshdesk_api import freshdesk_configured
 from app.service_monitor import GLINET_DOMAIN_MONITOR_PRESETS, normalize_service_monitor_targets
 from web_admin import create_web_app

@@ -18061,6 +18061,14 @@ def _log_freshdesk_startup_status() -> None:
             intake = f"intake channel <#{target_channel_id}>"
         else:
             intake = "intake channel not set (commands work in any channel)"
+        # The "api_key=" token in the format string below trips
+        # python-logger-credential-disclosure, but the argument is the
+        # boolean-derived word "configured"/"missing": has_api_key is
+        # bool(str(config.get("api_key"))), so the credential is reduced to a
+        # truth value before it reaches the logger. tests/
+        # test_freshdesk_startup_no_key_leak.py fails if the key itself is ever
+        # passed instead.
+        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
         logger.info(
             "Freshdesk integration enabled: base_url=%s api_key=%s %s",
             base_url,

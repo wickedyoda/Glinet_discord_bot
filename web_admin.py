@@ -4649,11 +4649,12 @@ def create_web_app(
                         # the only values interpolated are the account email and the
                         # client IP. No password, hash, or other credential is ever
                         # passed here -- see tests/test_password_audit_log.py, which
-                        # fails if that ever changes. The suppression is placed last so
-                        # it sits on the line immediately above the call, and is
-                        # line-scoped so the rule stays active everywhere else.
+                        # fails if that ever changes. The suppression must sit on the
+                        # line immediately above the flagged line for semgrep to
+                        # associate it, and is line-scoped so the rule stays active
+                        # everywhere else.
+                        # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                         logger.warning(
-                            # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure
                             "Password for %s changed without current password (email confirmation). ip=%s",
                             entry.get("email"),
                             _client_ip(),
