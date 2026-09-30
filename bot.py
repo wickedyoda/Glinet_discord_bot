@@ -13119,6 +13119,10 @@ async def on_ready():
     else:
         logger.warning("Tag slash commands not registered: register_tag_commands_for_guild missing")
 
+    # Report Freshdesk configuration alongside the other subsystems. This is the
+    # one integration whose state is otherwise invisible until a user hits it.
+    _log_freshdesk_startup_status()
+
     if firmware_monitor_task is None or firmware_monitor_task.done():
         firmware_monitor_task = asyncio.create_task(firmware_monitor_loop(), name="firmware_monitor")
     if reddit_feed_monitor_task is None or reddit_feed_monitor_task.done():
@@ -18014,6 +18018,60 @@ def _freshdesk_not_configured_reply():
     )
 
 
+def _log_freshdesk_startup_status() -> None:
+    """Log whether the Freshdesk integration is live, and if not, exactly what is missing.
+
+    Without this the startup banner says nothing about Freshdesk, so a user
+    hitting "Freshdesk integration is not configured or disabled" sends the
+    operator hunting through FRESHDESK_* with no evidence in the log about
+    which of them is unset. One line here answers that immediately.
+
+    The API key is never logged -- only whether one is present.
+    """
+    try:
+        config = resolve_freshdesk_config()
+        enabled = bool(config.get("enabled"))
+        base_url = str(config.get("base_url") or "")
+        has_api_key = bool(str(config.get("api_key") or ""))
+
+        if not enabled:
+            logger.info(
+                "Freshdesk integration disabled (FRESHDESK_ENABLED is false). "
+                "/create-ticket and /support-ticket-* are unavailable; use /ticket instead."
+            )
+            return
+
+        missing = []
+        if not base_url:
+            missing.append("FRESHDESK_DOMAIN or FRESHDESK_BASE_URL")
+        if not has_api_key:
+            missing.append("FRESHDESK_API_KEY")
+        if missing:
+            logger.warning(
+                "Freshdesk integration enabled but not fully configured; missing: %s. "
+                "/create-ticket and /support-ticket-* will report 'not configured'.",
+                ", ".join(missing),
+            )
+            return
+
+        target_channel_id = str(
+            os.getenv("FRESHDESK_TICKET_TARGET_CHANNEL_ID", "") or ""
+        ).strip()
+        if target_channel_id:
+            intake = f"intake channel <#{target_channel_id}>"
+        else:
+            intake = "intake channel not set (commands work in any channel)"
+        logger.info(
+            "Freshdesk integration enabled: base_url=%s api_key=%s %s",
+            base_url,
+            "configured" if has_api_key else "missing",
+            intake,
+        )
+    except Exception:
+        # Never let a diagnostic line break startup.
+        logger.exception("Failed to log Freshdesk startup status")
+
+
 FRESHDESK_WRONG_CHANNEL_PLACEHOLDERS = ("{wrong_channel}", "{right_channel}")
 
 
@@ -18021,6 +18079,7 @@ def _freshdesk_wrong_channel_reply(
     interaction: discord.Interaction,
     config: dict | None = None,
 ) -> str | None:
+
     """Return a friendly 'wrong channel' message, or None if the channel is acceptable.
 
     Freshdesk commands are only meaningful inside the configured Freshdesk intake
