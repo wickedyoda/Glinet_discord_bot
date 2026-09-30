@@ -60,7 +60,10 @@ def test_reports_enabled_with_base_url_and_intake_channel(monkeypatch, caplog):
         message = _emit(caplog)
 
     assert "Freshdesk integration enabled" in message
-    assert "acme.freshdesk.com" in message
+    # Assert on the labelled field rather than a bare host substring: CodeQL's
+    # "Incomplete URL substring sanitization" rule flags any `host in message`
+    # check, even in a test, and CI treats it as a blocking failure.
+    assert "base_url=https://acme.freshdesk.com" in message
     assert "111111111" in message
     assert "configured" in message
 
@@ -97,7 +100,7 @@ def test_uses_base_url_when_domain_is_absent(monkeypatch, caplog):
     with caplog.at_level(logging.INFO, logger="invite_bot"):
         message = _emit(caplog)
 
-    assert "alt.freshdesk.com" in message
+    assert "base_url=https://alt.freshdesk.com" in message
 
 
 # --------------------------------------------------------------------------- #
