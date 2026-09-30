@@ -17954,10 +17954,12 @@ async def support_ticket_search(interaction: discord.Interaction, email: str, ti
                 "❌ You can only view your own tickets.", ephemeral=True
             )
             return
+    # Logs the initiating Discord ID only. The searched email is deliberately
+    # not logged: it is requester PII, and the audit question this line answers
+    # is "who ran this", not "whose tickets did they look at".
     logger.info(
-        "/support-ticket-search invoked by %s for email: %s ticket: %s",
+        "/support-ticket-search invoked by %s ticket=%s",
         f"{interaction.user} (id: {interaction.user.id})",
-        email,
         ticket_id,
     )
     wrong_channel = _freshdesk_wrong_channel_reply(interaction)
@@ -18206,10 +18208,16 @@ class SupportTicketCategoryView(discord.ui.View):
         category = select.values[0] if select.values else ""
         config = self.config
         # send_modal must be called on the original response, not after defer()
-        
+
         # Pre-populate the message body with stored Discord message content
         message_body = getattr(self, 'message_content', '')
-        
+
+        logger.info(
+            "/create-ticket category selected by %s category=%s",
+            f"{interaction.user} (id: {interaction.user.id})",
+            category,
+        )
+
         await interaction.response.send_modal(
             SupportTicketCreateModal(
                 target_channel_id=self.target_channel_id,
@@ -18291,7 +18299,10 @@ class SupportTicketCreateModal(discord.ui.Modal, title="Create Freshdesk Ticket"
         )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception):
-        logger.exception("Freshdesk create modal error")
+        logger.exception(
+            "Freshdesk create modal error for %s",
+            f"{interaction.user} (id: {interaction.user.id})",
+        )
         try:
             await interaction.response.send_message(
                 "❌ An error occurred while processing the Freshdesk ticket form.", ephemeral=True
@@ -18430,7 +18441,11 @@ async def _freshdesk_create_on_submit(
                 timeout_seconds=config["timeout"],
             )
         except Exception:
-            logger.warning("Could not resolve Freshdesk group %s", group_name)
+            logger.warning(
+                "Could not resolve Freshdesk group %s for ticket request by %s",
+                group_name,
+                f"{interaction.user} (id: {interaction.user.id})",
+            )
     
     try:
         ticket = await asyncio.to_thread(
@@ -18445,15 +18460,34 @@ async def _freshdesk_create_on_submit(
             group_id=group_id,
         )
     except (FreshdeskApiError, FreshdeskRateLimitError) as exc:
+        logger.warning(
+            "Freshdesk ticket create rejected by API for %s: %s",
+            f"{interaction.user} (id: {interaction.user.id})",
+            exc,
+        )
         await interaction.followup.send(f"❌ Freshdesk error: {exc}", ephemeral=True)
         return
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Freshdesk ticket create failed")
+        logger.exception(
+            "Freshdesk ticket create failed for %s",
+            f"{interaction.user} (id: {interaction.user.id})",
+        )
         await interaction.followup.send(f"❌ Failed to create Freshdesk ticket: {exc}", ephemeral=True)
         return
     if not ticket.get("id"):
         await interaction.followup.send("❌ Freshdesk ticket was not created.", ephemeral=True)
         return
+    # Audit record for the ticket that was actually created. The /create-ticket
+    # command callback logs the invocation, but the ticket is only created here
+    # after the category select and the modal -- without this line a successful
+    # ticket leaves no trace beyond the bare invocation.
+    logger.info(
+        "Freshdesk ticket #%s created by %s category=%s thread_channel_id=%s",
+        ticket.get("id"),
+        f"{interaction.user} (id: {interaction.user.id})",
+        ticket_category,
+        target_channel_id,
+    )
     guild = interaction.guild
     target_channel = guild.get_channel(target_channel_id) if guild else None
     if target_channel is None:
@@ -18470,10 +18504,17 @@ async def _freshdesk_create_on_submit(
             name=f"support-ticket-{ticket['id']}",
             message=None,
             type=discord.ChannelType.private_thread,
-            reason=f"Freshdesk ticket #{ticket['id']} created by {interaction.user}",
+            reason=(
+                f"Freshdesk ticket #{ticket['id']} created by "
+                f"{interaction.user} (id: {interaction.user.id})"
+            ),
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to create Freshdesk ticket thread")
+        logger.exception(
+            "Failed to create Freshdesk ticket thread for ticket %s requested by %s",
+            ticket.get("id"),
+            f"{interaction.user} (id: {interaction.user.id})",
+        )
         await interaction.followup.send(
             f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
             f"but the Discord thread could not be created: {exc}",
@@ -18483,7 +18524,11 @@ async def _freshdesk_create_on_submit(
     try:
         await thread.add_user(interaction.user)
     except Exception as exc:  # noqa: BLE001
-        logger.exception("Failed to add requester to Freshdesk ticket thread")
+        logger.exception(
+            "Failed to add requester %s to Freshdesk ticket #%s thread",
+            f"{interaction.user} (id: {interaction.user.id})",
+            ticket.get("id"),
+        )
         await interaction.followup.send(
             f"✅ Created Freshdesk ticket #{ticket['id']} ({ticket['url']}), "
             f"but you could not be added to the Discord thread: {exc}",
