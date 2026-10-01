@@ -42,12 +42,12 @@ These commands are registered whether or not Freshdesk is enabled, but they refu
 | `FRESHDESK_DOMAIN` or `FRESHDESK_BASE_URL` | Freshdesk tenant URL |
 | `FRESHDESK_API_KEY` | API key |
 | `FRESHDESK_TICKET_TARGET_CHANNEL_ID` | Channel that receives the created threads |
-| `FRESHDESK_ADMIN` | Comma-separated role IDs allowed to create and search tickets |
-| `FRESHDESK_USER` | Comma-separated role IDs allowed to view tickets |
+| *(none)* | Command access is configured in the Web GUI, not via environment variables |
 
 Notes:
 
-- Role IDs are comma-separated lists and are read from the environment at authorization time, so Web GUI changes take effect without a bot restart.
+- `/create-ticket` and `/create-ticket-from-message` default to **everyone**; every other Freshdesk command defaults to **moderators**. All are overridable per-command in the Web GUI under Command Permissions.
+- Access is evaluated from the saved per-command rules, so Web GUI changes take effect without a bot restart.
 - If no intake channel resolves, `/create-ticket` replies that an admin must set `FRESHDESK_TICKET_TARGET_CHANNEL_ID` instead.
 - `FRESHDESK_ENABLED` is enforced only by `/create-ticket`; the read-only commands check the base URL and API key directly.
 

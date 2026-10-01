@@ -104,20 +104,6 @@ def viewer_page():
             base_url = str(request.form.get("FRESHDESK_BASE_URL", "")).strip().rstrip("/")
             api_key = str(request.form.get("FRESHDESK_API_KEY", "")).strip()
             timeout = str(request.form.get("FRESHDESK_REQUEST_TIMEOUT_SECONDS", "15")).strip()
-            # Support multi-select: get all selected admin role IDs
-            admin_role_ids = request.form.getlist("FRESHDESK_ADMIN")
-            if not admin_role_ids:
-                # Fallback to text input for comma-separated values
-                admin_role_text = str(request.form.get("FRESHDESK_ADMIN", "0")).strip()
-                admin_role_ids = [x for x in admin_role_text.split(",") if x.strip().isdigit()]
-            admin_role_id = ",".join(sorted(set(admin_role_ids))) if admin_role_ids else "0"
-            # Support multi-select: get all selected user role IDs
-            user_role_ids = request.form.getlist("FRESHDESK_USER")
-            if not user_role_ids:
-                # Fallback to text input for comma-separated values
-                user_role_text = str(request.form.get("FRESHDESK_USER", "0")).strip()
-                user_role_ids = [x for x in user_role_text.split(",") if x.strip().isdigit()]
-            user_role_id = ",".join(sorted(set(user_role_ids))) if user_role_ids else "0"
 
             wrong_channel_message = str(request.form.get("FRESHDESK_WRONG_CHANNEL_MESSAGE", "") or "").strip()
             # Discord rejects messages over 2000 characters; reject longer at save
@@ -130,8 +116,6 @@ def viewer_page():
                 "FRESHDESK_ENABLED": str(enabled).lower(),
                 "FRESHDESK_BASE_URL": base_url,
                 "FRESHDESK_REQUEST_TIMEOUT_SECONDS": timeout,
-                "FRESHDESK_ADMIN": admin_role_id,
-                "FRESHDESK_USER": user_role_id,
                 "FRESHDESK_WRONG_CHANNEL_MESSAGE": wrong_channel_message,
             }
             # Only update API key if provided

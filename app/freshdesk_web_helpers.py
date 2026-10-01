@@ -111,57 +111,6 @@ def render_freshdesk_viewer_body(
     enabled_checked = " checked" if enabled else ""
     api_key_placeholder = "••••••••••••••••" if api_key_configured else ""
 
-    # Parse stored role IDs for multi-select (comma-separated in env)
-    admin_role_ids = set()
-    user_role_ids = set()
-    admin_raw = str(effective_settings.get('FRESHDESK_ADMIN', '0')).strip()
-    user_raw = str(effective_settings.get('FRESHDESK_USER', '0')).strip()
-    if admin_raw and admin_raw != '0':
-        admin_role_ids = {int(x) for x in admin_raw.split(',') if x.strip().isdigit()}
-    if user_raw and user_raw != '0':
-        user_role_ids = {int(x) for x in user_raw.split(',') if x.strip().isdigit()}
-
-    # Build multi-select role dropdowns for Freshdesk roles (use discord_role_options if available)
-    # Sort defensively as well as in the catalog loader: this module is also called
-    # directly (tests, other blueprints) with an unsorted list, and a dropdown that
-    # is alphabetical on one page and not the next is worse than either.
-    role_options = sorted(
-        (discord_role_options or []),
-        key=_discord_role_option_sort_key,
-    )
-    def _build_role_select(name: str, selected_ids: set[int]) -> str:
-        option_tags = []
-        for opt in role_options:
-            opt_id = str(opt.get('id', '')).strip()
-            opt_label = str(opt.get('name', opt.get('label', opt_id))).strip()
-            if not opt_id:
-                continue
-            selected = ' selected' if int(opt_id) in selected_ids else ''
-            option_tags.append(f"<option value='{escape(opt_id, quote=True)}'{selected}>{escape(opt_label)} ({escape(opt_id)})</option>")
-        return (
-            f"<select name='{name}' multiple size='6' style='width:350px;'>"
-            f"<option value=''>— none —</option>"
-            + "".join(option_tags)
-            + "</select>"
-        )
-
-    # Build admin role selector HTML
-    if role_options:
-        admin_role_selector = _build_role_select('FRESHDESK_ADMIN', admin_role_ids)
-        user_role_selector = _build_role_select('FRESHDESK_USER', user_role_ids)
-    else:
-        # Fallback to comma-separated text input
-        admin_val = ','.join(str(x) for x in sorted(admin_role_ids))
-        user_val = ','.join(str(x) for x in sorted(user_role_ids))
-        admin_role_selector = (
-            f"<input type='text' name='FRESHDESK_ADMIN' value='{escape(admin_val, quote=True)}' "
-            f"placeholder='Comma-separated role IDs' style='width:350px;' />"
-        )
-        user_role_selector = (
-            f"<input type='text' name='FRESHDESK_USER' value='{escape(user_val, quote=True)}' "
-            f"placeholder='Comma-separated role IDs' style='width:350px;' />"
-        )
-
     integration_items = f"""
         <tr>
           <td><strong>Enabled</strong></td>
@@ -178,14 +127,6 @@ def render_freshdesk_viewer_body(
         <tr>
           <td><strong>Request Timeout</strong></td>
           <td><input type="number" name="FRESHDESK_REQUEST_TIMEOUT_SECONDS" value="{escape(str(timeout), quote=True)}" min="5" max="120" style="width:80px;" /> seconds</td>
-        </tr>
-        <tr>
-          <td><strong>Admin Role(s)</strong></td>
-          <td>{admin_role_selector}<br/><small class="muted">Required for /create-ticket and /support-ticket-view</small></td>
-        </tr>
-        <tr>
-          <td><strong>User Role(s)</strong></td>
-          <td>{user_role_selector}<br/><small class="muted">Required for /support-ticket-search and /support-ticket-view (own tickets only)</small></td>
         </tr>
         <tr>
           <td><strong>Wrong Channel Message</strong></td>

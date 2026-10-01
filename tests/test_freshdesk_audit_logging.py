@@ -2,10 +2,13 @@
 
 The ticket commands are an audit surface: they open support requests on behalf of
 a named requester, and when something goes wrong the logs are the only record of
-who asked for what. The project's convention for attributing an action is the
-inline form used by ~90 command callbacks::
+who asked for what. Most command callbacks attribute an action with::
 
     logger.info("/thing invoked by %s", f"{interaction.user} (id: {interaction.user.id})")
+
+The Freshdesk ticket path deliberately departs from that: because
+``str(discord.User)`` is ``"name#1234"``, it logs the numeric ID alone so no
+username is written to the audit log.
 
 Two properties matter and are asserted here:
 
@@ -37,7 +40,12 @@ BOT_SOURCE = Path(bot_module.__file__).read_text()
 PII_VARIABLES = ("message_body", "description", "subject", "email", "name")
 
 # A logging call that attributes an action, per the project convention.
-ACTOR_PATTERN = re.compile(r"\(id: \{interaction\.user\.id\}\)")
+# Ticket-path audit lines record the numeric Discord ID and nothing else.
+# The project-wide convention elsewhere is
+#     f"{interaction.user} (id: {interaction.user.id})"
+# but str(User) is "name#1234", so that form also records the username. The
+# Freshdesk ticket path was tightened to ID-only, and these assertions guard it.
+ACTOR_PATTERN = re.compile(r"user_id=%s|\buser_id=|interaction\.user\.id")
 PII_AS_LOG_ARG = re.compile(
     r"(?<![\w.])(?:" + "|".join(PII_VARIABLES) + r")(?![\w])"
 )

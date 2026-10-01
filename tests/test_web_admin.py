@@ -3488,7 +3488,13 @@ def test_command_permissions_page_lists_freshdesk_commands(tmp_path: Path):
     assert "support_ticket_categories" in commands
     assert "create_ticket" in commands
     assert commands["create_ticket"]["label"] == "/create-ticket"
-    assert commands["create_ticket"]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
+    # /create-ticket is open to everyone; the ticket *viewer* commands stay
+    # moderator-only. Access is set per command in the Web GUI, which is what
+    # replaced the old FRESHDESK_ADMIN / FRESHDESK_USER role layer.
+    assert commands["create_ticket"]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC
+    assert commands["create_ticket_from_message"]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC
+    for key in ("support_ticket_categories", "support_ticket_view", "support_ticket_search"):
+        assert commands[key]["default_policy"] == bot.COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS
 
 
 def test_freshdesk_configured_checks_enabled_flag(tmp_path: Path, monkeypatch):

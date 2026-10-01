@@ -111,7 +111,9 @@ def test_create_ticket_from_message_still_resolves_a_target_channel():
 def test_create_ticket_from_message_keeps_permission_and_config_guards():
     """Unrestricted by channel, but not unrestricted full stop."""
     source = _function_source("create_ticket_from_message")
-    assert "can_use_freshdesk_admin" in source, "permission check must remain"
+    assert (
+        'ensure_interaction_command_access(interaction, "create_ticket_from_message")' in source
+    ), "standard per-command permission check must remain"
     assert "_freshdesk_not_configured_reply" in source, "config check must remain"
     assert "interaction.guild is None" in source, "must still require a server"
 
