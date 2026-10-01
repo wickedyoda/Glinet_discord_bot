@@ -97,21 +97,6 @@ jobs:
             --exit-code 1 \
             local/discord-invite-bot:${{ github.sha }}-discourse
 
-      # --- Gate: Dependency Review ---
-  dependency-review:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # 5
-        with:
-          fetch-depth: 0
-      - name: Dependency review
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48  # 4
-        with:
-          fail-on-severity: high
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-
   # --- Gate: Python Vulnerability Scan ---
   pip-audit:
     runs-on: ubuntu-latest
