@@ -115,6 +115,17 @@ def test_freshdesk_page_role_dropdown_is_sorted():
             "FRESHDESK_REQUEST_TIMEOUT_SECONDS": "15",
         },
         discord_role_options=unsorted_roles,
+        command_permissions=[
+            {
+                "key": "create_ticket",
+                "label": "/create-ticket",
+                "description": "Create a Freshdesk ticket from Discord.",
+                "default_policy": "public",
+                "default_policy_label": "Everyone",
+                "mode": "default",
+                "role_ids": [],
+            }
+        ],
     )
 
     employee_at = html.find("Employee")

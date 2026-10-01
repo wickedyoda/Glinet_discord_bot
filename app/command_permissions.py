@@ -183,7 +183,8 @@ COMMAND_PERMISSION_DEFAULTS = {
     "support_ticket_search": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "support_ticket_view": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "support_ticket_categories": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
-    "create_ticket": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "create_ticket": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "create_ticket_from_message": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
 }
 
 for _command_key in MODERATOR_ONLY_COMMAND_KEYS:
@@ -275,6 +276,7 @@ COMMAND_PERMISSION_METADATA = {
     "support_ticket_view": {"label": "/support-ticket-view", "description": "View a Freshdesk ticket by ID."},
     "support_ticket_categories": {"label": "/support-ticket-categories", "description": "List Freshdesk solution/knowledge-base categories."},
     "create_ticket": {"label": "/create-ticket", "description": "Create a Freshdesk ticket from Discord."},
+    "create_ticket_from_message": {"label": "/create-ticket-from-message", "description": "Create a Freshdesk ticket from an existing Discord message."},
 }
 
 COMMAND_PERMISSIONS_FILE = "command_permissions.json"  # path relative to DATA_DIR; actual path built by caller

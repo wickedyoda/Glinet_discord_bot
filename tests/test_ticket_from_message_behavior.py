@@ -80,7 +80,12 @@ def _make_interaction(guild, channel_id=777):
 @pytest.fixture(autouse=True)
 def _patch_guards(monkeypatch):
     """Neutralise the checks unrelated to message resolution."""
-    monkeypatch.setattr(bot_module, "can_use_freshdesk_admin", lambda i: True)
+    async def _allow(interaction, command_key):
+        return True
+
+    monkeypatch.setattr(
+        bot_module, "ensure_interaction_command_access", _allow, raising=False
+    )
     monkeypatch.setattr(
         bot_module,
         "resolve_freshdesk_config",

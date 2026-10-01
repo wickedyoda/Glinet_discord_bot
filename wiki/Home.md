@@ -37,6 +37,10 @@ This wiki documents the current `GL.iNet UnOfficial Discord Bot` implementation 
 - [Security Hardening](Security-Hardening.md)
 - [Command Reference](Command-Reference.md)
 
+## Legal
+
+- [Privacy Policy, Terms of Use, Disclaimer, and Limitation of Liability](Privacy-Policy.md)
+
 ## Source of Truth
 
 - Main README: [`README.md`](../README.md)
