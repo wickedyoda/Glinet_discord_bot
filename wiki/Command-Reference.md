@@ -22,14 +22,14 @@ Per-command overrides are configured in:
 
 | Command | Type | Default Access | Parameters | Notes |
 |---|---|---|---|---|
-| `/submitrole` | Slash | Member/Public | `role` | Discord prompts for the target role, then the bot generates the invite + 6-digit access code |
-| `/restore_code` | Slash | Moderator | `role`, `code`, optional `invite` | Restores a specific 6-digit code for a role and either reuses the supplied invite URL/code or generates a fresh invite |
-| `/enter_role` | Slash | Member/Public | none | Opens a modal to redeem a 6-digit code and assigns mapped role |
-| `/getaccess` | Slash | Member/Public | none | Assigns default access role |
+| `/enter_role` | Slash | Member/Public | none (Interactive Modal) | Opens a Discord popup modal dialog prompting for a 6-digit access code and assigns the mapped role upon submission (ephemeral confirmation). See [Join With an Invite Code](Join-With-Invite-Code.md). |
+| `/submitrole` | Slash | Member/Public | `role` | Prompts for a target Discord role in the slash UI, then generates a dedicated invite link + paired 6-digit access code for that role. |
+| `/restore_code` | Slash | Moderator | `role`, `code`, optional `invite` | Restores or recreates a specific 6-digit code for a role and either reuses the supplied invite URL/code or generates a fresh invite. |
+| `/getaccess` | Slash | Member/Public | none | Assigns the server's configured default access role (`access_role_id`). |
 
 Web variation:
 
-- `/admin/role-access` shows stored invite/code mappings for the selected guild and allows pause, disable, activate, and manual restore/add actions.
+- `/admin/role-access` shows stored invite/code mappings for the selected guild and allows pause, disable, activate, and manual restore/add actions. See [Role Access and Invites](Role-Access-and-Invites.md).
 
 ## Bulk CSV Role Assignment
 
