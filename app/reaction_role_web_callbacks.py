@@ -17,6 +17,7 @@ class ReactionRolesWebCallbacks:
         truncate_log_text,
         logger,
         validate_reaction_role_message_for_guild,
+        post_reaction_role_message_for_guild=None,
     ):
         self.normalize_target_guild_id = normalize_target_guild_id
         self.normalize_reaction_role_emoji = normalize_reaction_role_emoji
@@ -30,6 +31,7 @@ class ReactionRolesWebCallbacks:
         self.truncate_log_text = truncate_log_text
         self.logger = logger
         self.validate_reaction_role_message_for_guild = validate_reaction_role_message_for_guild
+        self.post_reaction_role_message_for_guild = post_reaction_role_message_for_guild
 
     def build_reaction_roles_web_payload(self, guild_id: int):
         safe_guild_id = self.normalize_target_guild_id(guild_id)
@@ -53,7 +55,80 @@ class ReactionRolesWebCallbacks:
         action = str(payload.get("action") or "").strip().lower()
         audit_actor = self.build_web_actor_audit_label(actor_email)
         try:
-            if action == "save":
+            if action == "post_message":
+                channel_id = int(str(payload.get("channel_id") or "0").strip())
+                if channel_id <= 0:
+                    return {"ok": False, "error": "Please choose a valid text channel."}
+                message_content = str(payload.get("message_content") or "").strip()
+                if not message_content:
+                    return {"ok": False, "error": "Message content cannot be empty."}
+
+                raw_pairs = payload.get("pairs") or []
+                if not isinstance(raw_pairs, list) or not raw_pairs:
+                    return {"ok": False, "error": "Please configure at least one emoji and role connection."}
+
+                valid_pairs = []
+                seen_emoji_keys = set()
+                for pair in raw_pairs:
+                    if not isinstance(pair, dict):
+                        continue
+                    emoji_norm = self.normalize_reaction_role_emoji(pair.get("emoji"))
+                    if emoji_norm is None:
+                        return {"ok": False, "error": f"Invalid emoji: {pair.get('emoji')}"}
+                    emoji_key = emoji_norm["emoji_key"]
+                    if emoji_key in seen_emoji_keys:
+                        return {
+                            "ok": False,
+                            "error": f"Duplicate emoji specified: {pair.get('emoji')}. Each emoji can only be mapped to one role per message.",
+                        }
+                    seen_emoji_keys.add(emoji_key)
+
+                    try:
+                        role_id = int(str(pair.get("role_id") or "0").strip())
+                    except (TypeError, ValueError):
+                        role_id = 0
+                    if role_id <= 0:
+                        return {"ok": False, "error": "Please choose a valid Discord role for each emoji."}
+
+                    valid_pairs.append({
+                        "emoji": pair.get("emoji"),
+                        "emoji_key": emoji_norm["emoji_key"],
+                        "emoji_text": emoji_norm["emoji_text"],
+                        "role_id": role_id,
+                    })
+
+                if not valid_pairs:
+                    return {"ok": False, "error": "Please configure at least one valid emoji and role connection."}
+
+                if not callable(self.post_reaction_role_message_for_guild):
+                    return {"ok": False, "error": "Discord message posting is not available in this environment."}
+
+                post_result = self.post_reaction_role_message_for_guild(
+                    safe_guild_id,
+                    channel_id=channel_id,
+                    message_content=message_content,
+                    pairs=valid_pairs,
+                )
+                if not isinstance(post_result, dict) or not post_result.get("ok"):
+                    err = str(
+                        post_result.get("error")
+                        if isinstance(post_result, dict)
+                        else "Failed to post reaction role message to Discord."
+                    )
+                    return {"ok": False, "error": err}
+
+                msg_id = post_result.get("message_id")
+                count = int(post_result.get("saved_count") or len(valid_pairs))
+                self.record_action_safe(
+                    action="reaction_role_post_create",
+                    status="success",
+                    moderator=audit_actor,
+                    target=str(msg_id or channel_id),
+                    reason=self.truncate_log_text(f"Posted to channel {channel_id} with {count} reaction role(s)"),
+                    guild_id=safe_guild_id,
+                )
+                message = f"Reaction role message successfully posted ({msg_id}) with {count} reaction role(s)!"
+            elif action == "save":
                 message_id = self.normalize_reaction_role_message_id(payload.get("message_id"))
                 if message_id is None:
                     return {"ok": False, "error": "Message ID must be a valid Discord message ID."}

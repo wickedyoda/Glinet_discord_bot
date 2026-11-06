@@ -17,16 +17,57 @@ def process_reaction_roles_submission(*, form, on_manage_reaction_roles, actor_e
         messages.append(("Reaction role update callback is not configured.", "error"))
         return None, messages
 
-    payload = {
-        "action": str(form.get("action") or "").strip(),
-        "channel_id": str(form.get("channel_id") or "").strip(),
-        "message_id": str(form.get("message_id") or "").strip(),
-        "emoji": str(form.get("emoji") or "").strip(),
-        "role_id": str(form.get("role_id") or "").strip(),
-        "status": str(form.get("status") or "").strip().lower(),
-        "original_message_id": str(form.get("original_message_id") or "").strip(),
-        "original_emoji": str(form.get("original_emoji") or "").strip(),
-    }
+    action = str(form.get("action") or "").strip().lower()
+
+    if action == "post_message":
+        channel_id = str(form.get("post_channel_id") or form.get("channel_id") or "").strip()
+        message_content = str(form.get("post_message_content") or form.get("message_content") or "").strip()
+
+        pairs = []
+        for idx in range(1, 11):
+            emoji_val = str(form.get(f"post_emoji_{idx}") or form.get(f"emoji_{idx}") or "").strip()
+            role_val = str(form.get(f"post_role_id_{idx}") or form.get(f"role_id_{idx}") or "").strip()
+            if emoji_val and role_val:
+                pairs.append({"emoji": emoji_val, "role_id": role_val})
+
+        # Also support list inputs if provided
+        if not pairs and hasattr(form, "getlist"):
+            emoji_list = form.getlist("post_emoji") or form.getlist("emoji")
+            role_list = form.getlist("post_role_id") or form.getlist("role_id")
+            for em, ro in zip(emoji_list, role_list, strict=False):
+                em_str = str(em or "").strip()
+                ro_str = str(ro or "").strip()
+                if em_str and ro_str:
+                    pairs.append({"emoji": em_str, "role_id": ro_str})
+
+        if not channel_id:
+            messages.append(("Please select a target channel to post the message in.", "error"))
+            return None, messages
+        if not message_content:
+            messages.append(("Message content cannot be empty.", "error"))
+            return None, messages
+        if not pairs:
+            messages.append(("Please configure at least one emoji and role connection.", "error"))
+            return None, messages
+
+        payload = {
+            "action": "post_message",
+            "channel_id": channel_id,
+            "message_content": message_content,
+            "pairs": pairs,
+        }
+    else:
+        payload = {
+            "action": action,
+            "channel_id": str(form.get("channel_id") or "").strip(),
+            "message_id": str(form.get("message_id") or "").strip(),
+            "emoji": str(form.get("emoji") or "").strip(),
+            "role_id": str(form.get("role_id") or "").strip(),
+            "status": str(form.get("status") or "").strip().lower(),
+            "original_message_id": str(form.get("original_message_id") or "").strip(),
+            "original_emoji": str(form.get("original_emoji") or "").strip(),
+        }
+
     response = on_manage_reaction_roles(payload, actor_email, selected_guild_id)
     if not isinstance(response, dict):
         messages.append(("Invalid response from reaction role handler.", "error"))
@@ -106,6 +147,33 @@ def render_reaction_roles_body(
             """
         )
 
+    # Post builder inputs
+    post_channel_input = render_select_input(
+        "post_channel_id",
+        "",
+        channel_options,
+        placeholder="Select channel to post message in...",
+    )
+
+    pairing_rows = []
+    for idx in range(1, 9):
+        pairing_role_select = render_select_input(
+            f"post_role_id_{idx}",
+            "",
+            role_options,
+            placeholder=f"Select role for emoji {idx}...",
+        )
+        pairing_rows.append(
+            f"""
+            <tr>
+              <td class="muted mono" style="width:40px;text-align:center;">{idx}</td>
+              <td style="width:160px;"><input type="text" name="post_emoji_{idx}" placeholder="e.g. 🎮 or <:custom:123>" style="width:100%;box-sizing:border-box;" /></td>
+              <td>{pairing_role_select}</td>
+            </tr>
+            """
+        )
+
+    # Manual add inputs
     add_channel_input = render_select_input("channel_id", "", channel_options, placeholder="Choose channel...")
     add_role_input = render_select_input("role_id", "", role_options, placeholder="Choose role...")
     add_status_input = render_fixed_select_input(
@@ -117,7 +185,34 @@ def render_reaction_roles_body(
 
     return f"""
         <div class="card">
-          <h2>Reaction Roles</h2>
+          <h2>Post New Reaction Role Message</h2>
+          <p class="muted">Compose a message, attach emojis to Discord roles, and have the bot post it directly to a channel. The bot will automatically add the reactions so server members can click them to gain or remove roles.</p>
+          <form method="post">
+            <input type="hidden" name="action" value="post_message" />
+            <label>Target Channel</label>
+            {post_channel_input}
+            <label style="margin-top:12px;display:block;">Message Content</label>
+            <textarea name="post_message_content" rows="4" placeholder="React to this message to get your roles:&#10;🎮 = Gamer&#10;📢 = Announcements&#10;💻 = Developer" style="width:100%;box-sizing:border-box;resize:vertical;" required></textarea>
+            <div style="margin-top:16px;">
+              <h3 style="margin-bottom:6px;">Emoji & Role Connections</h3>
+              <p class="muted" style="margin-top:0;">Connect emojis to server roles below. Leave unused rows blank.</p>
+              <table>
+                <thead>
+                  <tr><th style="width:40px;text-align:center;">#</th><th style="width:160px;">Emoji</th><th>Assigned Role</th></tr>
+                </thead>
+                <tbody>
+                  {"".join(pairing_rows)}
+                </tbody>
+              </table>
+            </div>
+            <div style="margin-top:16px;">
+              <button class="btn primary" type="submit">Post Message & Setup Reaction Roles</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="card">
+          <h2>Active Reaction Role Mappings</h2>
           <p class="muted">Manage message reactions for <strong>{escape(guild_name)}</strong>. When a member reacts with the selected emoji, the assigned role is granted; removing the reaction removes the role.</p>
           {picker_note}
           <table>
@@ -129,9 +224,10 @@ def render_reaction_roles_body(
             </tbody>
           </table>
         </div>
+
         <div class="card">
-          <h2>Manual Add / Update</h2>
-          <p class="muted">Pick a text channel, paste the message ID, emoji, and role, then save. Editing a row above updates the existing mapping.</p>
+          <h2>Manual Add / Update by Message ID</h2>
+          <p class="muted">Connect an emoji and role to an already existing Discord message ID. Editing a row in the table above updates that mapping.</p>
           <form method="post">
             <input type="hidden" name="action" value="save" />
             <label>Channel</label>

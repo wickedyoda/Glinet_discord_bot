@@ -9277,6 +9277,147 @@ def validate_reaction_role_message_for_guild(guild_id: int, channel_id: int, mes
         return {"ok": False, "error": "Unexpected error while validating that message."}
 
 
+def resolve_reaction_emoji_for_discord(guild: discord.Guild, raw_emoji: str):
+    normalized = normalize_reaction_role_emoji(raw_emoji)
+    if not normalized:
+        return raw_emoji
+    emoji_key = normalized["emoji_key"]
+    emoji_text = normalized["emoji_text"]
+    if emoji_key.startswith("unicode:"):
+        return emoji_key[len("unicode:"):]
+    elif emoji_key.startswith("custom:"):
+        emoji_id = int(emoji_key[len("custom:"):])
+        custom_emoji = guild.get_emoji(emoji_id) if hasattr(guild, "get_emoji") else discord.utils.get(guild.emojis, id=emoji_id)
+        if custom_emoji is not None:
+            return custom_emoji
+        try:
+            return discord.PartialEmoji.from_str(emoji_text)
+        except Exception:
+            return None
+    return raw_emoji
+
+
+async def post_reaction_role_message_for_guild_async(
+    guild_id: int,
+    channel_id: int,
+    message_content: str,
+    pairs: list[dict],
+):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    guild = bot.get_guild(safe_guild_id)
+    if guild is None:
+        return {"ok": False, "error": "That Discord server is not available yet."}
+
+    channel = guild.get_channel(int(channel_id))
+    if channel is None or not hasattr(channel, "send"):
+        return {"ok": False, "error": "The selected text channel was not found or is not a text channel."}
+
+    bot_member = guild.me or guild.get_member(bot.user.id if bot.user else 0)
+    if bot_member is None:
+        return {"ok": False, "error": "Bot member is not available in that server."}
+
+    channel_perms = channel.permissions_for(bot_member)
+    if not channel_perms.send_messages:
+        return {"ok": False, "error": "The bot does not have permission to send messages in that channel."}
+    if not channel_perms.add_reactions:
+        return {"ok": False, "error": "The bot does not have permission to add reactions in that channel."}
+
+    # Verify roles exist and can be managed by the bot
+    for pair in pairs:
+        role_id = int(pair.get("role_id") or 0)
+        role = guild.get_role(role_id)
+        if role is None:
+            return {"ok": False, "error": f"Role ID {role_id} was not found in this server."}
+        if role.managed:
+            return {"ok": False, "error": f"Role '{role.name}' is managed by an integration and cannot be assigned."}
+        if role == guild.default_role:
+            return {"ok": False, "error": "Cannot assign the @everyone default role."}
+        if bot_member.top_role <= role:
+            return {
+                "ok": False,
+                "error": f"Role '{role.name}' is higher than or equal to the bot's top role ({bot_member.top_role.name}). Move the bot's role higher in Discord Server Settings > Roles.",
+            }
+
+    try:
+        sent_message = await channel.send(message_content)
+    except discord.Forbidden:
+        return {"ok": False, "error": "Discord rejected message send (permission denied)."}
+    except discord.HTTPException as exc:
+        logger.exception("Failed sending reaction role message in channel %s", channel_id)
+        return {"ok": False, "error": f"Discord error while sending message: {exc}"}
+
+    saved_count = 0
+    failed_emojis = []
+    for pair in pairs:
+        raw_emoji = str(pair.get("emoji") or "").strip()
+        role_id = int(pair.get("role_id") or 0)
+        if not raw_emoji or role_id <= 0:
+            continue
+
+        reaction_obj = resolve_reaction_emoji_for_discord(guild, raw_emoji)
+        if reaction_obj is not None:
+            try:
+                await sent_message.add_reaction(reaction_obj)
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                logger.warning("Could not add reaction %s to message %s: %s", raw_emoji, sent_message.id, exc)
+                failed_emojis.append(raw_emoji)
+        else:
+            failed_emojis.append(raw_emoji)
+
+        try:
+            save_reaction_role_mapping(
+                safe_guild_id,
+                channel_id=channel.id,
+                message_id=sent_message.id,
+                emoji=raw_emoji,
+                role_id=role_id,
+                status="active",
+            )
+            saved_count += 1
+        except Exception:
+            logger.exception("Failed to save reaction role mapping for message %s, emoji %s", sent_message.id, raw_emoji)
+
+    _refresh_reaction_role_cache_for_guild(safe_guild_id)
+
+    return {
+        "ok": True,
+        "message_id": sent_message.id,
+        "channel_id": channel.id,
+        "jump_url": str(getattr(sent_message, "jump_url", "")),
+        "saved_count": saved_count,
+        "failed_emojis": failed_emojis,
+    }
+
+
+def post_reaction_role_message_for_guild(
+    guild_id: int,
+    channel_id: int,
+    message_content: str,
+    pairs: list[dict],
+):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = asyncio.run_coroutine_threadsafe(
+        post_reaction_role_message_for_guild_async(
+            normalize_target_guild_id(guild_id),
+            channel_id=channel_id,
+            message_content=message_content,
+            pairs=pairs,
+        ),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while posting the reaction role message to Discord."}
+    except Exception:
+        logger.exception("Unexpected failure while posting reaction role message for guild %s", guild_id)
+        return {"ok": False, "error": "Unexpected error while posting reaction role message."}
+
+
 def get_feed_web_callbacks():
     global feed_web_callbacks
     if feed_web_callbacks is None:
@@ -9421,6 +9562,7 @@ def get_reaction_roles_web_callbacks():
             truncate_log_text=truncate_log_text,
             logger=logger,
             validate_reaction_role_message_for_guild=validate_reaction_role_message_for_guild,
+            post_reaction_role_message_for_guild=post_reaction_role_message_for_guild,
         )
     return reaction_roles_web_callbacks
 

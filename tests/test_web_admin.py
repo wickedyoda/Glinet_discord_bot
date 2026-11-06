@@ -685,6 +685,27 @@ def _make_app(tmp_path: Path, logger=None):
                 }
             )
             return get_reaction_roles(safe_guild_id) | {"message": "Reaction role mapping saved."}
+        if action == "post_message":
+            channel_id = int(str(payload.get("channel_id") or "0") or 0)
+            pairs = payload.get("pairs") or []
+            fake_message_id = 777777777777777777
+            for pair in pairs:
+                emoji_text = str(pair.get("emoji") or "").strip()
+                role_id = int(str(pair.get("role_id") or "0") or 0)
+                reaction_role_state.append(
+                    {
+                        "guild_id": safe_guild_id,
+                        "channel_id": channel_id,
+                        "message_id": fake_message_id,
+                        "emoji_key": f"unicode:{emoji_text}",
+                        "emoji_text": emoji_text,
+                        "role_id": role_id,
+                        "created_at": "",
+                        "updated_at": "",
+                        "status": "active",
+                    }
+                )
+            return get_reaction_roles(safe_guild_id) | {"message": f"Reaction role message successfully posted ({fake_message_id}) with {len(pairs)} reaction role(s)!"}
         if action == "delete":
             message_id = int(str(payload.get("message_id") or "0") or 0)
             emoji_text = str(payload.get("emoji") or "").strip()
@@ -1317,6 +1338,35 @@ def test_admin_can_add_reaction_role_mapping(tmp_path: Path):
     assert b"Reaction role mapping saved." in response.data
     assert b"666666666666666666" in response.data
     assert b"\xf0\x9f\x98\x80" in response.data
+
+
+def test_admin_can_post_reaction_role_message(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/reaction-roles",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/reaction-roles"),
+            "action": "post_message",
+            "post_channel_id": "9999",
+            "post_message_content": "Choose your gaming roles below:\n🎮 = Gamer\n📢 = Announcements",
+            "post_emoji_1": "🎮",
+            "post_role_id_1": "111",
+            "post_emoji_2": "📢",
+            "post_role_id_2": "222",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Reaction role message successfully posted" in response.data
+    assert b"777777777777777777" in response.data
+    assert b"\xf0\x9f\x8e\xae" in response.data  # 🎮
+    assert b"\xf0\x9f\x93\xa2" in response.data  # 📢
 
 
 def test_admin_can_pause_role_access_mapping(tmp_path: Path):
