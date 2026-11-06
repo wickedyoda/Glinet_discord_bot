@@ -2193,6 +2193,20 @@ def _discord_role_option_sort_key(option: dict):
     return (display, role_id)
 
 
+def _discord_channel_option_sort_key(option: dict):
+    """Sort key placing channel dropdown options in case-insensitive A-Z name order.
+
+    Renderers label a channel with ``name`` falling back to ``label`` falling back to
+    the id. The id is a final tiebreaker so channels sharing a name keep a stable order.
+    """
+    if not isinstance(option, dict):
+        return ("", "")
+    name = str(option.get("name") or option.get("label") or "").strip()
+    channel_id = str(option.get("id") or "").strip()
+    display = name.lstrip("#").casefold()
+    return (display, channel_id)
+
+
 def _render_multi_select_input(name: str, selected_values, options: list[dict], size: int = 8):
     selected_set = set()
     if isinstance(selected_values, str):
@@ -3025,67 +3039,38 @@ def _render_layout(
               <label class="sr-only" for="mobile-nav-page-select">Open page</label>
               <select id="mobile-nav-page-select" class="nav-select nav-page-select">
                 <option value="">Go to page...</option>
-                <option value="{{ url_for('guilds_page') }}">Servers</option>
-                <option value="{{ url_for('account') }}">My Account</option>
-                <option value="{{ url_for('members_page') }}">Members</option>
-                <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
-                {% if current_role in ("glinet_read_only", "glinet_rw") %}
+                <option value="{{ url_for('actions_page') }}">Action History</option>
+                <option value="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</option>
+                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('command_status') }}">Command Status</option>
                 <option value="{{ url_for('dashboard') }}">Dashboard</option>
-                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
-                <option value="{{ url_for('command_status') }}">Command Status</option>
-                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
-                <option value="{{ url_for('moderation_page') }}">Moderation</option>
-                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
-                <option value="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</option>
-                <option value="{{ url_for('members_page') }}">Members</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
-                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
-                <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
-                <option value="{{ url_for('actions_page') }}">Action History</option>
-                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-                <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
-                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
-                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
-                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
-                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
-                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
-                <option value="{{ url_for('role_access_page') }}">Role Access</option>
-                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
-                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
-                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
-                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
-                {% else %}
-                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
-                <option value="{{ url_for('command_status') }}">Command Status</option>
-                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
-                <option value="{{ url_for('moderation_page') }}">Moderation</option>
-                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
-                <option value="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</option>
-                <option value="{{ url_for('members_page') }}">Members</option>
-                <option value="{{ url_for('discourse_page') }}">Discourse</option>
-                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
-                <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
-                <option value="{{ url_for('actions_page') }}">Action History</option>
-                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-                <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
-                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
-                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
-                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
-                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
-                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
-                <option value="{{ url_for('role_access_page') }}">Role Access</option>
-                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
-                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
-                <option value="{{ url_for('settings') }}">Global Settings</option>
-                <option value="{{ url_for('public_observability') }}">Observability</option>
-                <option value="{{ url_for('admin_logs') }}">Logs</option>
                 <option value="{{ url_for('documentation') }}">Documentation</option>
-                <option value="{{ url_for('documentation') }}">Wiki Viewer</option>
+                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
+                <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
                 {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
+                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+                <option value="{{ url_for('settings') }}">Global Settings</option>
+                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
+                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+                <option value="{{ url_for('admin_logs') }}">Logs</option>
+                <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+                <option value="{{ url_for('members_page') }}">Members</option>
+                <option value="{{ url_for('moderation_page') }}">Moderation</option>
+                <option value="{{ url_for('account') }}">My Account</option>
+                <option value="{{ url_for('public_observability') }}">Observability</option>
+                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
+                <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
+                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('role_access_page') }}">Role Access</option>
+                <option value="{{ url_for('guilds_page') }}">Servers</option>
+                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
                 <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
-                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
                 <option value="{{ url_for('users') }}">Users</option>
-                {% endif %}
                 <option value="{{ url_for('logout') }}">Logout</option>
               </select>
             </div>
@@ -3174,63 +3159,40 @@ def _render_layout(
           <a class="btn secondary" href="{{ url_for('logout') }}">Logout</a>
           <label class="sr-only" for="desktop-nav-page-select">Open page</label>
           <select id="desktop-nav-page-select" class="nav-select nav-page-select">
-            <option value="">Go to page...</option>
-            <option value="{{ url_for('guilds_page') }}">Servers</option>
-            <option value="{{ url_for('account') }}">My Account</option>
-            <option value="{{ url_for('members_page') }}">Members</option>
-            <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
-            {% if current_role in ("glinet_read_only", "glinet_rw") %}
-            <option value="{{ url_for('dashboard') }}">Dashboard</option>
-            <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
-            <option value="{{ url_for('command_status') }}">Command Status</option>
-            <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
-            <option value="{{ url_for('moderation_page') }}">Moderation</option>
-            <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
-            <option value="{{ url_for('members_page') }}">Members</option>
-            <option value="{{ url_for('discourse_page') }}">Discourse</option>
-            <option value="{{ url_for('actions_page') }}">Action History</option>
-            <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-            <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
-            <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
-            <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
-            <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
-            <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
-            <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
-            <option value="{{ url_for('role_access_page') }}">Role Access</option>
-            <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
-            <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
-            <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
-            {% else %}
-            <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
-            <option value="{{ url_for('command_status') }}">Command Status</option>
-            <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
-            <option value="{{ url_for('moderation_page') }}">Moderation</option>
-            <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
-            <option value="{{ url_for('members_page') }}">Members</option>
-            <option value="{{ url_for('discourse_page') }}">Discourse</option>
-            <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
-            <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
-            <option value="{{ url_for('actions_page') }}">Action History</option>
-            <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-            <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
-            <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
-            <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
-            <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
-            <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
-            <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
-            <option value="{{ url_for('role_access_page') }}">Role Access</option>
-            <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
-            <option value="{{ url_for('settings') }}">Global Settings</option>
-            <option value="{{ url_for('public_observability') }}">Observability</option>
-            <option value="{{ url_for('admin_logs') }}">Logs</option>
-            <option value="{{ url_for('documentation') }}">Documentation</option>
-            <option value="{{ url_for('documentation') }}">Wiki Viewer</option>
-            {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
-            <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
-            <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
-            <option value="{{ url_for('users') }}">Users</option>
-            {% endif %}
-            <option value="{{ url_for('logout') }}">Logout</option>
+                <option value="">Go to page...</option>
+                <option value="{{ url_for('actions_page') }}">Action History</option>
+                <option value="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</option>
+                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
+                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
+                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
+                <option value="{{ url_for('command_status') }}">Command Status</option>
+                <option value="{{ url_for('dashboard') }}">Dashboard</option>
+                <option value="{{ url_for('discourse_page') }}">Discourse</option>
+                <option value="{{ url_for('documentation') }}">Documentation</option>
+                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
+                <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
+                {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
+                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
+                <option value="{{ url_for('settings') }}">Global Settings</option>
+                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
+                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
+                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
+                <option value="{{ url_for('admin_logs') }}">Logs</option>
+                <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
+                <option value="{{ url_for('members_page') }}">Members</option>
+                <option value="{{ url_for('moderation_page') }}">Moderation</option>
+                <option value="{{ url_for('account') }}">My Account</option>
+                <option value="{{ url_for('public_observability') }}">Observability</option>
+                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
+                <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
+                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
+                <option value="{{ url_for('role_access_page') }}">Role Access</option>
+                <option value="{{ url_for('guilds_page') }}">Servers</option>
+                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
+                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
+                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
+                <option value="{{ url_for('users') }}">Users</option>
+                <option value="{{ url_for('logout') }}">Logout</option>
           </select>
         </nav>
       {% endif %}
@@ -4280,11 +4242,12 @@ def create_web_app(
         catalog_error = ""
         if isinstance(discord_catalog, dict):
             if discord_catalog.get("ok"):
-                channel_options = discord_catalog.get("channels", []) or []
-                # Sort roles by name (case-insensitive) so every role dropdown in the
-                # web GUI lists them A-Z. Discord returns roles in hierarchy/position
-                # order, which is neither stable nor easy to scan. Sorting centrally
-                # here means every consumer benefits without touching each renderer.
+                # Sort channels and roles by name (case-insensitive) so every channel and
+                # role dropdown across the entire web GUI lists them in clean A-Z alphabetical order.
+                channel_options = sorted(
+                    discord_catalog.get("channels", []) or [],
+                    key=_discord_channel_option_sort_key,
+                )
                 role_options = sorted(
                     discord_catalog.get("roles", []) or [],
                     key=_discord_role_option_sort_key,
@@ -4980,28 +4943,7 @@ def create_web_app(
             </section>
             """
 
-        core_cards = [
-            build_dashboard_card(
-                "Guild Settings",
-                "Set server-specific channels, welcome behavior, and override global defaults for this guild.",
-                url_for("guild_settings"),
-                "Open Guild Settings",
-                primary=True,
-                extra_html="<p class='dashboard-note'>Use this first when a server needs channels, feeds, or feature toggles that differ from the global defaults.</p>",
-            ),
-            build_dashboard_card(
-                "Command Status",
-                "Quickly enable or disable commands for the selected Discord server.",
-                url_for("command_status"),
-                "Open Command Status",
-                primary=True,
-            ),
-            build_dashboard_card(
-                "Command Permissions",
-                "Set access mode per command and pick restricted roles from Discord role lists.",
-                url_for("command_permissions"),
-                "Open Permissions",
-            ),
+        moderation_security_cards = [
             build_dashboard_card(
                 "Moderation",
                 "Configure bad-word filtering, warning thresholds, timeout escalation, and the moderation log channel.",
@@ -5015,16 +4957,148 @@ def create_web_app(
                 "Open Honeypot",
             ),
             build_dashboard_card(
-                "Discourse",
-                "Control the forum URL, API key usage, profile identity, and guild-scoped Discourse feature toggles.",
+                "Action History",
+                "Review recent guild-scoped bot actions, moderation events, and administrative audit history.",
+                url_for("actions_page"),
+                "Open Action History",
+            ),
+        ]
+
+        roles_onboarding_cards = [
+            build_dashboard_card(
+                "Role Access & Invites",
+                "Generate, review, and control invite links paired with 6-digit access codes for self-service role redemption.",
+                url_for("role_access_page"),
+                "Open Role Access",
+            ),
+            build_dashboard_card(
+                "Reaction Roles",
+                "Compose announcements, attach emojis to Discord roles, and manage active reaction-to-role mappings.",
+                url_for("reaction_roles_page"),
+                "Open Reaction Roles",
+            ),
+            build_dashboard_card(
+                "Bulk Role CSV",
+                "Upload a CSV of Discord usernames to batch-assign roles with detailed completion reports.",
+                url_for("bulk_role_csv"),
+                "Open Bulk CSV",
+            ),
+            build_dashboard_card(
+                "Members",
+                "Browse guild members, inspect member details, then kick, ban, timeout, or update roles.",
+                url_for("members_page"),
+                "Open Members",
+            ),
+            build_dashboard_card(
+                "Member Activity",
+                "Review rolling activity windows, hourly message volume, and engagement trends for this server.",
+                url_for("member_activity_page"),
+                "Open Member Activity",
+            ),
+        ]
+
+        channels_automation_cards = [
+            build_dashboard_card(
+                "Tag Responses",
+                "Manage dynamic tag-response mappings for instant slash and prefix command FAQ answers.",
+                url_for("tag_responses"),
+                "Open Tag Responses",
+            ),
+            build_dashboard_card(
+                "Auto-Translate Channels",
+                "Bridge text channels with real-time multi-language translation and flag emoji reactions.",
+                url_for("translate_channels_page"),
+                "Open Auto-Translate",
+            ),
+            build_dashboard_card(
+                "Reddit Auto-Reply",
+                "Configure automated rule-based replies to matched subreddit submissions and keywords.",
+                url_for("reddit_auto_responds"),
+                "Open Auto-Reply",
+            ),
+        ]
+
+        feeds_monitors_cards = [
+            build_dashboard_card(
+                "Reddit Feeds",
+                "Map subreddit feeds to Discord channels and schedule automatic submission checks.",
+                url_for("reddit_feeds"),
+                "Open Reddit Feeds",
+            ),
+            build_dashboard_card(
+                "YouTube Subscriptions",
+                "Map YouTube channels to Discord channels and post new video uploads automatically.",
+                url_for("youtube_subscriptions"),
+                "Open YouTube",
+            ),
+            build_dashboard_card(
+                "LinkedIn Profiles",
+                "Map public LinkedIn company profiles to Discord channels and post updates automatically.",
+                url_for("linkedin_subscriptions"),
+                "Open LinkedIn",
+            ),
+            build_dashboard_card(
+                "GL.iNet Beta Programs",
+                "Monitor the GL.iNet beta testing portal and notify a channel when new programs open.",
+                url_for("beta_program_subscriptions"),
+                "Open Beta Programs",
+            ),
+            build_dashboard_card(
+                "Service Monitors",
+                "Manage direct HTTP/HTTPS endpoint checks and status alert notifications for this guild.",
+                url_for("service_monitors_page"),
+                "Open Service Monitors",
+            ),
+            build_dashboard_card(
+                "Uptime Kuma",
+                "Configure the Uptime Kuma watcher, import status monitors, and sync service check sets.",
+                url_for("uptime_kuma_page"),
+                "Open Uptime Kuma",
+            ),
+        ]
+
+        support_forum_cards = [
+            build_dashboard_card(
+                "Freshdesk Tickets",
+                "Read-only viewer for GL.iNet customer support tickets, categories, and ticket details.",
+                url_for("freshdesk_viewer.freshdesk_viewer_page"),
+                "Open Freshdesk",
+            ),
+            build_dashboard_card(
+                "Discourse Forum",
+                "Configure forum API connection, credentials, and guild-scoped Discourse sync toggles.",
                 url_for("discourse_page"),
                 "Open Discourse",
             ),
             build_dashboard_card(
-                "Freshdesk",
-                "Read-only viewer for GL.iNet support tickets — search and browse Freshdesk tickets without modifications.",
-                url_for("freshdesk_viewer.freshdesk_viewer_page"),
-                "Open Freshdesk",
+                "Forum Viewer",
+                "Browse community topics and search GL.iNet forum discussions directly from the web admin.",
+                url_for("discourse_viewer.discourse_viewer_page"),
+                "Open Forum Viewer",
+            ),
+        ]
+
+        server_system_cards = [
+            build_dashboard_card(
+                "Guild Settings",
+                "Set server-specific channels, welcome behavior, and override global defaults for this guild.",
+                url_for("guild_settings"),
+                "Open Guild Settings",
+                primary=True,
+                extra_html="<p class='dashboard-note'>Use this first when a server needs channels, feeds, or feature toggles that differ from global defaults.</p>",
+            ),
+            build_dashboard_card(
+                "Command Status",
+                "Quickly enable or disable slash commands for the selected Discord server.",
+                url_for("command_status"),
+                "Open Command Status",
+                primary=True,
+            ),
+            build_dashboard_card(
+                "Command Permissions",
+                "Set access mode per command and pick restricted roles from Discord role lists.",
+                url_for("command_permissions"),
+                "Open Permissions",
             ),
             build_dashboard_card(
                 "Bot Profile",
@@ -5032,87 +5106,6 @@ def create_web_app(
                 url_for("bot_profile"),
                 "Open Bot Profile",
             ),
-        ]
-
-        community_cards = [
-            build_dashboard_card(
-                "Members",
-                "Browse guild members, then kick, ban, timeout, or update roles from the selected Discord server.",
-                url_for("members_page"),
-                "Open Members",
-            ),
-            build_dashboard_card(
-                "Member Activity",
-                "Review top 20 member activity windows for the selected Discord server.",
-                url_for("member_activity_page"),
-                "Open Member Activity",
-            ),
-            build_dashboard_card(
-                "Role Access",
-                "Review and control invite links with their paired 6-digit access codes for the selected Discord server.",
-                url_for("role_access_page"),
-                "Open Role Access",
-            ),
-            build_dashboard_card(
-                "Tag Responses",
-                "Manage dynamic tag-response mappings and keep quick answers organized.",
-                url_for("tag_responses"),
-                "Open Tag Responses",
-            ),
-            build_dashboard_card(
-                "Action History",
-                "Review recent guild-scoped bot actions and utility activity.",
-                url_for("actions_page"),
-                "Open Actions",
-            ),
-            build_dashboard_card(
-                "Bulk Role CSV",
-                "Upload a CSV of names and assign a role with a detailed result report.",
-                url_for("bulk_role_csv"),
-                "Open Bulk CSV",
-            ),
-        ]
-
-        feed_cards = [
-            build_dashboard_card(
-                "Reddit Feeds",
-                "Map subreddit feeds to Discord channels and schedule automatic post checks.",
-                url_for("reddit_feeds"),
-                "Open Reddit Feeds",
-            ),
-            build_dashboard_card(
-                "Service Monitors",
-                "Manage direct website and API checks for the selected guild.",
-                url_for("service_monitors_page"),
-                "Open Service Monitors",
-            ),
-            build_dashboard_card(
-                "Uptime Kuma",
-                "Configure the watcher, import direct checks, and remove imported Uptime Kuma monitor sets.",
-                url_for("uptime_kuma_page"),
-                "Open Uptime Kuma",
-            ),
-            build_dashboard_card(
-                "YouTube Subscriptions",
-                "Map YouTube channels to Discord channels and post new uploads automatically.",
-                url_for("youtube_subscriptions"),
-                "Open YouTube",
-            ),
-            build_dashboard_card(
-                "LinkedIn Profiles",
-                "Map public LinkedIn profiles to Discord channels and post new profile activity automatically.",
-                url_for("linkedin_subscriptions"),
-                "Open LinkedIn",
-            ),
-            build_dashboard_card(
-                "GL.iNet Beta Programs",
-                "Monitor the GL.iNet beta testing page and notify a Discord channel when programs are added or removed.",
-                url_for("beta_program_subscriptions"),
-                "Open Beta Programs",
-            ),
-        ]
-
-        operations_cards = [
             build_dashboard_card(
                 "Servers",
                 "Switch the active Discord server context before opening guild-scoped management pages.",
@@ -5126,7 +5119,7 @@ def create_web_app(
                 "Open My Account",
             ),
             build_dashboard_card(
-                "Settings",
+                "Global Settings",
                 "Edit global runtime environment settings shared across all Discord servers.",
                 url_for("settings"),
                 "Open Global Settings",
@@ -5158,7 +5151,7 @@ def create_web_app(
         ]
 
         if wiki_url:
-            operations_cards.append(
+            server_system_cards.append(
                 build_dashboard_card(
                     "GitHub Wiki",
                     "Open the external project wiki in a new tab.",
@@ -5170,7 +5163,7 @@ def create_web_app(
 
         if restart_enabled:
             if is_admin:
-                operations_cards.append(
+                server_system_cards.append(
                     f"""
                     <div class="card dash-card">
                       <h3>Restart Container</h3>
@@ -5185,7 +5178,7 @@ def create_web_app(
                     """
                 )
             else:
-                operations_cards.append(
+                server_system_cards.append(
                     """
                     <div class="card dash-card">
                       <h3>Restart Container</h3>
@@ -5268,10 +5261,12 @@ def create_web_app(
               </div>
             </div>
           </section>
-          {render_dashboard_section("Core Controls", "Primary guild-level configuration and command access controls.", core_cards)}
-          {render_dashboard_section("Community Tools", "Member-facing utilities, access workflows, and guild operational history.", community_cards)}
-          {render_dashboard_section("Notification Feeds", "External monitors and feed-to-channel routing for the selected guild.", feed_cards)}
-          {render_dashboard_section("Runtime And Administration", "Account, logging, environment, and maintenance controls.", operations_cards)}
+          {render_dashboard_section("🛡️ Moderation & Security", "Automated spam defenses, chat moderation rules, and action history.", moderation_security_cards)}
+          {render_dashboard_section("👥 Roles & Onboarding", "Member onboarding, invite tracking, reaction roles, and role management.", roles_onboarding_cards)}
+          {render_dashboard_section("💬 Channels & Chat Automation", "Automated FAQ tags, auto-translate bridges, and Reddit auto-replies.", channels_automation_cards)}
+          {render_dashboard_section("📡 Notification Feeds & Monitors", "External feeds, social platform alerts, and service health checks.", feeds_monitors_cards)}
+          {render_dashboard_section("🎫 Support & Forum Integrations", "Customer support ticket viewer and Discourse forum community tools.", support_forum_cards)}
+          {render_dashboard_section("⚙️ Bot Configuration & System Administration", "Server settings, command permissions, bot identity, runtime logs, and user access.", server_system_cards)}
         </div>
         """
 
