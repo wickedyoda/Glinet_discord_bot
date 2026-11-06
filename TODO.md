@@ -41,6 +41,11 @@ This document tracks active development branches, open pull requests, pending fe
 
 ## ✅ Completed Milestones
 
+- [x] **Web GUI Alphabetical Sorting & Reorganization**:
+  - Sorted all navigation page select dropdowns (`#desktop-nav-page-select` and `#mobile-nav-page-select`) in alphabetical (A-Z) order.
+  - Sorted all Discord channel dropdowns (`_load_discord_catalog_options`) alphabetically (A-Z).
+  - Reorganized `/admin/dashboard` main GUI cards into 6 logical categories: *Moderation & Security*, *Roles & Onboarding*, *Channels & Chat Automation*, *Notification Feeds & Monitors*, *Support & Forum Integrations*, and *Bot Configuration & System Administration*.
+  - 436 tests passing (`test_web_admin_dashboard_organization.py`).
 - [x] **Reaction Role Message Builder & Auto-Poster**:
   - Interactive composer card in `/admin/reaction-roles` supporting up to 8 emoji-to-role pairs (Unicode & custom server emojis).
   - Async bot dispatcher (`post_reaction_role_message_for_guild_async`) verifying permissions, posting to Discord, and seeding reactions.
