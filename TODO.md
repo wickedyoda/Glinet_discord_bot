@@ -6,9 +6,9 @@ This document tracks active development branches, open pull requests, pending fe
 
 ## 🚀 Active Branches & Open Pull Requests
 
-- [ ] **PR #369**: `docs(wiki): detail member onboarding via invite links and /enter_role command`
+- [x] **PR #369 (Merged)**: `docs(wiki): detail member onboarding via invite links and /enter_role command`
   - **Branch**: `docs/wiki-invite-role-onboarding` → `main`
-  - **Status**: Open, mergeable, CI running.
+  - **Status**: Merged into  (commit 61f1030).
   - **Details**: Updated in-tree wiki docs (`Join-With-Invite-Code.md`, `Role-Access-and-Invites.md`, `Command-Reference.md`).
 - [ ] **Branch `feat/reaction-role-post-builder`**
   - **Status**: Local commit `12c8d9f` (433 tests passing, Ruff clean, Bandit clean).
