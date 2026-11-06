@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import discord
 import pytest
@@ -284,7 +284,8 @@ def test_post_reaction_role_message_for_guild_async_permissions_and_flow():
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(bot.bot, "get_guild", lambda gid: guild)
-        mp.setattr(bot, "save_reaction_role_mapping", MagicMock())
+        save_mapping_mock = create_autospec(bot.save_reaction_role_mapping)
+        mp.setattr(bot, "save_reaction_role_mapping", save_mapping_mock)
         mp.setattr(bot, "_refresh_reaction_role_cache_for_guild", MagicMock())
 
         res = asyncio.run(
@@ -298,9 +299,10 @@ def test_post_reaction_role_message_for_guild_async_permissions_and_flow():
 
         assert res["ok"] is True
         assert res["message_id"] == 55555555
+        assert res["saved_count"] == 1
         channel.send.assert_awaited_once_with("Click below for roles:")
         sent_message.add_reaction.assert_awaited_once_with("🎮")
-        bot.save_reaction_role_mapping.assert_called_once_with(
+        save_mapping_mock.assert_called_once_with(
             channel_id=channel.id,
             message_id=55555555,
             emoji="🎮",
