@@ -3071,6 +3071,7 @@ def _render_layout(
                 <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
                 <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
                 <option value="{{ url_for('users') }}">Users</option>
+                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('logout') }}">Logout</option>
               </select>
             </div>
@@ -3192,6 +3193,7 @@ def _render_layout(
                 <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
                 <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
                 <option value="{{ url_for('users') }}">Users</option>
+                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
                 <option value="{{ url_for('logout') }}">Logout</option>
           </select>
         </nav>

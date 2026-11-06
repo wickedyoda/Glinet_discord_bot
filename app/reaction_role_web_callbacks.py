@@ -118,7 +118,13 @@ class ReactionRolesWebCallbacks:
                     return {"ok": False, "error": err}
 
                 msg_id = post_result.get("message_id")
-                count = int(post_result.get("saved_count") or len(valid_pairs))
+                saved_count = post_result.get("saved_count")
+                count = int(saved_count if saved_count is not None else len(valid_pairs))
+                failed_emojis = post_result.get("failed_emojis") or []
+
+                if count == 0 and len(valid_pairs) > 0:
+                    return {"ok": False, "error": "Failed to save reaction role mappings for the posted message."}
+
                 self.record_action_safe(
                     action="reaction_role_post_create",
                     status="success",
@@ -127,7 +133,11 @@ class ReactionRolesWebCallbacks:
                     reason=self.truncate_log_text(f"Posted to channel {channel_id} with {count} reaction role(s)"),
                     guild_id=safe_guild_id,
                 )
-                message = f"Reaction role message successfully posted ({msg_id}) with {count} reaction role(s)!"
+                if failed_emojis:
+                    failed_str = ", ".join(failed_emojis)
+                    message = f"Reaction role message posted ({msg_id}) with {count} role(s). Note: Could not add reactions for: {failed_str}."
+                else:
+                    message = f"Reaction role message successfully posted ({msg_id}) with {count} reaction role(s)!"
             elif action == "save":
                 message_id = self.normalize_reaction_role_message_id(payload.get("message_id"))
                 if message_id is None:

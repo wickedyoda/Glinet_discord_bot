@@ -29,16 +29,31 @@ def process_reaction_roles_submission(*, form, on_manage_reaction_roles, actor_e
             role_val = str(form.get(f"post_role_id_{idx}") or form.get(f"role_id_{idx}") or "").strip()
             if emoji_val and role_val:
                 pairs.append({"emoji": emoji_val, "role_id": role_val})
+            elif emoji_val and not role_val:
+                messages.append((f"Row {idx}: Emoji '{emoji_val}' was provided without selecting a role. Please select a role or clear the emoji.", "error"))
+                return None, messages
+            elif role_val and not emoji_val:
+                messages.append((f"Row {idx}: A role was selected without providing an emoji. Please enter an emoji or clear the role selection.", "error"))
+                return None, messages
 
         # Also support list inputs if provided
         if not pairs and hasattr(form, "getlist"):
             emoji_list = form.getlist("post_emoji") or form.getlist("emoji")
             role_list = form.getlist("post_role_id") or form.getlist("role_id")
-            for em, ro in zip(emoji_list, role_list, strict=False):
+            if len(emoji_list) != len(role_list):
+                messages.append(("Emoji list and role list counts do not match.", "error"))
+                return None, messages
+            for row_idx, (em, ro) in enumerate(zip(emoji_list, role_list, strict=True), 1):
                 em_str = str(em or "").strip()
                 ro_str = str(ro or "").strip()
                 if em_str and ro_str:
                     pairs.append({"emoji": em_str, "role_id": ro_str})
+                elif em_str and not ro_str:
+                    messages.append((f"Row {row_idx}: Emoji '{em_str}' was provided without selecting a role.", "error"))
+                    return None, messages
+                elif ro_str and not em_str:
+                    messages.append((f"Row {row_idx}: A role was selected without providing an emoji.", "error"))
+                    return None, messages
 
         if not channel_id:
             messages.append(("Please select a target channel to post the message in.", "error"))

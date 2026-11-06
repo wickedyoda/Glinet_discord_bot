@@ -120,6 +120,40 @@ def test_process_submission_post_message_no_pairs():
     assert msgs == [("Please configure at least one emoji and role connection.", "error")]
 
 
+def test_process_submission_post_message_incomplete_pairs_rejected():
+    form_missing_role = {
+        "action": "post_message",
+        "post_channel_id": "123456",
+        "post_message_content": "React for roles",
+        "post_emoji_1": "🎮",
+        "post_role_id_1": "",
+    }
+    resp, msgs = process_reaction_roles_submission(
+        form=form_missing_role,
+        on_manage_reaction_roles=MagicMock(),
+        actor_email="admin@example.com",
+        selected_guild_id="123",
+    )
+    assert resp is None
+    assert any("Emoji '🎮' was provided without selecting a role" in m[0] for m in msgs)
+
+    form_missing_emoji = {
+        "action": "post_message",
+        "post_channel_id": "123456",
+        "post_message_content": "React for roles",
+        "post_emoji_1": "",
+        "post_role_id_1": "111",
+    }
+    resp, msgs = process_reaction_roles_submission(
+        form=form_missing_emoji,
+        on_manage_reaction_roles=MagicMock(),
+        actor_email="admin@example.com",
+        selected_guild_id="123",
+    )
+    assert resp is None
+    assert any("A role was selected without providing an emoji" in m[0] for m in msgs)
+
+
 def test_callbacks_post_message_rejects_duplicate_emojis():
     callbacks = _make_callbacks()
     payload = {
@@ -179,6 +213,22 @@ def test_callbacks_post_message_calls_poster_and_records_audit():
     assert callbacks.record_action_safe.call_args.kwargs["action"] == "reaction_role_post_create"
 
 
+def test_callbacks_post_message_surfaces_failed_emojis_warning():
+    post_mock = MagicMock(return_value={"ok": True, "message_id": 99998888, "saved_count": 1, "failed_emojis": ["<:missing:123>"]})
+    callbacks = _make_callbacks(post_reaction_role_message_for_guild=post_mock)
+    payload = {
+        "action": "post_message",
+        "channel_id": "123456",
+        "message_content": "React below:",
+        "pairs": [
+            {"emoji": "<:missing:123>", "role_id": 111},
+        ],
+    }
+    res = callbacks.run_web_manage_reaction_roles(payload, "admin@example.com", 123)
+    assert res["ok"] is True
+    assert "Could not add reactions for: <:missing:123>" in res["message"]
+
+
 def test_render_reaction_roles_body_includes_post_builder():
     channel_options = [{"id": "123", "name": "welcome"}]
     role_options = [{"id": "111", "name": "Gamer"}]
@@ -204,6 +254,7 @@ def test_post_reaction_role_message_for_guild_async_permissions_and_flow():
     guild = MagicMock(spec=discord.Guild)
     channel = MagicMock(spec=discord.TextChannel)
     bot_member = MagicMock(spec=discord.Member)
+    bot_member.guild_permissions.manage_roles = True
     role_top = MagicMock(spec=discord.Role, name="BotRole")
     role_top.name = "BotRole"
     role_top.__gt__ = lambda self, other: True
@@ -231,9 +282,7 @@ def test_post_reaction_role_message_for_guild_async_permissions_and_flow():
     sent_message.jump_url = "https://discord.com/channels/123/999/55555555"
     channel.send = AsyncMock(return_value=sent_message)
 
-    with (
-        pytest.MonkeyPatch.context() as mp,
-    ):
+    with pytest.MonkeyPatch.context() as mp:
         mp.setattr(bot.bot, "get_guild", lambda gid: guild)
         mp.setattr(bot, "save_reaction_role_mapping", MagicMock())
         mp.setattr(bot, "_refresh_reaction_role_cache_for_guild", MagicMock())
@@ -252,10 +301,35 @@ def test_post_reaction_role_message_for_guild_async_permissions_and_flow():
         channel.send.assert_awaited_once_with("Click below for roles:")
         sent_message.add_reaction.assert_awaited_once_with("🎮")
         bot.save_reaction_role_mapping.assert_called_once_with(
-            123,
             channel_id=channel.id,
             message_id=55555555,
             emoji="🎮",
             role_id=111,
+            guild_id=123,
             status="active",
         )
+
+
+def test_post_reaction_role_message_for_guild_async_requires_manage_roles():
+    import bot
+
+    guild = MagicMock(spec=discord.Guild)
+    channel = MagicMock(spec=discord.TextChannel)
+    bot_member = MagicMock(spec=discord.Member)
+    bot_member.guild_permissions.manage_roles = False
+    guild.me = bot_member
+    guild.get_channel.return_value = channel
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(bot.bot, "get_guild", lambda gid: guild)
+
+        res = asyncio.run(
+            bot.post_reaction_role_message_for_guild_async(
+                guild_id=123,
+                channel_id=999,
+                message_content="Click below for roles:",
+                pairs=[{"emoji": "🎮", "role_id": 111}],
+            )
+        )
+        assert res["ok"] is False
+        assert "Manage Roles" in res["error"]

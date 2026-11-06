@@ -9316,6 +9316,9 @@ async def post_reaction_role_message_for_guild_async(
     if bot_member is None:
         return {"ok": False, "error": "Bot member is not available in that server."}
 
+    if not bot_member.guild_permissions.manage_roles:
+        return {"ok": False, "error": "The bot lacks the 'Manage Roles' permission in this server."}
+
     channel_perms = channel.permissions_for(bot_member)
     if not channel_perms.send_messages:
         return {"ok": False, "error": "The bot does not have permission to send messages in that channel."}
@@ -9348,12 +9351,33 @@ async def post_reaction_role_message_for_guild_async(
 
     saved_count = 0
     failed_emojis = []
+
+    # 1. Save all mappings first and refresh cache so instant reactions from members are matched
     for pair in pairs:
         raw_emoji = str(pair.get("emoji") or "").strip()
         role_id = int(pair.get("role_id") or 0)
         if not raw_emoji or role_id <= 0:
             continue
+        try:
+            save_reaction_role_mapping(
+                channel_id=channel.id,
+                message_id=sent_message.id,
+                emoji=raw_emoji,
+                role_id=role_id,
+                guild_id=safe_guild_id,
+                status="active",
+            )
+            saved_count += 1
+        except Exception:
+            logger.exception("Failed to save reaction role mapping for message %s, emoji %s", sent_message.id, raw_emoji)
 
+    _refresh_reaction_role_cache_for_guild(safe_guild_id)
+
+    # 2. Add reactions to the message
+    for pair in pairs:
+        raw_emoji = str(pair.get("emoji") or "").strip()
+        if not raw_emoji:
+            continue
         reaction_obj = resolve_reaction_emoji_for_discord(guild, raw_emoji)
         if reaction_obj is not None:
             try:
@@ -9363,21 +9387,6 @@ async def post_reaction_role_message_for_guild_async(
                 failed_emojis.append(raw_emoji)
         else:
             failed_emojis.append(raw_emoji)
-
-        try:
-            save_reaction_role_mapping(
-                safe_guild_id,
-                channel_id=channel.id,
-                message_id=sent_message.id,
-                emoji=raw_emoji,
-                role_id=role_id,
-                status="active",
-            )
-            saved_count += 1
-        except Exception:
-            logger.exception("Failed to save reaction role mapping for message %s, emoji %s", sent_message.id, raw_emoji)
-
-    _refresh_reaction_role_cache_for_guild(safe_guild_id)
 
     return {
         "ok": True,
