@@ -331,6 +331,24 @@ Notes:
   - join-by-invite role assignment
   - `/enter_role`
 
+### `/admin/reaction-roles`
+
+- Scoped to the selected server
+- **Post New Reaction Role Message (Interactive Builder):**
+  - Choose a target Discord text channel from the dropdown.
+  - Enter custom message text or announcement instructions (e.g., *"React to this message to claim your roles:"*).
+  - Connect up to 8 emoji & role pairings in a single post (supports Unicode emojis and custom Discord emojis like `<:name:id>`).
+  - Upon submission, the bot automatically sends the message to the target channel, adds the specified reaction emojis to the message, and registers the active mappings in SQLite.
+- **Active Reaction Role Mappings Table:**
+  - View all active, paused, or disabled reaction role mappings for the server.
+  - Shows channel, message ID, emoji, assigned role, and creation/update timestamps.
+  - Quick action controls to `Activate`, `Pause`, or `Delete` individual mappings.
+- **Manual Add / Update by Message ID:**
+  - Connect an emoji and role to any pre-existing Discord message by supplying its message ID.
+- **Runtime Handling:**
+  - When members click an emoji reaction on the message, the bot's `on_raw_reaction_add` event automatically grants the assigned role.
+  - When members remove their reaction, the `on_raw_reaction_remove` event automatically removes the role.
+
 ### `/admin/settings`
 
 - Global environment-backed settings editor
