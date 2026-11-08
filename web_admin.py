@@ -8640,7 +8640,13 @@ def create_web_app(
             catalog_error=catalog_error,
             render_select_input=_render_select_input,
             render_fixed_select_input=_render_fixed_select_input,
-            catalog_fetched_at=_discord_catalog_fetched_at(selected_guild_id),
+            # Skip the timestamp lookup when the catalog failed: the getter caches
+            # only successes, so a second call would repeat the whole Discord fetch
+            # (up to WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS) just to obtain a
+            # timestamp that cannot exist without a catalog.
+            catalog_fetched_at=(
+                "" if catalog_error else _discord_catalog_fetched_at(selected_guild_id)
+            ),
         )
         return _render_page("Reaction Roles", body, user["email"], bool(user.get("is_admin")))
 

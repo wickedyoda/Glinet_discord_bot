@@ -16,6 +16,7 @@ import concurrent.futures
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
 import pytest
 
 import bot
@@ -92,8 +93,8 @@ def test_refresh_replaces_the_cached_entry_with_fresh_data(running_loop):
     assert [role["name"] for role in cached["roles"]] == ["NewRole"]
 
 
-def test_refresh_does_not_leave_a_stale_entry_when_fetch_fails(running_loop):
-    """A failed refresh must not resurrect the old snapshot as if it were current."""
+def test_failed_refresh_does_not_overwrite_the_cached_catalog(running_loop):
+    """A failed refresh must not present the old snapshot as freshly refreshed."""
     stale = _catalog()
     _seed_cache(stale, fetched_at=9_999_999_000.0)
 
@@ -106,7 +107,10 @@ def test_refresh_does_not_leave_a_stale_entry_when_fetch_fails(running_loop):
 
     assert result["ok"] is False
     assert result["error"] == "nope"
-    assert 123 not in bot.discord_catalog_cache
+    # The previous catalog survives untouched -- including its original fetch time, so
+    # the page keeps reporting how old the list actually is.
+    assert bot.discord_catalog_cache[123]["data"] is stale
+    assert bot.discord_catalog_cache[123]["fetched_at"] == 9_999_999_000.0
 
 
 def test_refresh_without_running_loop_returns_error():
@@ -196,3 +200,90 @@ def test_getter_refetches_once_the_ttl_has_expired(running_loop):
 
     assert [channel["name"] for channel in result["channels"]] == ["recent"]
     fetch_mock.assert_awaited_once()
+
+
+def test_strict_refresh_reports_live_fetch_failure(running_loop):
+    """An explicit refresh must not report stale cached channels as refreshed."""
+    stale = _catalog(fetched_at=9_999_999_000.0)
+    _seed_cache(stale, fetched_at=9_999_999_000.0)
+
+    async def failing_fetch(guild_id, *, strict=False):
+        if strict:
+            return {
+                "ok": False,
+                "error": "Could not reach Discord for a live channel list. Please try again.",
+            }
+        return _catalog()
+
+    with (
+        patch("bot.bot") as bot_mock,
+        patch("bot.fetch_discord_catalog_async", new=failing_fetch),
+    ):
+        bot_mock.loop = running_loop
+
+        # Refresh (strict) surfaces the failure...
+        result = bot.run_web_refresh_discord_catalog(123)
+        # ...while the normal getter still falls back to the cached channel list.
+        fallback = bot.run_web_get_discord_catalog(123)
+
+    assert result["ok"] is False
+    assert "Could not reach Discord" in result["error"]
+    assert fallback.get("ok") is True
+    # The failed refresh did not overwrite the previous catalog.
+    assert bot.discord_catalog_cache[123]["data"] is stale
+
+
+def _text_channel(channel_id: int, channel_name: str):
+    """Build a channel mock -- `name=` cannot be passed to MagicMock (reserved kwarg)."""
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.id = channel_id
+    channel.name = channel_name
+    channel.type = discord.ChannelType.text
+    channel.position = 0
+    return channel
+
+
+def _guild_whose_live_fetch_fails():
+    import bot  # noqa: F401  (kept local so the module import order stays explicit)
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.channels = [_text_channel(1, "general")]
+
+    default_role = MagicMock(spec=discord.Role)
+    default_role.id = 0
+    default_role.name = "@everyone"
+    guild.default_role = default_role
+    guild.roles = [default_role]
+
+    async def failing_fetch_channels():
+        raise RuntimeError("boom")
+
+    guild.fetch_channels = failing_fetch_channels
+    return guild
+
+
+def test_fetch_discord_catalog_async_falls_back_when_not_strict(running_loop):
+    """The cached getter's fallback must survive the strict change."""
+    import bot
+
+    guild = _guild_whose_live_fetch_fails()
+
+    with patch("bot.bot") as bot_mock:
+        bot_mock.get_guild.return_value = guild
+        result = asyncio.run(bot.fetch_discord_catalog_async(123, strict=False))
+
+    assert result["ok"] is True
+    assert [c["name"] for c in result["channels"]] == ["general"]
+
+
+def test_fetch_discord_catalog_async_strict_propagates_failure(running_loop):
+    import bot
+
+    guild = _guild_whose_live_fetch_fails()
+
+    with patch("bot.bot") as bot_mock:
+        bot_mock.get_guild.return_value = guild
+        result = asyncio.run(bot.fetch_discord_catalog_async(123, strict=True))
+
+    assert result["ok"] is False
+    assert "Could not reach Discord" in result["error"]

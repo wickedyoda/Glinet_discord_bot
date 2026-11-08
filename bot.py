@@ -7112,7 +7112,17 @@ def run_web_bulk_role_assignment(guild_id: int, role_input: str, payload: bytes,
         }
 
 
-async def fetch_discord_catalog_async(guild_id: int):
+async def fetch_discord_catalog_async(guild_id: int, *, strict: bool = False):
+    """Fetch the Discord channel/role catalog for the web GUI.
+
+    ``strict`` controls what happens when the live channel fetch fails:
+
+    * ``strict=False`` (the cached page-load getter) falls back to the bot's cached
+      channel list, so a transient Discord error does not blank out every dropdown.
+    * ``strict=True`` (the explicit "Refresh Channels & Roles" action) propagates the
+      failure. A refresh that silently fell back would report "Discord catalog
+      refreshed" while showing exactly the stale list the admin was trying to replace.
+    """
     safe_guild_id = normalize_target_guild_id(guild_id)
     guild = bot.get_guild(safe_guild_id)
     if guild is None:
@@ -7122,7 +7132,13 @@ async def fetch_discord_catalog_async(guild_id: int):
     source_channels = list(guild.channels)
     try:
         source_channels = await guild.fetch_channels()
-    except Exception:
+    except Exception as exc:
+        if strict:
+            logger.warning("Strict Discord catalog fetch failed for guild %s: %s", safe_guild_id, exc)
+            return {
+                "ok": False,
+                "error": "Could not reach Discord for a live channel list. Please try again.",
+            }
         logger.debug("Falling back to cached guild channels for web catalog", exc_info=True)
 
     for channel in source_channels:
@@ -7180,11 +7196,12 @@ async def fetch_discord_catalog_async(guild_id: int):
     }
 
 
-def _fetch_discord_catalog_for_web(safe_guild_id: int):
+def _fetch_discord_catalog_for_web(safe_guild_id: int, *, strict: bool = False):
     """Fetch a fresh Discord channel/role catalog for the web GUI.
 
     This helper always hits Discord and never consults the TTL cache, so it can back
-    both the cached getter and the explicit web GUI refresh action.
+    both the cached getter and the explicit web GUI refresh action. ``strict`` is
+    forwarded to the fetch (see :func:`fetch_discord_catalog_async`).
     """
     loop = getattr(bot, "loop", None)
     if loop is None or not loop.is_running():
@@ -7192,7 +7209,10 @@ def _fetch_discord_catalog_for_web(safe_guild_id: int):
 
     future = None
     try:
-        future = asyncio.run_coroutine_threadsafe(fetch_discord_catalog_async(safe_guild_id), loop)
+        future = asyncio.run_coroutine_threadsafe(
+            fetch_discord_catalog_async(safe_guild_id, strict=strict),
+            loop,
+        )
         data = future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
     except concurrent.futures.TimeoutError:
         if future is not None:
@@ -7229,9 +7249,11 @@ def run_web_refresh_discord_catalog(guild_id: int):
     WEB_DISCORD_CATALOG_TTL_SECONDS.
     """
     safe_guild_id = normalize_target_guild_id(guild_id)
-    discord_catalog_cache.pop(safe_guild_id, None)
 
-    data = _fetch_discord_catalog_for_web(safe_guild_id)
+    # Strict: a failed live fetch is reported as a failure, never as a refresh.
+    # The existing cache entry is replaced only on success, so a transient Discord
+    # error cannot blank out the dropdowns the admin was trying to update.
+    data = _fetch_discord_catalog_for_web(safe_guild_id, strict=True)
     if isinstance(data, dict) and data.get("ok"):
         discord_catalog_cache[safe_guild_id] = {"fetched_at": time.time(), "data": data}
     return data

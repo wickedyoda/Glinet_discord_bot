@@ -14,7 +14,7 @@ from app.service_monitor import GLINET_DOMAIN_MONITOR_PRESETS, normalize_service
 from web_admin import create_web_app
 
 
-def _make_app(tmp_path: Path, logger=None, refresh_catalog=None):
+def _make_app(tmp_path: Path, logger=None, refresh_catalog=None, discord_catalog=None):
     env_file = tmp_path / "env.env"
     env_file.write_text(
         "\n".join(
@@ -782,7 +782,9 @@ def _make_app(tmp_path: Path, logger=None, refresh_catalog=None):
         default_admin_password="Ab!12xy",
         logger=logger,
         on_get_guilds=guilds,
-        on_get_discord_catalog=catalog,
+        on_get_discord_catalog=(
+            discord_catalog if discord_catalog is not None else catalog
+        ),
         on_refresh_discord_catalog=(
             refresh_catalog if refresh_catalog is not None else default_refresh_catalog
         ),
@@ -1557,6 +1559,30 @@ def test_reaction_roles_save_button_updates_the_mapping(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"Reaction role mapping saved." in response.data
+
+
+def test_failed_catalog_does_not_trigger_a_second_fetch_for_the_timestamp(tmp_path: Path):
+    """A failed catalog load must not repeat the whole fetch just to read a timestamp.
+
+    The getter caches only successes, so a second call re-hits Discord -- up to
+    WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS (20s) added to an already failed page load.
+    """
+    attempts = {"n": 0}
+
+    def failing_catalog(_guild_id):
+        attempts["n"] += 1
+        return {"ok": False, "error": "Discord is rate limiting this bot."}
+
+    app = _make_app(tmp_path, discord_catalog=failing_catalog)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/reaction-roles", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"Discord is rate limiting this bot." in response.data
+    assert attempts["n"] == 1, f"catalog fetched {attempts['n']} times for one page load"
 
 
 def test_refresh_catalog_is_not_routed_through_reaction_role_submission(tmp_path: Path):
