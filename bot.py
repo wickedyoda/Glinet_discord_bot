@@ -7179,6 +7179,33 @@ async def fetch_discord_catalog_async(guild_id: int):
     }
 
 
+def _fetch_discord_catalog_for_web(safe_guild_id: int):
+    """Fetch a fresh Discord channel/role catalog for the web GUI.
+
+    This helper always hits Discord and never consults the TTL cache, so it can back
+    both the cached getter and the explicit web GUI refresh action.
+    """
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = None
+    try:
+        future = asyncio.run_coroutine_threadsafe(fetch_discord_catalog_async(safe_guild_id), loop)
+        data = future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        if future is not None:
+            future.cancel()
+        return {"ok": False, "error": "Timed out fetching Discord channels/roles."}
+    except Exception:
+        logger.exception("Unexpected failure while fetching web Discord catalog")
+        return {
+            "ok": False,
+            "error": "Unexpected error while fetching Discord channels/roles.",
+        }
+    return data
+
+
 def run_web_get_discord_catalog(guild_id: int):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now = time.time()
@@ -7187,25 +7214,25 @@ def run_web_get_discord_catalog(guild_id: int):
     if cached and now - float(cached_entry.get("fetched_at", 0.0)) < WEB_DISCORD_CATALOG_TTL_SECONDS:
         return cached
 
-    loop = getattr(bot, "loop", None)
-    if loop is None or not loop.is_running():
-        return {"ok": False, "error": "Bot loop is not running yet."}
-
-    future = asyncio.run_coroutine_threadsafe(fetch_discord_catalog_async(safe_guild_id), loop)
-    try:
-        data = future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        return {"ok": False, "error": "Timed out fetching Discord channels/roles."}
-    except Exception:
-        logger.exception("Unexpected failure while fetching web Discord catalog")
-        return {
-            "ok": False,
-            "error": "Unexpected error while fetching Discord channels/roles.",
-        }
-
+    data = _fetch_discord_catalog_for_web(safe_guild_id)
     if isinstance(data, dict) and data.get("ok"):
         discord_catalog_cache[safe_guild_id] = {"fetched_at": now, "data": data}
+    return data
+
+
+def run_web_refresh_discord_catalog(guild_id: int):
+    """Force a fresh Discord channel/role fetch, bypassing the TTL cache.
+
+    Backs the web GUI "Refresh channels & roles" button so newly created Discord
+    channels and roles appear in the dropdowns immediately instead of waiting out
+    WEB_DISCORD_CATALOG_TTL_SECONDS.
+    """
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    discord_catalog_cache.pop(safe_guild_id, None)
+
+    data = _fetch_discord_catalog_for_web(safe_guild_id)
+    if isinstance(data, dict) and data.get("ok"):
+        discord_catalog_cache[safe_guild_id] = {"fetched_at": time.time(), "data": data}
     return data
 
 
@@ -12249,6 +12276,7 @@ def start_web_admin_server():
                     on_save_tag_responses=run_web_save_tag_responses,
                     on_bulk_assign_role_csv=run_web_bulk_role_assignment,
                     on_get_discord_catalog=run_web_get_discord_catalog,
+                    on_refresh_discord_catalog=run_web_refresh_discord_catalog,
                     on_get_command_permissions=run_web_get_command_permissions,
                     on_save_command_permissions=run_web_update_command_permissions,
                     on_get_honeypot=run_web_get_honeypot,

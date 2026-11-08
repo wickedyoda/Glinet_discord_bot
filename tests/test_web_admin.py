@@ -14,7 +14,7 @@ from app.service_monitor import GLINET_DOMAIN_MONITOR_PRESETS, normalize_service
 from web_admin import create_web_app
 
 
-def _make_app(tmp_path: Path, logger=None):
+def _make_app(tmp_path: Path, logger=None, refresh_catalog=None):
     env_file = tmp_path / "env.env"
     env_file.write_text(
         "\n".join(
@@ -48,24 +48,33 @@ def _make_app(tmp_path: Path, logger=None):
             "primary_guild_id": "1234567890",
         }
 
+    catalog_channels = [
+        {"id": "9999", "name": "alerts", "type": "text", "label": "#alerts [text]"},
+    ]
+    catalog_roles = [
+        {"id": "111", "name": "Member", "label": "@Member"},
+        {"id": "222", "name": "Employee", "label": "@Employee"},
+    ]
+    catalog_fetched_at = [0.0]
+
     def catalog(guild_id):
         guild_name = "Support Guild" if str(guild_id) == "2222222222" else "Test Guild"
         return {
             "ok": True,
             "guild": {"id": str(guild_id), "name": guild_name},
-            "channels": [
-                {
-                    "id": "9999",
-                    "name": "alerts",
-                    "type": "text",
-                    "label": "#alerts [text]",
-                }
-            ],
-            "roles": [
-                {"id": "111", "name": "Member", "label": "@Member"},
-                {"id": "222", "name": "Employee", "label": "@Employee"},
-            ],
+            "channels": [dict(item) for item in catalog_channels],
+            "roles": [dict(item) for item in catalog_roles],
+            "fetched_at": catalog_fetched_at[0],
         }
+
+    def default_refresh_catalog(_guild_id):
+        """Simulate Discord gaining a brand new channel between page loads."""
+        catalog_channels.append(
+            {"id": "8888", "name": "new-channel", "type": "text", "label": "#new-channel [text]"}
+        )
+        catalog_roles.append({"id": "333", "name": "NewRole", "label": "@NewRole"})
+        catalog_fetched_at[0] = 1_700_000_000.0
+        return catalog(_guild_id)
 
     guild_settings_state = {
         "bot_log_channel_id": "",
@@ -774,6 +783,9 @@ def _make_app(tmp_path: Path, logger=None):
         logger=logger,
         on_get_guilds=guilds,
         on_get_discord_catalog=catalog,
+        on_refresh_discord_catalog=(
+            refresh_catalog if refresh_catalog is not None else default_refresh_catalog
+        ),
         on_get_guild_settings=get_guild_settings,
         on_save_guild_settings=save_guild_settings,
         on_get_bot_profile=get_bot_profile,
@@ -1367,6 +1379,115 @@ def test_admin_can_post_reaction_role_message(tmp_path: Path):
     assert b"777777777777777777" in response.data
     assert b"\xf0\x9f\x8e\xae" in response.data  # 🎮
     assert b"\xf0\x9f\x93\xa2" in response.data  # 📢
+
+
+def test_reaction_roles_page_shows_refresh_control(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/reaction-roles", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    assert b"refresh_catalog" in response.data
+    assert b"Refresh Channels" in response.data
+
+
+def test_admin_can_refresh_discord_catalog_to_surface_new_channels(tmp_path: Path):
+    """The reported bug: a channel created in Discord was missing from the dropdown."""
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    before = client.get("/admin/reaction-roles", base_url="https://docker.example:8443")
+    assert b"new-channel" not in before.data
+
+    response = client.post(
+        "/admin/reaction-roles",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/reaction-roles"),
+            "action": "refresh_catalog",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Discord catalog refreshed" in response.data
+    # The newly created channel and role must now be selectable in the composer.
+    assert b"new-channel" in response.data
+    assert b"NewRole" in response.data
+
+
+def test_refresh_catalog_reports_callback_failure(tmp_path: Path):
+    app = _make_app(
+        tmp_path,
+        refresh_catalog=lambda _guild_id: {"ok": False, "error": "Discord is rate limiting this bot."},
+    )
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/reaction-roles",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/reaction-roles"),
+            "action": "refresh_catalog",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Discord is rate limiting this bot." in response.data
+    assert b"Discord catalog refreshed" not in response.data
+
+
+def test_refresh_catalog_survives_an_unexpected_callback_exception(tmp_path: Path):
+    def exploding_refresh(_guild_id):
+        raise RuntimeError("loop went away")
+
+    app = _make_app(tmp_path, refresh_catalog=exploding_refresh)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/reaction-roles",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/reaction-roles"),
+            "action": "refresh_catalog",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Unexpected error while refreshing Discord channels/roles." in response.data
+
+
+def test_refresh_catalog_is_not_routed_through_reaction_role_submission(tmp_path: Path):
+    """A refresh must not be treated as a reaction-role save/delete action."""
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.post(
+        "/admin/reaction-roles",
+        data={
+            "csrf_token": _page_csrf_token(client, "/admin/reaction-roles"),
+            "action": "refresh_catalog",
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert response.status_code == 200
+    assert b"Reaction role mapping" not in response.data
+    assert b"Reaction role update callback is not configured." not in response.data
 
 
 def test_admin_can_pause_role_access_mapping(tmp_path: Path):

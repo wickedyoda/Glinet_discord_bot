@@ -3310,6 +3310,7 @@ def create_web_app(
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
     on_get_discord_catalog=None,
+    on_refresh_discord_catalog=None,
     on_get_command_permissions=None,
     on_save_command_permissions=None,
     on_get_honeypot=None,
@@ -4264,6 +4265,54 @@ def create_web_app(
                 if str(option.get("type") or "").strip().lower() == expected_type
             ]
         return channel_options, role_options, catalog_error
+
+    def _refresh_discord_catalog_for_guild(selected_guild_id: str) -> tuple[str, str]:
+        """Force a fresh Discord channel/role fetch for the selected guild."""
+        if not selected_guild_id:
+            return ("Select a Discord server before refreshing channels and roles.", "error")
+        if not callable(on_refresh_discord_catalog):
+            return ("Discord catalog refresh callback is not configured.", "error")
+        try:
+            result = on_refresh_discord_catalog(selected_guild_id)
+        except Exception:
+            if logger:
+                logger.exception("Discord catalog refresh failed for guild %s", selected_guild_id)
+            return ("Unexpected error while refreshing Discord channels/roles.", "error")
+        if not isinstance(result, dict) or not result.get("ok"):
+            error_text = str(result.get("error") or "") if isinstance(result, dict) else ""
+            return (error_text or "Failed to refresh Discord channels/roles.", "error")
+
+        channel_count = len(result.get("channels", []) or [])
+        role_count = len(result.get("roles", []) or [])
+        stamp = ""
+        fetched_at = result.get("fetched_at")
+        if isinstance(fetched_at, (int, float)) and float(fetched_at) > 0:
+            try:
+                stamp = f" at {datetime.fromtimestamp(float(fetched_at), tz=UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            except (TypeError, ValueError, OSError, OverflowError):
+                stamp = ""
+        return (
+            f"Discord catalog refreshed{stamp}: {channel_count} channels and {role_count} roles loaded.",
+            "success",
+        )
+
+    def _discord_catalog_fetched_at(selected_guild_id: str) -> str:
+        """Return a display timestamp for the cached Discord catalog, if available."""
+        if not selected_guild_id or not callable(on_get_discord_catalog):
+            return ""
+        try:
+            catalog = on_get_discord_catalog(selected_guild_id)
+        except Exception:
+            return ""
+        if not isinstance(catalog, dict) or not catalog.get("ok"):
+            return ""
+        fetched_at = catalog.get("fetched_at")
+        if isinstance(fetched_at, (int, float)) and float(fetched_at) > 0:
+            try:
+                return datetime.fromtimestamp(float(fetched_at), tz=UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+            except (TypeError, ValueError, OSError, OverflowError):
+                return ""
+        return ""
 
     def _redirect_for_password_rotation(user: dict):
         if not user:
@@ -8529,7 +8578,6 @@ def create_web_app(
         selected_guild = _selected_guild() or {}
         selected_guild_id = str(selected_guild.get("id") or "")
         guild_name = str(selected_guild.get("name") or "Unknown")
-        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         payload = (
             on_get_reaction_roles(selected_guild_id)
@@ -8538,16 +8586,24 @@ def create_web_app(
         )
 
         if request.method == "POST":
-            response, messages = process_reaction_roles_submission(
-                form=request.form,
-                on_manage_reaction_roles=on_manage_reaction_roles,
-                actor_email=user["email"],
-                selected_guild_id=selected_guild_id,
-            )
-            for message, category in messages:
+            action = str(request.form.get("action") or "").strip().lower()
+            if action == "refresh_catalog":
+                message, category = _refresh_discord_catalog_for_guild(selected_guild_id)
                 flash(message, category)
-            if isinstance(response, dict):
-                payload = response
+            else:
+                response, messages = process_reaction_roles_submission(
+                    form=request.form,
+                    on_manage_reaction_roles=on_manage_reaction_roles,
+                    actor_email=user["email"],
+                    selected_guild_id=selected_guild_id,
+                )
+                for message, category in messages:
+                    flash(message, category)
+                if isinstance(response, dict):
+                    payload = response
+
+        # Reload after a refresh so newly created Discord channels/roles appear immediately.
+        channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
 
         if not isinstance(payload, dict) or not payload.get("ok"):
             error_text = (
@@ -8568,6 +8624,7 @@ def create_web_app(
             catalog_error=catalog_error,
             render_select_input=_render_select_input,
             render_fixed_select_input=_render_fixed_select_input,
+            catalog_fetched_at=_discord_catalog_fetched_at(selected_guild_id),
         )
         return _render_page("Reaction Roles", body, user["email"], bool(user.get("is_admin")))
 
@@ -10283,6 +10340,7 @@ def start_web_admin_interface(
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
     on_get_discord_catalog=None,
+    on_refresh_discord_catalog=None,
     on_get_command_permissions=None,
     on_save_command_permissions=None,
     on_get_honeypot=None,
@@ -10333,6 +10391,7 @@ def start_web_admin_interface(
         on_tag_responses_saved=on_tag_responses_saved,
         on_bulk_assign_role_csv=on_bulk_assign_role_csv,
         on_get_discord_catalog=on_get_discord_catalog,
+        on_refresh_discord_catalog=on_refresh_discord_catalog,
         on_get_command_permissions=on_get_command_permissions,
         on_save_command_permissions=on_save_command_permissions,
         on_get_honeypot=on_get_honeypot,
