@@ -126,15 +126,16 @@ from app.reaction_roles import (
     find_reaction_role_mapping as find_reaction_role_mapping_impl,
 )
 from app.reaction_roles import (
+    is_usable_reaction_emoji,
+    normalize_reaction_role_emoji,
+    normalize_reaction_role_message_id,
+    reaction_role_emoji_key_from_payload,
+)
+from app.reaction_roles import (
     list_reaction_role_mappings as list_reaction_role_mappings_impl,
 )
 from app.reaction_roles import (
     load_reaction_roles as load_reaction_roles_impl,
-)
-from app.reaction_roles import (
-    normalize_reaction_role_emoji,
-    normalize_reaction_role_message_id,
-    reaction_role_emoji_key_from_payload,
 )
 from app.reaction_roles import (
     save_reaction_role_mapping as save_reaction_role_mapping_impl,
@@ -9311,7 +9312,14 @@ def resolve_reaction_emoji_for_discord(guild: discord.Guild, raw_emoji: str):
     emoji_key = normalized["emoji_key"]
     emoji_text = normalized["emoji_text"]
     if emoji_key.startswith("unicode:"):
-        return emoji_key[len("unicode:"):]
+        candidate = emoji_key[len("unicode:"):]
+        # A shortcode the tables cannot resolve, or free text typed into the emoji
+        # field, still normalises to a "unicode:" key. Returning it here made
+        # add_reaction() fail with 400 "In emoji_id: Value \"\" is not snowflake"
+        # AFTER the message had already been posted, leaving an unusable prompt.
+        if not is_usable_reaction_emoji(candidate):
+            return None
+        return candidate
     elif emoji_key.startswith("custom:"):
         emoji_id = int(emoji_key[len("custom:"):])
         custom_emoji = guild.get_emoji(emoji_id) if hasattr(guild, "get_emoji") else discord.utils.get(guild.emojis, id=emoji_id)
@@ -9368,6 +9376,28 @@ async def post_reaction_role_message_for_guild_async(
                 "error": f"Role '{role.name}' is higher than or equal to the bot's top role ({bot_member.top_role.name}). Move the bot's role higher in Discord Server Settings > Roles.",
             }
 
+    # Resolve and validate every emoji BEFORE posting. A message that goes out without
+    # its reactions is a broken reaction-role prompt that no member can use, so an
+    # unusable emoji must stop the post rather than follow it.
+    resolved_pairs = []
+    for pair in pairs:
+        raw_emoji = str(pair.get("emoji") or "").strip()
+        if not raw_emoji:
+            continue
+        reaction_obj = resolve_reaction_emoji_for_discord(guild, raw_emoji)
+        if reaction_obj is None:
+            return {
+                "ok": False,
+                "error": (
+                    f"Emoji '{raw_emoji}' is not a recognised emoji, Discord shortcode, or custom emoji. "
+                    "Paste the emoji itself (for example \U0001f3ae) or use a custom emoji in the <:name:id> form."
+                ),
+            }
+        resolved_pairs.append((pair, reaction_obj))
+
+    if not resolved_pairs:
+        return {"ok": False, "error": "Please configure at least one emoji and role connection."}
+
     try:
         sent_message = await channel.send(message_content)
     except discord.Forbidden:
@@ -9400,19 +9430,13 @@ async def post_reaction_role_message_for_guild_async(
 
     _refresh_reaction_role_cache_for_guild(safe_guild_id)
 
-    # 2. Add reactions to the message
-    for pair in pairs:
+    # 2. Add reactions to the message (emoji objects already validated above)
+    for pair, reaction_obj in resolved_pairs:
         raw_emoji = str(pair.get("emoji") or "").strip()
-        if not raw_emoji:
-            continue
-        reaction_obj = resolve_reaction_emoji_for_discord(guild, raw_emoji)
-        if reaction_obj is not None:
-            try:
-                await sent_message.add_reaction(reaction_obj)
-            except (discord.Forbidden, discord.HTTPException) as exc:
-                logger.warning("Could not add reaction %s to message %s: %s", raw_emoji, sent_message.id, exc)
-                failed_emojis.append(raw_emoji)
-        else:
+        try:
+            await sent_message.add_reaction(reaction_obj)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning("Could not add reaction %s to message %s: %s", raw_emoji, sent_message.id, exc)
             failed_emojis.append(raw_emoji)
 
     return {

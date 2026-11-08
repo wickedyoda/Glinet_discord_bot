@@ -147,7 +147,7 @@ def render_reaction_roles_body(
     }
 
     rows = []
-    for mapping in mappings:
+    for row_index, mapping in enumerate(mappings, start=1):
         channel_id = str(mapping.get("channel_id") or "")
         message_id = str(mapping.get("message_id") or "")
         emoji_text = str(mapping.get("emoji_text") or mapping.get("emoji_key") or "")
@@ -157,28 +157,34 @@ def render_reaction_roles_body(
         updated_at = format_timestamp_display(mapping.get("updated_at"))
         channel_label = channel_labels.get(channel_id, channel_id or "n/a")
         role_labels.get(role_id, role_id or "n/a")
+
+        # A form cannot be a child of <tbody>/<tr> (the HTML parser foster-parents it out
+        # of the table), so each row's form lives in its action cell and the row's inputs
+        # join it via the HTML5 `form` attribute. Without this the Save/Activate/Pause/
+        # Delete buttons had no form at all and submitted nothing.
+        form_id = f"rr-row-{row_index}"
         rows.append(
             f"""
             <tr>
-              <td>{render_select_input("channel_id", channel_id, channel_options, placeholder="Choose channel...")}</td>
-              <td><input type="text" name="message_id" value="{escape(message_id, quote=True)}" inputmode="numeric" /></td>
-              <td><input type="text" name="emoji" value="{escape(emoji_text, quote=True)}" placeholder="😀 or <:custom:123>" /></td>
-              <td>{render_select_input("role_id", role_id, role_options, placeholder="Choose role...")}</td>
-              <td>{render_fixed_select_input("status", status, list(REACTION_ROLE_STATUS_OPTIONS), placeholder="Select status...")}</td>
+              <td>{render_select_input("channel_id", channel_id, channel_options, placeholder="Choose channel...", form_id=form_id)}</td>
+              <td><input type="text" name="message_id" value="{escape(message_id, quote=True)}" inputmode="numeric" form="{form_id}" /></td>
+              <td><input type="text" name="emoji" value="{escape(emoji_text, quote=True)}" placeholder="😀 or <:custom:123>" form="{form_id}" /></td>
+              <td>{render_select_input("role_id", role_id, role_options, placeholder="Choose role...", form_id=form_id)}</td>
+              <td>{render_fixed_select_input("status", status, list(REACTION_ROLE_STATUS_OPTIONS), placeholder="Select status...", form_id=form_id)}</td>
               <td>
-                <input type="hidden" name="original_message_id" value="{escape(message_id, quote=True)}" />
-                <input type="hidden" name="original_emoji" value="{escape(emoji_text, quote=True)}" />
                 <div class="muted mono">{escape(channel_label)}</div>
                 <div class="muted mono">{escape(created_at)}</div>
                 <div class="muted">{escape(updated_at)}</div>
               </td>
               <td>
-                <div class="dash-actions">
+                <form method="post" id="{form_id}" style="display:flex;gap:10px;flex-wrap:wrap;">
+                  <input type="hidden" name="original_message_id" value="{escape(message_id, quote=True)}" />
+                  <input type="hidden" name="original_emoji" value="{escape(emoji_text, quote=True)}" />
                   <button class="btn" type="submit" name="action" value="save">Save</button>
                   <button class="btn secondary" type="submit" name="action" value="set_status" onclick="this.form.status.value='active';">Activate</button>
                   <button class="btn secondary" type="submit" name="action" value="set_status" onclick="this.form.status.value='paused';">Pause</button>
                   <button class="btn danger" type="submit" name="action" value="delete">Delete</button>
-                </div>
+                </form>
               </td>
             </tr>
             """

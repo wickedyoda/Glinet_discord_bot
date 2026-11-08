@@ -1922,7 +1922,13 @@ def _normalize_select_value(value: str):
     return selected
 
 
-def _render_select_input(name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."):
+def _render_select_input(
+    name: str,
+    selected_value: str,
+    options: list[dict],
+    placeholder: str = "Select...",
+    form_id: str = "",
+):
     selected = _normalize_select_value(selected_value)
     rows = [f"<option value=''>{escape(placeholder)}</option>"]
     seen = set()
@@ -1936,10 +1942,19 @@ def _render_select_input(name: str, selected_value: str, options: list[dict], pl
         rows.append(f"<option value='{escape(option_id, quote=True)}'{selected_attr}>{escape(label)} ({escape(option_id)})</option>")
     if selected and selected not in seen:
         rows.append(f"<option value='{escape(selected, quote=True)}' selected>Current value (not found): {escape(selected)}</option>")
-    return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
+    # `form_id` lets a select belong to a form elsewhere in the document, which is how
+    # each table row submits only its own values.
+    form_attr = f" form='{escape(form_id, quote=True)}'" if str(form_id or "").strip() else ""
+    return f"<select name='{escape(name, quote=True)}'{form_attr}>" + "".join(rows) + "</select>"
 
 
-def _render_fixed_select_input(name: str, selected_value: str, options: list[dict], placeholder: str = "Select..."):
+def _render_fixed_select_input(
+    name: str,
+    selected_value: str,
+    options: list[dict],
+    placeholder: str = "Select...",
+    form_id: str = "",
+):
     selected = str(selected_value or "").strip()
     rows = [f"<option value=''>{escape(placeholder)}</option>"]
     seen = set()
@@ -1953,7 +1968,8 @@ def _render_fixed_select_input(name: str, selected_value: str, options: list[dic
         rows.append(f"<option value='{escape(option_value, quote=True)}'{selected_attr}>{escape(label)}</option>")
     if selected and selected not in seen:
         rows.append(f"<option value='{escape(selected, quote=True)}' selected>Current value: {escape(selected)}</option>")
-    return f"<select name='{escape(name, quote=True)}'>" + "".join(rows) + "</select>"
+    form_attr = f" form='{escape(form_id, quote=True)}'" if str(form_id or "").strip() else ""
+    return f"<select name='{escape(name, quote=True)}'{form_attr}>" + "".join(rows) + "</select>"
 
 
 def _extract_hostname_from_value(value: str):

@@ -1468,6 +1468,97 @@ def test_refresh_catalog_survives_an_unexpected_callback_exception(tmp_path: Pat
     assert b"Unexpected error while refreshing Discord channels/roles." in response.data
 
 
+def test_reaction_roles_mappings_table_rows_have_working_forms(tmp_path: Path):
+    """Every Save/Activate/Pause/Delete button must sit inside a form.
+
+    The mappings table originally rendered its buttons with no <form> at all, so all
+    four actions silently did nothing.
+    """
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/reaction-roles", base_url="https://docker.example:8443")
+    assert response.status_code == 200
+
+    soup = BeautifulSoup(response.data, "html.parser")
+    submits = soup.find_all("button", attrs={"type": "submit"})
+    assert submits, "expected action buttons on the reaction roles page"
+    orphaned = [button for button in submits if button.find_parent("form") is None]
+    assert orphaned == [], f"submit buttons outside any form: {[b.get_text(strip=True) for b in orphaned]}"
+
+    row_forms = [form for form in soup.find_all("form") if str(form.get("id") or "").startswith("rr-row-")]
+    assert row_forms, "expected one form per mapping row"
+
+    expected_controls = {"channel_id", "message_id", "emoji", "role_id", "status"}
+    for form in row_forms:
+        associated = {
+            control.get("name")
+            for control in soup.find_all(["input", "select"])
+            if control.get("form") == form.get("id") and control.get("name")
+        }
+        associated |= {
+            control.get("name") for control in form.find_all(["input", "select"]) if control.get("name")
+        }
+        missing = expected_controls - associated
+        assert not missing, f"row form {form.get('id')} is missing controls: {sorted(missing)}"
+
+
+def _submit_reaction_role_row(client, form, action: str):
+    """Build a POST the way the browser now submits a mapping row form."""
+    soup = BeautifulSoup(client.get("/admin/reaction-roles", base_url="https://docker.example:8443").data, "html.parser")
+    target = None
+    for candidate in soup.find_all("form"):
+        if candidate.get("id") == form.get("id"):
+            target = candidate
+            break
+    assert target is not None, f"row form {form.get('id')} did not render"
+
+    data = {"csrf_token": _page_csrf_token(client, "/admin/reaction-roles"), "action": action}
+    for control in soup.find_all(["input", "select"]):
+        if control.get("form") == target.get("id") and control.get("name"):
+            data[control.get("name")] = control.get("value") or ""
+    return client.post(
+        "/admin/reaction-roles",
+        data=data,
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+
+def test_reaction_roles_delete_button_actually_deletes_the_mapping(tmp_path: Path):
+    """End to end: submit the row form exactly as the browser now does."""
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    soup = BeautifulSoup(client.get("/admin/reaction-roles", base_url="https://docker.example:8443").data, "html.parser")
+    form = next(f for f in soup.find_all("form") if str(f.get("id") or "").startswith("rr-row-"))
+
+    response = _submit_reaction_role_row(client, form, "delete")
+
+    assert response.status_code == 200
+    assert b"Reaction role mapping deleted." in response.data
+    assert b"555555555555555555" not in response.data
+
+
+def test_reaction_roles_save_button_updates_the_mapping(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    soup = BeautifulSoup(client.get("/admin/reaction-roles", base_url="https://docker.example:8443").data, "html.parser")
+    form = next(f for f in soup.find_all("form") if str(f.get("id") or "").startswith("rr-row-"))
+
+    response = _submit_reaction_role_row(client, form, "save")
+
+    assert response.status_code == 200
+    assert b"Reaction role mapping saved." in response.data
+
+
 def test_refresh_catalog_is_not_routed_through_reaction_role_submission(tmp_path: Path):
     """A refresh must not be treated as a reaction-role save/delete action."""
     app = _make_app(tmp_path)
