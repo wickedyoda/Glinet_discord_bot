@@ -334,6 +334,10 @@ Notes:
 ### `/admin/reaction-roles`
 
 - Scoped to the selected server
+- **Refresh Channels & Roles:**
+  - Channel and role dropdowns are cached for `WEB_DISCORD_CATALOG_TTL_SECONDS` (default 120 seconds) so the page does not query Discord on every load.
+  - If a channel or role was just created in Discord and is not listed, use **Refresh Channels & Roles** to force an immediate fresh fetch instead of waiting for the cache to expire.
+  - The page shows when the catalog was last refreshed and how many channels and roles are currently loaded.
 - **Post New Reaction Role Message (Interactive Builder):**
   - Choose a target Discord text channel from the dropdown.
   - Enter custom message text or announcement instructions (e.g., *"React to this message to claim your roles:"*).
