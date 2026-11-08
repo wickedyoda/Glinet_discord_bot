@@ -341,12 +341,17 @@ Notes:
 - **Post New Reaction Role Message (Interactive Builder):**
   - Choose a target Discord text channel from the dropdown.
   - Enter custom message text or announcement instructions (e.g., *"React to this message to claim your roles:"*).
-  - Connect up to 8 emoji & role pairings in a single post (supports Unicode emojis and custom Discord emojis like `<:name:id>`).
+  - Connect up to 8 emoji & role pairings in a single post. Each emoji accepts:
+    - A pasted Unicode emoji (for example `🎮`).
+    - A Discord shortcode name such as `:thumbsup:`, `:computer:`, or `:tools:` — these are converted to the real emoji automatically.
+    - A custom server emoji in `<:name:id>` form (or its numeric id).
+  - Emojis are validated before anything is posted. If one cannot be used, the post is refused with a message naming the offending emoji rather than publishing a prompt nobody can react to.
   - Upon submission, the bot automatically sends the message to the target channel, adds the specified reaction emojis to the message, and registers the active mappings in SQLite.
 - **Active Reaction Role Mappings Table:**
   - View all active, paused, or disabled reaction role mappings for the server.
   - Shows channel, message ID, emoji, assigned role, and creation/update timestamps.
-  - Quick action controls to `Activate`, `Pause`, or `Delete` individual mappings.
+  - Quick action controls to `Save`, `Activate`, `Pause`, or `Delete` individual mappings. Each row is its own form, so a button acts only on that row.
+  - Deleting a mapping removes the stored reaction-to-role link; the Discord message itself is left in place.
 - **Manual Add / Update by Message ID:**
   - Connect an emoji and role to any pre-existing Discord message by supplying its message ID.
 - **Runtime Handling:**

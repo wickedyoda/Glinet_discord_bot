@@ -14,10 +14,11 @@ This document tracks active development branches, open pull requests, pending fe
   - **Branch**: `feat/reaction-role-post-builder` → `main`
   - **Status**: Merged into `main` (commit `f410151`).
   - **Details**: Reaction-role message composer, A–Z dropdowns, 6-category dashboard, 439 tests passing.
-- [ ] **Branch `feat/webgui-refresh-discord-catalog`**
-  - **Status**: Local commit `1d4dc31` (452 tests passing, Ruff clean, Bandit clean apart from pre-existing B608).
-  - **Feature**: "Refresh Channels & Roles" button on `/admin/reaction-roles` that bypasses the 120s `WEB_DISCORD_CATALOG_TTL_SECONDS` cache so newly created Discord channels and roles appear immediately.
-  - **Action**: Ready to push and open PR.
+- [ ] **Branch `feat/webgui-refresh-discord-catalog`** — **PR [#371](https://github.com/wickedyoda/Glinet_discord_bot/pull/371) open**
+  - **Status**: Pushed at `561abf5` (465 tests passing, Ruff clean, pip-audit clean, gitleaks/trufflehog clean, Semgrep identical to main).
+  - **Feature 1**: "Refresh Channels & Roles" button on `/admin/reaction-roles` that bypasses the 120s `WEB_DISCORD_CATALOG_TTL_SECONDS` cache so newly created Discord channels and roles appear immediately.
+  - **Feature 2**: Reaction-role shortcode support (`:thumbsup:` → 👍) with pre-post emoji validation, and per-row forms so Save/Activate/Pause/Delete actually submit.
+  - **Action**: Awaiting review and merge; then Docker build + deploy to `serv2`.
 - [ ] **Branch `feat/freshdesk-discord-thread-sync`**
   - **Status**: Local commit `75d16ed` (463 tests passing, S1 authorization gates, S2 private notes, S3 HTML escaping).
   - **Action**: Pending review / PR push.
@@ -50,6 +51,12 @@ This document tracks active development branches, open pull requests, pending fe
   - Sorted all Discord channel dropdowns (`_load_discord_catalog_options`) alphabetically (A-Z).
   - Reorganized `/admin/dashboard` main GUI cards into 6 logical categories: *Moderation & Security*, *Roles & Onboarding*, *Channels & Chat Automation*, *Notification Feeds & Monitors*, *Support & Forum Integrations*, and *Bot Configuration & System Administration*.
   - 436 tests passing (`test_web_admin_dashboard_organization.py`).
+- [x] **Reaction Role Shortcode Support & Pre-Post Emoji Validation**:
+  - Discord shortcodes typed into the web form (`:thumbsup:`, `:computer:`, `:tools:`) are resolved to real Unicode emoji via the new `emoji==2.16.0` dependency plus a supplementary alias table for names the package lacks.
+  - `resolve_reaction_emoji_for_discord()` returns `None` for values Discord would refuse, and `post_reaction_role_message_for_guild_async()` validates every emoji **before** sending — a bad emoji aborts the post instead of publishing a prompt nobody can react to.
+- [x] **Reaction Role Mappings Table Row Forms**:
+  - The mappings table rendered four `type=submit` buttons with no `<form>` element (a form cannot be a child of `<tbody>`/`<tr>`), so Save/Activate/Pause/Delete all did nothing.
+  - Each row now renders its own form in the action cell, with the row's inputs joined via the HTML5 `form` attribute. Verified with a DOM pass: 0 orphaned submit buttons.
 - [x] **Discord Catalog Refresh Button**:
   - Added a "Refresh Channels & Roles" control to `/admin/reaction-roles` that forces a fresh Discord fetch, bypassing the 120s `WEB_DISCORD_CATALOG_TTL_SECONDS` cache.
   - `bot.py`: extracted `_fetch_discord_catalog_for_web()` and added `run_web_refresh_discord_catalog()`, which pops the cache entry before fetching so a failed refresh cannot resurrect a stale snapshot. Scheduling failures from `run_coroutine_threadsafe()` are now covered by the "Unexpected error" path.
