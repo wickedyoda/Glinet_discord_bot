@@ -126,15 +126,16 @@ from app.reaction_roles import (
     find_reaction_role_mapping as find_reaction_role_mapping_impl,
 )
 from app.reaction_roles import (
+    is_usable_reaction_emoji,
+    normalize_reaction_role_emoji,
+    normalize_reaction_role_message_id,
+    reaction_role_emoji_key_from_payload,
+)
+from app.reaction_roles import (
     list_reaction_role_mappings as list_reaction_role_mappings_impl,
 )
 from app.reaction_roles import (
     load_reaction_roles as load_reaction_roles_impl,
-)
-from app.reaction_roles import (
-    normalize_reaction_role_emoji,
-    normalize_reaction_role_message_id,
-    reaction_role_emoji_key_from_payload,
 )
 from app.reaction_roles import (
     save_reaction_role_mapping as save_reaction_role_mapping_impl,
@@ -7111,7 +7112,17 @@ def run_web_bulk_role_assignment(guild_id: int, role_input: str, payload: bytes,
         }
 
 
-async def fetch_discord_catalog_async(guild_id: int):
+async def fetch_discord_catalog_async(guild_id: int, *, strict: bool = False):
+    """Fetch the Discord channel/role catalog for the web GUI.
+
+    ``strict`` controls what happens when the live channel fetch fails:
+
+    * ``strict=False`` (the cached page-load getter) falls back to the bot's cached
+      channel list, so a transient Discord error does not blank out every dropdown.
+    * ``strict=True`` (the explicit "Refresh Channels & Roles" action) propagates the
+      failure. A refresh that silently fell back would report "Discord catalog
+      refreshed" while showing exactly the stale list the admin was trying to replace.
+    """
     safe_guild_id = normalize_target_guild_id(guild_id)
     guild = bot.get_guild(safe_guild_id)
     if guild is None:
@@ -7121,7 +7132,13 @@ async def fetch_discord_catalog_async(guild_id: int):
     source_channels = list(guild.channels)
     try:
         source_channels = await guild.fetch_channels()
-    except Exception:
+    except Exception as exc:
+        if strict:
+            logger.warning("Strict Discord catalog fetch failed for guild %s: %s", safe_guild_id, exc)
+            return {
+                "ok": False,
+                "error": "Could not reach Discord for a live channel list. Please try again.",
+            }
         logger.debug("Falling back to cached guild channels for web catalog", exc_info=True)
 
     for channel in source_channels:
@@ -7179,6 +7196,37 @@ async def fetch_discord_catalog_async(guild_id: int):
     }
 
 
+def _fetch_discord_catalog_for_web(safe_guild_id: int, *, strict: bool = False):
+    """Fetch a fresh Discord channel/role catalog for the web GUI.
+
+    This helper always hits Discord and never consults the TTL cache, so it can back
+    both the cached getter and the explicit web GUI refresh action. ``strict`` is
+    forwarded to the fetch (see :func:`fetch_discord_catalog_async`).
+    """
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {"ok": False, "error": "Bot loop is not running yet."}
+
+    future = None
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            fetch_discord_catalog_async(safe_guild_id, strict=strict),
+            loop,
+        )
+        data = future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        if future is not None:
+            future.cancel()
+        return {"ok": False, "error": "Timed out fetching Discord channels/roles."}
+    except Exception:
+        logger.exception("Unexpected failure while fetching web Discord catalog")
+        return {
+            "ok": False,
+            "error": "Unexpected error while fetching Discord channels/roles.",
+        }
+    return data
+
+
 def run_web_get_discord_catalog(guild_id: int):
     safe_guild_id = normalize_target_guild_id(guild_id)
     now = time.time()
@@ -7187,25 +7235,27 @@ def run_web_get_discord_catalog(guild_id: int):
     if cached and now - float(cached_entry.get("fetched_at", 0.0)) < WEB_DISCORD_CATALOG_TTL_SECONDS:
         return cached
 
-    loop = getattr(bot, "loop", None)
-    if loop is None or not loop.is_running():
-        return {"ok": False, "error": "Bot loop is not running yet."}
-
-    future = asyncio.run_coroutine_threadsafe(fetch_discord_catalog_async(safe_guild_id), loop)
-    try:
-        data = future.result(timeout=WEB_DISCORD_CATALOG_FETCH_TIMEOUT_SECONDS)
-    except concurrent.futures.TimeoutError:
-        future.cancel()
-        return {"ok": False, "error": "Timed out fetching Discord channels/roles."}
-    except Exception:
-        logger.exception("Unexpected failure while fetching web Discord catalog")
-        return {
-            "ok": False,
-            "error": "Unexpected error while fetching Discord channels/roles.",
-        }
-
+    data = _fetch_discord_catalog_for_web(safe_guild_id)
     if isinstance(data, dict) and data.get("ok"):
         discord_catalog_cache[safe_guild_id] = {"fetched_at": now, "data": data}
+    return data
+
+
+def run_web_refresh_discord_catalog(guild_id: int):
+    """Force a fresh Discord channel/role fetch, bypassing the TTL cache.
+
+    Backs the web GUI "Refresh channels & roles" button so newly created Discord
+    channels and roles appear in the dropdowns immediately instead of waiting out
+    WEB_DISCORD_CATALOG_TTL_SECONDS.
+    """
+    safe_guild_id = normalize_target_guild_id(guild_id)
+
+    # Strict: a failed live fetch is reported as a failure, never as a refresh.
+    # The existing cache entry is replaced only on success, so a transient Discord
+    # error cannot blank out the dropdowns the admin was trying to update.
+    data = _fetch_discord_catalog_for_web(safe_guild_id, strict=True)
+    if isinstance(data, dict) and data.get("ok"):
+        discord_catalog_cache[safe_guild_id] = {"fetched_at": time.time(), "data": data}
     return data
 
 
@@ -9284,7 +9334,14 @@ def resolve_reaction_emoji_for_discord(guild: discord.Guild, raw_emoji: str):
     emoji_key = normalized["emoji_key"]
     emoji_text = normalized["emoji_text"]
     if emoji_key.startswith("unicode:"):
-        return emoji_key[len("unicode:"):]
+        candidate = emoji_key[len("unicode:"):]
+        # A shortcode the tables cannot resolve, or free text typed into the emoji
+        # field, still normalises to a "unicode:" key. Returning it here made
+        # add_reaction() fail with 400 "In emoji_id: Value \"\" is not snowflake"
+        # AFTER the message had already been posted, leaving an unusable prompt.
+        if not is_usable_reaction_emoji(candidate):
+            return None
+        return candidate
     elif emoji_key.startswith("custom:"):
         emoji_id = int(emoji_key[len("custom:"):])
         custom_emoji = guild.get_emoji(emoji_id) if hasattr(guild, "get_emoji") else discord.utils.get(guild.emojis, id=emoji_id)
@@ -9341,6 +9398,28 @@ async def post_reaction_role_message_for_guild_async(
                 "error": f"Role '{role.name}' is higher than or equal to the bot's top role ({bot_member.top_role.name}). Move the bot's role higher in Discord Server Settings > Roles.",
             }
 
+    # Resolve and validate every emoji BEFORE posting. A message that goes out without
+    # its reactions is a broken reaction-role prompt that no member can use, so an
+    # unusable emoji must stop the post rather than follow it.
+    resolved_pairs = []
+    for pair in pairs:
+        raw_emoji = str(pair.get("emoji") or "").strip()
+        if not raw_emoji:
+            continue
+        reaction_obj = resolve_reaction_emoji_for_discord(guild, raw_emoji)
+        if reaction_obj is None:
+            return {
+                "ok": False,
+                "error": (
+                    f"Emoji '{raw_emoji}' is not a recognised emoji, Discord shortcode, or custom emoji. "
+                    "Paste the emoji itself (for example \U0001f3ae) or use a custom emoji in the <:name:id> form."
+                ),
+            }
+        resolved_pairs.append((pair, reaction_obj))
+
+    if not resolved_pairs:
+        return {"ok": False, "error": "Please configure at least one emoji and role connection."}
+
     try:
         sent_message = await channel.send(message_content)
     except discord.Forbidden:
@@ -9373,19 +9452,13 @@ async def post_reaction_role_message_for_guild_async(
 
     _refresh_reaction_role_cache_for_guild(safe_guild_id)
 
-    # 2. Add reactions to the message
-    for pair in pairs:
+    # 2. Add reactions to the message (emoji objects already validated above)
+    for pair, reaction_obj in resolved_pairs:
         raw_emoji = str(pair.get("emoji") or "").strip()
-        if not raw_emoji:
-            continue
-        reaction_obj = resolve_reaction_emoji_for_discord(guild, raw_emoji)
-        if reaction_obj is not None:
-            try:
-                await sent_message.add_reaction(reaction_obj)
-            except (discord.Forbidden, discord.HTTPException) as exc:
-                logger.warning("Could not add reaction %s to message %s: %s", raw_emoji, sent_message.id, exc)
-                failed_emojis.append(raw_emoji)
-        else:
+        try:
+            await sent_message.add_reaction(reaction_obj)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            logger.warning("Could not add reaction %s to message %s: %s", raw_emoji, sent_message.id, exc)
             failed_emojis.append(raw_emoji)
 
     return {
@@ -12249,6 +12322,7 @@ def start_web_admin_server():
                     on_save_tag_responses=run_web_save_tag_responses,
                     on_bulk_assign_role_csv=run_web_bulk_role_assignment,
                     on_get_discord_catalog=run_web_get_discord_catalog,
+                    on_refresh_discord_catalog=run_web_refresh_discord_catalog,
                     on_get_command_permissions=run_web_get_command_permissions,
                     on_save_command_permissions=run_web_update_command_permissions,
                     on_get_honeypot=run_web_get_honeypot,

@@ -104,12 +104,34 @@ def render_reaction_roles_body(
     catalog_error: str,
     render_select_input,
     render_fixed_select_input,
+    catalog_fetched_at: str = "",
 ):
+    refreshed_note = ""
+    if catalog_fetched_at:
+        refreshed_note = (
+            f"<p class='muted'>Catalog last refreshed {escape(catalog_fetched_at)}. "
+            "If a channel or role is missing, use Refresh Channels &amp; Roles.</p>"
+        )
+
+    refresh_form = """
+        <form method="post" style="margin:0;">
+          <input type="hidden" name="action" value="refresh_catalog" />
+          <button class="btn secondary" type="submit">&#128260; Refresh Channels &amp; Roles</button>
+        </form>
+    """
+
+    def _plural(count: int, singular: str, plural: str) -> str:
+        return f"{count} {singular if count == 1 else plural}"
+
     picker_note = ""
     if catalog_error:
         picker_note = f"<p class='muted'>Could not load Discord catalog: {escape(catalog_error)}</p>"
     elif channel_options and role_options:
-        picker_note = f"<p class='muted'>Loaded live Discord channels and roles from <strong>{escape(guild_name)}</strong>.</p>"
+        picker_note = (
+            f"<p class='muted'>Loaded live Discord channels and roles from <strong>{escape(guild_name)}</strong> "
+            f"({_plural(len(channel_options), 'channel', 'channels')}, "
+            f"{_plural(len(role_options), 'role', 'roles')}).</p>"
+        )
     else:
         picker_note = "<p class='muted'>Discord catalog is unavailable right now. Existing mappings can still be edited.</p>"
 
@@ -125,7 +147,7 @@ def render_reaction_roles_body(
     }
 
     rows = []
-    for mapping in mappings:
+    for row_index, mapping in enumerate(mappings, start=1):
         channel_id = str(mapping.get("channel_id") or "")
         message_id = str(mapping.get("message_id") or "")
         emoji_text = str(mapping.get("emoji_text") or mapping.get("emoji_key") or "")
@@ -135,28 +157,34 @@ def render_reaction_roles_body(
         updated_at = format_timestamp_display(mapping.get("updated_at"))
         channel_label = channel_labels.get(channel_id, channel_id or "n/a")
         role_labels.get(role_id, role_id or "n/a")
+
+        # A form cannot be a child of <tbody>/<tr> (the HTML parser foster-parents it out
+        # of the table), so each row's form lives in its action cell and the row's inputs
+        # join it via the HTML5 `form` attribute. Without this the Save/Activate/Pause/
+        # Delete buttons had no form at all and submitted nothing.
+        form_id = f"rr-row-{row_index}"
         rows.append(
             f"""
             <tr>
-              <td>{render_select_input("channel_id", channel_id, channel_options, placeholder="Choose channel...")}</td>
-              <td><input type="text" name="message_id" value="{escape(message_id, quote=True)}" inputmode="numeric" /></td>
-              <td><input type="text" name="emoji" value="{escape(emoji_text, quote=True)}" placeholder="😀 or <:custom:123>" /></td>
-              <td>{render_select_input("role_id", role_id, role_options, placeholder="Choose role...")}</td>
-              <td>{render_fixed_select_input("status", status, list(REACTION_ROLE_STATUS_OPTIONS), placeholder="Select status...")}</td>
+              <td>{render_select_input("channel_id", channel_id, channel_options, placeholder="Choose channel...", form_id=form_id)}</td>
+              <td><input type="text" name="message_id" value="{escape(message_id, quote=True)}" inputmode="numeric" form="{form_id}" /></td>
+              <td><input type="text" name="emoji" value="{escape(emoji_text, quote=True)}" placeholder="😀 or <:custom:123>" form="{form_id}" /></td>
+              <td>{render_select_input("role_id", role_id, role_options, placeholder="Choose role...", form_id=form_id)}</td>
+              <td>{render_fixed_select_input("status", status, list(REACTION_ROLE_STATUS_OPTIONS), placeholder="Select status...", form_id=form_id)}</td>
               <td>
-                <input type="hidden" name="original_message_id" value="{escape(message_id, quote=True)}" />
-                <input type="hidden" name="original_emoji" value="{escape(emoji_text, quote=True)}" />
                 <div class="muted mono">{escape(channel_label)}</div>
                 <div class="muted mono">{escape(created_at)}</div>
                 <div class="muted">{escape(updated_at)}</div>
               </td>
               <td>
-                <div class="dash-actions">
+                <form method="post" id="{form_id}" style="display:flex;gap:10px;flex-wrap:wrap;">
+                  <input type="hidden" name="original_message_id" value="{escape(message_id, quote=True)}" />
+                  <input type="hidden" name="original_emoji" value="{escape(emoji_text, quote=True)}" />
                   <button class="btn" type="submit" name="action" value="save">Save</button>
                   <button class="btn secondary" type="submit" name="action" value="set_status" onclick="this.form.status.value='active';">Activate</button>
                   <button class="btn secondary" type="submit" name="action" value="set_status" onclick="this.form.status.value='paused';">Pause</button>
                   <button class="btn danger" type="submit" name="action" value="delete">Delete</button>
-                </div>
+                </form>
               </td>
             </tr>
             """
@@ -202,6 +230,10 @@ def render_reaction_roles_body(
         <div class="card">
           <h2>Post New Reaction Role Message</h2>
           <p class="muted">Compose a message, attach emojis to Discord roles, and have the bot post it directly to a channel. The bot will automatically add the reactions so server members can click them to gain or remove roles.</p>
+          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:14px;">
+            {refresh_form}
+            {refreshed_note}
+          </div>
           <form method="post">
             <input type="hidden" name="action" value="post_message" />
             <label>Target Channel</label>

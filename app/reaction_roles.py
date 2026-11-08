@@ -3,9 +3,75 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 
+try:  # optional at import time; shortcode resolution degrades to the alias table without it
+    import emoji as _emoji_lib
+except ImportError:  # pragma: no cover - exercised only when the extra is absent
+    _emoji_lib = None
+
 REACTION_ROLE_STATUSES = {"active", "paused", "disabled"}
 _CUSTOM_EMOJI_RE = re.compile(r"^<a?:([A-Za-z0-9_]{2,32}):(\d+)>$")
 _CUSTOM_EMOJI_SHORT_RE = re.compile(r"^([A-Za-z0-9_]{2,32}):(\d+)$")
+_SHORTCODE_RE = re.compile(r"^:([A-Za-z0-9_+\-]+):$")
+
+# Discord's shortcode names that the `emoji` package does not carry. Without these a
+# user typing ":tools:" (a name Discord's own composer accepts) would be rejected.
+DISCORD_SHORTCODE_ALIASES = {
+    "tools": "\U0001f6e0\ufe0f",
+    "desktop": "\U0001f5a5\ufe0f",
+    "nerd": "\U0001f913",
+    "cowboy": "\U0001f920",
+    "clown": "\U0001f921",
+    "medal": "\U0001f3c5",
+}
+
+
+def resolve_reaction_emoji_shortcode(raw_emoji: str):
+    """Resolve a Discord shortcode such as ``:thumbsup:`` to its Unicode emoji.
+
+    Returns ``None`` when the value is not a shortcode or has no known mapping, so
+    callers can distinguish "not a shortcode" from "unknown shortcode".
+    """
+    match = _SHORTCODE_RE.fullmatch(str(raw_emoji or "").strip())
+    if not match:
+        return None
+
+    name = match.group(1)
+    alias = DISCORD_SHORTCODE_ALIASES.get(name)
+    if alias:
+        return alias
+
+    if _emoji_lib is None:
+        return None
+    candidate = f":{name}:"
+    try:
+        resolved = _emoji_lib.emojize(candidate, language="alias")
+    except Exception:
+        return None
+    if not resolved or resolved == candidate:
+        return None
+    return resolved
+
+
+def _emoji_looks_like_emoji(candidate: str) -> bool:
+    """Range check used when the optional ``emoji`` extra is absent or raises."""
+    return any(ord(char) > 0x2100 for char in candidate)
+
+
+def is_usable_reaction_emoji(value) -> bool:
+    """True when Discord will accept ``value`` as a Unicode emoji reaction.
+
+    Used to reject values that survive normalisation but are still not emoji — a
+    shortcode the tables cannot resolve, or free text typed into the emoji field.
+    """
+    candidate = str(value or "").strip()
+    if not candidate:
+        return False
+    if _emoji_lib is None:
+        return _emoji_looks_like_emoji(candidate)
+    try:
+        return bool(_emoji_lib.is_emoji(candidate))
+    except Exception:
+        return _emoji_looks_like_emoji(candidate)
 
 
 def normalize_reaction_role_status(value: str | None, default: str = "active"):
@@ -39,6 +105,13 @@ def normalize_reaction_role_emoji(value):
         return {"emoji_key": f"custom:{emoji_id}", "emoji_text": f"<:{name}:{emoji_id}>"}
     if raw.isdigit():
         return {"emoji_key": f"custom:{raw}", "emoji_text": raw}
+    # Discord's composer accepts shortcode names like ":thumbsup:"; the bot must too,
+    # otherwise add_reaction() receives ":thumbsup:" and Discord rejects it with
+    # "In emoji_id: Value \"\" is not snowflake". Resolving here also means the stored
+    # emoji_key matches what on_raw_reaction_add sees for the real emoji.
+    resolved = resolve_reaction_emoji_shortcode(raw)
+    if resolved is not None:
+        raw = resolved
     return {"emoji_key": f"unicode:{raw}", "emoji_text": raw}
 
 
