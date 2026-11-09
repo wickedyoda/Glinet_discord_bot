@@ -14,11 +14,12 @@ This document tracks active development branches, open pull requests, pending fe
   - **Branch**: `feat/reaction-role-post-builder` → `main`
   - **Status**: Merged into `main` (commit `f410151`).
   - **Details**: Reaction-role message composer, A–Z dropdowns, 6-category dashboard, 439 tests passing.
-- [ ] **Branch `feat/webgui-refresh-discord-catalog`** — **PR [#371](https://github.com/wickedyoda/Glinet_discord_bot/pull/371) open**
-  - **Status**: Pushed at `561abf5` (465 tests passing, Ruff clean, pip-audit clean, gitleaks/trufflehog clean, Semgrep identical to main).
-  - **Feature 1**: "Refresh Channels & Roles" button on `/admin/reaction-roles` that bypasses the 120s `WEB_DISCORD_CATALOG_TTL_SECONDS` cache so newly created Discord channels and roles appear immediately.
+- [x] **PR #371 (Merged & Deployed)**: `feat(web_admin): add Discord channel/role catalog refresh button` + reaction-role fixes
+  - **Branch**: `feat/webgui-refresh-discord-catalog` → `main` (squash-merged as `3d56375`)
+  - **Status**: Merged 2026-11-08, 12/12 checks green, 0 unresolved review threads, 469 tests passing. Image rebuilt and deployed to `serv2`; container healthy.
+  - **Feature 1**: "Refresh Channels & Roles" button on `/admin/reaction-roles` bypassing the 120s catalog TTL, with strict-mode fetching so a failed live fetch is never reported as a successful refresh.
   - **Feature 2**: Reaction-role shortcode support (`:thumbsup:` → 👍) with pre-post emoji validation, and per-row forms so Save/Activate/Pause/Delete actually submit.
-  - **Action**: Awaiting review and merge; then Docker build + deploy to `serv2`.
+  - **Feature 3**: Catalog timestamp lookup skipped when the catalog fails, removing a redundant 20s fetch from failed page loads.
 - [ ] **Branch `feat/freshdesk-discord-thread-sync`**
   - **Status**: Local commit `75d16ed` (463 tests passing, S1 authorization gates, S2 private notes, S3 HTML escaping).
   - **Action**: Pending review / PR push.
@@ -28,9 +29,10 @@ This document tracks active development branches, open pull requests, pending fe
 ## 🔄 Pending Enhancements & Backlog
 
 ### 1. Web GUI & Reaction Roles
-- [ ] Push and merge `feat/webgui-refresh-discord-catalog` to `main`.
-- [ ] Build new Docker image tag (`glinet_discord_bot_v1.10.XX`) and deploy to `serv2`.
-- [ ] Verify live Reaction Role Message Composer and the catalog refresh button on `https://glinet.wickedyoda.com/admin/reaction-roles`.
+- [x] Merged `feat/webgui-refresh-discord-catalog` to `main` (`3d56375`).
+- [x] Rebuilt the image and deployed to `serv2` — container healthy, all new code markers verified in the running image.
+- [x] Live GitHub Wiki updated (`0b4a192`).
+- [ ] Verify the Reaction Role Message Composer and the catalog refresh button against the live site at `https://glinet.wickedyoda.com/admin/reaction-roles`.
 
 ### 2. Freshdesk Integration Hardening (Backlog S4–S7)
 - [ ] **S4 — Rate Limiting & 429 Handling**: Add per-(thread, user) cooldown for Discord-to-Freshdesk message relay; catch `FreshdeskRateLimitError` gracefully without stack traces, and honor `Retry-After`.
