@@ -59,7 +59,14 @@ from app.discourse_announcements import (
     mark_announcement_topic_posted,
     parse_announcement_topics,
 )
-from app.discourse_api import DiscourseApiError, DiscourseRateLimitError, search_discourse_topics
+from app.discourse_api import (
+    DiscourseApiError,
+    DiscourseRateLimitError,
+    clean_discourse_text,
+    fetch_discourse_tag_topics,
+    fetch_discourse_topic,
+    search_discourse_topics,
+)
 from app.discourse_integration import (
     DISCOURSE_DEFAULT_FEATURES,
     DISCOURSE_FEATURE_SEARCH,
@@ -71,6 +78,7 @@ from app.forum_monitor import (
     FORUM_MONITOR_CATEGORIES,
     search_forum,
 )
+from app.forum_tag_web_callbacks import ForumTagWebCallbacks
 from app.freshdesk_api import (
     FreshdeskApiError,
     FreshdeskRateLimitError,
@@ -240,6 +248,13 @@ REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
+DEFAULT_FORUM_TAG_CHECK_SCHEDULE = "*/30 * * * *"
+FORUM_TAG_FETCH_LIMIT = 10
+FORUM_TAG_REQUEST_TIMEOUT_SECONDS = 20
+FORUM_TAG_SEEN_POST_RETENTION_LIMIT = 500
+FORUM_TAG_MAX_POSTS_PER_RUN = 5
+FORUM_TAG_POST_MAX_CHARS = 1500
+DISCOURSE_USER_AGENT = "GLiNetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
 LINKEDIN_REQUEST_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -830,6 +845,9 @@ REDDIT_FEED_NOTIFY_ENABLED = is_truthy_env_value(
 )
 REDDIT_FEED_CHECK_SCHEDULE = (
     str(os.getenv("REDDIT_FEED_CHECK_SCHEDULE", DEFAULT_REDDIT_FEED_CHECK_SCHEDULE)).strip() or DEFAULT_REDDIT_FEED_CHECK_SCHEDULE
+)
+FORUM_TAG_CHECK_SCHEDULE = (
+    str(os.getenv("FORUM_TAG_CHECK_SCHEDULE", DEFAULT_FORUM_TAG_CHECK_SCHEDULE)).strip() or DEFAULT_FORUM_TAG_CHECK_SCHEDULE
 )
 DOCS_MAX_RESULTS_PER_SITE = int(os.getenv("DOCS_MAX_RESULTS_PER_SITE", "2"))
 DOCS_INDEX_TTL_SECONDS = int(os.getenv("DOCS_INDEX_TTL_SECONDS", "3600"))
@@ -1584,6 +1602,7 @@ service_monitor_task = None
 uptime_status_monitor_task = None
 member_activity_backfill_task = None
 feed_web_callbacks = None
+forum_tag_web_callbacks = None
 role_access_web_callbacks = None
 reaction_roles_web_callbacks = None
 web_admin_thread = None
@@ -2050,6 +2069,30 @@ def ensure_db_schema():
                 payload BLOB NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS forum_tag_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                tag TEXT NOT NULL,
+                channel_id INTEGER NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                created_by_email TEXT NOT NULL DEFAULT '',
+                updated_by_email TEXT NOT NULL DEFAULT '',
+                last_checked_at TEXT NOT NULL DEFAULT '',
+                last_posted_at TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                UNIQUE(guild_id, tag)
+            );
+
+            CREATE TABLE IF NOT EXISTS forum_tag_seen_posts (
+                subscription_id INTEGER NOT NULL,
+                topic_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(subscription_id, topic_id),
+                FOREIGN KEY(subscription_id) REFERENCES forum_tag_subscriptions(id) ON DELETE CASCADE
+            );
+
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
             CREATE INDEX IF NOT EXISTS idx_honeypot_channels_guild_id
                 ON honeypot_channels(guild_id);
@@ -2069,6 +2112,12 @@ def ensure_db_schema():
                 ON linkedin_subscriptions(enabled);
             CREATE INDEX IF NOT EXISTS idx_beta_program_subscriptions_enabled
                 ON beta_program_subscriptions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_forum_tag_subscriptions_guild_id
+                ON forum_tag_subscriptions(guild_id);
+            CREATE INDEX IF NOT EXISTS idx_forum_tag_subscriptions_enabled
+                ON forum_tag_subscriptions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_forum_tag_seen_posts_subscription_id
+                ON forum_tag_seen_posts(subscription_id);
             CREATE TABLE IF NOT EXISTS irc_bridge_servers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL DEFAULT 0,
@@ -4121,6 +4170,269 @@ def delete_reddit_feed_subscription(feed_id: int):
             (int(feed_id),),
         )
     return cursor.rowcount > 0
+
+
+def normalize_forum_tag_name(raw_value) -> str:
+    """Normalize a Discourse tag for storage and comparison.
+
+    Discourse tag names are case-insensitive and cannot contain whitespace, but
+    admins type them into a form, so accept the common spellings: strip surrounding
+    whitespace, drop a leading ``#``, collapse internal whitespace to ``-`` and
+    casefold. Returns ``""`` when nothing usable remains.
+    """
+    text = str(raw_value or "").strip().lstrip("#").strip()
+    if not text:
+        return ""
+    text = "-".join(text.split())
+    return text.casefold()
+
+
+def list_forum_tag_subscriptions(enabled_only: bool = False, guild_id: int | None = None):
+    query = (
+        "SELECT id, guild_id, tag, channel_id, enabled, created_at, updated_at, "
+        "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error "
+        "FROM forum_tag_subscriptions"
+    )
+    where_clauses = []
+    params = []
+    if guild_id is not None:
+        where_clauses.append("guild_id = ?")
+        params.append(normalize_target_guild_id(guild_id))
+    if enabled_only:
+        where_clauses.append("enabled = 1")
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+    query += " ORDER BY tag COLLATE NOCASE ASC, channel_id ASC, id ASC"
+    with with_db() as conn:
+        rows = conn.execute(query, tuple(params)).fetchall()
+    subscriptions = []
+    for row in rows:
+        subscriptions.append(
+            {
+                "id": int(row["id"]),
+                "guild_id": int(row["guild_id"] or 0),
+                "tag": str(row["tag"] or ""),
+                "channel_id": int(row["channel_id"] or 0),
+                "enabled": bool(row["enabled"]),
+                "created_at": str(row["created_at"] or ""),
+                "updated_at": str(row["updated_at"] or ""),
+                "created_by_email": str(row["created_by_email"] or ""),
+                "updated_by_email": str(row["updated_by_email"] or ""),
+                "last_checked_at": str(row["last_checked_at"] or ""),
+                "last_posted_at": str(row["last_posted_at"] or ""),
+                "last_error": str(row["last_error"] or ""),
+            }
+        )
+    return subscriptions
+
+
+def get_forum_tag_subscription(subscription_id: int, guild_id: int | str | None = None):
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    with with_db() as conn:
+        query = (
+            "SELECT id, guild_id, tag, channel_id, enabled, created_at, updated_at, "
+            "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error "
+            "FROM forum_tag_subscriptions WHERE id = ?"
+        )
+        params = [int(subscription_id)]
+        if safe_guild_id is not None:
+            query += " AND guild_id = ?"
+            params.append(safe_guild_id)
+        row = conn.execute(query, tuple(params)).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": int(row["id"]),
+        "guild_id": int(row["guild_id"] or 0),
+        "tag": str(row["tag"] or ""),
+        "channel_id": int(row["channel_id"] or 0),
+        "enabled": bool(row["enabled"]),
+        "created_at": str(row["created_at"] or ""),
+        "updated_at": str(row["updated_at"] or ""),
+        "created_by_email": str(row["created_by_email"] or ""),
+        "updated_by_email": str(row["updated_by_email"] or ""),
+        "last_checked_at": str(row["last_checked_at"] or ""),
+        "last_posted_at": str(row["last_posted_at"] or ""),
+        "last_error": str(row["last_error"] or ""),
+    }
+
+
+def create_forum_tag_subscription(guild_id: int, tag: str, channel_id: int, actor_email: str):
+    cleaned_tag = normalize_forum_tag_name(tag)
+    if not cleaned_tag:
+        raise ValueError("Enter a valid forum tag.")
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_channel_id = int(channel_id)
+    if safe_channel_id <= 0:
+        raise ValueError("Choose a valid Discord channel.")
+    now_iso = datetime.now(UTC).isoformat()
+    with with_db(commit=True) as conn:
+        conn.execute(
+            """
+            INSERT INTO forum_tag_subscriptions (
+                guild_id, tag, channel_id, enabled, created_at, updated_at,
+                created_by_email, updated_by_email
+            )
+            VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+            """,
+            (
+                safe_guild_id,
+                cleaned_tag,
+                safe_channel_id,
+                now_iso,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                str(actor_email or "").strip().lower(),
+            ),
+        )
+
+
+def update_forum_tag_subscription(subscription_id: int, guild_id: int, tag: str, channel_id: int, actor_email: str):
+    cleaned_tag = normalize_forum_tag_name(tag)
+    if not cleaned_tag:
+        raise ValueError("Enter a valid forum tag.")
+    safe_guild_id = normalize_target_guild_id(guild_id)
+    safe_channel_id = int(channel_id)
+    if safe_channel_id <= 0:
+        raise ValueError("Choose a valid Discord channel.")
+    now_iso = datetime.now(UTC).isoformat()
+    with with_db(commit=True) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE forum_tag_subscriptions
+            SET tag = ?, channel_id = ?, enabled = 1, updated_at = ?, updated_by_email = ?,
+                last_checked_at = '', last_posted_at = '', last_error = ''
+            WHERE id = ? AND guild_id = ?
+            """,
+            (
+                cleaned_tag,
+                safe_channel_id,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                int(subscription_id),
+                safe_guild_id,
+            ),
+        )
+        if cursor.rowcount <= 0:
+            conn.rollback()
+            return False
+        conn.execute(
+            "DELETE FROM forum_tag_seen_posts WHERE subscription_id = ?",
+            (int(subscription_id),),
+        )
+    return True
+
+
+def set_forum_tag_subscription_enabled(subscription_id: int, enabled: bool, actor_email: str):
+    now_iso = datetime.now(UTC).isoformat()
+    with with_db(commit=True) as conn:
+        cursor = conn.execute(
+            """
+            UPDATE forum_tag_subscriptions
+            SET enabled = ?, updated_at = ?, updated_by_email = ?, last_error = ''
+            WHERE id = ?
+            """,
+            (
+                1 if enabled else 0,
+                now_iso,
+                str(actor_email or "").strip().lower(),
+                int(subscription_id),
+            ),
+        )
+    return cursor.rowcount > 0
+
+
+def delete_forum_tag_subscription(subscription_id: int):
+    with with_db(commit=True) as conn:
+        cursor = conn.execute(
+            "DELETE FROM forum_tag_subscriptions WHERE id = ?",
+            (int(subscription_id),),
+        )
+    return cursor.rowcount > 0
+
+
+def load_forum_tag_seen_topic_ids(subscription_id: int):
+    with with_db() as conn:
+        rows = conn.execute(
+            "SELECT topic_id FROM forum_tag_seen_posts WHERE subscription_id = ?",
+            (int(subscription_id),),
+        ).fetchall()
+    return {int(row["topic_id"]) for row in rows if row["topic_id"] is not None}
+
+
+def merge_forum_tag_seen_topic_ids(subscription_id: int, topic_ids):
+    normalized_ids = []
+    seen = set()
+    for raw_topic_id in topic_ids or []:
+        try:
+            topic_id = int(raw_topic_id)
+        except (TypeError, ValueError):
+            continue
+        if topic_id <= 0 or topic_id in seen:
+            continue
+        seen.add(topic_id)
+        normalized_ids.append(topic_id)
+    if not normalized_ids:
+        return
+
+    now_iso = datetime.now(UTC).isoformat()
+    with with_db(commit=True) as conn:
+        for topic_id in normalized_ids:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO forum_tag_seen_posts (subscription_id, topic_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (int(subscription_id), topic_id, now_iso),
+            )
+        conn.execute(
+            """
+            DELETE FROM forum_tag_seen_posts
+            WHERE subscription_id = ?
+              AND rowid NOT IN (
+                SELECT rowid
+                FROM forum_tag_seen_posts
+                WHERE subscription_id = ?
+                ORDER BY created_at DESC, topic_id DESC
+                LIMIT ?
+              )
+            """,
+            (
+                int(subscription_id),
+                int(subscription_id),
+                FORUM_TAG_SEEN_POST_RETENTION_LIMIT,
+            ),
+        )
+
+
+def update_forum_tag_runtime_status(
+    subscription_id: int,
+    *,
+    last_checked_at: str = "",
+    last_posted_at: str = "",
+    last_error: str = "",
+):
+    now_iso = datetime.now(UTC).isoformat()
+    with with_db(commit=True) as conn:
+        conn.execute(
+            """
+            UPDATE forum_tag_subscriptions
+            SET updated_at = ?,
+                last_checked_at = CASE WHEN ? != '' THEN ? ELSE last_checked_at END,
+                last_posted_at = CASE WHEN ? != '' THEN ? ELSE last_posted_at END,
+                last_error = ?
+            WHERE id = ?
+            """,
+            (
+                now_iso,
+                str(last_checked_at or "").strip(),
+                str(last_checked_at or "").strip(),
+                str(last_posted_at or "").strip(),
+                str(last_posted_at or "").strip(),
+                str(last_error or "").strip(),
+                int(subscription_id),
+            ),
+        )
 
 
 def get_reddit_auto_respond_rule(rule_id: int, guild_id: int | str | None = None):
@@ -6625,6 +6937,7 @@ def run_web_save_guild_settings(payload: dict, actor_email: str, guild_id: int |
         schedule_linkedin_monitor_restart()
         schedule_beta_program_monitor_restart()
         schedule_forum_announcement_monitor_restart()
+        schedule_forum_tag_monitor_restart()
         return {
             **build_guild_settings_web_payload(safe_guild_id),
             "message": "Guild settings updated.",
@@ -9546,6 +9859,26 @@ def get_feed_web_callbacks():
     return feed_web_callbacks
 
 
+def get_forum_tag_web_callbacks():
+    global forum_tag_web_callbacks
+    if forum_tag_web_callbacks is None:
+        forum_tag_web_callbacks = ForumTagWebCallbacks(
+            normalize_target_guild_id=normalize_target_guild_id,
+            normalize_forum_tag_name=normalize_forum_tag_name,
+            list_forum_tag_subscriptions=list_forum_tag_subscriptions,
+            get_forum_tag_subscription=get_forum_tag_subscription,
+            create_forum_tag_subscription=create_forum_tag_subscription,
+            update_forum_tag_subscription=update_forum_tag_subscription,
+            set_forum_tag_subscription_enabled=set_forum_tag_subscription_enabled,
+            delete_forum_tag_subscription=delete_forum_tag_subscription,
+            record_action_safe=record_action_safe,
+            build_web_actor_audit_label=build_web_actor_audit_label,
+            truncate_log_text=truncate_log_text,
+            logger=logger,
+        )
+    return forum_tag_web_callbacks
+
+
 def get_role_access_web_callbacks():
     global role_access_web_callbacks
     if role_access_web_callbacks is None:
@@ -11026,6 +11359,269 @@ def schedule_reddit_feed_monitor_restart():
     loop.call_soon_threadsafe(restart_reddit_feed_monitor_task)
 
 
+# ---------------------------------------------------------------------------
+# Forum tag cross-post monitor
+# ---------------------------------------------------------------------------
+
+
+async def resolve_forum_tag_channel(channel_id: int):
+    """Resolve a Discord target channel for a forum tag subscription."""
+    if int(channel_id or 0) <= 0:
+        return None, "channel_id_not_configured"
+
+    channel = bot.get_channel(int(channel_id))
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(int(channel_id))
+        except discord.NotFound:
+            return None, "channel_not_found"
+        except discord.Forbidden:
+            return None, "channel_access_forbidden"
+        except discord.HTTPException:
+            logger.exception("Failed to fetch forum tag channel %s", channel_id)
+            return None, "channel_fetch_http_error"
+
+    if isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return channel, ""
+    return None, "channel_not_text"
+
+
+def format_forum_tag_post_message(tag: str, topic: dict) -> str:
+    """Build the Discord message for a forum topic matched by tag.
+
+    The forum post body is the message body, with a link back to the original
+    topic -- that is the whole point of the cross-post, so neither is optional.
+    """
+    title = str(topic.get("title") or "Untitled topic").strip() or "Untitled topic"
+    url = str(topic.get("url") or "").strip()
+    author = str(topic.get("author") or "unknown").strip() or "unknown"
+    body = clean_discourse_text(str(topic.get("body") or "")).strip()
+
+    lines = [f"**New forum post tagged `#{tag}`**", f"**{title}**"]
+    if body:
+        lines.append(body)
+    lines.append(f"Posted by `{author}`")
+    if url:
+        lines.append(f"Read the full post: {url}")
+
+    return trim_discord_message("\n".join(lines))
+
+
+async def process_forum_tag_subscription(subscription: dict):
+    subscription_id = int(subscription.get("id") or 0)
+    guild_id = int(subscription.get("guild_id") or 0)
+    tag = normalize_forum_tag_name(subscription.get("tag"))
+    channel_id = int(subscription.get("channel_id") or 0)
+    checked_at = datetime.now(UTC).isoformat()
+    if subscription_id <= 0 or guild_id <= 0 or not tag or channel_id <= 0:
+        return
+    if not is_managed_guild_id(guild_id):
+        return
+    if not FORUM_API_KEY:
+        update_forum_tag_runtime_status(subscription_id, last_error="Forum API key is not configured.")
+        return
+
+    config = resolve_discourse_forum_settings(guild_id)
+    try:
+        topics = await asyncio.to_thread(
+            fetch_discourse_tag_topics,
+            base_url=config["base_url"],
+            tag=tag,
+            max_results=FORUM_TAG_FETCH_LIMIT,
+            source_name="Discourse tag feed",
+            timeout_seconds=config["timeout_seconds"],
+            user_agent=DISCOURSE_USER_AGENT,
+            api_key=config["api_key"],
+            api_username=config["api_username"],
+        )
+    except DiscourseRateLimitError:
+        update_forum_tag_runtime_status(
+            subscription_id,
+            last_checked_at=checked_at,
+            last_error="Forum is rate limiting requests.",
+        )
+        logger.warning("Forum tag %s check was rate limited (subscription %s)", tag, subscription_id)
+        return
+    except DiscourseApiError as exc:
+        update_forum_tag_runtime_status(
+            subscription_id,
+            last_checked_at=checked_at,
+            last_error=str(exc),
+        )
+        logger.warning("Forum tag %s check failed (subscription %s): %s", tag, subscription_id, exc)
+        return
+    except Exception:
+        update_forum_tag_runtime_status(
+            subscription_id,
+            last_checked_at=checked_at,
+            last_error="Unexpected forum request error.",
+        )
+        logger.exception("Unexpected forum tag check failure for %s", tag)
+        return
+
+    current_topic_ids = [int(topic.get("id") or 0) for topic in topics if topic.get("id")]
+    seen_topic_ids = load_forum_tag_seen_topic_ids(subscription_id)
+    if not seen_topic_ids:
+        # First run: record the baseline and stay quiet, otherwise every existing
+        # topic in the tag would be cross-posted at once.
+        merge_forum_tag_seen_topic_ids(subscription_id, current_topic_ids)
+        update_forum_tag_runtime_status(subscription_id, last_checked_at=checked_at, last_error="")
+        logger.info(
+            "Forum tag baseline initialized for #%s -> channel %s with %d topics",
+            tag,
+            channel_id,
+            len(current_topic_ids),
+        )
+        return
+
+    new_topics = [topic for topic in topics if int(topic.get("id") or 0) not in seen_topic_ids]
+    if not new_topics:
+        merge_forum_tag_seen_topic_ids(subscription_id, current_topic_ids)
+        update_forum_tag_runtime_status(subscription_id, last_checked_at=checked_at, last_error="")
+        return
+
+    channel, channel_error = await resolve_forum_tag_channel(channel_id)
+    if channel is None:
+        error_messages = {
+            "channel_id_not_configured": "Target channel is not configured.",
+            "channel_not_found": "Target channel was not found.",
+            "channel_access_forbidden": "Bot cannot access the target channel.",
+            "channel_fetch_http_error": "Discord API error while loading target channel.",
+            "channel_not_text": "Target channel is not a text channel.",
+        }
+        error_text = error_messages.get(channel_error, "Target channel is unavailable.")
+        update_forum_tag_runtime_status(
+            subscription_id,
+            last_checked_at=checked_at,
+            last_error=error_text,
+        )
+        logger.warning(
+            "Forum tag cross-post paused for #%s (subscription %s): %s",
+            tag,
+            subscription_id,
+            error_text,
+        )
+        return
+
+    posted_ids = []
+    try:
+        for topic in new_topics[:FORUM_TAG_MAX_POSTS_PER_RUN]:
+            topic_id = int(topic.get("id") or 0)
+            # Fetch the topic body only when we are actually going to post it.
+            enriched = await asyncio.to_thread(
+                fetch_discourse_topic,
+                base_url=config["base_url"],
+                topic_id=topic_id,
+                timeout_seconds=config["timeout_seconds"],
+                user_agent=DISCOURSE_USER_AGENT,
+                api_key=config["api_key"],
+                api_username=config["api_username"],
+            )
+            posts = enriched.get("posts") or []
+            body_text = str(posts[0].get("text") or "") if posts else ""
+            await channel.send(
+                format_forum_tag_post_message(
+                    tag,
+                    {
+                        "id": topic_id,
+                        "title": topic.get("title") or enriched.get("title") or "",
+                        "url": topic.get("url") or enriched.get("url") or "",
+                        "author": topic.get("author") or (posts[0].get("username") if posts else "") or "",
+                        "body": body_text,
+                    },
+                )
+            )
+            posted_ids.append(topic_id)
+    except discord.Forbidden:
+        merge_forum_tag_seen_topic_ids(subscription_id, [i for i in current_topic_ids if i not in posted_ids])
+        update_forum_tag_runtime_status(
+            subscription_id,
+            last_checked_at=checked_at,
+            last_error="Bot lacks permission to post in the target channel.",
+        )
+        logger.warning("Forum tag cross-post failed for #%s: missing Discord permission", tag)
+        return
+    except (DiscourseApiError, DiscourseRateLimitError) as exc:
+        merge_forum_tag_seen_topic_ids(subscription_id, [i for i in current_topic_ids if i not in posted_ids])
+        update_forum_tag_runtime_status(
+            subscription_id,
+            last_checked_at=checked_at,
+            last_error=f"Could not load the forum post: {exc}",
+        )
+        logger.warning("Forum tag cross-post could not load topic body for #%s: %s", tag, exc)
+        return
+    except Exception:
+        merge_forum_tag_seen_topic_ids(subscription_id, [i for i in current_topic_ids if i not in posted_ids])
+        update_forum_tag_runtime_status(
+            subscription_id,
+            last_checked_at=checked_at,
+            last_error="Unexpected forum cross-post error.",
+        )
+        logger.exception("Unexpected forum tag cross-post failure for #%s", tag)
+        return
+
+    merge_forum_tag_seen_topic_ids(subscription_id, current_topic_ids)
+    update_forum_tag_runtime_status(
+        subscription_id,
+        last_checked_at=checked_at,
+        last_posted_at=datetime.now(UTC).isoformat(),
+        last_error="",
+    )
+    logger.info(
+        "Cross-posted %d forum topic(s) for #%s to channel %s",
+        len(posted_ids),
+        tag,
+        channel_id,
+    )
+
+
+async def check_forum_tag_updates_once():
+    subscriptions = list_forum_tag_subscriptions(enabled_only=True)
+    if not subscriptions:
+        return
+    for subscription in subscriptions:
+        await process_forum_tag_subscription(subscription)
+
+
+forum_tag_monitor_task = None
+
+
+async def forum_tag_monitor_loop():
+    if not croniter.is_valid(FORUM_TAG_CHECK_SCHEDULE):
+        logger.error(
+            "Forum tag monitor disabled: invalid FORUM_TAG_CHECK_SCHEDULE '%s'",
+            FORUM_TAG_CHECK_SCHEDULE,
+        )
+        return
+
+    logger.info(
+        "Forum tag monitor active: checking subscriptions on cron '%s' (UTC)",
+        FORUM_TAG_CHECK_SCHEDULE,
+    )
+    await check_forum_tag_updates_once()
+
+    while not bot.is_closed():
+        now_utc = datetime.now(UTC)
+        next_run_utc = croniter(FORUM_TAG_CHECK_SCHEDULE, now_utc).get_next(datetime)
+        wait_seconds = max(1, int((next_run_utc - now_utc).total_seconds()))
+        await asyncio.sleep(wait_seconds)
+        await check_forum_tag_updates_once()
+
+
+def restart_forum_tag_monitor_task():
+    global forum_tag_monitor_task
+    if forum_tag_monitor_task is not None and not forum_tag_monitor_task.done():
+        forum_tag_monitor_task.cancel()
+    forum_tag_monitor_task = asyncio.create_task(forum_tag_monitor_loop(), name="forum_tag_monitor")
+
+
+def schedule_forum_tag_monitor_restart():
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return
+    loop.call_soon_threadsafe(restart_forum_tag_monitor_task)
+
+
 async def process_youtube_subscription(subscription: dict):
     subscription_id = int(subscription.get("id") or 0)
     guild_id = int(subscription.get("guild_id") or 0)
@@ -12137,6 +12733,7 @@ def refresh_runtime_settings_from_env(_updated_values=None):
     schedule_youtube_monitor_restart()
     schedule_linkedin_monitor_restart()
     schedule_beta_program_monitor_restart()
+    schedule_forum_tag_monitor_restart()
     schedule_service_monitor_restart()
     schedule_uptime_status_monitor_restart()
     logger.info("Runtime settings refreshed from environment")
@@ -12334,6 +12931,8 @@ def start_web_admin_server():
                     on_export_member_activity=run_web_export_member_activity,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
+                    on_get_forum_tags=get_forum_tag_web_callbacks().run_web_get_forum_tags,
+                    on_manage_forum_tags=get_forum_tag_web_callbacks().run_web_manage_forum_tags,
                     on_get_reddit_auto_responds=run_web_get_reddit_auto_responds,
                     on_manage_reddit_auto_responds=run_web_manage_reddit_auto_responds,
                     on_get_youtube_subscriptions=run_web_get_youtube_subscriptions,
@@ -13270,6 +13869,7 @@ async def on_ready():
     global beta_program_monitor_task
     global forum_announcement_task
     global forum_monitor_task
+    global forum_tag_monitor_task
     global service_monitor_task
     global uptime_status_monitor_task
     global member_activity_backfill_task
@@ -13315,6 +13915,8 @@ async def on_ready():
     if FORUM_API_KEY and FORUM_MONITOR_CATEGORIES and (forum_monitor_task is None or forum_monitor_task.done()):
         forum_monitor_task = asyncio.create_task(_forum_monitor_loop(), name="forum_monitor")
         logger.info("Forum monitor task scheduled")
+    if forum_tag_monitor_task is None or forum_tag_monitor_task.done():
+        forum_tag_monitor_task = asyncio.create_task(forum_tag_monitor_loop(), name="forum_tag_monitor")
     if service_monitor_task is None or service_monitor_task.done():
         service_monitor_task = asyncio.create_task(service_monitor_loop(), name="service_monitor")
     if uptime_status_monitor_task is None or uptime_status_monitor_task.done():

@@ -136,6 +136,41 @@ def search_discourse_topics(
     return extract_discourse_topics(data or {}, base_url=base_url, max_results=max_results)
 
 
+def fetch_discourse_tag_topics(
+    *,
+    base_url: str,
+    tag: str,
+    max_results: int,
+    source_name: str,
+    timeout_seconds: int,
+    user_agent: str,
+    api_key: str = "",
+    api_username: str = "",
+) -> list[dict]:
+    """Fetch the latest topics carrying a given tag.
+
+    Uses ``/tag/{tag}/l/latest.json`` rather than search so results are ordered by
+    activity the way the forum presents them, and so a tag with no search-index
+    entry still resolves.
+    """
+    cleaned_tag = str(tag or "").strip().lstrip("#")
+    if not cleaned_tag:
+        raise DiscourseApiError("A forum tag is required.")
+
+    response = requests.get(
+        f"{base_url.rstrip('/')}/tag/{cleaned_tag}/l/latest.json",
+        params={"order": "created", "ascending": "false"},
+        timeout=timeout_seconds,
+        headers=build_discourse_headers(user_agent=user_agent, api_key=api_key, api_username=api_username),
+    )
+    _raise_for_discourse_status(response, source_name, query=f"tag:{cleaned_tag}")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise DiscourseApiError(f"{source_name} returned invalid JSON.") from exc
+    return extract_discourse_topics(data or {}, base_url=base_url, max_results=max_results)
+
+
 def fetch_discourse_categories(
     *,
     base_url: str,

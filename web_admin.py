@@ -59,6 +59,7 @@ from app.web_discourse import (
     render_discourse_body,
 )
 from app.web_discourse_routes import register_discourse_viewer_blueprint
+from app.web_forum_tags import process_forum_tags_submission, render_forum_tags_body
 from app.web_freshdesk_routes import register_freshdesk_viewer_blueprint
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_honeypot import process_honeypot_submission, render_honeypot_body
@@ -3064,6 +3065,7 @@ def _render_layout(
                 <option value="{{ url_for('dashboard') }}">Dashboard</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('documentation') }}">Documentation</option>
+                <option value="{{ url_for('forum_tags') }}">Forum Tag Cross-Posts</option>
                 <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
                 <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
                 {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
@@ -3186,6 +3188,7 @@ def _render_layout(
                 <option value="{{ url_for('dashboard') }}">Dashboard</option>
                 <option value="{{ url_for('discourse_page') }}">Discourse</option>
                 <option value="{{ url_for('documentation') }}">Documentation</option>
+                <option value="{{ url_for('forum_tags') }}">Forum Tag Cross-Posts</option>
                 <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
                 <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
                 {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
@@ -3338,6 +3341,8 @@ def create_web_app(
     on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
+    on_get_forum_tags=None,
+    on_manage_forum_tags=None,
     on_get_reddit_auto_responds=None,
     on_manage_reddit_auto_responds=None,
     on_get_youtube_subscriptions=None,
@@ -5086,6 +5091,12 @@ def create_web_app(
         ]
 
         feeds_monitors_cards = [
+            build_dashboard_card(
+                "Forum Tag Cross-Posts",
+                "Cross-post GL.iNet forum topics carrying a chosen tag into a Discord channel.",
+                url_for("forum_tags"),
+                "Open Forum Tags",
+            ),
             build_dashboard_card(
                 "Reddit Feeds",
                 "Map subreddit feeds to Discord channels and schedule automatic submission checks.",
@@ -9330,6 +9341,57 @@ def create_web_app(
         get_guild_settings=on_get_guild_settings,
     )
 
+    @app.route("/admin/forum-tags", methods=["GET", "POST"])
+    @login_required
+    def forum_tags():
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+
+        channel_options, _role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+
+        payload = (
+            on_get_forum_tags(selected_guild_id)
+            if callable(on_get_forum_tags)
+            else {"ok": False, "error": "Forum tag callbacks are not configured."}
+        )
+
+        if request.method == "POST":
+            response, messages = process_forum_tags_submission(
+                form=request.form,
+                on_manage_forum_tags=on_manage_forum_tags,
+                actor_email=user["email"],
+                selected_guild_id=selected_guild_id,
+            )
+            for message, category in messages:
+                flash(message, category)
+            if isinstance(response, dict):
+                payload = response
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = (
+                str(payload.get("error") or "Unable to load forum tag subscriptions.")
+                if isinstance(payload, dict)
+                else "Unable to load forum tag subscriptions."
+            )
+            body = (
+                f"<div class='card'><h2>Forum Tag Cross-Posts</h2>"
+                f"<p class='muted'>Could not load subscriptions: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Forum Tags", body, user["email"], bool(user.get("is_admin")))
+
+        body = render_forum_tags_body(
+            guild_name=guild_name,
+            subscriptions=payload.get("subscriptions", []) or [],
+            channel_options=channel_options,
+            render_select_input=_render_select_input,
+        )
+        return _render_page("Forum Tags", body, user["email"], bool(user.get("is_admin")))
+
     # Register Freshdesk Ticket Viewer blueprint (read-only, app/web_freshdesk_routes.py)
     def _on_get_freshdesk_env():
         env_vals = _load_effective_env_values(env_file, fallback_env_file)
@@ -10374,6 +10436,8 @@ def start_web_admin_interface(
     on_export_member_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
+    on_get_forum_tags=None,
+    on_manage_forum_tags=None,
     on_get_reddit_auto_responds=None,
     on_manage_reddit_auto_responds=None,
     on_get_youtube_subscriptions=None,
@@ -10425,6 +10489,8 @@ def start_web_admin_interface(
         on_export_member_activity=on_export_member_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
         on_manage_reddit_feeds=on_manage_reddit_feeds,
+        on_get_forum_tags=on_get_forum_tags,
+        on_manage_forum_tags=on_manage_forum_tags,
         on_get_youtube_subscriptions=on_get_youtube_subscriptions,
         on_manage_youtube_subscriptions=on_manage_youtube_subscriptions,
         on_get_linkedin_subscriptions=on_get_linkedin_subscriptions,
