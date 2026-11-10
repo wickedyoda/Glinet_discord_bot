@@ -10,6 +10,7 @@ from __future__ import annotations
 import sqlite3
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
 import pytest
 import test_web_admin
 
@@ -347,6 +348,7 @@ def test_new_topic_is_cross_posted_with_body_and_link(forum_db):
     bot.create_forum_tag_subscription(123, "kb", 999, "admin@example.com")
     subscription = bot.list_forum_tag_subscriptions(guild_id=123)[0]
     bot.merge_forum_tag_seen_topic_ids(subscription["id"], [11])
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
 
     channel = MagicMock()
     channel.send = AsyncMock()
@@ -560,3 +562,281 @@ def test_web_admin_forum_tags_page_reports_a_catalog_failure(tmp_path):
     response = client.get("/admin/forum-tags", base_url="https://docker.example:8443")
     assert response.status_code == 200
     assert "Storage is unavailable." in response.get_data(as_text=True)
+
+# ---------------------------------------------------------------------------
+# Regression tests for the PR review findings
+# ---------------------------------------------------------------------------
+
+
+def _run(coro):
+    import asyncio
+
+    return asyncio.run(coro)
+
+
+def _make_subscription(forum_db, guild_id=123, channel_id=999, tag="kb"):
+    bot.create_forum_tag_subscription(guild_id, tag, channel_id, "admin@example.com")
+    return bot.list_forum_tag_subscriptions(guild_id=guild_id)[0]
+
+
+def _config(**overrides):
+    base = {
+        "base_url": "https://forum.gl-inet.com",
+        "api_key": "key",
+        "api_username": "system",
+        "timeout_seconds": 15,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_cross_guild_channel_is_rejected():
+    """A channel id saved for one guild must not be able to post into another."""
+    other_guild = MagicMock()
+    other_guild.id = 999
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.guild = other_guild
+
+    with patch.object(bot, "bot") as fake_bot:
+        fake_bot.get_channel.return_value = channel
+        resolved, error = _run(bot.resolve_forum_tag_channel(999, guild_id=123))
+
+    assert resolved is None
+    assert error == "channel_wrong_guild"
+
+
+def test_matching_guild_channel_is_accepted():
+    guild = MagicMock()
+    guild.id = 123
+
+    channel = MagicMock(spec=discord.TextChannel)
+    channel.guild = guild
+
+    with patch.object(bot, "bot") as fake_bot:
+        fake_bot.get_channel.return_value = channel
+        resolved, error = _run(bot.resolve_forum_tag_channel(999, guild_id=123))
+
+    assert resolved is channel
+    assert error == ""
+
+
+def test_send_restricts_allowed_mentions(forum_db):
+    """Untrusted forum text must never be able to ping @everyone or a role."""
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=[
+            {"id": 12, "title": "T", "url": "https://forum.gl-inet.com/t/x/12", "author": "a", "excerpt": ""},
+        ]),
+        patch.object(bot, "fetch_discourse_topic", return_value={
+            "id": 12, "title": "T", "url": "https://forum.gl-inet.com/t/x/12",
+            "posts": [{"id": 1, "username": "a", "text": "@everyone look", "cooked": "<p>@everyone look</p>"}],
+        }),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    channel.send.assert_awaited_once()
+    mentions = channel.send.call_args.kwargs["allowed_mentions"]
+    assert mentions.everyone is False
+    assert mentions.roles is False
+    assert mentions.users is False
+
+
+def test_long_body_keeps_the_source_link():
+    message = bot.format_forum_tag_post_message(
+        "kb",
+        {
+            "title": "A very long topic",
+            "url": "https://forum.gl-inet.com/t/slug/12345",
+            "author": "someone",
+            "body": "Word " * 1200,
+        },
+    )
+    assert len(message) <= 1900
+    assert "https://forum.gl-inet.com/t/slug/12345" in message
+    assert "Posted by `someone`" in message
+
+
+def test_guild_level_api_key_is_sufficient(forum_db):
+    """A guild with its own discourse_api_key must work without the global key."""
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    with (
+        patch.object(bot, "FORUM_API_KEY", ""),
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config(api_key="guild-key")),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=[
+            {"id": 12, "title": "T", "url": "https://forum.gl-inet.com/t/x/12", "author": "a", "excerpt": ""},
+        ]),
+        patch.object(bot, "fetch_discourse_topic", return_value={
+            "id": 12, "title": "T", "url": "https://forum.gl-inet.com/t/x/12",
+            "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}],
+        }),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    channel.send.assert_awaited_once()
+    updated = bot.get_forum_tag_subscription(subscription["id"], guild_id=123)
+    assert updated["last_error"] == ""
+
+
+def test_empty_first_feed_still_baseline_initializes(forum_db):
+    """A tag with no topics yet must not swallow its first real topic."""
+    subscription = _make_subscription(forum_db)
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    # First poll: the tag has no topics at all.
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=[]),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    channel.send.assert_not_awaited()
+    assert bot.is_forum_tag_baseline_initialized(subscription["id"]) is True
+
+    # Second poll: the first topic appears and must be posted.
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=[
+            {"id": 21, "title": "First!", "url": "https://forum.gl-inet.com/t/x/21", "author": "a", "excerpt": ""},
+        ]),
+        patch.object(bot, "fetch_discourse_topic", return_value={
+            "id": 21, "title": "First!", "url": "https://forum.gl-inet.com/t/x/21",
+            "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}],
+        }),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    channel.send.assert_awaited_once()
+
+
+def test_topics_beyond_the_per_run_cap_are_not_marked_seen(forum_db):
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    topics = [
+        {"id": i, "title": f"T{i}", "url": f"https://forum.gl-inet.com/t/x/{i}", "author": "a", "excerpt": ""}
+        for i in range(100, 100 + bot.FORUM_TAG_MAX_POSTS_PER_RUN + 2)
+    ]
+
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=topics),
+        patch.object(bot, "fetch_discourse_topic", side_effect=lambda **kw: {
+            "id": kw["topic_id"], "title": "T", "url": "https://forum.gl-inet.com/t/x/1",
+            "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}],
+        }),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    assert channel.send.await_count == bot.FORUM_TAG_MAX_POSTS_PER_RUN
+
+    seen = bot.load_forum_tag_seen_topic_ids(subscription["id"])
+    assert len(seen) == bot.FORUM_TAG_MAX_POSTS_PER_RUN
+    assert 105 not in seen  # the topic past the cap stays pending
+
+
+def test_failed_topic_fetch_leaves_the_topic_retryable(forum_db):
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=[
+            {"id": 31, "title": "T", "url": "https://forum.gl-inet.com/t/x/31", "author": "a", "excerpt": ""},
+        ]),
+        patch.object(bot, "fetch_discourse_topic", side_effect=DiscourseApiError("boom")),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    channel.send.assert_not_awaited()
+    assert bot.load_forum_tag_seen_topic_ids(subscription["id"]) == set()
+    updated = bot.get_forum_tag_subscription(subscription["id"], guild_id=123)
+    assert "boom" in updated["last_error"]
+
+
+def test_toggle_form_submits_the_next_enabled_state():
+    from app.web_forum_tags import render_forum_tags_body
+
+    enabled_row = render_forum_tags_body(
+        guild_name="G",
+        subscriptions=[{"id": 1, "tag": "kb", "channel_id": 999, "enabled": True,
+                        "last_checked_at": "", "last_posted_at": "", "last_error": ""}],
+        channel_options=[{"id": "999", "name": "general", "type": "text"}],
+        render_select_input=lambda *a, **k: "",
+    )
+    assert 'name="enabled" value="0"' in enabled_row
+
+    disabled_row = render_forum_tags_body(
+        guild_name="G",
+        subscriptions=[{"id": 1, "tag": "kb", "channel_id": 999, "enabled": False,
+                        "last_checked_at": "", "last_posted_at": "", "last_error": ""}],
+        channel_options=[{"id": "999", "name": "general", "type": "text"}],
+        render_select_input=lambda *a, **k: "",
+    )
+    assert 'name="enabled" value="1"' in disabled_row
+
+
+def test_forum_tags_page_offers_only_text_channels(tmp_path):
+    from web_admin import create_web_app
+
+    app = create_web_app(
+        data_dir=str(tmp_path),
+        env_file_path=str(tmp_path / "e.env"),
+        tag_responses_file=str(tmp_path / "t.json"),
+        default_admin_email="admin@example.com",
+        default_admin_password="Ab!12xy",
+        on_get_guilds=lambda: {
+            "ok": True,
+            "guilds": [
+                {"id": "1234567890", "name": "Test Guild", "member_count": 1, "icon_url": "", "is_primary": True}
+            ],
+        },
+        on_get_discord_catalog=lambda guild_id: {
+            "ok": True,
+            "channels": [
+                {"id": "111", "name": "general", "type": "text", "position": 0},
+                {"id": "222", "name": "voice-lounge", "type": "voice", "position": 1},
+                {"id": "333", "name": "random", "type": "text", "position": 2},
+            ],
+            "roles": [],
+        },
+        on_get_forum_tags=lambda guild_id: {"ok": True, "subscriptions": []},
+    )
+
+    client = app.test_client()
+    _login_as(client, "admin@example.com", "Ab!12xy")
+    _select_guild(client)
+    html = client.get("/admin/forum-tags", base_url="https://docker.example:8443").get_data(as_text=True)
+
+    assert "general" in html
+    assert "random" in html
+    assert "voice-lounge" not in html

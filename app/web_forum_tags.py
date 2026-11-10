@@ -100,6 +100,7 @@ def render_forum_tags_body(
               <td>
                 <form method="post" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
                   <input type="hidden" name="subscription_id" value="{escape(subscription_id, quote=True)}" />
+                  <input type="hidden" name="enabled" value="{'0' if enabled else '1'}" />
                   <button class="btn" type="submit" name="action" value="toggle"
                           formaction="">{'Disable' if enabled else 'Enable'}</button>
                   <button class="btn danger" type="submit" name="action" value="delete">Delete</button>

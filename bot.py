@@ -254,6 +254,13 @@ FORUM_TAG_REQUEST_TIMEOUT_SECONDS = 20
 FORUM_TAG_SEEN_POST_RETENTION_LIMIT = 500
 FORUM_TAG_MAX_POSTS_PER_RUN = 5
 FORUM_TAG_POST_MAX_CHARS = 1500
+# Matches the default ceiling in trim_discord_message, so the body can be budgeted
+# against the same limit the assembler enforces.
+FORUM_TAG_MESSAGE_LIMIT = 1900
+# Forum text is untrusted: never let it ping @everyone, @here, or any role.
+FORUM_TAG_ALLOWED_MENTIONS = discord.AllowedMentions(
+    everyone=False, users=False, roles=False, replied_user=False
+)
 DISCOURSE_USER_AGENT = "GLiNetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
 # Discourse renders uploaded images as "image 400x300 31.7 KB" in the plain-text
 # field. That is meaningless in Discord, so drop it from the cross-post body.
@@ -2087,6 +2094,9 @@ def ensure_db_schema():
                 last_checked_at TEXT NOT NULL DEFAULT '',
                 last_posted_at TEXT NOT NULL DEFAULT '',
                 last_error TEXT NOT NULL DEFAULT '',
+                -- Separate from the seen-topic rows: an empty first feed must still
+                -- count as "baseline done", or the tag's first real topic is swallowed.
+                baseline_initialized INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(guild_id, tag)
             );
 
@@ -2200,6 +2210,15 @@ def ensure_db_schema():
                 ALTER TABLE tag_responses_new RENAME TO tag_responses;
                 CREATE INDEX IF NOT EXISTS idx_tag_responses_guild_id ON tag_responses(guild_id);
                 """
+            )
+
+        forum_tag_subscription_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(forum_tag_subscriptions)").fetchall()
+        }
+        if "baseline_initialized" not in forum_tag_subscription_columns:
+            conn.execute(
+                "ALTER TABLE forum_tag_subscriptions ADD COLUMN baseline_initialized INTEGER NOT NULL DEFAULT 0"
             )
 
         guild_settings_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
@@ -4195,7 +4214,8 @@ def normalize_forum_tag_name(raw_value) -> str:
 def list_forum_tag_subscriptions(enabled_only: bool = False, guild_id: int | None = None):
     query = (
         "SELECT id, guild_id, tag, channel_id, enabled, created_at, updated_at, "
-        "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error "
+        "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error, "
+        "baseline_initialized "
         "FROM forum_tag_subscriptions"
     )
     where_clauses = []
@@ -4226,6 +4246,7 @@ def list_forum_tag_subscriptions(enabled_only: bool = False, guild_id: int | Non
                 "last_checked_at": str(row["last_checked_at"] or ""),
                 "last_posted_at": str(row["last_posted_at"] or ""),
                 "last_error": str(row["last_error"] or ""),
+                "baseline_initialized": bool(row["baseline_initialized"]),
             }
         )
     return subscriptions
@@ -4236,7 +4257,8 @@ def get_forum_tag_subscription(subscription_id: int, guild_id: int | str | None 
     with with_db() as conn:
         query = (
             "SELECT id, guild_id, tag, channel_id, enabled, created_at, updated_at, "
-            "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error "
+            "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error, "
+            "baseline_initialized "
             "FROM forum_tag_subscriptions WHERE id = ?"
         )
         params = [int(subscription_id)]
@@ -4259,6 +4281,7 @@ def get_forum_tag_subscription(subscription_id: int, guild_id: int | str | None 
         "last_checked_at": str(row["last_checked_at"] or ""),
         "last_posted_at": str(row["last_posted_at"] or ""),
         "last_error": str(row["last_error"] or ""),
+        "baseline_initialized": bool(row["baseline_initialized"]),
     }
 
 
@@ -4407,6 +4430,23 @@ def merge_forum_tag_seen_topic_ids(subscription_id: int, topic_ids):
                 int(subscription_id),
                 FORUM_TAG_SEEN_POST_RETENTION_LIMIT,
             ),
+        )
+
+
+def is_forum_tag_baseline_initialized(subscription_id: int) -> bool:
+    with with_db() as conn:
+        row = conn.execute(
+            "SELECT baseline_initialized FROM forum_tag_subscriptions WHERE id = ?",
+            (int(subscription_id),),
+        ).fetchone()
+    return bool(row["baseline_initialized"]) if row is not None else False
+
+
+def mark_forum_tag_baseline_initialized(subscription_id: int):
+    with with_db(commit=True) as conn:
+        conn.execute(
+            "UPDATE forum_tag_subscriptions SET baseline_initialized = 1 WHERE id = ?",
+            (int(subscription_id),),
         )
 
 
@@ -11369,8 +11409,14 @@ def schedule_reddit_feed_monitor_restart():
 # ---------------------------------------------------------------------------
 
 
-async def resolve_forum_tag_channel(channel_id: int):
-    """Resolve a Discord target channel for a forum tag subscription."""
+async def resolve_forum_tag_channel(channel_id: int, guild_id: int | None = None):
+    """Resolve a Discord target channel for a forum tag subscription.
+
+    When *guild_id* is supplied the channel must belong to that guild. A channel
+    id saved for one guild must never be able to post into another -- including a
+    guild outside MANAGED_GUILD_IDS -- so the check is made here rather than
+    trusting the id that was stored.
+    """
     if int(channel_id or 0) <= 0:
         return None, "channel_id_not_configured"
 
@@ -11386,9 +11432,15 @@ async def resolve_forum_tag_channel(channel_id: int):
             logger.exception("Failed to fetch forum tag channel %s", channel_id)
             return None, "channel_fetch_http_error"
 
-    if isinstance(channel, (discord.TextChannel, discord.Thread)):
-        return channel, ""
-    return None, "channel_not_text"
+    if not isinstance(channel, (discord.TextChannel, discord.Thread)):
+        return None, "channel_not_text"
+
+    if guild_id is not None:
+        channel_guild_id = getattr(getattr(channel, "guild", None), "id", None)
+        if channel_guild_id is not None and int(channel_guild_id) != int(guild_id):
+            return None, "channel_wrong_guild"
+
+    return channel, ""
 
 
 def format_forum_tag_post_message(tag: str, topic: dict) -> str:
@@ -11404,14 +11456,27 @@ def format_forum_tag_post_message(tag: str, topic: dict) -> str:
     body = DISCOURSE_IMAGE_PLACEHOLDER.sub("", body).strip()
     body = " ".join(body.split())
 
-    lines = [f"**New forum post tagged `#{tag}`**", f"**{title}**"]
-    if body:
-        lines.append(body)
-    lines.append(f"Posted by `{author}`")
+    header = f"**New forum post tagged `#{tag}`**\n\n**{title}**"
+    footer_lines = [f"Posted by `{author}`"]
     if url:
-        lines.append(f"Read the full post: {url}")
+        footer_lines.append(f"Read the full post: {url}")
+    footer = "\n".join(footer_lines)
 
-    return trim_discord_message("\n".join(lines))
+    # Budget the body against the fixed header and footer so a long post can never
+    # push the attribution or the link back to the topic out of the message.
+    separator = "\n\n"
+    reserved = len(header) + len(footer) + (len(separator) * 2 if body else len(separator))
+    body_budget = max(0, FORUM_TAG_MESSAGE_LIMIT - reserved)
+    if len(body) > body_budget:
+        clipped = body[:body_budget].rsplit(" ", 1)[0].rstrip()
+        body = f"{clipped} ..." if clipped else body[:body_budget]
+
+    parts = [header]
+    if body:
+        parts.append(body)
+    parts.append(footer)
+
+    return trim_discord_message(separator.join(parts))
 
 
 async def process_forum_tag_subscription(subscription: dict):
@@ -11424,11 +11489,13 @@ async def process_forum_tag_subscription(subscription: dict):
         return
     if not is_managed_guild_id(guild_id):
         return
-    if not FORUM_API_KEY:
+
+    # Resolve the effective guild config first: a guild may carry its own
+    # discourse_api_key even when the global FORUM_API_KEY is unset.
+    config = resolve_discourse_forum_settings(guild_id)
+    if not config.get("api_key"):
         update_forum_tag_runtime_status(subscription_id, last_error="Forum API key is not configured.")
         return
-
-    config = resolve_discourse_forum_settings(guild_id)
     try:
         topics = await asyncio.to_thread(
             fetch_discourse_tag_topics,
@@ -11467,11 +11534,13 @@ async def process_forum_tag_subscription(subscription: dict):
         return
 
     current_topic_ids = [int(topic.get("id") or 0) for topic in topics if topic.get("id")]
-    seen_topic_ids = load_forum_tag_seen_topic_ids(subscription_id)
-    if not seen_topic_ids:
-        # First run: record the baseline and stay quiet, otherwise every existing
-        # topic in the tag would be cross-posted at once.
+
+    # The baseline is a separate flag, not "the seen set is empty": a successful
+    # first poll can legitimately return no topics, and an empty set would then
+    # swallow the tag's first real topic as if it were historical.
+    if not is_forum_tag_baseline_initialized(subscription_id):
         merge_forum_tag_seen_topic_ids(subscription_id, current_topic_ids)
+        mark_forum_tag_baseline_initialized(subscription_id)
         update_forum_tag_runtime_status(subscription_id, last_checked_at=checked_at, last_error="")
         logger.info(
             "Forum tag baseline initialized for #%s -> channel %s with %d topics",
@@ -11481,13 +11550,13 @@ async def process_forum_tag_subscription(subscription: dict):
         )
         return
 
+    seen_topic_ids = load_forum_tag_seen_topic_ids(subscription_id)
     new_topics = [topic for topic in topics if int(topic.get("id") or 0) not in seen_topic_ids]
     if not new_topics:
-        merge_forum_tag_seen_topic_ids(subscription_id, current_topic_ids)
         update_forum_tag_runtime_status(subscription_id, last_checked_at=checked_at, last_error="")
         return
 
-    channel, channel_error = await resolve_forum_tag_channel(channel_id)
+    channel, channel_error = await resolve_forum_tag_channel(channel_id, guild_id)
     if channel is None:
         error_messages = {
             "channel_id_not_configured": "Target channel is not configured.",
@@ -11495,6 +11564,7 @@ async def process_forum_tag_subscription(subscription: dict):
             "channel_access_forbidden": "Bot cannot access the target channel.",
             "channel_fetch_http_error": "Discord API error while loading target channel.",
             "channel_not_text": "Target channel is not a text channel.",
+            "channel_wrong_guild": "Target channel belongs to a different server.",
         }
         error_text = error_messages.get(channel_error, "Target channel is unavailable.")
         update_forum_tag_runtime_status(
@@ -11536,11 +11606,12 @@ async def process_forum_tag_subscription(subscription: dict):
                         "author": topic.get("author") or (posts[0].get("username") if posts else "") or "",
                         "body": body_text,
                     },
-                )
+                ),
+                allowed_mentions=FORUM_TAG_ALLOWED_MENTIONS,
             )
             posted_ids.append(topic_id)
     except discord.Forbidden:
-        merge_forum_tag_seen_topic_ids(subscription_id, [i for i in current_topic_ids if i not in posted_ids])
+        merge_forum_tag_seen_topic_ids(subscription_id, posted_ids)
         update_forum_tag_runtime_status(
             subscription_id,
             last_checked_at=checked_at,
@@ -11549,7 +11620,7 @@ async def process_forum_tag_subscription(subscription: dict):
         logger.warning("Forum tag cross-post failed for #%s: missing Discord permission", tag)
         return
     except (DiscourseApiError, DiscourseRateLimitError) as exc:
-        merge_forum_tag_seen_topic_ids(subscription_id, [i for i in current_topic_ids if i not in posted_ids])
+        merge_forum_tag_seen_topic_ids(subscription_id, posted_ids)
         update_forum_tag_runtime_status(
             subscription_id,
             last_checked_at=checked_at,
@@ -11558,7 +11629,7 @@ async def process_forum_tag_subscription(subscription: dict):
         logger.warning("Forum tag cross-post could not load topic body for #%s: %s", tag, exc)
         return
     except Exception:
-        merge_forum_tag_seen_topic_ids(subscription_id, [i for i in current_topic_ids if i not in posted_ids])
+        merge_forum_tag_seen_topic_ids(subscription_id, posted_ids)
         update_forum_tag_runtime_status(
             subscription_id,
             last_checked_at=checked_at,
@@ -11567,7 +11638,9 @@ async def process_forum_tag_subscription(subscription: dict):
         logger.exception("Unexpected forum tag cross-post failure for #%s", tag)
         return
 
-    merge_forum_tag_seen_topic_ids(subscription_id, current_topic_ids)
+    # Only topics actually delivered are marked seen. Topics beyond the per-run cap
+    # stay pending, and a topic whose body failed to load stays retryable.
+    merge_forum_tag_seen_topic_ids(subscription_id, posted_ids)
     update_forum_tag_runtime_status(
         subscription_id,
         last_checked_at=checked_at,

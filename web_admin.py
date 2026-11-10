@@ -9352,7 +9352,10 @@ def create_web_app(
         selected_guild_id = str(selected_guild.get("id") or "")
         guild_name = str(selected_guild.get("name") or "Unknown")
 
-        channel_options, _role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
+        channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id,
+            channel_type="text",
+        )
 
         payload = (
             on_get_forum_tags(selected_guild_id)
