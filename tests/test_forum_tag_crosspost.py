@@ -14,7 +14,7 @@ import pytest
 import test_web_admin
 
 import bot
-from app.discourse_api import DiscourseApiError, fetch_discourse_tag_topics
+from app.discourse_api import DiscourseApiError, extract_discourse_topics, fetch_discourse_tag_topics
 from app.forum_tag_web_callbacks import ForumTagWebCallbacks
 
 _login_as = test_web_admin._login_as
@@ -116,6 +116,61 @@ def test_fetch_discourse_tag_topics_uses_the_tag_endpoint():
     assert get.call_args.kwargs["headers"]["Api-Key"] == "key"
     assert topics[0]["id"] == 11
     assert topics[0]["url"].endswith("/t/a-topic/11")
+
+
+def test_extractor_reads_topics_nested_under_topic_list():
+    """The tag endpoint nests topics under topic_list, unlike the search endpoint."""
+    payload = {
+        "topic_list": {
+            "topics": [
+                {
+                    "id": 72161,
+                    "title": "Nested topic",
+                    "fancy_title": "Nested topic",
+                    "slug": "nested-topic",
+                    "category_id": 3,
+                    "posts_count": 2,
+                    "last_posted_at": "2026-01-01T00:00:00Z",
+                }
+            ]
+        }
+    }
+    topics = extract_discourse_topics(payload, base_url="https://forum.gl-inet.com", max_results=5)
+    assert len(topics) == 1
+    assert topics[0]["id"] == 72161
+    assert topics[0]["url"] == "https://forum.gl-inet.com/t/nested-topic/72161"
+
+
+def test_extractor_still_reads_a_top_level_topics_list():
+    payload = {
+        "topics": [
+            {
+                "id": 5,
+                "title": "Flat topic",
+                "slug": "flat-topic",
+                "category_id": 3,
+                "posts_count": 1,
+                "last_posted_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+    }
+    topics = extract_discourse_topics(payload, base_url="https://forum.gl-inet.com", max_results=5)
+    assert [t["id"] for t in topics] == [5]
+
+
+def test_message_strips_discourse_image_placeholders():
+    message = bot.format_forum_tag_post_message(
+        "kb",
+        {
+            "title": "Title",
+            "url": "https://forum.gl-inet.com/t/x/1",
+            "author": "a",
+            "body": "Before. image 400\u00d7300 31.7 KB image 700\u00d7700 54.4 KB After.",
+        },
+    )
+    assert "image 400" not in message
+    assert "31.7 KB" not in message
+    assert "Before. After." in message
 
 
 def test_fetch_discourse_tag_topics_rejects_a_blank_tag():

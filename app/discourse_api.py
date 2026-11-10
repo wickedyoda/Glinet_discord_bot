@@ -64,7 +64,11 @@ def _raise_for_discourse_status(response: requests.Response, source_name: str, q
 
 
 def extract_discourse_topics(payload: dict, *, base_url: str, max_results: int) -> list[dict]:
+    # The search endpoint returns topics at the top level; the tag endpoint nests
+    # them under topic_list. Accept both so the extractor is not endpoint-specific.
     topics = payload.get("topics", [])
+    if not topics and isinstance(payload.get("topic_list"), dict):
+        topics = payload["topic_list"].get("topics", [])
     if not isinstance(topics, list):
         topics = []
     category_lookup = {}

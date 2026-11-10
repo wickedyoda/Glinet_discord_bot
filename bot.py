@@ -255,6 +255,11 @@ FORUM_TAG_SEEN_POST_RETENTION_LIMIT = 500
 FORUM_TAG_MAX_POSTS_PER_RUN = 5
 FORUM_TAG_POST_MAX_CHARS = 1500
 DISCOURSE_USER_AGENT = "GLiNetDiscordBot/1.0 (+https://github.com/wickedyoda/Glinet_discord_bot)"
+# Discourse renders uploaded images as "image 400x300 31.7 KB" in the plain-text
+# field. That is meaningless in Discord, so drop it from the cross-post body.
+DISCOURSE_IMAGE_PLACEHOLDER = re.compile(
+    r"\bimage\s+\d+\s*[\u00d7x]\s*\d+\s+[\d.,]+\s*[KMGTP]?B\b", re.IGNORECASE
+)
 LINKEDIN_REQUEST_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -11396,6 +11401,8 @@ def format_forum_tag_post_message(tag: str, topic: dict) -> str:
     url = str(topic.get("url") or "").strip()
     author = str(topic.get("author") or "unknown").strip() or "unknown"
     body = clean_discourse_text(str(topic.get("body") or "")).strip()
+    body = DISCOURSE_IMAGE_PLACEHOLDER.sub("", body).strip()
+    body = " ".join(body.split())
 
     lines = [f"**New forum post tagged `#{tag}`**", f"**{title}**"]
     if body:
