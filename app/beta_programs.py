@@ -5,8 +5,14 @@ import re
 import urllib.parse
 import uuid
 
+# bs4 is imported lazily at each call site: it costs ~80ms and every user of
+# it is a scrape that runs on a schedule, never during startup.
+from typing import TYPE_CHECKING
+
 import requests
-from bs4 import BeautifulSoup
+
+if TYPE_CHECKING:  # annotations only; the runtime import is per call site
+    from bs4 import BeautifulSoup
 
 BETA_PROGRAM_HEADING_PATTERN = re.compile(r"\bbeta testing products\b", re.IGNORECASE)
 BETA_PROGRAM_STOP_HEADING_PATTERN = re.compile(r"\bregister to join\b", re.IGNORECASE)
@@ -159,6 +165,8 @@ def _extract_beta_programs_from_select_inputs(soup: BeautifulSoup, source_url: s
 
 
 def parse_beta_testing_programs(page_html: str, source_url: str):
+    from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(page_html, "html.parser")
     select_programs = _extract_beta_programs_from_select_inputs(soup, source_url)
     heading_tag = _find_beta_program_section_heading(soup)

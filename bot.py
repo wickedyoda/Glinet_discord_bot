@@ -30,7 +30,9 @@ from urllib.parse import urljoin
 import discord
 import requests
 import urllib3
-from bs4 import BeautifulSoup
+
+# bs4 is imported lazily at each call site: it costs ~80ms and every user of
+# it is a scrape that runs on a schedule, never during startup.
 from croniter import croniter
 from cryptography.fernet import Fernet, InvalidToken
 from defusedxml import ElementTree as ET
@@ -10775,6 +10777,8 @@ def save_firmware_state(seen_ids: set[str], signature_snapshot: dict[str, str], 
 
 
 def parse_firmware_entries(page_html: str):
+    from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(page_html, "lxml")
     sync_line = soup.select_one(".sync-line")
     sync_label = clean_search_text(sync_line.get_text(" ", strip=True)) if sync_line else ""
@@ -13420,6 +13424,8 @@ def fetch_reddit_search_posts_via_html(query: str):
         headers=request_headers,
     )
     response.raise_for_status()
+
+    from bs4 import BeautifulSoup
 
     soup = BeautifulSoup(response.text, "lxml")
     posts = []
