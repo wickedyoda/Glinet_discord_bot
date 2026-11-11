@@ -2429,7 +2429,7 @@ def test_account_page_renders_forgotten_password_form(tmp_path: Path):
     response = client.get("/admin/account", base_url="https://docker.example:8443")
     assert response.status_code == 200
     assert b'name="action" value="password_forgotten"' in response.data
-    assert b"Set New Password (Forgot Current Password)" in response.data
+    assert b"Recover Password (Forgot Current Password)" in response.data
 
 
 def test_admin_reset_rejects_users_previous_password(tmp_path: Path):
