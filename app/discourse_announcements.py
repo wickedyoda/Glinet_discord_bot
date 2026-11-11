@@ -4,8 +4,9 @@ import logging
 from datetime import UTC, datetime
 
 import requests
-from bs4 import BeautifulSoup
 
+# bs4 is imported lazily at the call site: it costs ~80ms and every user of it
+# is a scrape that runs on a schedule, never during startup.
 from app.discourse_api import (
     build_discourse_headers,
     clean_discourse_text,
@@ -86,6 +87,8 @@ def fetch_announcement_category_html(
 
 
 def parse_announcement_topics(page_html: str, source_url: str, max_results: int = 20) -> list[dict]:
+    from bs4 import BeautifulSoup
+
     soup = BeautifulSoup(page_html, "html.parser")
     results: list[dict] = []
     seen_topic_ids = set()

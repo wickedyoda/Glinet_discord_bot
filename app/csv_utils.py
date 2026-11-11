@@ -3,7 +3,10 @@ from __future__ import annotations
 import csv
 import io
 
-from openpyxl import load_workbook
+# openpyxl is imported lazily inside parse_xlsx_cells(): it drags in numpy and
+# Pillow (~360ms standalone), and xlsx parsing is rare enough that paying that on
+# every container start -- via app.member_activity importing build_csv_bytes --
+# is not worth it. Nothing else in this module needs it.
 
 _DANGEROUS_SPREADSHEET_PREFIXES = ("=", "+", "-", "@")
 
@@ -34,6 +37,8 @@ def parse_csv_cells(data: bytes) -> list[str]:
 
 def parse_xlsx_cells(data: bytes) -> list[str]:
     """Extract all non-empty cell values from an xlsx file."""
+    from openpyxl import load_workbook
+
     try:
         workbook = load_workbook(io.BytesIO(data), data_only=True, read_only=True)
         values: list[str] = []
