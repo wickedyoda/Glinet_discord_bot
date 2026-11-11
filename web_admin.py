@@ -4783,7 +4783,7 @@ def create_web_app(
             </script>
           </div>
           <div class="card">
-            <h2>Set New Password (Forgot Current Password)</h2>
+            <h2>Recover Password (Forgot Current Password)</h2>
             <p class="muted">
               Use this only if you cannot remember your current password. You are already signed in,
               so confirm your account email address to prove ownership. All other password rules still apply.
@@ -4811,7 +4811,7 @@ def create_web_app(
                 Show passwords
               </label>
               <div style="margin-top:14px;">
-                <button class="btn" type="submit">Set New Password</button>
+                <button class="btn" type="submit">Recover Password</button>
               </div>
             </form>
             <script>
