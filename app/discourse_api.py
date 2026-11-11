@@ -54,6 +54,13 @@ def build_discourse_headers(*, user_agent: str, api_key: str = "", api_username:
     return headers
 
 
+def _safe_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _raise_for_discourse_status(response: requests.Response, source_name: str, query: str = ""):
     status_code = int(getattr(response, "status_code", 0) or 0)
     if status_code == 429:
@@ -133,6 +140,39 @@ def search_discourse_topics(
         headers=build_discourse_headers(user_agent=user_agent, api_key=api_key, api_username=api_username),
     )
     _raise_for_discourse_status(response, source_name, query=query)
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise DiscourseApiError(f"{source_name} returned invalid JSON.") from exc
+    return extract_discourse_topics(data or {}, base_url=base_url, max_results=max_results)
+
+
+def fetch_discourse_category_topics(
+    *,
+    base_url: str,
+    category_slug: str,
+    max_results: int,
+    source_name: str,
+    timeout_seconds: int,
+    user_agent: str,
+    api_key: str = "",
+    api_username: str = "",
+) -> list[dict]:
+    """Fetch the latest topics in a category.
+
+    The bare ``/c/{slug}/l/latest.json`` form redirects to the id-qualified URL;
+    ``requests`` follows that automatically.
+    """
+    cleaned_slug = str(category_slug or "").strip().strip("/")
+    if not cleaned_slug:
+        raise DiscourseApiError("A forum category is required.")
+
+    response = requests.get(
+        f"{base_url.rstrip('/')}/c/{cleaned_slug}/l/latest.json",
+        timeout=timeout_seconds,
+        headers=build_discourse_headers(user_agent=user_agent, api_key=api_key, api_username=api_username),
+    )
+    _raise_for_discourse_status(response, source_name, query=f"category:{cleaned_slug}")
     try:
         data = response.json()
     except ValueError as exc:
@@ -257,6 +297,7 @@ def fetch_discourse_categories(
                 "id": int(category_id),
                 "name": clean_discourse_text(str(category.get("name") or "")).strip(),
                 "slug": slug,
+                "topic_count": _safe_int(category.get("topic_count")),
                 "url": urljoin(f"{base_url.rstrip('/')}/", f"c/{slug}/{category_id}" if slug else f"c/{category_id}"),
             }
         )

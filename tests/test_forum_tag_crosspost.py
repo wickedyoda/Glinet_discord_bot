@@ -18,6 +18,7 @@ import bot
 from app.discourse_api import (
     DiscourseApiError,
     extract_discourse_topics,
+    fetch_discourse_category_topics,
     fetch_discourse_tag_topics,
     fetch_discourse_tags,
 )
@@ -439,6 +440,7 @@ def _callbacks():
         list_forum_tag_subscriptions=lambda guild_id=None, enabled_only=False: [],
         get_forum_tag_subscription=lambda subscription_id, guild_id=None: None,
         fetch_forum_tag_options=lambda guild_id: {"ok": True, "tags": [], "error": ""},
+        fetch_forum_category_options=lambda guild_id: {"ok": True, "categories": [], "error": ""},
         create_forum_tag_subscription=MagicMock(),
         update_forum_tag_subscription=MagicMock(return_value=True),
         set_forum_tag_subscription_enabled=MagicMock(return_value=True),
@@ -476,7 +478,7 @@ def test_callback_add_normalises_the_tag_and_audits():
 
     assert result["ok"] is True
     callbacks.create_forum_tag_subscription.assert_called_once_with(
-        123, "kb", 999, "admin@example.com"
+        123, "kb", 999, "admin@example.com", feed_type="tag"
     )
     callbacks.record_action_safe.assert_called_once()
     assert callbacks.record_action_safe.call_args.kwargs["action"] == "forum_tag_add"
@@ -539,7 +541,14 @@ def test_web_admin_forum_tags_page_renders_and_adds_a_subscription(tmp_path):
         follow_redirects=True,
     )
     assert response.status_code == 200
-    assert created == [{"action": "add", "tag": "#KB", "channel_id": "999", "subscription_id": "", "enabled": ""}]
+    assert created == [{
+        "action": "add",
+        "tag": "#KB",
+        "feed_type": "tag",
+        "channel_id": "999",
+        "subscription_id": "",
+        "enabled": "",
+    }]
 
 
 def test_web_admin_forum_tags_page_reports_a_catalog_failure(tmp_path):
@@ -922,9 +931,10 @@ def test_page_offers_a_dropdown_of_real_tags():
         ],
     )
 
-    assert '<select name="tag">' in html
-    assert '<option value="kb">KB (97 topics)</option>' in html
-    assert '<option value="featured">Featured (59 topics)</option>' in html
+    assert '<select name="feed"' in html
+    assert '<optgroup label="Tags">' in html
+    assert '<option value="tag:kb">KB (97 topics)</option>' in html
+    assert '<option value="tag:featured">Featured (59 topics)</option>' in html
     # the free-text fallback must not also be present
     assert 'name="tag" placeholder' not in html
 
@@ -979,5 +989,136 @@ def test_route_loads_the_live_tag_list(tmp_path):
     _select_guild(client)
     html = client.get("/admin/forum-tags", base_url="https://docker.example:8443").get_data(as_text=True)
 
-    assert "<select name='tag'>" in html
-    assert "KB (97 topics) (kb)" in html
+    assert '<select name="feed"' in html
+    assert '<optgroup label="Tags">' in html
+    assert "KB (97 topics)" in html
+
+# ---------------------------------------------------------------------------
+# Category feeds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("tag", "tag"), ("TAG", "tag"), ("category", "category"), ("Category", "category"),
+     ("", "tag"), (None, "tag"), ("nonsense", "tag")],
+)
+def test_normalize_forum_feed_type(raw, expected):
+    assert bot.normalize_forum_feed_type(raw) == expected
+
+
+def test_fetch_discourse_category_topics_reads_the_category_feed():
+    payload = {
+        "topic_list": {
+            "topics": [
+                {
+                    "id": 70690,
+                    "title": "Join the Mango 2 Creator Program",
+                    "slug": "join-the-mango-2-creator-program",
+                    "category_id": 22,
+                    "posts_count": 1,
+                    "last_posted_at": "2026-10-28T00:00:00Z",
+                }
+            ]
+        }
+    }
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = payload
+
+    with patch("app.discourse_api.requests.get", return_value=response) as get:
+        topics = fetch_discourse_category_topics(
+            base_url="https://forum.gl-inet.com",
+            category_slug="announcement",
+            max_results=5,
+            source_name="Discourse category feed",
+            timeout_seconds=15,
+            user_agent="test",
+        )
+
+    assert get.call_args.args[0] == "https://forum.gl-inet.com/c/announcement/l/latest.json"
+    assert topics[0]["id"] == 70690
+    assert topics[0]["url"].endswith("/t/join-the-mango-2-creator-program/70690")
+
+
+def test_fetch_discourse_category_topics_rejects_a_blank_category():
+    with pytest.raises(DiscourseApiError):
+        fetch_discourse_category_topics(
+            base_url="https://forum.gl-inet.com",
+            category_slug="   ",
+            max_results=5,
+            source_name="Discourse category feed",
+            timeout_seconds=15,
+            user_agent="test",
+        )
+
+
+def test_fetch_forum_category_options_returns_categories():
+    with patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()), \
+         patch.object(bot, "fetch_discourse_categories", return_value=[
+             {"id": 22, "name": "Announcement", "slug": "announcement", "topic_count": 93},
+         ]):
+        result = bot.fetch_forum_category_options(123)
+
+    assert result["ok"] is True
+    assert result["categories"][0]["slug"] == "announcement"
+
+
+def test_category_subscription_is_cross_posted(forum_db):
+    """The Announcement category must drive the same cross-post path as a tag."""
+    bot.create_forum_tag_subscription(
+        123, "announcement", 999, "admin@example.com", feed_type="category"
+    )
+    subscription = bot.list_forum_tag_subscriptions(guild_id=123)[0]
+    assert subscription["feed_type"] == "category"
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_category_topics", return_value=[
+            {"id": 70690, "title": "Join the Mango 2 Creator Program",
+             "url": "https://forum.gl-inet.com/t/x/70690", "author": "a", "excerpt": ""},
+        ]) as category_fetch,
+        patch.object(bot, "fetch_discourse_tag_topics") as tag_fetch,
+        patch.object(bot, "fetch_discourse_topic", return_value={
+            "id": 70690, "title": "Join the Mango 2 Creator Program",
+            "url": "https://forum.gl-inet.com/t/x/70690",
+            "posts": [{"id": 1, "username": "a", "text": "Body text.", "cooked": "<p>Body text.</p>"}],
+        }),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    category_fetch.assert_called_once()
+    tag_fetch.assert_not_called()
+    channel.send.assert_awaited_once()
+    sent = channel.send.call_args.args[0]
+    assert "New forum post in `#announcement`" in sent
+    assert "Body text." in sent
+    assert "https://forum.gl-inet.com/t/x/70690" in sent
+
+
+def test_category_picker_lists_categories():
+    from app.web_forum_tags import render_forum_tags_body
+
+    html = render_forum_tags_body(
+        guild_name="G",
+        subscriptions=[],
+        channel_options=[{"id": "999", "name": "general", "type": "text"}],
+        render_select_input=lambda *a, **k: "",
+        available_tags=[{"slug": "kb", "name": "KB", "count": 97}],
+        available_categories=[{"slug": "announcement", "name": "Announcement", "topic_count": 93}],
+    )
+
+    assert '<optgroup label="Tags">' in html
+    assert '<optgroup label="Categories">' in html
+    assert '<option value="tag:kb">KB (97 topics)</option>' in html
+    assert '<option value="category:announcement">Announcement (93 topics)</option>' in html
+
+
+def test_schedule_defaults_to_every_twelve_hours():
+    assert bot.DEFAULT_FORUM_TAG_CHECK_SCHEDULE == "0 */12 * * *"

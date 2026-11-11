@@ -14,6 +14,7 @@ class ForumTagWebCallbacks:
         list_forum_tag_subscriptions,
         get_forum_tag_subscription,
         fetch_forum_tag_options,
+        fetch_forum_category_options,
         create_forum_tag_subscription,
         update_forum_tag_subscription,
         set_forum_tag_subscription_enabled,
@@ -27,6 +28,7 @@ class ForumTagWebCallbacks:
         self.normalize_forum_tag_name = normalize_forum_tag_name
         self.list_forum_tag_subscriptions = list_forum_tag_subscriptions
         self.fetch_forum_tag_options = fetch_forum_tag_options
+        self.fetch_forum_category_options = fetch_forum_category_options
         self.get_forum_tag_subscription = get_forum_tag_subscription
         self.create_forum_tag_subscription = create_forum_tag_subscription
         self.update_forum_tag_subscription = update_forum_tag_subscription
@@ -61,11 +63,22 @@ class ForumTagWebCallbacks:
             self.logger.exception("Failed to load forum tag options for web admin")
             return {"ok": False, "error": "Unexpected error while loading forum tags.", "tags": []}
 
+    def run_web_get_forum_category_options(self, guild_id: int):
+        """Available forum categories for the picker."""
+        try:
+            return self.fetch_forum_category_options(guild_id)
+        except Exception:
+            self.logger.exception("Failed to load forum category options for web admin")
+            return {"ok": False, "error": "Unexpected error while loading forum categories.", "categories": []}
+
     def run_web_manage_forum_tags(self, payload: dict, actor_email: str, guild_id: int, actor_display_name: str = ""):
         if not isinstance(payload, dict):
             return {"ok": False, "error": "Invalid forum tag payload."}
 
         action = str(payload.get("action") or "").strip().lower()
+        feed_type = str(payload.get("feed_type") or "tag").strip().casefold()
+        if feed_type not in {"tag", "category"}:
+            feed_type = "tag"
         safe_guild_id = self.normalize_target_guild_id(guild_id)
         audit_actor = self.build_web_actor_audit_label(actor_email, actor_display_name)
         try:
@@ -76,7 +89,9 @@ class ForumTagWebCallbacks:
                 channel_id = int(str(payload.get("channel_id") or "0").strip())
                 if channel_id <= 0:
                     return {"ok": False, "error": "Choose a valid Discord channel."}
-                self.create_forum_tag_subscription(safe_guild_id, tag, channel_id, actor_email)
+                self.create_forum_tag_subscription(
+                    safe_guild_id, tag, channel_id, actor_email, feed_type=feed_type
+                )
                 self.record_action_safe(
                     action="forum_tag_add",
                     status="success",
@@ -97,7 +112,9 @@ class ForumTagWebCallbacks:
                 channel_id = int(str(payload.get("channel_id") or "0").strip())
                 if channel_id <= 0:
                     return {"ok": False, "error": "Choose a valid Discord channel."}
-                if not self.update_forum_tag_subscription(subscription_id, safe_guild_id, tag, channel_id, actor_email):
+                if not self.update_forum_tag_subscription(
+                    subscription_id, safe_guild_id, tag, channel_id, actor_email, feed_type=feed_type
+                ):
                     return {"ok": False, "error": "Forum tag subscription was not found."}
                 self.record_action_safe(
                     action="forum_tag_edit",

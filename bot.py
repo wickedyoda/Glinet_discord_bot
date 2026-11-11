@@ -63,6 +63,8 @@ from app.discourse_api import (
     DiscourseApiError,
     DiscourseRateLimitError,
     clean_discourse_text,
+    fetch_discourse_categories,
+    fetch_discourse_category_topics,
     fetch_discourse_tag_topics,
     fetch_discourse_tags,
     fetch_discourse_topic,
@@ -249,7 +251,8 @@ REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
-DEFAULT_FORUM_TAG_CHECK_SCHEDULE = "*/30 * * * *"
+# Every 12 hours; override with FORUM_TAG_CHECK_SCHEDULE.
+DEFAULT_FORUM_TAG_CHECK_SCHEDULE = "0 */12 * * *"
 FORUM_TAG_FETCH_LIMIT = 10
 FORUM_TAG_REQUEST_TIMEOUT_SECONDS = 20
 FORUM_TAG_SEEN_POST_RETENTION_LIMIT = 500
@@ -2086,6 +2089,7 @@ def ensure_db_schema():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 guild_id INTEGER NOT NULL DEFAULT 0,
                 tag TEXT NOT NULL,
+                feed_type TEXT NOT NULL DEFAULT 'tag',
                 channel_id INTEGER NOT NULL,
                 enabled INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL,
@@ -2220,6 +2224,10 @@ def ensure_db_schema():
         if "baseline_initialized" not in forum_tag_subscription_columns:
             conn.execute(
                 "ALTER TABLE forum_tag_subscriptions ADD COLUMN baseline_initialized INTEGER NOT NULL DEFAULT 0"
+            )
+        if "feed_type" not in forum_tag_subscription_columns:
+            conn.execute(
+                "ALTER TABLE forum_tag_subscriptions ADD COLUMN feed_type TEXT NOT NULL DEFAULT 'tag'"
             )
 
         guild_settings_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
@@ -4212,9 +4220,15 @@ def normalize_forum_tag_name(raw_value) -> str:
     return text.casefold()
 
 
+def normalize_forum_feed_type(raw_value) -> str:
+    """Restrict a subscription's feed type to the two sources we can poll."""
+    cleaned = str(raw_value or "").strip().casefold()
+    return "category" if cleaned == "category" else "tag"
+
+
 def list_forum_tag_subscriptions(enabled_only: bool = False, guild_id: int | None = None):
     query = (
-        "SELECT id, guild_id, tag, channel_id, enabled, created_at, updated_at, "
+        "SELECT id, guild_id, tag, feed_type, channel_id, enabled, created_at, updated_at, "
         "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error, "
         "baseline_initialized "
         "FROM forum_tag_subscriptions"
@@ -4238,6 +4252,7 @@ def list_forum_tag_subscriptions(enabled_only: bool = False, guild_id: int | Non
                 "id": int(row["id"]),
                 "guild_id": int(row["guild_id"] or 0),
                 "tag": str(row["tag"] or ""),
+                "feed_type": normalize_forum_feed_type(row["feed_type"]),
                 "channel_id": int(row["channel_id"] or 0),
                 "enabled": bool(row["enabled"]),
                 "created_at": str(row["created_at"] or ""),
@@ -4259,7 +4274,7 @@ def get_forum_tag_subscription(subscription_id: int, guild_id: int | str | None 
         query = (
             "SELECT id, guild_id, tag, channel_id, enabled, created_at, updated_at, "
             "created_by_email, updated_by_email, last_checked_at, last_posted_at, last_error, "
-            "baseline_initialized "
+            "baseline_initialized, feed_type "
             "FROM forum_tag_subscriptions WHERE id = ?"
         )
         params = [int(subscription_id)]
@@ -4273,6 +4288,7 @@ def get_forum_tag_subscription(subscription_id: int, guild_id: int | str | None 
         "id": int(row["id"]),
         "guild_id": int(row["guild_id"] or 0),
         "tag": str(row["tag"] or ""),
+        "feed_type": normalize_forum_feed_type(row["feed_type"]),
         "channel_id": int(row["channel_id"] or 0),
         "enabled": bool(row["enabled"]),
         "created_at": str(row["created_at"] or ""),
@@ -4286,7 +4302,13 @@ def get_forum_tag_subscription(subscription_id: int, guild_id: int | str | None 
     }
 
 
-def create_forum_tag_subscription(guild_id: int, tag: str, channel_id: int, actor_email: str):
+def create_forum_tag_subscription(
+    guild_id: int,
+    tag: str,
+    channel_id: int,
+    actor_email: str,
+    feed_type: str = "tag",
+):
     cleaned_tag = normalize_forum_tag_name(tag)
     if not cleaned_tag:
         raise ValueError("Enter a valid forum tag.")
@@ -4294,19 +4316,21 @@ def create_forum_tag_subscription(guild_id: int, tag: str, channel_id: int, acto
     safe_channel_id = int(channel_id)
     if safe_channel_id <= 0:
         raise ValueError("Choose a valid Discord channel.")
+    safe_feed_type = normalize_forum_feed_type(feed_type)
     now_iso = datetime.now(UTC).isoformat()
     with with_db(commit=True) as conn:
         conn.execute(
             """
             INSERT INTO forum_tag_subscriptions (
-                guild_id, tag, channel_id, enabled, created_at, updated_at,
+                guild_id, tag, feed_type, channel_id, enabled, created_at, updated_at,
                 created_by_email, updated_by_email
             )
-            VALUES (?, ?, ?, 1, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?)
             """,
             (
                 safe_guild_id,
                 cleaned_tag,
+                safe_feed_type,
                 safe_channel_id,
                 now_iso,
                 now_iso,
@@ -4316,7 +4340,14 @@ def create_forum_tag_subscription(guild_id: int, tag: str, channel_id: int, acto
         )
 
 
-def update_forum_tag_subscription(subscription_id: int, guild_id: int, tag: str, channel_id: int, actor_email: str):
+def update_forum_tag_subscription(
+    subscription_id: int,
+    guild_id: int,
+    tag: str,
+    channel_id: int,
+    actor_email: str,
+    feed_type: str = "tag",
+):
     cleaned_tag = normalize_forum_tag_name(tag)
     if not cleaned_tag:
         raise ValueError("Enter a valid forum tag.")
@@ -4324,17 +4355,19 @@ def update_forum_tag_subscription(subscription_id: int, guild_id: int, tag: str,
     safe_channel_id = int(channel_id)
     if safe_channel_id <= 0:
         raise ValueError("Choose a valid Discord channel.")
+    safe_feed_type = normalize_forum_feed_type(feed_type)
     now_iso = datetime.now(UTC).isoformat()
     with with_db(commit=True) as conn:
         cursor = conn.execute(
             """
             UPDATE forum_tag_subscriptions
-            SET tag = ?, channel_id = ?, enabled = 1, updated_at = ?, updated_by_email = ?,
+            SET tag = ?, feed_type = ?, channel_id = ?, enabled = 1, updated_at = ?, updated_by_email = ?,
                 last_checked_at = '', last_posted_at = '', last_error = ''
             WHERE id = ? AND guild_id = ?
             """,
             (
                 cleaned_tag,
+                safe_feed_type,
                 safe_channel_id,
                 now_iso,
                 str(actor_email or "").strip().lower(),
@@ -9914,6 +9947,7 @@ def get_forum_tag_web_callbacks():
             list_forum_tag_subscriptions=list_forum_tag_subscriptions,
             get_forum_tag_subscription=get_forum_tag_subscription,
             fetch_forum_tag_options=fetch_forum_tag_options,
+            fetch_forum_category_options=fetch_forum_category_options,
             create_forum_tag_subscription=create_forum_tag_subscription,
             update_forum_tag_subscription=update_forum_tag_subscription,
             set_forum_tag_subscription_enabled=set_forum_tag_subscription_enabled,
@@ -11445,7 +11479,7 @@ async def resolve_forum_tag_channel(channel_id: int, guild_id: int | None = None
     return channel, ""
 
 
-def format_forum_tag_post_message(tag: str, topic: dict) -> str:
+def format_forum_tag_post_message(tag: str, topic: dict, feed_type: str = "tag") -> str:
     """Build the Discord message for a forum topic matched by tag.
 
     The forum post body is the message body, with a link back to the original
@@ -11458,7 +11492,10 @@ def format_forum_tag_post_message(tag: str, topic: dict) -> str:
     body = DISCOURSE_IMAGE_PLACEHOLDER.sub("", body).strip()
     body = " ".join(body.split())
 
-    header = f"**New forum post tagged `#{tag}`**\n\n**{title}**"
+    if normalize_forum_feed_type(feed_type) == "category":
+        header = f"**New forum post in `#{tag}`**\n\n**{title}**"
+    else:
+        header = f"**New forum post tagged `#{tag}`**\n\n**{title}**"
     footer_lines = [f"Posted by `{author}`"]
     if url:
         footer_lines.append(f"Read the full post: {url}")
@@ -11505,6 +11542,25 @@ def fetch_forum_tag_options(guild_id: int) -> dict:
     return {"ok": True, "tags": tags, "error": ""}
 
 
+def fetch_forum_category_options(guild_id: int) -> dict:
+    """Return the forum's categories for the web admin picker."""
+    try:
+        config = resolve_discourse_forum_settings(guild_id)
+        categories = fetch_discourse_categories(
+            base_url=config["base_url"],
+            timeout_seconds=config["timeout_seconds"],
+            user_agent=DISCOURSE_USER_AGENT,
+            api_key=config["api_key"],
+            api_username=config["api_username"],
+        )
+    except (DiscourseApiError, DiscourseRateLimitError) as exc:
+        return {"ok": False, "error": f"Could not load forum categories: {exc}", "categories": []}
+    except Exception:
+        logger.exception("Failed to load forum category options for guild %s", guild_id)
+        return {"ok": False, "error": "Unexpected error while loading forum categories.", "categories": []}
+    return {"ok": True, "categories": categories, "error": ""}
+
+
 async def process_forum_tag_subscription(subscription: dict):
     subscription_id = int(subscription.get("id") or 0)
     guild_id = int(subscription.get("guild_id") or 0)
@@ -11522,25 +11578,40 @@ async def process_forum_tag_subscription(subscription: dict):
     if not config.get("api_key"):
         update_forum_tag_runtime_status(subscription_id, last_error="Forum API key is not configured.")
         return
+    feed_type = normalize_forum_feed_type(subscription.get("feed_type"))
+    feed_label = f"{feed_type} #{tag}"
     try:
-        topics = await asyncio.to_thread(
-            fetch_discourse_tag_topics,
-            base_url=config["base_url"],
-            tag=tag,
-            max_results=FORUM_TAG_FETCH_LIMIT,
-            source_name="Discourse tag feed",
-            timeout_seconds=config["timeout_seconds"],
-            user_agent=DISCOURSE_USER_AGENT,
-            api_key=config["api_key"],
-            api_username=config["api_username"],
-        )
+        if feed_type == "category":
+            topics = await asyncio.to_thread(
+                fetch_discourse_category_topics,
+                base_url=config["base_url"],
+                category_slug=tag,
+                max_results=FORUM_TAG_FETCH_LIMIT,
+                source_name="Discourse category feed",
+                timeout_seconds=config["timeout_seconds"],
+                user_agent=DISCOURSE_USER_AGENT,
+                api_key=config["api_key"],
+                api_username=config["api_username"],
+            )
+        else:
+            topics = await asyncio.to_thread(
+                fetch_discourse_tag_topics,
+                base_url=config["base_url"],
+                tag=tag,
+                max_results=FORUM_TAG_FETCH_LIMIT,
+                source_name="Discourse tag feed",
+                timeout_seconds=config["timeout_seconds"],
+                user_agent=DISCOURSE_USER_AGENT,
+                api_key=config["api_key"],
+                api_username=config["api_username"],
+            )
     except DiscourseRateLimitError:
         update_forum_tag_runtime_status(
             subscription_id,
             last_checked_at=checked_at,
             last_error="Forum is rate limiting requests.",
         )
-        logger.warning("Forum tag %s check was rate limited (subscription %s)", tag, subscription_id)
+        logger.warning("Forum %s check was rate limited (subscription %s)", feed_label, subscription_id)
         return
     except DiscourseApiError as exc:
         update_forum_tag_runtime_status(
@@ -11548,7 +11619,7 @@ async def process_forum_tag_subscription(subscription: dict):
             last_checked_at=checked_at,
             last_error=str(exc),
         )
-        logger.warning("Forum tag %s check failed (subscription %s): %s", tag, subscription_id, exc)
+        logger.warning("Forum %s check failed (subscription %s): %s", feed_label, subscription_id, exc)
         return
     except Exception:
         update_forum_tag_runtime_status(
@@ -11556,7 +11627,7 @@ async def process_forum_tag_subscription(subscription: dict):
             last_checked_at=checked_at,
             last_error="Unexpected forum request error.",
         )
-        logger.exception("Unexpected forum tag check failure for %s", tag)
+        logger.exception("Unexpected forum %s check failure", feed_label)
         return
 
     current_topic_ids = [int(topic.get("id") or 0) for topic in topics if topic.get("id")]
@@ -11632,6 +11703,7 @@ async def process_forum_tag_subscription(subscription: dict):
                         "author": topic.get("author") or (posts[0].get("username") if posts else "") or "",
                         "body": body_text,
                     },
+                    feed_type,
                 ),
                 allowed_mentions=FORUM_TAG_ALLOWED_MENTIONS,
             )
@@ -13040,6 +13112,7 @@ def start_web_admin_server():
                     on_get_forum_tags=get_forum_tag_web_callbacks().run_web_get_forum_tags,
                     on_manage_forum_tags=get_forum_tag_web_callbacks().run_web_manage_forum_tags,
                     on_get_forum_tag_options=get_forum_tag_web_callbacks().run_web_get_forum_tag_options,
+                    on_get_forum_category_options=get_forum_tag_web_callbacks().run_web_get_forum_category_options,
                     on_get_reddit_auto_responds=run_web_get_reddit_auto_responds,
                     on_manage_reddit_auto_responds=run_web_manage_reddit_auto_responds,
                     on_get_youtube_subscriptions=run_web_get_youtube_subscriptions,
