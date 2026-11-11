@@ -3139,7 +3139,7 @@ def _get_member_activity_manager():
             excluded_role_ids=MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS,
             # Re-read on use so a change saved in the web GUI applies without a
             # container restart (env is read at import; the manager is a singleton).
-            excluded_role_ids_provider=lambda: normalize_role_ids(
+            excluded_role_ids_provider=lambda: parse_member_activity_excluded_role_ids(
                 os.getenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", "")
             ),
         )
@@ -5839,14 +5839,48 @@ def normalize_role_ids(values):
     return normalized
 
 
+def parse_member_activity_excluded_role_ids(raw_value):
+    """Strictly parse MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS.
+
+    Unlike normalize_role_ids(), a malformed token raises instead of being
+    silently dropped. That difference matters: a typo has to be rejected so the
+    activity manager keeps its last good exclusion list, rather than quietly
+    resolving to [] and re-including members an operator meant to hide. A blank
+    value is still valid and clears the exclusions.
+    """
+    text = str(raw_value or "").strip()
+    if not text:
+        return []
+    parsed = []
+    for token in re.split(r"[\s,]+", text):
+        cleaned = token.strip()
+        if not cleaned:
+            continue
+        if cleaned.startswith("<@&") and cleaned.endswith(">"):
+            cleaned = cleaned[3:-1]
+        if not cleaned.isdigit():
+            raise ValueError(f"MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS contains a non-numeric role id: {token!r}")
+        role_id = int(cleaned)
+        if role_id > 0 and role_id not in parsed:
+            parsed.append(role_id)
+    return parsed
+
+
+def _load_member_activity_excluded_role_ids():
+    """Boot-time read. A bad value must not stop the bot starting."""
+    raw = os.getenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", "")
+    try:
+        return set(parse_member_activity_excluded_role_ids(raw))
+    except ValueError as exc:
+        logger.warning("Ignoring malformed MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS at startup: %s", exc)
+        return set()
+
+
 # Roles never shown in member-activity rankings, as comma-separated role IDs
 # (e.g. "1294957416294645771,1138302148292116551"). Empty by default, so every
 # role is monitored -- including staff roles such as Employee, which used to be
 # hidden because "allowed role" also meant "excluded from activity".
-# Declared here because it reuses normalize_role_ids().
-MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS = set(
-    normalize_role_ids(os.getenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", ""))
-)
+MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS = _load_member_activity_excluded_role_ids()
 
 
 def normalize_command_permission_rule(raw_rule):

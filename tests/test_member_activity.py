@@ -313,10 +313,74 @@ def test_exclusion_list_is_re_read_without_a_restart():
         assert manager.is_member_activity_ranking_eligible(DummyMember(role_ids=(7,))) is True
 
 
-def test_malformed_exclusion_value_does_not_break_the_ranking():
+def test_malformed_exclusion_value_keeps_the_last_good_list():
+    """Uses the production provider, not a stand-in.
+
+    A typo must not silently resolve to an empty list: that would re-include
+    everyone the operator meant to hide, with no warning. The strict parser raises,
+    and the manager keeps its last good exclusions.
+    """
+    import bot as bot_module
+
+    holder = {"raw": "7"}
     manager = build_manager()
-    manager.excluded_role_ids_provider = lambda: ["not-a-role-id"]
+    manager.excluded_role_ids_provider = lambda: bot_module.parse_member_activity_excluded_role_ids(
+        holder["raw"]
+    )
 
     with patch("discord.Member", DummyMember):
-        # falls back to the last good value (empty) rather than raising
+        assert manager.is_member_activity_ranking_eligible(DummyMember(role_ids=(7,))) is False
+
+        holder["raw"] = "not-a-role-id"  # a typo saved in the web GUI
+        assert (
+            manager.is_member_activity_ranking_eligible(DummyMember(role_ids=(7,))) is False
+        ), "malformed value silently re-included an excluded role"
+
+        holder["raw"] = ""  # clearing the setting is legitimate
         assert manager.is_member_activity_ranking_eligible(DummyMember(role_ids=(7,))) is True
+
+
+def test_excluded_role_parser_is_strict_but_allows_blank():
+    import bot as bot_module
+
+    parser = bot_module.parse_member_activity_excluded_role_ids
+    assert parser("") == []
+    assert parser("   ") == []
+    assert parser("111, 222") == [111, 222]
+    assert parser("<@&333>") == [333]
+    assert parser("111 222") == [111, 222]
+    assert parser("111,111") == [111]
+
+    for bad in ("111, oops", "not-a-role-id", "0x1f", "111,abc"):
+        try:
+            parser(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"parser accepted a malformed value: {bad!r}")
+
+def test_production_provider_rejects_a_malformed_exclusion(monkeypatch):
+    """Exercises the provider bot.py actually wires, not a stand-in.
+
+    Assigning a provider directly in a test proves the manager's fallback works
+    but says nothing about what production passes in -- and that was the gap: the
+    real provider used the lenient normalize_role_ids(), which never raises, so the
+    fallback was unreachable and a typo silently cleared every exclusion.
+    """
+    import bot as bot_module
+
+    monkeypatch.setattr(bot_module, "member_activity_manager", None, raising=False)
+
+    monkeypatch.setenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", "7")
+    manager = bot_module._get_member_activity_manager()
+    assert manager.current_excluded_role_ids() == (7,)
+
+    monkeypatch.setenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", "not-a-role-id")
+    assert manager.current_excluded_role_ids() == (7,), (
+        "the production provider accepted a malformed value, which silently "
+        "re-includes everyone the operator excluded"
+    )
+
+    monkeypatch.setenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", "")
+    assert manager.current_excluded_role_ids() == ()
+
+    monkeypatch.setattr(bot_module, "member_activity_manager", None, raising=False)
