@@ -3137,6 +3137,11 @@ def _get_member_activity_manager():
             member_activity_web_top_limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT,
             member_activity_recent_retention_days=MEMBER_ACTIVITY_RECENT_RETENTION_DAYS,
             excluded_role_ids=MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS,
+            # Re-read on use so a change saved in the web GUI applies without a
+            # container restart (env is read at import; the manager is a singleton).
+            excluded_role_ids_provider=lambda: normalize_role_ids(
+                os.getenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", "")
+            ),
         )
     return member_activity_manager
 

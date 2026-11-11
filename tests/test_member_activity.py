@@ -290,3 +290,33 @@ def test_excluded_role_constant_defaults_to_empty():
     import bot as bot_module
 
     assert isinstance(bot_module.MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS, set)
+
+def test_exclusion_list_is_re_read_without_a_restart():
+    """Editing the setting in the web GUI must not need a container restart.
+
+    env is read at import and the manager is a cached singleton, so a copied-once
+    list would leave the ranking stale until the process restarted.
+    """
+    holder = {"raw": ""}
+    manager = build_manager()
+    manager.excluded_role_ids_provider = lambda: [
+        int(part) for part in holder["raw"].split(",") if part.strip()
+    ]
+
+    with patch("discord.Member", DummyMember):
+        assert manager.is_member_activity_ranking_eligible(DummyMember(role_ids=(7,))) is True
+
+        holder["raw"] = "7"
+        assert manager.is_member_activity_ranking_eligible(DummyMember(role_ids=(7,))) is False
+
+        holder["raw"] = ""
+        assert manager.is_member_activity_ranking_eligible(DummyMember(role_ids=(7,))) is True
+
+
+def test_malformed_exclusion_value_does_not_break_the_ranking():
+    manager = build_manager()
+    manager.excluded_role_ids_provider = lambda: ["not-a-role-id"]
+
+    with patch("discord.Member", DummyMember):
+        # falls back to the last good value (empty) rather than raising
+        assert manager.is_member_activity_ranking_eligible(DummyMember(role_ids=(7,))) is True

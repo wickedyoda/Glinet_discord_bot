@@ -33,6 +33,7 @@ class MemberActivityManager:
         member_activity_web_top_limit: int,
         member_activity_recent_retention_days: int,
         excluded_role_ids=(),
+        excluded_role_ids_provider=None,
     ):
         self.get_db_connection = get_db_connection
         self.db_lock = db_lock
@@ -51,6 +52,11 @@ class MemberActivityManager:
         # Roles never shown in the activity ranking. Empty means every role is
         # monitored, including staff roles.
         self.excluded_role_ids = tuple(int(role_id) for role_id in excluded_role_ids)
+        # When supplied, the list is re-read instead of copied once at construction,
+        # so editing MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS in the web GUI takes effect
+        # without restarting the container. bot.py owns the parsing.
+        self.excluded_role_ids_provider = excluded_role_ids_provider
+        self._excluded_role_ids_resolved = self.excluded_role_ids
         self.recent_prune_marker = ""
         self.encryption_migration_checked = False
 
@@ -471,6 +477,19 @@ class MemberActivityManager:
             return None
         return role_id if role_id > 0 else None
 
+    def current_excluded_role_ids(self):
+        """The exclusion list in force right now."""
+        if self.excluded_role_ids_provider is None:
+            return self.excluded_role_ids
+        try:
+            resolved = tuple(int(role_id) for role_id in (self.excluded_role_ids_provider() or ()))
+        except (TypeError, ValueError):
+            # A half-saved or malformed value must not break the whole ranking.
+            self.logger.warning("Ignoring malformed MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS value")
+            return self._excluded_role_ids_resolved
+        self._excluded_role_ids_resolved = resolved
+        return resolved
+
     def is_member_activity_ranking_eligible(self, member: discord.Member | None, role_id: int | None = None):
         """Whether a member appears in the activity ranking.
 
@@ -485,8 +504,9 @@ class MemberActivityManager:
             return False
         if member.bot:
             return False
-        if self.excluded_role_ids and any(
-            role.id in self.excluded_role_ids for role in member.roles
+        excluded_role_ids = self.current_excluded_role_ids()
+        if excluded_role_ids and any(
+            role.id in excluded_role_ids for role in member.roles
         ):
             return False
         if role_id is not None and not any(role.id == role_id for role in member.roles):
@@ -733,7 +753,7 @@ class MemberActivityManager:
             # What the UI hides from the role picker. Driven only by
             # MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS -- staff roles are no longer
             # excluded by virtue of being staff.
-            "excluded_role_ids": sorted(self.excluded_role_ids),
+            "excluded_role_ids": sorted(self.current_excluded_role_ids()),
             "excluded_role_names": [],
             "windows": windows,
         }
