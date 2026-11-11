@@ -771,7 +771,10 @@ def test_topics_beyond_the_per_run_cap_are_not_marked_seen(forum_db):
 
     seen = bot.load_forum_tag_seen_topic_ids(subscription["id"])
     assert len(seen) == bot.FORUM_TAG_MAX_POSTS_PER_RUN
-    assert 105 not in seen  # the topic past the cap stays pending
+    # Derived from the cap, not hardcoded: the topic just past it stays pending.
+    first_pending_id = 100 + bot.FORUM_TAG_MAX_POSTS_PER_RUN
+    assert first_pending_id not in seen
+    assert 100 in seen
 
 
 def test_failed_topic_fetch_leaves_the_topic_retryable(forum_db):
@@ -1122,3 +1125,129 @@ def test_category_picker_lists_categories():
 
 def test_schedule_defaults_to_every_twelve_hours():
     assert bot.DEFAULT_FORUM_TAG_CHECK_SCHEDULE == "0 */12 * * *"
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: ordering, drain limits, and the feed_type unique key
+# ---------------------------------------------------------------------------
+
+
+def test_category_feed_requests_creation_order():
+    """Activity order would re-announce a years-old topic after a reply bump."""
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"topic_list": {"topics": []}}
+
+    with patch("app.discourse_api.requests.get", return_value=response) as get:
+        fetch_discourse_category_topics(
+            base_url="https://forum.gl-inet.com",
+            category_slug="announcement",
+            max_results=5,
+            source_name="Discourse category feed",
+            timeout_seconds=15,
+            user_agent="test",
+        )
+
+    assert get.call_args.kwargs["params"] == {"order": "created", "ascending": "false"}
+
+
+def test_delivery_cap_is_never_below_the_fetch_window():
+    """A pending topic must not age out of the next fetch window."""
+    assert bot.FORUM_TAG_MAX_POSTS_PER_RUN >= bot.FORUM_TAG_FETCH_LIMIT
+
+
+def _old_schema_db(path):
+    """Build a database with the pre-fix UNIQUE(guild_id, tag) constraint."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE forum_tag_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL DEFAULT 0,
+            tag TEXT NOT NULL,
+            feed_type TEXT NOT NULL DEFAULT 'tag',
+            channel_id INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            created_by_email TEXT NOT NULL DEFAULT '',
+            updated_by_email TEXT NOT NULL DEFAULT '',
+            last_checked_at TEXT NOT NULL DEFAULT '',
+            last_posted_at TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            baseline_initialized INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(guild_id, tag)
+        );
+        CREATE TABLE forum_tag_seen_posts (
+            subscription_id INTEGER NOT NULL,
+            topic_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(subscription_id, topic_id),
+            FOREIGN KEY(subscription_id) REFERENCES forum_tag_subscriptions(id) ON DELETE CASCADE
+        );
+        INSERT INTO forum_tag_subscriptions
+            (id, guild_id, tag, feed_type, channel_id, enabled, created_at, updated_at,
+             created_by_email, updated_by_email, last_checked_at, last_posted_at,
+             last_error, baseline_initialized)
+        VALUES (7, 123, 'kb', 'tag', 999, 1, '2026-01-01', '2026-01-01', '', '', '', '', '', 1);
+        INSERT INTO forum_tag_seen_posts VALUES (7, 111, '2026-01-01'), (7, 222, '2026-01-02');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_migration_admits_a_tag_and_a_category_with_the_same_slug(forum_db):
+    """UNIQUE(guild_id, tag) made the second insert look like a duplicate."""
+    bot.create_forum_tag_subscription(123, "announcement", 999, "a@example.com", feed_type="tag")
+    bot.create_forum_tag_subscription(123, "announcement", 999, "a@example.com", feed_type="category")
+
+    subs = bot.list_forum_tag_subscriptions(guild_id=123)
+    assert sorted(s["feed_type"] for s in subs) == ["category", "tag"]
+
+    # a true duplicate in the same guild still collides
+    import sqlite3
+
+    with pytest.raises(sqlite3.IntegrityError):
+        bot.create_forum_tag_subscription(123, "announcement", 999, "a@example.com", feed_type="category")
+
+
+def test_migration_rebuilds_old_schema_and_preserves_rows(tmp_path, monkeypatch):
+    """Existing subscription ids and seen-topic rows must survive the rebuild."""
+
+    db_path = tmp_path / "old.db"
+    _old_schema_db(db_path)
+
+    monkeypatch.setattr(bot, "DB_FILE", str(db_path))
+    bot.db_connection = None
+    try:
+        bot.ensure_db_schema()
+        conn = bot.get_db_connection()
+
+        # the unique index now spans feed_type
+        unique_cols = []
+        for idx in conn.execute("PRAGMA index_list(forum_tag_subscriptions)").fetchall():
+            if idx["unique"]:
+                cols = {c["name"] for c in conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()}
+                if {"guild_id", "tag"} <= cols:
+                    unique_cols = cols
+                    break
+        assert "feed_type" in unique_cols, unique_cols
+
+        # the pre-existing subscription kept its id and baseline flag
+        row = conn.execute("SELECT * FROM forum_tag_subscriptions WHERE id = 7").fetchone()
+        assert row is not None
+        assert row["tag"] == "kb" and row["feed_type"] == "tag"
+        assert row["baseline_initialized"] == 1
+
+        # the cascade did not eat the seen-topic rows
+        seen = {
+            r["topic_id"]
+            for r in conn.execute(
+                "SELECT topic_id FROM forum_tag_seen_posts WHERE subscription_id = 7"
+            ).fetchall()
+        }
+        assert seen == {111, 222}
+    finally:
+        bot.db_connection = None

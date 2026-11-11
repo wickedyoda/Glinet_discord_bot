@@ -253,10 +253,15 @@ REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
 # Every 12 hours; override with FORUM_TAG_CHECK_SCHEDULE.
 DEFAULT_FORUM_TAG_CHECK_SCHEDULE = "0 */12 * * *"
-FORUM_TAG_FETCH_LIMIT = 10
+# One Discourse page. A 12-hour cadence can accumulate more than ten new topics,
+# and anything not delivered in a run stays pending -- if it then falls outside the
+# fetch window it is lost for good. Fetching a full page and delivering everything
+# fetched keeps the pending set inside the next window.
+FORUM_TAG_FETCH_LIMIT = 30
 FORUM_TAG_REQUEST_TIMEOUT_SECONDS = 20
 FORUM_TAG_SEEN_POST_RETENTION_LIMIT = 500
-FORUM_TAG_MAX_POSTS_PER_RUN = 5
+# Must stay >= FORUM_TAG_FETCH_LIMIT, or undelivered topics start ageing out.
+FORUM_TAG_MAX_POSTS_PER_RUN = FORUM_TAG_FETCH_LIMIT
 FORUM_TAG_POST_MAX_CHARS = 1500
 # Matches the default ceiling in trim_discord_message, so the body can be budgeted
 # against the same limit the assembler enforces.
@@ -2102,7 +2107,9 @@ def ensure_db_schema():
                 -- Separate from the seen-topic rows: an empty first feed must still
                 -- count as "baseline done", or the tag's first real topic is swallowed.
                 baseline_initialized INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(guild_id, tag)
+                -- feed_type is part of the key: #announcement as a tag and
+                -- #announcement as a category are two different feeds.
+                UNIQUE(guild_id, feed_type, tag)
             );
 
             CREATE TABLE IF NOT EXISTS forum_tag_seen_posts (
@@ -2229,6 +2236,73 @@ def ensure_db_schema():
             conn.execute(
                 "ALTER TABLE forum_tag_subscriptions ADD COLUMN feed_type TEXT NOT NULL DEFAULT 'tag'"
             )
+
+        # Older databases carry UNIQUE(guild_id, tag). That makes a tag and a
+        # category of the same slug collide, and the duplicate surfaces as
+        # "already configured". SQLite cannot drop a constraint, so rebuild the
+        # table. foreign_keys is ON, so DROP TABLE would cascade into
+        # forum_tag_seen_posts -- the seen rows are stashed and restored.
+        forum_tag_unique_columns = []
+        for index_row in conn.execute("PRAGMA index_list(forum_tag_subscriptions)").fetchall():
+            if not index_row["unique"]:
+                continue
+            index_columns = [
+                str(col["name"])
+                for col in conn.execute(f"PRAGMA index_info({index_row['name']})").fetchall()
+            ]
+            if {"guild_id", "tag"} <= set(index_columns):
+                forum_tag_unique_columns = index_columns
+                break
+        if forum_tag_unique_columns and "feed_type" not in forum_tag_unique_columns:
+            conn.executescript(
+                """
+                CREATE TEMP TABLE _forum_tag_seen_backup AS
+                    SELECT subscription_id, topic_id, created_at FROM forum_tag_seen_posts;
+
+                CREATE TABLE forum_tag_subscriptions_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL DEFAULT 0,
+                    tag TEXT NOT NULL,
+                    feed_type TEXT NOT NULL DEFAULT 'tag',
+                    channel_id INTEGER NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    created_by_email TEXT NOT NULL DEFAULT '',
+                    updated_by_email TEXT NOT NULL DEFAULT '',
+                    last_checked_at TEXT NOT NULL DEFAULT '',
+                    last_posted_at TEXT NOT NULL DEFAULT '',
+                    last_error TEXT NOT NULL DEFAULT '',
+                    baseline_initialized INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(guild_id, feed_type, tag)
+                );
+
+                INSERT INTO forum_tag_subscriptions_new (
+                    id, guild_id, tag, feed_type, channel_id, enabled,
+                    created_at, updated_at, created_by_email, updated_by_email,
+                    last_checked_at, last_posted_at, last_error, baseline_initialized
+                )
+                SELECT
+                    id, guild_id, tag, feed_type, channel_id, enabled,
+                    created_at, updated_at, created_by_email, updated_by_email,
+                    last_checked_at, last_posted_at, last_error, baseline_initialized
+                FROM forum_tag_subscriptions;
+
+                DROP TABLE forum_tag_subscriptions;
+                ALTER TABLE forum_tag_subscriptions_new RENAME TO forum_tag_subscriptions;
+
+                CREATE INDEX IF NOT EXISTS idx_forum_tag_subscriptions_guild_id
+                    ON forum_tag_subscriptions(guild_id);
+                CREATE INDEX IF NOT EXISTS idx_forum_tag_subscriptions_enabled
+                    ON forum_tag_subscriptions(enabled);
+
+                INSERT OR IGNORE INTO forum_tag_seen_posts (subscription_id, topic_id, created_at)
+                    SELECT subscription_id, topic_id, created_at FROM _forum_tag_seen_backup;
+
+                DROP TABLE _forum_tag_seen_backup;
+                """
+            )
+            logger.info("Rebuilt forum_tag_subscriptions with feed_type in the unique key")
 
         guild_settings_columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(guild_settings)").fetchall()}
         if "bad_words_enabled" not in guild_settings_columns:

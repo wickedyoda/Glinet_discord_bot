@@ -158,10 +158,14 @@ def fetch_discourse_category_topics(
     api_key: str = "",
     api_username: str = "",
 ) -> list[dict]:
-    """Fetch the latest topics in a category.
+    """Fetch the newest topics in a category.
 
     The bare ``/c/{slug}/l/latest.json`` form redirects to the id-qualified URL;
     ``requests`` follows that automatically.
+
+    ``order=created`` matches the tag feed. Without it the list comes back in
+    activity order, so a reply bumping a years-old announcement pushes it to the
+    top and it is announced as if it were new.
     """
     cleaned_slug = str(category_slug or "").strip().strip("/")
     if not cleaned_slug:
@@ -169,6 +173,7 @@ def fetch_discourse_category_topics(
 
     response = requests.get(
         f"{base_url.rstrip('/')}/c/{cleaned_slug}/l/latest.json",
+        params={"order": "created", "ascending": "false"},
         timeout=timeout_seconds,
         headers=build_discourse_headers(user_agent=user_agent, api_key=api_key, api_username=api_username),
     )
