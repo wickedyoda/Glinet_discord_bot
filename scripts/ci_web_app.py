@@ -10,6 +10,7 @@ Used by .github/workflows/dast-zap.yml. Not part of the bot runtime.
 from __future__ import annotations
 
 import os
+import secrets
 import sys
 import tempfile
 from pathlib import Path
@@ -41,7 +42,11 @@ def main() -> int:
         env_file_path=str(DATA_DIR / "env.env"),
         tag_responses_file=str(DATA_DIR / "tag_responses.json"),
         default_admin_email="dast@example.invalid",
-        default_admin_password="Dast!Scan12345",
+        # Random per run: this bootstrap account exists only for the scan window,
+        # and a literal here trips Bandit B106 and reads like a real credential.
+        # DAST_ADMIN_PASSWORD lets an authenticated scan (CSRF / rate-limit checks)
+        # log in without committing a password to the repo.
+        default_admin_password=os.environ.get("DAST_ADMIN_PASSWORD") or secrets.token_urlsafe(24),
     )
     app.run(host=HOST, port=PORT, debug=False, use_reloader=False)
     return 0
