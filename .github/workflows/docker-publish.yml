@@ -1,90 +1,85 @@
-name: Build and Publish Docker image
+name: CI And Docker Publish
+
+# Single pipeline for pull requests and main. Every scan runs once per change, as
+# a gating job of this workflow, and the image is only built when all of them pass.
+#
+# The scan workflows used to carry their own pull_request/push triggers as well as
+# being callable, so wiring them in here would have run each of them twice per
+# push. They now keep only workflow_call plus their weekly schedule, which still
+# catches newly published CVEs and updated rules against unchanged code.
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
       - main
   workflow_dispatch:
 
+# A newer push to the same ref supersedes the previous run.
+concurrency:
+  group: ci-publish-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
+# Called workflows can only reduce these, so grant the union they need.
 permissions:
   contents: read
   packages: write
+  security-events: write
 
 jobs:
   # --------------------------------------------------------------------------- #
-  #  GATE 1: Security scans — MUST PASS before build
+  #  GATES -- each is a reusable workflow; all must succeed before the build
   # --------------------------------------------------------------------------- #
-  bandit:
-    name: Bandit Python Security
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # 5
-
-      - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # 6
-        with:
-          python-version: "3.11"
-
-      - name: Install Bandit
-        run: pip install bandit
-
-      - name: Run Bandit
-        run: |
-          bandit \
-            -r app/ bot.py web_admin.py \
-            -f json \
-            -o bandit-results.json \
-            -x tests/ \
-            --severity-level medium \
-            --confidence-level medium
-
-      - name: Enforce Bandit (fail on HIGH)
-        run: |
-          bandit \
-            -r app/ bot.py web_admin.py \
-            -x tests/ \
-            --severity-level high \
-            --confidence-level high
-
   ci-integrity:
     name: CI Integrity
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # 5
+    uses: ./.github/workflows/ci-integrity.yml
 
-      - name: Validate YAML
-        run: |
-          python3 -c "
-          import yaml, sys, glob
-          errors = 0
-          for f in glob.glob('.github/workflows/*.yml'):
-              try:
-                  with open(f) as fh:
-                      yaml.safe_load(fh)
-                  print(f'OK: {f}')
-              except Exception as e:
-                  print(f'FAIL: {f}: {e}')
-                  errors += 1
-          sys.exit(1 if errors else 0)
-          "
+  security-scan:
+    name: Security Scan
+    uses: ./.github/workflows/security-scan.yml
+
+  secret-scan:
+    name: Secret Scan
+    uses: ./.github/workflows/secret-scan.yml
+
+  python-vuln-scan:
+    name: Python Vulnerability Scan
+    uses: ./.github/workflows/python-vulnerability-scan.yml
+
+  container-security-scan:
+    name: Container Security Scan
+    uses: ./.github/workflows/container-security-scan.yml
+
+  dast-scan:
+    name: Web DAST Scan
+    uses: ./.github/workflows/dast-zap.yml
 
   # --------------------------------------------------------------------------- #
-  #  GATE 2: Build — only runs if all gates above pass
+  #  BUILD -- only if every gate above passed
   # --------------------------------------------------------------------------- #
   build:
     name: Build and Push
     needs:
-      - bandit
       - ci-integrity
+      - security-scan
+      - secret-scan
+      - python-vuln-scan
+      - container-security-scan
+      - dast-scan
     runs-on: ubuntu-latest
-    if: always() && needs.bandit.result == 'success' && needs.ci-integrity.result == 'success'
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    if: >-
+      always() && !cancelled()
+      && needs.ci-integrity.result == 'success'
+      && needs.security-scan.result == 'success'
+      && needs.secret-scan.result == 'success'
+      && needs.python-vuln-scan.result == 'success'
+      && needs.container-security-scan.result == 'success'
+      && needs.dast-scan.result == 'success'
 
     steps:
       - name: Checkout code
@@ -116,6 +111,7 @@ jobs:
           context: .
           file: Dockerfile
           platforms: linux/amd64,linux/arm64
+          # Pull requests build but never publish.
           push: ${{ github.event_name != 'pull_request' }}
           tags: |
             ${{ steps.vars.outputs.IMAGE }}:latest

@@ -1,17 +1,10 @@
 name: Container Security Scan
 
 on:
-  pull_request:
-    branches:
-      - main
-      - beta
-  push:
-    branches:
-      - main
-      - beta
+  # Called as a gating job by docker-publish.yml (PR + push to main).
+  # No standalone pull_request/push trigger -- that would run it twice per change.
   workflow_call:
   workflow_dispatch:
-
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
