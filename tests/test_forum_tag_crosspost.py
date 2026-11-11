@@ -8,6 +8,8 @@ the web admin callbacks.
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -18,6 +20,7 @@ import bot
 from app.discourse_api import (
     DiscourseApiError,
     extract_discourse_topics,
+    fetch_discourse_category_topics,
     fetch_discourse_tag_topics,
     fetch_discourse_tags,
 )
@@ -439,6 +442,7 @@ def _callbacks():
         list_forum_tag_subscriptions=lambda guild_id=None, enabled_only=False: [],
         get_forum_tag_subscription=lambda subscription_id, guild_id=None: None,
         fetch_forum_tag_options=lambda guild_id: {"ok": True, "tags": [], "error": ""},
+        fetch_forum_category_options=lambda guild_id: {"ok": True, "categories": [], "error": ""},
         create_forum_tag_subscription=MagicMock(),
         update_forum_tag_subscription=MagicMock(return_value=True),
         set_forum_tag_subscription_enabled=MagicMock(return_value=True),
@@ -476,7 +480,7 @@ def test_callback_add_normalises_the_tag_and_audits():
 
     assert result["ok"] is True
     callbacks.create_forum_tag_subscription.assert_called_once_with(
-        123, "kb", 999, "admin@example.com"
+        123, "kb", 999, "admin@example.com", feed_type="tag"
     )
     callbacks.record_action_safe.assert_called_once()
     assert callbacks.record_action_safe.call_args.kwargs["action"] == "forum_tag_add"
@@ -539,7 +543,14 @@ def test_web_admin_forum_tags_page_renders_and_adds_a_subscription(tmp_path):
         follow_redirects=True,
     )
     assert response.status_code == 200
-    assert created == [{"action": "add", "tag": "#KB", "channel_id": "999", "subscription_id": "", "enabled": ""}]
+    assert created == [{
+        "action": "add",
+        "tag": "#KB",
+        "feed_type": "tag",
+        "channel_id": "999",
+        "subscription_id": "",
+        "enabled": "",
+    }]
 
 
 def test_web_admin_forum_tags_page_reports_a_catalog_failure(tmp_path):
@@ -762,7 +773,10 @@ def test_topics_beyond_the_per_run_cap_are_not_marked_seen(forum_db):
 
     seen = bot.load_forum_tag_seen_topic_ids(subscription["id"])
     assert len(seen) == bot.FORUM_TAG_MAX_POSTS_PER_RUN
-    assert 105 not in seen  # the topic past the cap stays pending
+    # Derived from the cap, not hardcoded: the topic just past it stays pending.
+    first_pending_id = 100 + bot.FORUM_TAG_MAX_POSTS_PER_RUN
+    assert first_pending_id not in seen
+    assert 100 in seen
 
 
 def test_failed_topic_fetch_leaves_the_topic_retryable(forum_db):
@@ -922,9 +936,10 @@ def test_page_offers_a_dropdown_of_real_tags():
         ],
     )
 
-    assert '<select name="tag">' in html
-    assert '<option value="kb">KB (97 topics)</option>' in html
-    assert '<option value="featured">Featured (59 topics)</option>' in html
+    assert '<select name="feed"' in html
+    assert '<optgroup label="Tags">' in html
+    assert '<option value="tag:kb">KB (97 topics)</option>' in html
+    assert '<option value="tag:featured">Featured (59 topics)</option>' in html
     # the free-text fallback must not also be present
     assert 'name="tag" placeholder' not in html
 
@@ -979,5 +994,371 @@ def test_route_loads_the_live_tag_list(tmp_path):
     _select_guild(client)
     html = client.get("/admin/forum-tags", base_url="https://docker.example:8443").get_data(as_text=True)
 
-    assert "<select name='tag'>" in html
-    assert "KB (97 topics) (kb)" in html
+    assert '<select name="feed"' in html
+    assert '<optgroup label="Tags">' in html
+    assert "KB (97 topics)" in html
+
+# ---------------------------------------------------------------------------
+# Category feeds
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("tag", "tag"), ("TAG", "tag"), ("category", "category"), ("Category", "category"),
+     ("", "tag"), (None, "tag"), ("nonsense", "tag")],
+)
+def test_normalize_forum_feed_type(raw, expected):
+    assert bot.normalize_forum_feed_type(raw) == expected
+
+
+def test_fetch_discourse_category_topics_reads_the_category_feed():
+    payload = {
+        "topic_list": {
+            "topics": [
+                {
+                    "id": 70690,
+                    "title": "Join the Mango 2 Creator Program",
+                    "slug": "join-the-mango-2-creator-program",
+                    "category_id": 22,
+                    "posts_count": 1,
+                    "last_posted_at": "2026-10-28T00:00:00Z",
+                }
+            ]
+        }
+    }
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = payload
+
+    with patch("app.discourse_api.requests.get", return_value=response) as get:
+        topics = fetch_discourse_category_topics(
+            base_url="https://forum.gl-inet.com",
+            category_slug="announcement",
+            max_results=5,
+            source_name="Discourse category feed",
+            timeout_seconds=15,
+            user_agent="test",
+        )
+
+    assert get.call_args.args[0] == "https://forum.gl-inet.com/c/announcement/l/latest.json"
+    assert topics[0]["id"] == 70690
+    assert topics[0]["url"].endswith("/t/join-the-mango-2-creator-program/70690")
+
+
+def test_fetch_discourse_category_topics_rejects_a_blank_category():
+    with pytest.raises(DiscourseApiError):
+        fetch_discourse_category_topics(
+            base_url="https://forum.gl-inet.com",
+            category_slug="   ",
+            max_results=5,
+            source_name="Discourse category feed",
+            timeout_seconds=15,
+            user_agent="test",
+        )
+
+
+def test_fetch_forum_category_options_returns_categories():
+    with patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()), \
+         patch.object(bot, "fetch_discourse_categories", return_value=[
+             {"id": 22, "name": "Announcement", "slug": "announcement", "topic_count": 93},
+         ]):
+        result = bot.fetch_forum_category_options(123)
+
+    assert result["ok"] is True
+    assert result["categories"][0]["slug"] == "announcement"
+
+
+def test_category_subscription_is_cross_posted(forum_db):
+    """The Announcement category must drive the same cross-post path as a tag."""
+    bot.create_forum_tag_subscription(
+        123, "announcement", 999, "admin@example.com", feed_type="category"
+    )
+    subscription = bot.list_forum_tag_subscriptions(guild_id=123)[0]
+    assert subscription["feed_type"] == "category"
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_category_topics", return_value=[
+            {"id": 70690, "title": "Join the Mango 2 Creator Program",
+             "url": "https://forum.gl-inet.com/t/x/70690", "author": "a", "excerpt": ""},
+        ]) as category_fetch,
+        patch.object(bot, "fetch_discourse_tag_topics") as tag_fetch,
+        patch.object(bot, "fetch_discourse_topic", return_value={
+            "id": 70690, "title": "Join the Mango 2 Creator Program",
+            "url": "https://forum.gl-inet.com/t/x/70690",
+            "posts": [{"id": 1, "username": "a", "text": "Body text.", "cooked": "<p>Body text.</p>"}],
+        }),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    category_fetch.assert_called_once()
+    tag_fetch.assert_not_called()
+    channel.send.assert_awaited_once()
+    sent = channel.send.call_args.args[0]
+    assert "New forum post in `#announcement`" in sent
+    assert "Body text." in sent
+    assert "https://forum.gl-inet.com/t/x/70690" in sent
+
+
+def test_category_picker_lists_categories():
+    from app.web_forum_tags import render_forum_tags_body
+
+    html = render_forum_tags_body(
+        guild_name="G",
+        subscriptions=[],
+        channel_options=[{"id": "999", "name": "general", "type": "text"}],
+        render_select_input=lambda *a, **k: "",
+        available_tags=[{"slug": "kb", "name": "KB", "count": 97}],
+        available_categories=[{"slug": "announcement", "name": "Announcement", "topic_count": 93}],
+    )
+
+    assert '<optgroup label="Tags">' in html
+    assert '<optgroup label="Categories">' in html
+    assert '<option value="tag:kb">KB (97 topics)</option>' in html
+    assert '<option value="category:announcement">Announcement (93 topics)</option>' in html
+
+
+def test_schedule_defaults_to_every_twelve_hours():
+    assert bot.DEFAULT_FORUM_TAG_CHECK_SCHEDULE == "0 */12 * * *"
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: ordering, drain limits, and the feed_type unique key
+# ---------------------------------------------------------------------------
+
+
+def test_category_feed_requests_creation_order():
+    """Activity order would re-announce a years-old topic after a reply bump."""
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"topic_list": {"topics": []}}
+
+    with patch("app.discourse_api.requests.get", return_value=response) as get:
+        fetch_discourse_category_topics(
+            base_url="https://forum.gl-inet.com",
+            category_slug="announcement",
+            max_results=5,
+            source_name="Discourse category feed",
+            timeout_seconds=15,
+            user_agent="test",
+        )
+
+    assert get.call_args.kwargs["params"] == {"order": "created", "ascending": "false"}
+
+
+def test_delivery_cap_is_never_below_the_fetch_window():
+    """A pending topic must not age out of the next fetch window."""
+    assert bot.FORUM_TAG_MAX_POSTS_PER_RUN >= bot.FORUM_TAG_FETCH_LIMIT
+
+
+def _old_schema_db(path):
+    """Build a database with the pre-fix UNIQUE(guild_id, tag) constraint."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE forum_tag_subscriptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            guild_id INTEGER NOT NULL DEFAULT 0,
+            tag TEXT NOT NULL,
+            feed_type TEXT NOT NULL DEFAULT 'tag',
+            channel_id INTEGER NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            created_by_email TEXT NOT NULL DEFAULT '',
+            updated_by_email TEXT NOT NULL DEFAULT '',
+            last_checked_at TEXT NOT NULL DEFAULT '',
+            last_posted_at TEXT NOT NULL DEFAULT '',
+            last_error TEXT NOT NULL DEFAULT '',
+            baseline_initialized INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(guild_id, tag)
+        );
+        CREATE TABLE forum_tag_seen_posts (
+            subscription_id INTEGER NOT NULL,
+            topic_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(subscription_id, topic_id),
+            FOREIGN KEY(subscription_id) REFERENCES forum_tag_subscriptions(id) ON DELETE CASCADE
+        );
+        INSERT INTO forum_tag_subscriptions
+            (id, guild_id, tag, feed_type, channel_id, enabled, created_at, updated_at,
+             created_by_email, updated_by_email, last_checked_at, last_posted_at,
+             last_error, baseline_initialized)
+        VALUES (7, 123, 'kb', 'tag', 999, 1, '2026-01-01', '2026-01-01', '', '', '', '', '', 1);
+        INSERT INTO forum_tag_seen_posts VALUES (7, 111, '2026-01-01'), (7, 222, '2026-01-02');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_migration_admits_a_tag_and_a_category_with_the_same_slug(forum_db):
+    """UNIQUE(guild_id, tag) made the second insert look like a duplicate."""
+    bot.create_forum_tag_subscription(123, "announcement", 999, "a@example.com", feed_type="tag")
+    bot.create_forum_tag_subscription(123, "announcement", 999, "a@example.com", feed_type="category")
+
+    subs = bot.list_forum_tag_subscriptions(guild_id=123)
+    assert sorted(s["feed_type"] for s in subs) == ["category", "tag"]
+
+    # a true duplicate in the same guild still collides
+    import sqlite3
+
+    with pytest.raises(sqlite3.IntegrityError):
+        bot.create_forum_tag_subscription(123, "announcement", 999, "a@example.com", feed_type="category")
+
+
+def test_migration_rebuilds_old_schema_and_preserves_rows(tmp_path, monkeypatch):
+    """Existing subscription ids and seen-topic rows must survive the rebuild."""
+
+    db_path = tmp_path / "old.db"
+    _old_schema_db(db_path)
+
+    monkeypatch.setattr(bot, "DB_FILE", str(db_path))
+    bot.db_connection = None
+    try:
+        bot.ensure_db_schema()
+        conn = bot.get_db_connection()
+
+        # the unique index now spans feed_type
+        unique_cols = []
+        for idx in conn.execute("PRAGMA index_list(forum_tag_subscriptions)").fetchall():
+            if idx["unique"]:
+                cols = {c["name"] for c in conn.execute(f"PRAGMA index_info({idx['name']})").fetchall()}
+                if {"guild_id", "tag"} <= cols:
+                    unique_cols = cols
+                    break
+        assert "feed_type" in unique_cols, unique_cols
+
+        # the pre-existing subscription kept its id and baseline flag
+        row = conn.execute("SELECT * FROM forum_tag_subscriptions WHERE id = 7").fetchone()
+        assert row is not None
+        assert row["tag"] == "kb" and row["feed_type"] == "tag"
+        assert row["baseline_initialized"] == 1
+
+        # the cascade did not eat the seen-topic rows
+        seen = {
+            r["topic_id"]
+            for r in conn.execute(
+                "SELECT topic_id FROM forum_tag_seen_posts WHERE subscription_id = 7"
+            ).fetchall()
+        }
+        assert seen == {111, 222}
+    finally:
+        bot.db_connection = None
+
+# ---------------------------------------------------------------------------
+# Concurrency: bounded fetches, ordered sends, per-topic failure isolation
+# ---------------------------------------------------------------------------
+
+
+def _topics(ids):
+    return [
+        {"id": i, "title": f"T{i}", "url": f"https://forum.gl-inet.com/t/x/{i}",
+         "author": "a", "excerpt": ""}
+        for i in ids
+    ]
+
+
+def test_bodies_are_fetched_concurrently_but_bounded(forum_db):
+    """Fetches overlap, yet never exceed the configured concurrency."""
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+    in_flight = {"now": 0, "peak": 0}
+    guard = threading.Lock()
+
+    def timed_topic(**kw):
+        with guard:
+            in_flight["now"] += 1
+            in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        time.sleep(0.05)
+        with guard:
+            in_flight["now"] -= 1
+        return {"id": kw["topic_id"], "title": "T", "url": "u",
+                "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}]}
+
+    n = bot.FORUM_TAG_FETCH_CONCURRENCY * 2
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=_topics(range(400, 400 + n))),
+        patch.object(bot, "fetch_discourse_topic", side_effect=timed_topic),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    assert in_flight["peak"] > 1, "bodies were fetched serially"
+    assert in_flight["peak"] <= bot.FORUM_TAG_FETCH_CONCURRENCY, in_flight["peak"]
+    assert channel.send.await_count == n
+
+
+def test_messages_stay_in_feed_order_despite_concurrent_fetches(forum_db):
+    """Concurrency must not reorder the channel: oldest topic posts first."""
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+    # Deliberately make later topics answer faster than earlier ones.
+    def inverted_latency(**kw):
+        time.sleep(0.06 if kw["topic_id"] < 510 else 0.005)
+        return {"id": kw["topic_id"], "title": f"T{kw['topic_id']}", "url": "u",
+                "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}]}
+
+    ids = list(range(500, 510))
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=_topics(ids)),
+        patch.object(bot, "fetch_discourse_topic", side_effect=inverted_latency),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    assert channel.send.await_count == len(ids)
+    # order is proven by the url embedded in each message
+    positions = [
+        c.args[0].find(f"/x/{i}")
+        for i, c in zip(ids, channel.send.call_args_list, strict=True)
+    ]
+    assert all(p >= 0 for p in positions), "topic url missing from message"
+    assert positions == sorted(positions), "messages were sent out of feed order"
+
+
+def test_one_unreadable_topic_does_not_block_the_rest(forum_db):
+    """A single bad topic stays pending; its neighbours still post."""
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    def flaky(**kw):
+        if kw["topic_id"] == 602:
+            raise DiscourseApiError("boom")
+        return {"id": kw["topic_id"], "title": "T", "url": f"https://forum.gl-inet.com/t/x/{kw['topic_id']}",
+                "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}]}
+
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=_topics([601, 602, 603])),
+        patch.object(bot, "fetch_discourse_topic", side_effect=flaky),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    assert channel.send.await_count == 2
+    assert bot.load_forum_tag_seen_topic_ids(subscription["id"]) == {601, 603}
+    updated = bot.get_forum_tag_subscription(subscription["id"], guild_id=123)
+    assert "boom" in updated["last_error"]

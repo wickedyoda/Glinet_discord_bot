@@ -27,9 +27,23 @@ def process_forum_tags_submission(*, form, on_manage_forum_tags, actor_email: st
         messages.append(("Invalid forum tag action.", "error"))
         return None, messages
 
+    # The picker submits one combined "feed" value ("tag:kb", "category:announcement").
+    # Fall back to separate fields so a hand-posted form still works.
+    raw_feed = str(form.get("feed") or "").strip()
+    if raw_feed:
+        raw_type, _, raw_value = raw_feed.partition(":")
+        feed_type = raw_type.strip().casefold()
+        tag_value = raw_value.strip()
+    else:
+        feed_type = str(form.get("feed_type") or "tag").strip().casefold()
+        tag_value = str(form.get("tag") or "").strip()
+    if feed_type not in {"tag", "category"}:
+        feed_type = "tag"
+
     payload = {
         "action": action,
-        "tag": str(form.get("tag") or "").strip(),
+        "tag": tag_value,
+        "feed_type": feed_type,
         "channel_id": str(form.get("channel_id") or "").strip(),
         "subscription_id": str(form.get("subscription_id") or "").strip(),
         "enabled": str(form.get("enabled") or "").strip().lower(),
@@ -56,6 +70,8 @@ def render_forum_tags_body(
     tag_placeholder: str = "",
     available_tags: list[dict] | None = None,
     tag_options_error: str = "",
+    available_categories: list[dict] | None = None,
+    category_options_error: str = "",
 ):
     """Render the forum tag cross-post management page."""
     channel_labels = {
@@ -64,35 +80,54 @@ def render_forum_tags_body(
         if str(option.get("id") or "").strip()
     }
 
-    # When the forum's tag list loaded, offer a real dropdown of actual tags.
-    # Otherwise degrade to a text field and say why, rather than failing silently.
-    tag_picker = ""
+    # A single grouped dropdown of real tags and categories. The value carries the
+    # feed type ("tag:kb", "category:announcement") so one field is enough and no
+    # JavaScript is needed to keep a type selector in sync.
+    picker_groups = []
     if available_tags:
-        tag_options = [
-            {
-                "id": str(entry.get("slug") or entry.get("name") or "").strip(),
-                "label": "{} ({} topics)".format(
-                    entry.get("name") or entry.get("slug") or "",
-                    entry.get("count", 0),
-                ),
-            }
+        rows = "".join(
+            '<option value="tag:{}">{} ({} topics)</option>'.format(
+                escape(str(entry.get("slug") or entry.get("name") or "").strip(), quote=True),
+                escape(str(entry.get("name") or entry.get("slug") or "").strip()),
+                entry.get("count", 0),
+            )
             for entry in available_tags
             if str(entry.get("slug") or entry.get("name") or "").strip()
-        ]
-        if tag_options:
-            tag_picker = render_select_input(
-                "tag",
-                "",
-                tag_options,
-                placeholder="Select a forum tag...",
+        )
+        if rows:
+            picker_groups.append(f'<optgroup label="Tags">{rows}</optgroup>')
+
+    if available_categories:
+        rows = "".join(
+            '<option value="category:{}">{} ({} topics)</option>'.format(
+                escape(str(entry.get("slug") or "").strip(), quote=True),
+                escape(str(entry.get("name") or entry.get("slug") or "").strip()),
+                entry.get("topic_count", entry.get("count", 0)),
             )
-    if not tag_picker:
+            for entry in available_categories
+            if str(entry.get("slug") or "").strip()
+        )
+        if rows:
+            picker_groups.append(f'<optgroup label="Categories">{rows}</optgroup>')
+
+    picker_errors = " ".join(
+        escape(part) for part in (tag_options_error, category_options_error) if part
+    ).strip()
+
+    if picker_groups:
+        tag_picker = (
+            '<select name="feed" required>'
+            "<option value=''>Select a forum tag or category...</option>"
+            + "".join(picker_groups)
+            + "</select>"
+        )
+    else:
         tag_picker = (
             f'<input type="text" name="tag" placeholder="{escape(tag_placeholder or "e.g. KB")}" '
             'style="width:260px;" required />'
         )
-        if tag_options_error:
-            tag_picker += f'<div class="warning">{escape(tag_options_error)}</div>'
+    if picker_errors:
+        tag_picker += f'<div class="warning">{picker_errors}</div>'
 
     rows = []
     for subscription in subscriptions:

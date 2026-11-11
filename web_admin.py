@@ -3344,6 +3344,7 @@ def create_web_app(
     on_get_forum_tags=None,
     on_manage_forum_tags=None,
     on_get_forum_tag_options=None,
+    on_get_forum_category_options=None,
     on_get_reddit_auto_responds=None,
     on_manage_reddit_auto_responds=None,
     on_get_youtube_subscriptions=None,
@@ -9366,6 +9367,14 @@ def create_web_app(
         if not isinstance(tag_options, dict):
             tag_options = {"ok": False, "error": "Could not load forum tags.", "tags": []}
 
+        category_options = (
+            on_get_forum_category_options(selected_guild_id)
+            if callable(on_get_forum_category_options)
+            else {"ok": False, "error": "Forum category callbacks are not configured.", "categories": []}
+        )
+        if not isinstance(category_options, dict):
+            category_options = {"ok": False, "error": "Could not load forum categories.", "categories": []}
+
         payload = (
             on_get_forum_tags(selected_guild_id)
             if callable(on_get_forum_tags)
@@ -9403,6 +9412,8 @@ def create_web_app(
             render_select_input=_render_select_input,
             available_tags=tag_options.get("tags", []) or [],
             tag_options_error="" if tag_options.get("ok") else str(tag_options.get("error") or ""),
+            available_categories=category_options.get("categories", []) or [],
+            category_options_error="" if category_options.get("ok") else str(category_options.get("error") or ""),
         )
         return _render_page("Forum Tags", body, user["email"], bool(user.get("is_admin")))
 
@@ -10453,6 +10464,7 @@ def start_web_admin_interface(
     on_get_forum_tags=None,
     on_manage_forum_tags=None,
     on_get_forum_tag_options=None,
+    on_get_forum_category_options=None,
     on_get_reddit_auto_responds=None,
     on_manage_reddit_auto_responds=None,
     on_get_youtube_subscriptions=None,
@@ -10507,6 +10519,7 @@ def start_web_admin_interface(
         on_get_forum_tags=on_get_forum_tags,
         on_manage_forum_tags=on_manage_forum_tags,
         on_get_forum_tag_options=on_get_forum_tag_options,
+        on_get_forum_category_options=on_get_forum_category_options,
         on_get_youtube_subscriptions=on_get_youtube_subscriptions,
         on_manage_youtube_subscriptions=on_manage_youtube_subscriptions,
         on_get_linkedin_subscriptions=on_get_linkedin_subscriptions,
