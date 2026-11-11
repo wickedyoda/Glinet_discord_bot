@@ -1,0 +1,82 @@
+name: Web DAST Scan
+
+# OWASP ZAP baseline against the Flask web admin, booted locally by
+# scripts/ci_web_app.py. This is the only scan that exercises the app over HTTP:
+# Bandit/Semgrep read the source, Trivy reads the image, pip-audit reads the pins.
+#
+# `-I` keeps WARN-level alerts (missing COEP, CSP wildcard directive, non-storable
+# content) from failing the build; a FAIL-level alert still returns non-zero, which
+# is what gates the Docker build in docker-publish.yml.
+#
+# Baseline against this app currently reports FAIL-NEW: 0, WARN-NEW: 8, PASS: 60.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  zap-baseline:
+    name: OWASP ZAP Baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # 5
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # 6
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Start web admin
+        run: |
+          nohup python scripts/ci_web_app.py > /tmp/dast-web.log 2>&1 &
+          for _ in $(seq 1 40); do
+            if curl -sf -o /dev/null http://127.0.0.1:8082/healthz; then
+              echo "web admin is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "web admin did not start within 40s"
+          cat /tmp/dast-web.log
+          exit 1
+
+      - name: Run ZAP baseline scan
+        run: |
+          mkdir -p zap-report
+          # The ZAP container runs unprivileged and must be able to write its report.
+          chmod 777 zap-report
+          docker run --rm --network host \
+            -v "$PWD/zap-report:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py \
+              -t http://127.0.0.1:8082 \
+              -J report.json \
+              -r report.html \
+              -w report.md \
+              -I
+
+      - name: Upload ZAP report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: zap-baseline-report
+          path: zap-report/
+          if-no-files-found: warn
+
+      - name: Show web admin log on failure
+        if: failure()
+        run: tail -50 /tmp/dast-web.log || true
