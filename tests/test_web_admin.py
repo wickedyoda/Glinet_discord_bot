@@ -3843,3 +3843,119 @@ def test_freshdesk_viewer_page_save_command_permissions(tmp_path: Path):
 
     assert response.status_code == 200
     assert b"Command permissions updated" in response.data
+
+
+# ---------------------------------------------------------------------------
+# "Keep me signed in for 5 days" must not be defeated by the inactivity window
+#
+# These drive the real HTTP path. `session_transaction()` is not usable here: the
+# secure session cookie is scoped to docker.example and the helper reads the
+# default domain, so it reports an empty session for an authenticated client.
+# A controllable clock over web_admin.datetime is used instead.
+# ---------------------------------------------------------------------------
+
+import contextlib  # noqa: E402
+from datetime import datetime, timedelta  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+import web_admin as web_admin_module  # noqa: E402
+
+_AUTH_BASE = "https://docker.example:8443"
+
+
+@contextlib.contextmanager
+def _clock_offset(delta):
+    """Advance web_admin's notion of 'now' by `delta` for the duration."""
+    real_datetime = datetime
+
+    class _Clock(real_datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime.now(tz) + delta
+
+    with patch.object(web_admin_module, "datetime", _Clock):
+        yield
+
+
+def _login_remembering(client):
+    """Log in with the "Keep me signed in" checkbox ticked."""
+    login_page = client.get("/login", base_url=_AUTH_BASE)
+    assert login_page.status_code == 200
+    csrf = re.search(r'<meta name="csrf-token" content="([^"]+)"', login_page.get_data(as_text=True))
+    assert csrf is not None
+    response = client.post(
+        "/login",
+        data={"email": "admin@example.com", "password": "Ab!12xy", "remember_login": "1"},
+        base_url=_AUTH_BASE,
+        headers={"X-CSRF-Token": csrf.group(1)},
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    return response
+
+
+def _signed_in(client) -> bool:
+    page = client.get("/admin/dashboard", base_url=_AUTH_BASE, follow_redirects=True)
+    return b">Logout<" in page.data
+
+
+def test_remember_login_signs_the_user_in(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login_remembering(client)
+
+    assert _signed_in(client)
+
+
+def test_session_cookie_lifetime_is_five_days(tmp_path: Path):
+    """The cookie itself must carry the 5-day expiry."""
+    import datetime as _dt
+
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login_remembering(client)
+
+    cookie = client.get_cookie("session", domain="docker.example")
+    assert cookie is not None, "no session cookie was issued"
+    assert cookie.expires is not None, "session cookie has no expiry (browser-session only)"
+    remaining = cookie.expires - _dt.datetime.now(_dt.UTC)
+    assert _dt.timedelta(days=4, hours=23) < remaining <= _dt.timedelta(days=5)
+
+
+def test_remember_login_survives_the_standard_inactivity_timeout(tmp_path: Path, monkeypatch):
+    """The checkbox promises REMEMBER_LOGIN_DAYS on this device.
+
+    A 60-minute idle window applied to remember-mode sessions too, so the promise
+    was never kept: any gap longer than the inactivity timeout logged the user out.
+    """
+    monkeypatch.setenv("WEB_SESSION_TIMEOUT_MINUTES", "60")
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login_remembering(client)
+
+    with _clock_offset(timedelta(minutes=61)):
+        assert _signed_in(client), "remember-me session was killed by the inactivity window"
+
+
+def test_standard_login_still_times_out_after_the_inactivity_window(tmp_path: Path, monkeypatch):
+    """Sessions without remember-me keep the short idle window."""
+    # Pin the window: saving settings in this app writes into os.environ, so an
+    # earlier test can leave WEB_SESSION_TIMEOUT_MINUTES=120 behind and this
+    # assertion would silently test a different timeout.
+    monkeypatch.setenv("WEB_SESSION_TIMEOUT_MINUTES", "60")
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    with _clock_offset(timedelta(minutes=61)):
+        assert not _signed_in(client), "a non-remembered session should still time out"
+
+
+def test_remember_login_still_expires_after_five_days(tmp_path: Path):
+    """The absolute window must still end the session."""
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login_remembering(client)
+
+    with _clock_offset(timedelta(days=5, minutes=1)):
+        assert not _signed_in(client), "expired saved login was accepted"

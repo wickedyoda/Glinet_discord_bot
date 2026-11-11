@@ -643,7 +643,9 @@ ENV_FIELDS = [
     (
         "WEB_SESSION_TIMEOUT_MINUTES",
         "Web Auto Logout (Minutes)",
-        "Session inactivity timeout in minutes (allowed: 5, 10, 15, 20, 30, 45, 60, 90, 120).",
+        "Idle timeout for sessions that did not tick 'keep me signed in' "
+        "(allowed: 5, 10, 15, 20, 30, 45, 60, 90, 120). Remembered sessions are not "
+        f"cut short by this and last {REMEMBER_LOGIN_DAYS} days.",
     ),
     (
         "WEB_DISCORD_CATALOG_TTL_SECONDS",
@@ -3918,12 +3920,16 @@ def create_web_app(
                 _clear_auth_session()
                 flash("Your saved login expired. Please log in again.", "error")
                 return False
-
-        inactivity_limit = timedelta(minutes=_session_timeout_minutes())
-        if (now_dt - last_seen_dt) > inactivity_limit:
-            _clear_auth_session()
-            flash("You were logged out due to inactivity.", "error")
-            return False
+            # "Keep me signed in for N days" is an explicit promise about this
+            # device, so the short idle window must not apply here: with it, any
+            # gap longer than the inactivity timeout logged the user out and the
+            # promise was never kept. The absolute expiry above is the only bound.
+        else:
+            inactivity_limit = timedelta(minutes=_session_timeout_minutes())
+            if (now_dt - last_seen_dt) > inactivity_limit:
+                _clear_auth_session()
+                flash("You were logged out due to inactivity.", "error")
+                return False
 
         session["auth_mode"] = mode
         session["auth_last_seen"] = now_dt.isoformat()
