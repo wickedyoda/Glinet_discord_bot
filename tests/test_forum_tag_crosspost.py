@@ -8,6 +8,8 @@ the web admin callbacks.
 from __future__ import annotations
 
 import sqlite3
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
@@ -1251,3 +1253,112 @@ def test_migration_rebuilds_old_schema_and_preserves_rows(tmp_path, monkeypatch)
         assert seen == {111, 222}
     finally:
         bot.db_connection = None
+
+# ---------------------------------------------------------------------------
+# Concurrency: bounded fetches, ordered sends, per-topic failure isolation
+# ---------------------------------------------------------------------------
+
+
+def _topics(ids):
+    return [
+        {"id": i, "title": f"T{i}", "url": f"https://forum.gl-inet.com/t/x/{i}",
+         "author": "a", "excerpt": ""}
+        for i in ids
+    ]
+
+
+def test_bodies_are_fetched_concurrently_but_bounded(forum_db):
+    """Fetches overlap, yet never exceed the configured concurrency."""
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+    in_flight = {"now": 0, "peak": 0}
+    guard = threading.Lock()
+
+    def timed_topic(**kw):
+        with guard:
+            in_flight["now"] += 1
+            in_flight["peak"] = max(in_flight["peak"], in_flight["now"])
+        time.sleep(0.05)
+        with guard:
+            in_flight["now"] -= 1
+        return {"id": kw["topic_id"], "title": "T", "url": "u",
+                "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}]}
+
+    n = bot.FORUM_TAG_FETCH_CONCURRENCY * 2
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=_topics(range(400, 400 + n))),
+        patch.object(bot, "fetch_discourse_topic", side_effect=timed_topic),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    assert in_flight["peak"] > 1, "bodies were fetched serially"
+    assert in_flight["peak"] <= bot.FORUM_TAG_FETCH_CONCURRENCY, in_flight["peak"]
+    assert channel.send.await_count == n
+
+
+def test_messages_stay_in_feed_order_despite_concurrent_fetches(forum_db):
+    """Concurrency must not reorder the channel: oldest topic posts first."""
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+    # Deliberately make later topics answer faster than earlier ones.
+    def inverted_latency(**kw):
+        time.sleep(0.06 if kw["topic_id"] < 510 else 0.005)
+        return {"id": kw["topic_id"], "title": f"T{kw['topic_id']}", "url": "u",
+                "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}]}
+
+    ids = list(range(500, 510))
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=_topics(ids)),
+        patch.object(bot, "fetch_discourse_topic", side_effect=inverted_latency),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    assert channel.send.await_count == len(ids)
+    # order is proven by the url embedded in each message
+    positions = [
+        c.args[0].find(f"/x/{i}")
+        for i, c in zip(ids, channel.send.call_args_list, strict=True)
+    ]
+    assert all(p >= 0 for p in positions), "topic url missing from message"
+    assert positions == sorted(positions), "messages were sent out of feed order"
+
+
+def test_one_unreadable_topic_does_not_block_the_rest(forum_db):
+    """A single bad topic stays pending; its neighbours still post."""
+    subscription = _make_subscription(forum_db)
+    bot.mark_forum_tag_baseline_initialized(subscription["id"])
+
+    channel = MagicMock()
+    channel.send = AsyncMock()
+
+    def flaky(**kw):
+        if kw["topic_id"] == 602:
+            raise DiscourseApiError("boom")
+        return {"id": kw["topic_id"], "title": "T", "url": f"https://forum.gl-inet.com/t/x/{kw['topic_id']}",
+                "posts": [{"id": 1, "username": "a", "text": "Body.", "cooked": "<p>Body.</p>"}]}
+
+    with (
+        patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()),
+        patch.object(bot, "fetch_discourse_tag_topics", return_value=_topics([601, 602, 603])),
+        patch.object(bot, "fetch_discourse_topic", side_effect=flaky),
+        patch.object(bot, "resolve_forum_tag_channel", new=AsyncMock(return_value=(channel, ""))),
+        patch.object(bot, "is_managed_guild_id", return_value=True),
+    ):
+        _run(bot.process_forum_tag_subscription(subscription))
+
+    assert channel.send.await_count == 2
+    assert bot.load_forum_tag_seen_topic_ids(subscription["id"]) == {601, 603}
+    updated = bot.get_forum_tag_subscription(subscription["id"], guild_id=123)
+    assert "boom" in updated["last_error"]
