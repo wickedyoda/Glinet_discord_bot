@@ -14,7 +14,13 @@ from app.service_monitor import GLINET_DOMAIN_MONITOR_PRESETS, normalize_service
 from web_admin import create_web_app
 
 
-def _make_app(tmp_path: Path, logger=None, refresh_catalog=None, discord_catalog=None):
+def _make_app(
+    tmp_path: Path,
+    logger=None,
+    refresh_catalog=None,
+    discord_catalog=None,
+    member_activity_payload=None,
+):
     env_file = tmp_path / "env.env"
     env_file.write_text(
         "\n".join(
@@ -807,12 +813,13 @@ def _make_app(tmp_path: Path, logger=None, refresh_catalog=None, discord_catalog
         },
         on_get_members=get_members,
         on_manage_member=manage_member,
-        on_get_member_activity=lambda guild_id, role_id=None: {
+        on_get_member_activity=member_activity_payload
+        or (lambda guild_id, role_id=None: {
             "ok": True,
             "top_limit": 20,
             "selected_role_id": int(role_id or 0),
             "excluded_role_ids": [],
-            "excluded_role_names": ["Employee", "Admin", "Gl.iNet Moderator"],
+            "excluded_role_names": [],
             "windows": [
                 {
                     "key": "last_180_days",
@@ -843,7 +850,7 @@ def _make_app(tmp_path: Path, logger=None, refresh_catalog=None, discord_catalog
                     ],
                 }
             ],
-        },
+        }),
         on_export_member_activity=lambda guild_id, role_id=None: {
             "ok": True,
             "filename": "member_activity_test.zip",
@@ -2581,7 +2588,9 @@ def test_member_activity_page_renders_tables(tmp_path: Path):
     assert b"Top 20 by role" in response.data
     assert b"All eligible members" in response.data
     assert b"@Member" in response.data
-    assert b"@Employee" not in response.data
+    # Staff roles are selectable now: "allowed role" no longer implies "excluded
+    # from member activity" (see test_member_activity_role_dropdown_lists_staff_roles).
+    assert b"@Employee" in response.data
     assert b"2026-03-15 00:00:00 UTC" in response.data
     assert b"2026-03-15T00:00:00+00:00" not in response.data
 
@@ -3959,3 +3968,54 @@ def test_remember_login_still_expires_after_five_days(tmp_path: Path):
 
     with _clock_offset(timedelta(days=5, minutes=1)):
         assert not _signed_in(client), "expired saved login was accepted"
+# ---------------------------------------------------------------------------
+# Member activity: every role is selectable unless explicitly excluded
+# ---------------------------------------------------------------------------
+
+
+def test_member_activity_role_dropdown_lists_staff_roles(tmp_path: Path):
+    """The Employee role used to be filtered out of the role picker.
+
+    Its name was in DEFAULT_ALLOWED_ROLE_NAMES, and "allowed role" also meant
+    "excluded from member activity", so staff activity was invisible and the role
+    was not even selectable.
+    """
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    page = client.get(
+        "/admin/member-activity", base_url="https://docker.example:8443", follow_redirects=True
+    )
+    assert page.status_code == 200
+    body = page.get_data(as_text=True)
+
+    assert "@Employee" in body, "the Employee role is missing from the role dropdown"
+    assert "@Member" in body, "the ordinary Member role went missing from the dropdown"
+
+
+def test_member_activity_dropdown_still_hides_explicitly_excluded_roles(tmp_path: Path):
+    """An env-configured exclusion must still remove the role from the picker."""
+    app = _make_app(
+        tmp_path,
+        member_activity_payload=lambda guild_id, role_id=None: {
+            "ok": True,
+            "top_limit": 20,
+            "selected_role_id": int(role_id or 0),
+            "excluded_role_ids": ["222"],
+            "excluded_role_names": [],
+            "windows": [],
+        },
+    )
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    page = client.get(
+        "/admin/member-activity", base_url="https://docker.example:8443", follow_redirects=True
+    )
+    body = page.get_data(as_text=True)
+
+    assert "@Employee" not in body, "an excluded role was still offered in the dropdown"
+    assert "@Member" in body

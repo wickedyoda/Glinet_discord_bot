@@ -78,10 +78,6 @@ def build_manager(*, conn=None):
         member_activity_window_specs=[("last_24h", "Last 24 Hours", timedelta(days=1))],
         member_activity_web_top_limit=20,
         member_activity_recent_retention_days=90,
-        has_moderator_access=lambda member: False,
-        has_allowed_role=lambda member: False,
-        moderator_role_ids=[1, 2],
-        default_allowed_role_names={"Admin", "Employee"},
     )
     if connection is not None:
         # Mirror production startup: ensure the schema once (initialize_storage
@@ -235,3 +231,62 @@ def test_export_member_activity_archive_escapes_formula_like_cells():
     assert "'=cmd" in summary_csv
     assert "'+display" in summary_csv
     assert "'+display" in window_csv
+
+# ---------------------------------------------------------------------------
+# Role eligibility: every role is monitored unless explicitly excluded
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch  # noqa: E402
+
+
+class DummyMember:
+    def __init__(self, role_ids=(7,), is_bot=False):
+        self.bot = is_bot
+        self.roles = [DummyRole(role_id=rid, name=f"role-{rid}") for rid in role_ids]
+
+
+def _eligible(role_ids=(7,), excluded=(), role_id=None):
+    manager = build_manager()
+    manager.excluded_role_ids = tuple(excluded)
+    with patch("discord.Member", DummyMember):
+        return manager.is_member_activity_ranking_eligible(
+            DummyMember(role_ids=role_ids), role_id=role_id
+        )
+
+
+def test_staff_role_is_monitored_by_default():
+    """Employee used to be excluded because "allowed role" implied "not monitored"."""
+    assert _eligible(role_ids=(7,)) is True
+
+
+def test_a_role_is_excluded_only_when_configured():
+    assert _eligible(role_ids=(7, 999), excluded=(999,)) is False
+    # a different role in the exclusion list must not affect this member
+    assert _eligible(role_ids=(7,), excluded=(999,)) is True
+
+
+def test_bots_are_still_excluded():
+    manager = build_manager()
+    with patch("discord.Member", DummyMember):
+        assert manager.is_member_activity_ranking_eligible(DummyMember(is_bot=True)) is False
+
+
+def test_role_dropdown_filter_still_applies():
+    """Selecting a role keeps only members holding it."""
+    assert _eligible(role_ids=(7, 8), role_id=8) is True
+    assert _eligible(role_ids=(7,), role_id=8) is False
+
+
+def test_excluded_role_env_is_parsed_from_ids_and_mentions():
+    import bot as bot_module
+
+    parsed = bot_module.normalize_role_ids("111, 222")
+    assert parsed == [111, 222]
+    assert bot_module.normalize_role_ids("<@&333>") == [333]
+    assert bot_module.normalize_role_ids("") == []
+
+
+def test_excluded_role_constant_defaults_to_empty():
+    import bot as bot_module
+
+    assert isinstance(bot_module.MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS, set)

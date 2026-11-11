@@ -395,6 +395,12 @@ ENV_FIELDS = [
     ),
     ("ADMIN_ROLE_ID", "Admin Role ID", "Additional role ID allowed to moderate."),
     (
+        "MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS",
+        "Member Activity Excluded Role IDs",
+        "Comma-separated role IDs to hide from member-activity rankings. Leave blank to "
+        "monitor every role, including staff roles such as Employee.",
+    ),
+    (
         "CSV_ROLE_ASSIGN_MAX_NAMES",
         "CSV Role Max Names",
         "Max unique names accepted per CSV bulk-assign.",
@@ -782,6 +788,7 @@ ENV_FIELD_SECTIONS = (
             "MANAGED_GUILD_IDS",
             "MODERATOR_ROLE_ID",
             "ADMIN_ROLE_ID",
+            "MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS",
             "ENABLE_MEMBERS_INTENT",
             "COMMAND_RESPONSES_EPHEMERAL",
         ),

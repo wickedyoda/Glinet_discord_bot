@@ -32,10 +32,7 @@ class MemberActivityManager:
         member_activity_window_specs,
         member_activity_web_top_limit: int,
         member_activity_recent_retention_days: int,
-        has_moderator_access,
-        has_allowed_role,
-        moderator_role_ids,
-        default_allowed_role_names,
+        excluded_role_ids=(),
     ):
         self.get_db_connection = get_db_connection
         self.db_lock = db_lock
@@ -51,10 +48,9 @@ class MemberActivityManager:
         self.member_activity_window_specs = list(member_activity_window_specs)
         self.member_activity_web_top_limit = int(member_activity_web_top_limit)
         self.member_activity_recent_retention_days = int(member_activity_recent_retention_days)
-        self.has_moderator_access = has_moderator_access
-        self.has_allowed_role = has_allowed_role
-        self.moderator_role_ids = tuple(int(role_id) for role_id in moderator_role_ids)
-        self.default_allowed_role_names = tuple(str(name) for name in default_allowed_role_names)
+        # Roles never shown in the activity ranking. Empty means every role is
+        # monitored, including staff roles.
+        self.excluded_role_ids = tuple(int(role_id) for role_id in excluded_role_ids)
         self.recent_prune_marker = ""
         self.encryption_migration_checked = False
 
@@ -476,13 +472,22 @@ class MemberActivityManager:
         return role_id if role_id > 0 else None
 
     def is_member_activity_ranking_eligible(self, member: discord.Member | None, role_id: int | None = None):
+        """Whether a member appears in the activity ranking.
+
+        Every role is monitored; only roles listed in
+        MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS are dropped. Staff status is not an
+        exclusion on its own -- the employee role used to be hidden here because
+        it counted as an "allowed role", which made staff activity invisible.
+        """
         import discord
 
         if not isinstance(member, discord.Member):
             return False
         if member.bot:
             return False
-        if self.has_moderator_access(member) or self.has_allowed_role(member):
+        if self.excluded_role_ids and any(
+            role.id in self.excluded_role_ids for role in member.roles
+        ):
             return False
         if role_id is not None and not any(role.id == role_id for role in member.roles):
             return False
@@ -725,8 +730,11 @@ class MemberActivityManager:
             "generated_at": datetime.now(UTC).isoformat(),
             "top_limit": self.member_activity_web_top_limit,
             "selected_role_id": safe_role_id or 0,
-            "excluded_role_ids": sorted(self.moderator_role_ids),
-            "excluded_role_names": sorted(self.default_allowed_role_names),
+            # What the UI hides from the role picker. Driven only by
+            # MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS -- staff roles are no longer
+            # excluded by virtue of being staff.
+            "excluded_role_ids": sorted(self.excluded_role_ids),
+            "excluded_role_names": [],
             "windows": windows,
         }
 

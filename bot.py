@@ -3136,10 +3136,7 @@ def _get_member_activity_manager():
             member_activity_window_specs=MEMBER_ACTIVITY_WINDOW_SPECS,
             member_activity_web_top_limit=MEMBER_ACTIVITY_WEB_TOP_LIMIT,
             member_activity_recent_retention_days=MEMBER_ACTIVITY_RECENT_RETENTION_DAYS,
-            has_moderator_access=has_moderator_access,
-            has_allowed_role=has_allowed_role,
-            moderator_role_ids=MODERATOR_ROLE_IDS,
-            default_allowed_role_names=DEFAULT_ALLOWED_ROLE_NAMES,
+            excluded_role_ids=MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS,
         )
     return member_activity_manager
 
@@ -5835,6 +5832,16 @@ def normalize_role_ids(values):
         seen.add(role_id)
         normalized.append(role_id)
     return normalized
+
+
+# Roles never shown in member-activity rankings, as comma-separated role IDs
+# (e.g. "1294957416294645771,1138302148292116551"). Empty by default, so every
+# role is monitored -- including staff roles such as Employee, which used to be
+# hidden because "allowed role" also meant "excluded from activity".
+# Declared here because it reuses normalize_role_ids().
+MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS = set(
+    normalize_role_ids(os.getenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", ""))
+)
 
 
 def normalize_command_permission_rule(raw_rule):
