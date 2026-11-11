@@ -15,7 +15,12 @@ import pytest
 import test_web_admin
 
 import bot
-from app.discourse_api import DiscourseApiError, extract_discourse_topics, fetch_discourse_tag_topics
+from app.discourse_api import (
+    DiscourseApiError,
+    extract_discourse_topics,
+    fetch_discourse_tag_topics,
+    fetch_discourse_tags,
+)
 from app.forum_tag_web_callbacks import ForumTagWebCallbacks
 
 _login_as = test_web_admin._login_as
@@ -433,6 +438,7 @@ def _callbacks():
         normalize_forum_tag_name=bot.normalize_forum_tag_name,
         list_forum_tag_subscriptions=lambda guild_id=None, enabled_only=False: [],
         get_forum_tag_subscription=lambda subscription_id, guild_id=None: None,
+        fetch_forum_tag_options=lambda guild_id: {"ok": True, "tags": [], "error": ""},
         create_forum_tag_subscription=MagicMock(),
         update_forum_tag_subscription=MagicMock(return_value=True),
         set_forum_tag_subscription_enabled=MagicMock(return_value=True),
@@ -840,3 +846,138 @@ def test_forum_tags_page_offers_only_text_channels(tmp_path):
     assert "general" in html
     assert "random" in html
     assert "voice-lounge" not in html
+
+# ---------------------------------------------------------------------------
+# Live tag-list integration
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_discourse_tags_parses_and_sorts():
+    payload = {
+        "tags": [
+            {"id": 1, "name": "Featured", "slug": "featured", "count": 59},
+            {"id": 2, "name": "KB", "slug": "kb", "count": 97},
+            {"id": 3, "name": "KB", "slug": "kb", "count": 1},  # duplicate slug
+            "not-a-dict",
+        ]
+    }
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = payload
+
+    with patch("app.discourse_api.requests.get", return_value=response) as get:
+        tags = fetch_discourse_tags(
+            base_url="https://forum.gl-inet.com",
+            timeout_seconds=15,
+            source_name="Discourse tag list",
+            user_agent="test",
+        )
+
+    assert get.call_args.args[0] == "https://forum.gl-inet.com/tags.json"
+    # most-used first, duplicate slug dropped
+    assert [t["slug"] for t in tags] == ["kb", "featured"]
+    assert tags[0]["count"] == 97
+
+
+def test_fetch_forum_tag_options_returns_tags():
+    with patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()), \
+         patch.object(bot, "fetch_discourse_tags", return_value=[
+             {"slug": "kb", "name": "KB", "count": 97},
+             {"slug": "featured", "name": "Featured", "count": 59},
+         ]):
+        result = bot.fetch_forum_tag_options(123)
+
+    assert result["ok"] is True
+    assert [t["slug"] for t in result["tags"]] == ["kb", "featured"]
+
+
+def test_fetch_forum_tag_options_survives_a_failure():
+    with patch.object(bot, "resolve_discourse_forum_settings", return_value=_config()), \
+         patch.object(bot, "fetch_discourse_tags", side_effect=DiscourseApiError("boom")):
+        result = bot.fetch_forum_tag_options(123)
+
+    assert result["ok"] is False
+    assert result["tags"] == []
+    assert "boom" in result["error"]
+
+
+def test_page_offers_a_dropdown_of_real_tags():
+    from app.web_forum_tags import render_forum_tags_body
+
+    html = render_forum_tags_body(
+        guild_name="G",
+        subscriptions=[],
+        channel_options=[{"id": "999", "name": "general", "type": "text"}],
+        render_select_input=lambda name, value, options, placeholder="": (
+            f'<select name="{name}">'
+            + "".join(
+                f'<option value="{o.get("id")}">{o.get("label") or o.get("name")}</option>'
+                for o in options
+            )
+            + "</select>"
+        ),
+        available_tags=[
+            {"slug": "kb", "name": "KB", "count": 97},
+            {"slug": "featured", "name": "Featured", "count": 59},
+        ],
+    )
+
+    assert '<select name="tag">' in html
+    assert '<option value="kb">KB (97 topics)</option>' in html
+    assert '<option value="featured">Featured (59 topics)</option>' in html
+    # the free-text fallback must not also be present
+    assert 'name="tag" placeholder' not in html
+
+
+def test_page_falls_back_to_text_input_when_tags_unavailable():
+    from app.web_forum_tags import render_forum_tags_body
+
+    html = render_forum_tags_body(
+        guild_name="G",
+        subscriptions=[],
+        channel_options=[{"id": "999", "name": "general", "type": "text"}],
+        render_select_input=lambda name, value, options, placeholder="": f'<select name="{name}"></select>',
+        available_tags=[],
+        tag_options_error="Could not load forum tags: Forum is rate limiting requests.",
+    )
+
+    assert '<select name="tag">' not in html
+    assert 'name="tag" placeholder' in html
+    assert "rate limiting" in html
+
+
+def test_route_loads_the_live_tag_list(tmp_path):
+    from web_admin import create_web_app
+
+    app = create_web_app(
+        data_dir=str(tmp_path),
+        env_file_path=str(tmp_path / "e.env"),
+        tag_responses_file=str(tmp_path / "t.json"),
+        default_admin_email="admin@example.com",
+        default_admin_password="Ab!12xy",
+        on_get_guilds=lambda: {
+            "ok": True,
+            "guilds": [
+                {"id": "1234567890", "name": "Test Guild", "member_count": 1, "icon_url": "", "is_primary": True}
+            ],
+        },
+        on_get_discord_catalog=lambda guild_id: {
+            "ok": True,
+            "channels": [{"id": "999", "name": "general", "type": "text", "position": 0}],
+            "roles": [],
+        },
+        on_get_forum_tags=lambda guild_id: {"ok": True, "subscriptions": []},
+        on_get_forum_tag_options=lambda guild_id: {
+            "ok": True,
+            "tags": [{"slug": "kb", "name": "KB", "count": 97}],
+            "error": "",
+        },
+    )
+
+    client = app.test_client()
+    _login_as(client, "admin@example.com", "Ab!12xy")
+    _select_guild(client)
+    html = client.get("/admin/forum-tags", base_url="https://docker.example:8443").get_data(as_text=True)
+
+    assert "<select name='tag'>" in html
+    assert "KB (97 topics) (kb)" in html

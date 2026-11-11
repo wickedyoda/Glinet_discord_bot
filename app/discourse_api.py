@@ -140,6 +140,56 @@ def search_discourse_topics(
     return extract_discourse_topics(data or {}, base_url=base_url, max_results=max_results)
 
 
+def fetch_discourse_tags(
+    *,
+    base_url: str,
+    timeout_seconds: int,
+    source_name: str,
+    user_agent: str,
+    api_key: str = "",
+    api_username: str = "",
+) -> list[dict]:
+    """Fetch the forum's available tags, most-used first.
+
+    Used by the web admin picker so an admin chooses a real tag instead of typing
+    one from memory. Slugs are used as the value because they are the canonical,
+    case-insensitive form the tag feed accepts.
+    """
+    response = requests.get(
+        f"{base_url.rstrip('/')}/tags.json",
+        timeout=timeout_seconds,
+        headers=build_discourse_headers(user_agent=user_agent, api_key=api_key, api_username=api_username),
+    )
+    _raise_for_discourse_status(response, source_name, query="tags")
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise DiscourseApiError(f"{source_name} returned invalid JSON.") from exc
+
+    raw_tags = (data or {}).get("tags", [])
+    if not isinstance(raw_tags, list):
+        return []
+
+    tags = []
+    seen_slugs = set()
+    for entry in raw_tags:
+        if not isinstance(entry, dict):
+            continue
+        slug = str(entry.get("slug") or entry.get("name") or "").strip().lstrip("#")
+        name = str(entry.get("name") or entry.get("text") or slug).strip()
+        if not slug or slug in seen_slugs:
+            continue
+        seen_slugs.add(slug)
+        try:
+            count = int(entry.get("count") or 0)
+        except (TypeError, ValueError):
+            count = 0
+        tags.append({"slug": slug, "name": name or slug, "count": count})
+
+    tags.sort(key=lambda item: (-item["count"], item["name"].casefold()))
+    return tags
+
+
 def fetch_discourse_tag_topics(
     *,
     base_url: str,

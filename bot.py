@@ -64,6 +64,7 @@ from app.discourse_api import (
     DiscourseRateLimitError,
     clean_discourse_text,
     fetch_discourse_tag_topics,
+    fetch_discourse_tags,
     fetch_discourse_topic,
     search_discourse_topics,
 )
@@ -9912,6 +9913,7 @@ def get_forum_tag_web_callbacks():
             normalize_forum_tag_name=normalize_forum_tag_name,
             list_forum_tag_subscriptions=list_forum_tag_subscriptions,
             get_forum_tag_subscription=get_forum_tag_subscription,
+            fetch_forum_tag_options=fetch_forum_tag_options,
             create_forum_tag_subscription=create_forum_tag_subscription,
             update_forum_tag_subscription=update_forum_tag_subscription,
             set_forum_tag_subscription_enabled=set_forum_tag_subscription_enabled,
@@ -11479,6 +11481,30 @@ def format_forum_tag_post_message(tag: str, topic: dict) -> str:
     return trim_discord_message(separator.join(parts))
 
 
+def fetch_forum_tag_options(guild_id: int) -> dict:
+    """Return the forum's available tags for the web admin picker.
+
+    Resolved per guild so a server carrying its own discourse_api_key still gets
+    its own tag list. Never raises: the picker degrades to a text field on failure.
+    """
+    try:
+        config = resolve_discourse_forum_settings(guild_id)
+        tags = fetch_discourse_tags(
+            base_url=config["base_url"],
+            timeout_seconds=config["timeout_seconds"],
+            source_name="Discourse tag list",
+            user_agent=DISCOURSE_USER_AGENT,
+            api_key=config["api_key"],
+            api_username=config["api_username"],
+        )
+    except (DiscourseApiError, DiscourseRateLimitError) as exc:
+        return {"ok": False, "error": f"Could not load forum tags: {exc}", "tags": []}
+    except Exception:
+        logger.exception("Failed to load forum tag options for guild %s", guild_id)
+        return {"ok": False, "error": "Unexpected error while loading forum tags.", "tags": []}
+    return {"ok": True, "tags": tags, "error": ""}
+
+
 async def process_forum_tag_subscription(subscription: dict):
     subscription_id = int(subscription.get("id") or 0)
     guild_id = int(subscription.get("guild_id") or 0)
@@ -13013,6 +13039,7 @@ def start_web_admin_server():
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_forum_tags=get_forum_tag_web_callbacks().run_web_get_forum_tags,
                     on_manage_forum_tags=get_forum_tag_web_callbacks().run_web_manage_forum_tags,
+                    on_get_forum_tag_options=get_forum_tag_web_callbacks().run_web_get_forum_tag_options,
                     on_get_reddit_auto_responds=run_web_get_reddit_auto_responds,
                     on_manage_reddit_auto_responds=run_web_manage_reddit_auto_responds,
                     on_get_youtube_subscriptions=run_web_get_youtube_subscriptions,

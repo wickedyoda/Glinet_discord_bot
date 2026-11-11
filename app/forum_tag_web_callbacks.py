@@ -13,6 +13,7 @@ class ForumTagWebCallbacks:
         normalize_forum_tag_name,
         list_forum_tag_subscriptions,
         get_forum_tag_subscription,
+        fetch_forum_tag_options,
         create_forum_tag_subscription,
         update_forum_tag_subscription,
         set_forum_tag_subscription_enabled,
@@ -25,6 +26,7 @@ class ForumTagWebCallbacks:
         self.normalize_target_guild_id = normalize_target_guild_id
         self.normalize_forum_tag_name = normalize_forum_tag_name
         self.list_forum_tag_subscriptions = list_forum_tag_subscriptions
+        self.fetch_forum_tag_options = fetch_forum_tag_options
         self.get_forum_tag_subscription = get_forum_tag_subscription
         self.create_forum_tag_subscription = create_forum_tag_subscription
         self.update_forum_tag_subscription = update_forum_tag_subscription
@@ -50,6 +52,14 @@ class ForumTagWebCallbacks:
         except Exception:
             self.logger.exception("Failed to build forum tag subscriptions payload for web admin")
             return {"ok": False, "error": "Unexpected error while loading forum tag subscriptions."}
+
+    def run_web_get_forum_tag_options(self, guild_id: int):
+        """Available forum tags for the picker, sorted by usage."""
+        try:
+            return self.fetch_forum_tag_options(guild_id)
+        except Exception:
+            self.logger.exception("Failed to load forum tag options for web admin")
+            return {"ok": False, "error": "Unexpected error while loading forum tags.", "tags": []}
 
     def run_web_manage_forum_tags(self, payload: dict, actor_email: str, guild_id: int, actor_display_name: str = ""):
         if not isinstance(payload, dict):
