@@ -10779,7 +10779,9 @@ def save_firmware_state(seen_ids: set[str], signature_snapshot: dict[str, str], 
 def parse_firmware_entries(page_html: str):
     from bs4 import BeautifulSoup
 
-    soup = BeautifulSoup(page_html, "lxml")
+    # html.parser, not lxml: lxml is not a declared dependency and is absent from
+    # the image, so "lxml" raised FeatureNotFound on every real run.
+    soup = BeautifulSoup(page_html, "html.parser")
     sync_line = soup.select_one(".sync-line")
     sync_label = clean_search_text(sync_line.get_text(" ", strip=True)) if sync_line else ""
     entries = []
@@ -13427,7 +13429,7 @@ def fetch_reddit_search_posts_via_html(query: str):
 
     from bs4 import BeautifulSoup
 
-    soup = BeautifulSoup(response.text, "lxml")
+    soup = BeautifulSoup(response.text, "html.parser")
     posts = []
     seen_links = set()
     for container in soup.select("div.search-result.search-result-link"):
