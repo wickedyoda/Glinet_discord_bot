@@ -55,6 +55,7 @@ def render_forum_tags_body(
     render_select_input,
     tag_placeholder: str = "",
     available_tags: list[dict] | None = None,
+    tag_options_error: str = "",
 ):
     """Render the forum tag cross-post management page."""
     channel_labels = {
@@ -63,14 +64,35 @@ def render_forum_tags_body(
         if str(option.get("id") or "").strip()
     }
 
-    tag_datalist = ""
+    # When the forum's tag list loaded, offer a real dropdown of actual tags.
+    # Otherwise degrade to a text field and say why, rather than failing silently.
+    tag_picker = ""
     if available_tags:
-        options = "".join(
-            f"<option value='{escape(str(t.get('name') or ''), quote=True)}'>"
-            for t in available_tags
-            if str(t.get("name") or "").strip()
+        tag_options = [
+            {
+                "id": str(entry.get("slug") or entry.get("name") or "").strip(),
+                "label": "{} ({} topics)".format(
+                    entry.get("name") or entry.get("slug") or "",
+                    entry.get("count", 0),
+                ),
+            }
+            for entry in available_tags
+            if str(entry.get("slug") or entry.get("name") or "").strip()
+        ]
+        if tag_options:
+            tag_picker = render_select_input(
+                "tag",
+                "",
+                tag_options,
+                placeholder="Select a forum tag...",
+            )
+    if not tag_picker:
+        tag_picker = (
+            f'<input type="text" name="tag" placeholder="{escape(tag_placeholder or "e.g. KB")}" '
+            'style="width:260px;" required />'
         )
-        tag_datalist = f"<datalist id='forum-tag-suggestions'>{options}</datalist>"
+        if tag_options_error:
+            tag_picker += f'<div class="warning">{escape(tag_options_error)}</div>'
 
     rows = []
     for subscription in subscriptions:
@@ -127,9 +149,7 @@ def render_forum_tags_body(
           <form method="post">
             <input type="hidden" name="action" value="add" />
             <label>Forum Tag</label>
-            <input type="text" name="tag" list="forum-tag-suggestions" placeholder="{escape(tag_placeholder or 'e.g. KB')}"
-                   style="width:260px;" required />
-            {tag_datalist}
+            {tag_picker}
             <label>Discord Channel</label>
             {channel_select}
             <div style="margin-top:14px;">
