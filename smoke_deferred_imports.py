@@ -71,18 +71,36 @@ def main():
         lambda: parse_announcement_topics(ann_html, "https://forum.gl-inet.com/c/announcement"),
     )
 
-    # 4. beta_programs (bs4, html.parser)
-    import app.beta_programs as bp
+    # 4. beta_programs -- parse_beta_testing_programs() owns the deferred import.
+    # Uses a snippet trimmed from the live page: hand-written markup does not reach
+    # the section and the function raises, which would look like a broken import.
+    from app.beta_programs import parse_beta_testing_programs
 
-    bp_html = '<html><body><select name="x"><option value="1">One</option></select></body></html>'
-    ok &= check(
-        "beta_programs parse",
-        lambda: bp.parse_beta_programs_page(bp_html, "https://example.com")
-        if hasattr(bp, "parse_beta_programs_page")
-        else bp._extract_beta_programs_from_select_inputs(
-            __import__("bs4").BeautifulSoup(bp_html, "html.parser"), "https://example.com"
-        ),
+    bp_html = (Path(__file__).parent / "tests" / "fixtures" / "beta_programs_snippet.html").read_text(
+        encoding="utf-8"
     )
+    ok &= check(
+        "beta_programs.parse_beta_testing_programs",
+        lambda: parse_beta_testing_programs(bp_html, "https://www.gl-inet.com/beta-testing/"),
+    )
+
+    # 5. bot.fetch_reddit_search_posts_via_html -- own deferred import, and it is
+    # reached through a fallback that only catches requests errors, so a broken
+    # import here takes out the whole path.
+    from unittest.mock import MagicMock
+
+    reddit_html = (
+        '<html><body><a href="https://www.reddit.com/r/x/comments/abc/t/"></a></body></html>'
+    )
+    fake_response = MagicMock()
+    fake_response.text = reddit_html
+    fake_response.raise_for_status.return_value = None
+    original_get = bot.get
+    bot.get = lambda *a, **k: fake_response
+    try:
+        ok &= check("bot.fetch_reddit_search_posts_via_html", lambda: bot.fetch_reddit_search_posts_via_html("test"))
+    finally:
+        bot.get = original_get
 
     print("\nAfter the calls:")
     for mod in ("bs4", "openpyxl", "numpy", "PIL"):
