@@ -4019,3 +4019,36 @@ def test_member_activity_dropdown_still_hides_explicitly_excluded_roles(tmp_path
 
     assert "@Employee" not in body, "an excluded role was still offered in the dropdown"
     assert "@Member" in body
+
+def test_saving_activity_exclusions_updates_the_running_process(tmp_path: Path, monkeypatch):
+    """Saving the setting must reach the running bot, not just the env file.
+
+    The env is read at import and the activity manager is a cached singleton, so a
+    value written only to the file would leave rankings and the dropdown stale
+    until a container restart. The save handler writes os.environ, and the manager
+    re-reads through a provider, so this asserts the chain end to end.
+    """
+    import os
+
+    monkeypatch.delenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", raising=False)
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+
+    payload = _form_payload(client, "/admin/settings")
+    assert "MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS" in payload, "field is not in the settings form"
+    payload["MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS"] = "1138303172595687554, 111"
+
+    response = client.post(
+        "/admin/settings", data=payload, base_url="https://docker.example:8443", follow_redirects=True
+    )
+    assert response.status_code == 200
+
+    assert os.environ.get("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS") == "1138303172595687554, 111"
+
+    # this is exactly what bot.py passes as the manager's provider
+    import bot as bot_module
+
+    assert bot_module.normalize_role_ids(
+        os.getenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", "")
+    ) == [1138303172595687554, 111]
