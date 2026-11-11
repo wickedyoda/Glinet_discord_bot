@@ -2247,18 +2247,20 @@ def ensure_db_schema():
         # "already configured". SQLite cannot drop a constraint, so rebuild the
         # table. foreign_keys is ON, so DROP TABLE would cascade into
         # forum_tag_seen_posts -- the seen rows are stashed and restored.
-        forum_tag_unique_columns = []
-        for index_row in conn.execute("PRAGMA index_list(forum_tag_subscriptions)").fetchall():
-            if not index_row["unique"]:
-                continue
-            index_columns = [
-                str(col["name"])
-                for col in conn.execute(f"PRAGMA index_info({index_row['name']})").fetchall()
-            ]
-            if {"guild_id", "tag"} <= set(index_columns):
-                forum_tag_unique_columns = index_columns
-                break
-        if forum_tag_unique_columns and "feed_type" not in forum_tag_unique_columns:
+        #
+        # The table DDL is read with a bound parameter instead of interpolating an
+        # index name into PRAGMA index_info(): SQLite cannot parameterise a PRAGMA,
+        # and the f-string form is a real formatted-SQL pattern (code-scanning
+        # alert 282). A two-column UNIQUE is exactly the pre-feed_type schema.
+        forum_tag_ddl_row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            ("forum_tag_subscriptions",),
+        ).fetchone()
+        forum_tag_table_ddl = str((forum_tag_ddl_row["sql"] if forum_tag_ddl_row else "") or "")
+        forum_tag_needs_rebuild = bool(
+            re.search(r"UNIQUE\s*\(\s*guild_id\s*,\s*tag\s*\)", forum_tag_table_ddl, re.IGNORECASE)
+        )
+        if forum_tag_needs_rebuild:
             conn.executescript(
                 """
                 CREATE TEMP TABLE _forum_tag_seen_backup AS
