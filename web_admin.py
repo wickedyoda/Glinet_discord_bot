@@ -65,6 +65,7 @@ from app.web_guild_settings import process_guild_settings_submission, render_gui
 from app.web_honeypot import process_honeypot_submission, render_honeypot_body
 from app.web_members import process_member_action_submission, render_members_body
 from app.web_moderation import process_moderation_submission, render_moderation_body
+from app.web_permissions import write_endpoints_for_role
 from app.web_reaction_roles import process_reaction_roles_submission, render_reaction_roles_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
@@ -4078,24 +4079,7 @@ def create_web_app(
         if _is_admin_user(user):
             return None
         if _is_glinet_rw_user(user):
-            glinet_rw_write_endpoints = {
-                "account",
-                "command_status",
-                "guild_settings",
-                "moderation_page",
-                "members_page",
-                "discourse_page",
-                "command_permissions",
-                "reddit_feeds",
-                "service_monitors_page",
-                "uptime_kuma_page",
-                "youtube_subscriptions",
-                "linkedin_subscriptions",
-                "beta_program_subscriptions",
-                "role_access_page",
-                "tag_responses",
-                "bot_profile",
-            }
+            glinet_rw_write_endpoints = write_endpoints_for_role("glinet_rw")
             if request.endpoint in glinet_rw_write_endpoints:
                 if request.endpoint == "bot_profile":
                     action = str(request.form.get("action", "") or "").strip().lower()
@@ -4104,24 +4088,7 @@ def create_web_app(
                         return redirect(url_for("bot_profile"))
                 return None
         if _is_guild_admin_user(user):
-            guild_admin_write_endpoints = {
-                "account",
-                "command_status",
-                "guild_settings",
-                "moderation_page",
-                "members_page",
-                "discourse_page",
-                "command_permissions",
-                "reddit_feeds",
-                "service_monitors_page",
-                "uptime_kuma_page",
-                "youtube_subscriptions",
-                "linkedin_subscriptions",
-                "beta_program_subscriptions",
-                "role_access_page",
-                "tag_responses",
-                "bot_profile",
-            }
+            guild_admin_write_endpoints = write_endpoints_for_role("guild_admin")
             if request.endpoint in guild_admin_write_endpoints:
                 if request.endpoint == "bot_profile":
                     action = str(request.form.get("action", "") or "").strip().lower()
