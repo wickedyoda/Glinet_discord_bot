@@ -192,6 +192,8 @@ NAV_GROUPS = (
         "label": "Support & Integrations",
         "items": (
             ("discourse_page", "Discourse"),
+            ("discourse_viewer.discourse_viewer_page", "Forum Viewer"),
+            ("freshdesk_viewer.freshdesk_viewer_page", "Freshdesk"),
         ),
     },
     {
@@ -3156,6 +3158,7 @@ def _render_layout(
                   {% endfor %}
                 </optgroup>
                 {% endfor %}
+                {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
               </select>
             </div>
             <div class="mobile-panel-section">
@@ -3251,6 +3254,7 @@ def _render_layout(
                   {% endfor %}
                 </optgroup>
                 {% endfor %}
+                {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
           </select>
         </nav>
       {% endif %}

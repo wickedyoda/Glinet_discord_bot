@@ -41,6 +41,8 @@ _EXPECTED_NAV_PAGES = {
     "Dashboard",
     "Discourse",
     "Documentation",
+    "Forum Viewer",
+    "Freshdesk",
     "Forum Tag Cross-Posts",
     "GL.iNet Beta Programs",
     "Global Settings",
@@ -112,6 +114,34 @@ def test_nav_options_stay_alphabetical_inside_each_group(tmp_path: Path):
         assert items == sorted(items, key=str.casefold), (
             f"group {label!r} is not alphabetical: {items}"
         )
+
+
+def test_nav_offers_the_github_wiki_link_when_configured(tmp_path: Path, monkeypatch):
+    """The wiki entry is conditional and must survive regrouping in both selects."""
+    monkeypatch.setenv("WEB_GITHUB_WIKI_URL", "https://example.com/wiki")
+    soup = _load_dashboard_soup(tmp_path)
+
+    for select_id in ("desktop-nav-page-select", "mobile-nav-page-select"):
+        select = _nav_select(soup, select_id)
+        wiki = [
+            o for o in select.find_all("option")
+            if o.get_text().strip() == "GitHub Wiki"
+        ]
+        assert wiki, f"{select_id} lost the GitHub Wiki entry"
+        assert wiki[0].get("data-external") == "1", (
+            "wiki option must open in a new tab via data-external=1"
+        )
+        assert wiki[0].get("value") == "https://example.com/wiki"
+
+
+def test_nav_hides_the_github_wiki_link_when_unset(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("WEB_GITHUB_WIKI_URL", "")
+    soup = _load_dashboard_soup(tmp_path)
+
+    for select_id in ("desktop-nav-page-select", "mobile-nav-page-select"):
+        select = _nav_select(soup, select_id)
+        labels = {o.get_text().strip() for o in select.find_all("option")}
+        assert "GitHub Wiki" not in labels, f"{select_id} rendered a blank wiki entry"
 
 
 def test_nav_grouping_loses_no_page(tmp_path: Path):
