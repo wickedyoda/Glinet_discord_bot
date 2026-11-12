@@ -35,6 +35,23 @@ HOST = os.environ.get("DAST_HOST", "127.0.0.1")
 PORT = int(os.environ.get("DAST_PORT", "8082"))
 
 
+def _bootstrap_password() -> str:
+    """A per-run password that satisfies the web GUI policy.
+
+    ``_password_policy_errors`` in web_admin requires 6-16 characters, at least two
+    digits, an uppercase letter and a symbol. ``secrets.token_urlsafe(24)`` is 32
+    characters and often has fewer than two digits, so using it left the bootstrap
+    admin uncreated and login disabled.
+
+    The fixed "A!00" prefix guarantees the two digits, the uppercase letter and the
+    symbol; the random suffix keeps the password unguessable per run.
+    """
+    override = os.environ.get("DAST_ADMIN_PASSWORD")
+    if override:
+        return override
+    return "A!00" + secrets.token_urlsafe(9)
+
+
 def main() -> int:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     app = create_web_app(
@@ -46,7 +63,7 @@ def main() -> int:
         # and a literal here trips Bandit B106 and reads like a real credential.
         # DAST_ADMIN_PASSWORD lets an authenticated scan (CSRF / rate-limit checks)
         # log in without committing a password to the repo.
-        default_admin_password=os.environ.get("DAST_ADMIN_PASSWORD") or secrets.token_urlsafe(24),
+        default_admin_password=_bootstrap_password(),
     )
     app.run(host=HOST, port=PORT, debug=False, use_reloader=False)
     return 0
