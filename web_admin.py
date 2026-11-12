@@ -5076,9 +5076,15 @@ def create_web_app(
                 url_for("members_page"),
                 "Open Members",
             ),
+        ]
+
+        # User activity gets its own section: it is a distinct concern from role
+        # administration, and it is the surface that will grow more platform
+        # sources (currently Discord only).
+        user_activity_cards = [
             build_dashboard_card(
                 "Member Activity",
-                "Review rolling activity windows, hourly message volume, and engagement trends for this server.",
+                "Discord engagement: rolling activity windows, hourly message volume, and per-role rankings.",
                 url_for("member_activity_page"),
                 "Open Member Activity",
             ),
@@ -5356,6 +5362,7 @@ def create_web_app(
           </section>
           {render_dashboard_section("🛡️ Moderation & Security", "Automated spam defenses, chat moderation rules, and action history.", moderation_security_cards)}
           {render_dashboard_section("👥 Roles & Onboarding", "Member onboarding, invite tracking, reaction roles, and role management.", roles_onboarding_cards)}
+          {render_dashboard_section("📊 User Activity & Statistics", "Engagement statistics per platform. Discord is live; additional platform sources will be added here.", user_activity_cards)}
           {render_dashboard_section("💬 Channels & Chat Automation", "Automated FAQ tags, auto-translate bridges, and Reddit auto-replies.", channels_automation_cards)}
           {render_dashboard_section("📡 Notification Feeds & Monitors", "External feeds, social platform alerts, and service health checks.", feeds_monitors_cards)}
           {render_dashboard_section("🎫 Support & Forum Integrations", "Customer support ticket viewer and Discourse forum community tools.", support_forum_cards)}
