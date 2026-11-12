@@ -69,3 +69,37 @@ def test_dashboard_renders_reorganized_logical_sections(tmp_path: Path):
     assert "Notification Feeds &amp; Monitors" in html or "Notification Feeds & Monitors" in html
     assert "Support &amp; Forum Integrations" in html or "Support & Forum Integrations" in html
     assert "Bot Configuration &amp; System Administration" in html or "Bot Configuration & System Administration" in html
+    assert "User Activity &amp; Statistics" in html or "User Activity & Statistics" in html
+
+
+def test_member_activity_lives_in_its_own_section(tmp_path: Path):
+    """User activity is its own dashboard section, ready for more platforms.
+
+    It used to be the last card under Roles & Onboarding, which conflated
+    engagement statistics with role administration.
+    """
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.data, "html.parser")
+
+    def section_containing(heading_text: str):
+        for section in soup.find_all("section", class_="dashboard-section"):
+            heading = section.find("h3")
+            if heading and heading.get_text(strip=True) == heading_text:
+                return section
+        return None
+
+    activity = section_containing("📊 User Activity & Statistics")
+    assert activity is not None, "no User Activity & Statistics section on the dashboard"
+    assert "Member Activity" in activity.get_text()
+
+    roles = section_containing("👥 Roles & Onboarding")
+    assert roles is not None
+    assert "Member Activity" not in roles.get_text(), (
+        "Member Activity is still listed under Roles & Onboarding"
+    )
