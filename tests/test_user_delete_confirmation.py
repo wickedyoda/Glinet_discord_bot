@@ -15,6 +15,7 @@ self-delete, always keep one admin) still take precedence and still work.
 
 from __future__ import annotations
 
+import html as html_module
 from pathlib import Path
 
 import pytest
@@ -168,19 +169,47 @@ def test_confirmation_is_case_insensitive(tmp_path: Path):
 # --------------------------------------------------------------------------- #
 
 
-def test_delete_form_carries_a_client_side_confirm(tmp_path: Path):
-    """The Delete form must warn before submitting."""
+def test_delete_form_requires_an_explicit_second_step(tmp_path: Path):
+    """Deleting must not depend on a browser dialog.
+
+    confirm() is silently suppressed once a browser has "prevent additional
+    dialogs" ticked, and the form then submits with no warning at all. The
+    confirmation is a native <details> disclosure instead: the destructive form
+    is not reachable until the admin opens the panel, which works with dialogs
+    disabled.
+    """
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
 
-    response = client.get("/admin/users", base_url=BASE_URL)
-    html = response.get_data(as_text=True)
+    html = client.get("/admin/users", base_url=BASE_URL).get_data(as_text=True)
 
-    assert "onsubmit=\"return confirm(" in html, "no client-side confirm on the form"
-    # The dialog must name what is being removed.
-    assert "Delete user" in html
-    assert "cannot be undone" in html
+    assert 'onsubmit="return confirm(' not in html, (
+        "the delete form still relies on a JS confirm() dialog"
+    )
+
+    soup = BeautifulSoup(html, "html.parser")
+    panels = soup.find_all("details", class_="inline-confirm")
+    assert panels, "no two-step confirmation panel on the users page"
+
+    found = False
+    for panel in panels:
+        form = panel.find("form")
+        if form is None:
+            continue
+        if form.find("input", {"name": "action", "value": "delete"}) is None:
+            continue
+        found = True
+        summary = panel.find("summary")
+        assert summary is not None and "Delete" in summary.get_text()
+        text = panel.get_text(" ", strip=True)
+        assert "cannot be undone" in text, "panel does not warn before deleting"
+        assert form.find("input", {"name": "confirm", "value": "yes"}) is not None, (
+            "panel lost the server-side guard"
+        )
+        button = form.find("button", {"type": "submit"})
+        assert button is not None and "delete" in button.get_text().lower()
+    assert found, "no delete form inside a confirmation panel"
 
 
 def test_delete_form_ships_the_confirmation_field(tmp_path: Path):
@@ -204,7 +233,10 @@ def test_delete_button_is_styled_as_dangerous(tmp_path: Path):
     response = client.get("/admin/users", base_url=BASE_URL)
     html = response.get_data(as_text=True)
 
-    assert '<button class="btn danger" type="submit">Delete</button>' in html
+    # The Delete control is a <summary> that opens the confirmation panel; it is
+    # still styled dangerous, it is just not a submit button until confirmed.
+    assert 'class="btn danger"' in html
+    assert "<summary" in html
 
 
 # --------------------------------------------------------------------------- #
@@ -278,63 +310,33 @@ def test_unknown_user_with_confirmation_reports_not_found(tmp_path: Path):
         "o'brien@sub.example.co.uk",
     ],
 )
-def test_confirm_dialog_is_valid_js_for_any_valid_email(tmp_path: Path, email: str):
-    """The dialog string must not be broken by characters legal in an address.
+def test_confirm_dialog_helper_is_valid_js_for_any_valid_email(email: str):
+    """The dialog literal must survive characters that are legal in an address.
 
-    Apostrophes are permitted in an email local part, and HTML-escaping does not
-    save us: &#x27; is decoded back to ' before the attribute is evaluated as
+    The delete form no longer uses a JS dialog, but the helper remains for other
+    destructive controls, so it is still unit-tested directly. Apostrophes are
+    permitted in an email local part, and HTML-escaping does not save a naive
+    implementation: &#x27; is decoded back to ' before the attribute runs as
     JavaScript, so an escaped apostrophe still terminates the string early.
     """
-    app = _make_app(tmp_path)
-    client = app.test_client()
-    _login(client)
-    client.post(
-        "/admin/users",
-        data={
-            "action": "create",
-            "csrf_token": _page_csrf_token(client, "/admin/users"),
-            "first_name": "T",
-            "last_name": "U",
-            "display_name": "T U",
-            "email": email,
-            "password": NEW_USER_PASSWORD,
-            "confirm_password": NEW_USER_PASSWORD,
-            "role": "glinet_rw",
-        },
-        base_url=BASE_URL,
-        follow_redirects=True,
+    from web_admin import _js_confirm_dialog
+
+    raw = _js_confirm_dialog(f"Delete user {email}? This cannot be undone.")
+
+    # The helper returns the HTML-escaped form because it is interpolated into a
+    # double-quoted HTML attribute. A browser decodes entities before the JS engine
+    # runs, so decode first -- that is the step that makes o&#x27;brien safe.
+    decoded = html_module.unescape(raw)
+
+    assert decoded.startswith("'") and decoded.endswith("'"), (
+        f"not a single-quoted JS string after HTML decoding: {decoded!r}"
     )
+    # Undo the JavaScript escaping of the embedded apostrophe.
+    body = decoded[1:-1].replace("\\'", "'")
+    assert body == f"Delete user {email}? This cannot be undone.", repr(body)
 
-    html = client.get("/admin/users", base_url=BASE_URL).get_data(as_text=True)
-    soup = BeautifulSoup(html, "html.parser")
 
-    form = None
-    for candidate in soup.find_all("form"):
-        action_field = candidate.find("input", {"name": "action", "value": "delete"})
-        email_field = candidate.find("input", {"name": "email"})
-        if action_field and email_field and email_field.get("value") == email:
-            form = candidate
-            break
 
-    assert form is not None, f"no delete form rendered for {email}"
-    onsubmit = form.get("onsubmit") or ""
-    assert "return confirm(" in onsubmit
-
-    # The surrounding HTML attribute must survive intact: a double-quoted JS
-    # literal would terminate this attribute early and the rest of the form would
-    # be parsed as garbage. BeautifulSoup decoding the attribute is exactly what a
-    # browser does before the JavaScript engine sees it.
-    literal = onsubmit.split("return confirm(", 1)[1].rsplit(");", 1)[0].strip()
-    assert literal.startswith("'") and literal.endswith("'"), (
-        f"dialog literal is not a single-quoted JS string: {literal!r}"
-    )
-
-    # Undo the JavaScript single-quote escaping to recover the original text.
-    body = literal[1:-1].replace("\\'", "'").replace("\\\\", "\\")
-    assert body.startswith(f"Delete user {email}?"), (
-        f"dialog text did not round-trip for {email!r}: {body!r}"
-    )
-    assert "cannot be undone" in body
 
 
 def test_js_confirm_dialog_helper_escapes_quotes():

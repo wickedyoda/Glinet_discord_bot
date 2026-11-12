@@ -10323,12 +10323,18 @@ def create_web_app(
                       <button class="btn secondary" type="submit">Set Role</button>
                     </form>
                     <a class="btn secondary" style="margin-left:6px;" href="#edit-user-{escape(email, quote=True)}">Edit</a>
-                    <form method="post" style="display:inline;margin-left:6px;" onsubmit="return confirm({_js_confirm_dialog(f'Delete user {email}? This permanently removes the account and its access. It cannot be undone from the web GUI.')});">
-                      <input type="hidden" name="action" value="delete" />
-                      <input type="hidden" name="email" value="{escape(email, quote=True)}" />
-                      <input type="hidden" name="confirm" value="yes" />
-                      <button class="btn danger" type="submit">Delete</button>
-                    </form>
+                    <details class="inline-confirm" style="display:inline-block;margin-left:6px;vertical-align:top;">
+                      <summary class="btn danger" style="display:inline-block;cursor:pointer;list-style:none;">Delete</summary>
+                      <div style="margin-top:8px;padding:12px;border:1px solid var(--border);border-radius:8px;max-width:360px;">
+                        <p style="margin:0 0 10px;">Delete <strong>{escape(email)}</strong>? This permanently removes the account and its access. It cannot be undone from the web GUI.</p>
+                        <form method="post">
+                          <input type="hidden" name="action" value="delete" />
+                          <input type="hidden" name="email" value="{escape(email, quote=True)}" />
+                          <input type="hidden" name="confirm" value="yes" />
+                          <button class="btn danger" type="submit">Yes, delete this user</button>
+                        </form>
+                      </div>
+                    </details>
                   </td>
                 </tr>
                 <tr>
