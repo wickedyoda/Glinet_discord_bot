@@ -129,6 +129,30 @@ def test_legacy_boolean_still_resolves_a_role():
     assert permissions_for_role("glinet") == permissions_for_role("glinet_read_only")
 
 
+@pytest.mark.parametrize("missing", [None, {}])
+@pytest.mark.parametrize("area", AREAS)
+def test_missing_user_is_denied_every_read(missing, area):
+    """An absent user is not a read-only user.
+
+    ``user or {}`` normalised a missing record to the read_only role, which holds
+    every ``.read`` permission, so an anonymous caller passed read checks. The
+    helper must reject before resolving a role.
+    """
+    assert user_has_permission(missing, f"{area}.read") is False
+
+
+@pytest.mark.parametrize("missing", [None, {}])
+def test_missing_user_is_denied_every_write(missing):
+    for area in AREAS:
+        assert user_has_permission(missing, f"{area}.write") is False
+
+
+def test_empty_role_with_is_admin_still_resolves():
+    """The guard must not break legacy rows that only carry the boolean."""
+    assert user_has_permission({"is_admin": True}, "system.write") is True
+    assert user_has_permission({"is_admin": False}, "system.write") is False
+
+
 def test_user_has_permission_reads_role_and_boolean():
     assert user_has_permission({"role": "admin"}, "system.write") is True
     assert user_has_permission({"role": "glinet_rw"}, "system.write") is False

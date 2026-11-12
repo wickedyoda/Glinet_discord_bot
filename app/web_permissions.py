@@ -153,7 +153,17 @@ def permissions_for_role(role: str | None, *, is_admin: bool = False) -> frozens
 
 
 def user_has_permission(user: dict | None, permission: str) -> bool:
+    """Permission check for a resolved user record.
+
+    A missing or empty user is rejected outright. Without this guard the empty dict
+    normalises to the read_only role -- which grants every ``.read`` -- so
+    ``user_has_permission(None, "system.read")`` returned True. Reads belong to
+    authenticated roles, not to anonymous callers. Legacy records that still carry
+    only ``is_admin`` keep working through the ``permissions_for_role`` fallback.
+    """
     user = user or {}
+    if not user:
+        return False
     return permission in permissions_for_role(
         user.get("role", ""), is_admin=bool(user.get("is_admin"))
     )
