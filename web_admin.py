@@ -133,6 +133,92 @@ WEB_GUI_TITLE_SUFFIX = "GL.iNet UnOfficial Discord Bot Dashboard"
 WEB_GUI_VERSION_PREFIX = "v1.0"
 RECENT_NAV_SESSION_KEY = "recent_admin_pages"
 RECENT_NAV_LIMIT = 6
+# Navigation grouped by task rather than one flat A-Z list of ~30 pages. Order is
+# fixed (workflow order), but items inside a group stay alphabetical so scanning
+# still works. Every page reachable in the old flat list must appear exactly once;
+# a test enforces that.
+NAV_GROUPS = (
+    {
+        "label": "Overview",
+        "items": (
+            ("dashboard", "Dashboard"),
+            ("account", "My Account"),
+            ("guilds_page", "Servers"),
+        ),
+    },
+    {
+        "label": "Moderation & Security",
+        "items": (
+            ("actions_page", "Action History"),
+            ("honeypot_page", "Honeypot"),
+            ("moderation_page", "Moderation"),
+        ),
+    },
+    {
+        "label": "Roles & Onboarding",
+        "items": (
+            ("bulk_role_csv", "Bulk Role CSV"),
+            ("members_page", "Members"),
+            ("reaction_roles_page", "Reaction Roles"),
+            ("role_access_page", "Role Access"),
+        ),
+    },
+    {
+        "label": "User Activity",
+        "items": (
+            ("member_activity_page", "Member Activity"),
+        ),
+    },
+    {
+        "label": "Channels & Chat Automation",
+        "items": (
+            ("translate_channels_page", "Auto-Translate Channels"),
+            ("reddit_auto_responds", "Reddit Auto-Reply"),
+            ("tag_responses", "Tag Responses"),
+        ),
+    },
+    {
+        "label": "Feeds & Monitors",
+        "items": (
+            ("forum_tags", "Forum Tag Cross-Posts"),
+            ("beta_program_subscriptions", "GL.iNet Beta Programs"),
+            ("linkedin_subscriptions", "LinkedIn Profiles"),
+            ("reddit_feeds", "Reddit Feeds"),
+            ("service_monitors_page", "Service Monitors"),
+            ("uptime_kuma_page", "Uptime Kuma"),
+            ("youtube_subscriptions", "YouTube Subscriptions"),
+        ),
+    },
+    {
+        "label": "Support & Integrations",
+        "items": (
+            ("discourse_page", "Discourse"),
+            ("discourse_viewer.discourse_viewer_page", "Forum Viewer"),
+            ("freshdesk_viewer.freshdesk_viewer_page", "Freshdesk"),
+        ),
+    },
+    {
+        "label": "Configuration & System",
+        "items": (
+            ("bot_profile", "Bot Profile"),
+            ("command_permissions", "Command Permissions"),
+            ("command_status", "Command Status"),
+            ("documentation", "Documentation"),
+            ("settings", "Global Settings"),
+            ("guild_settings", "Guild Settings"),
+            ("admin_logs", "Logs"),
+            ("public_observability", "Observability"),
+            ("users", "Users"),
+        ),
+    },
+    {
+        "label": "Session",
+        "items": (
+            ("logout", "Logout"),
+        ),
+    },
+)
+
 THEME_OPTIONS = (
     {"value": "light", "label": "Light"},
     {"value": "black", "label": "Black"},
@@ -3066,41 +3152,14 @@ def _render_layout(
               <label class="sr-only" for="mobile-nav-page-select">Open page</label>
               <select id="mobile-nav-page-select" class="nav-select nav-page-select">
                 <option value="">Go to page...</option>
-                <option value="{{ url_for('actions_page') }}">Action History</option>
-                <option value="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</option>
-                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
-                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
-                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
-                <option value="{{ url_for('command_status') }}">Command Status</option>
-                <option value="{{ url_for('dashboard') }}">Dashboard</option>
-                <option value="{{ url_for('discourse_page') }}">Discourse</option>
-                <option value="{{ url_for('documentation') }}">Documentation</option>
-                <option value="{{ url_for('forum_tags') }}">Forum Tag Cross-Posts</option>
-                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
-                <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
+                {% for nav_group in nav_groups %}
+                <optgroup label="{{ nav_group.label }}">
+                  {% for nav_endpoint, nav_label in nav_group["items"] %}
+                  <option value="{{ url_for(nav_endpoint) }}">{{ nav_label }}</option>
+                  {% endfor %}
+                </optgroup>
+                {% endfor %}
                 {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
-                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
-                <option value="{{ url_for('settings') }}">Global Settings</option>
-                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
-                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
-                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
-                <option value="{{ url_for('admin_logs') }}">Logs</option>
-                <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
-                <option value="{{ url_for('members_page') }}">Members</option>
-                <option value="{{ url_for('moderation_page') }}">Moderation</option>
-                <option value="{{ url_for('account') }}">My Account</option>
-                <option value="{{ url_for('public_observability') }}">Observability</option>
-                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
-                <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
-                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-                <option value="{{ url_for('role_access_page') }}">Role Access</option>
-                <option value="{{ url_for('guilds_page') }}">Servers</option>
-                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
-                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
-                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
-                <option value="{{ url_for('users') }}">Users</option>
-                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
-                <option value="{{ url_for('logout') }}">Logout</option>
               </select>
             </div>
             <div class="mobile-panel-section">
@@ -3189,41 +3248,14 @@ def _render_layout(
           <label class="sr-only" for="desktop-nav-page-select">Open page</label>
           <select id="desktop-nav-page-select" class="nav-select nav-page-select">
                 <option value="">Go to page...</option>
-                <option value="{{ url_for('actions_page') }}">Action History</option>
-                <option value="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</option>
-                <option value="{{ url_for('bot_profile') }}">Bot Profile</option>
-                <option value="{{ url_for('bulk_role_csv') }}">Bulk Role CSV</option>
-                <option value="{{ url_for('command_permissions') }}">Command Permissions</option>
-                <option value="{{ url_for('command_status') }}">Command Status</option>
-                <option value="{{ url_for('dashboard') }}">Dashboard</option>
-                <option value="{{ url_for('discourse_page') }}">Discourse</option>
-                <option value="{{ url_for('documentation') }}">Documentation</option>
-                <option value="{{ url_for('forum_tags') }}">Forum Tag Cross-Posts</option>
-                <option value="{{ url_for('discourse_viewer.discourse_viewer_page') }}">Forum Viewer</option>
-                <option value="{{ url_for('freshdesk_viewer.freshdesk_viewer_page') }}">Freshdesk</option>
+                {% for nav_group in nav_groups %}
+                <optgroup label="{{ nav_group.label }}">
+                  {% for nav_endpoint, nav_label in nav_group["items"] %}
+                  <option value="{{ url_for(nav_endpoint) }}">{{ nav_label }}</option>
+                  {% endfor %}
+                </optgroup>
+                {% endfor %}
                 {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
-                <option value="{{ url_for('beta_program_subscriptions') }}">GL.iNet Beta Programs</option>
-                <option value="{{ url_for('settings') }}">Global Settings</option>
-                <option value="{{ url_for('guild_settings') }}">Guild Settings</option>
-                <option value="{{ url_for('honeypot_page') }}">Honeypot</option>
-                <option value="{{ url_for('linkedin_subscriptions') }}">LinkedIn Profiles</option>
-                <option value="{{ url_for('admin_logs') }}">Logs</option>
-                <option value="{{ url_for('member_activity_page') }}">Member Activity</option>
-                <option value="{{ url_for('members_page') }}">Members</option>
-                <option value="{{ url_for('moderation_page') }}">Moderation</option>
-                <option value="{{ url_for('account') }}">My Account</option>
-                <option value="{{ url_for('public_observability') }}">Observability</option>
-                <option value="{{ url_for('reaction_roles_page') }}">Reaction Roles</option>
-                <option value="{{ url_for('reddit_auto_responds') }}">Reddit Auto-Reply</option>
-                <option value="{{ url_for('reddit_feeds') }}">Reddit Feeds</option>
-                <option value="{{ url_for('role_access_page') }}">Role Access</option>
-                <option value="{{ url_for('guilds_page') }}">Servers</option>
-                <option value="{{ url_for('service_monitors_page') }}">Service Monitors</option>
-                <option value="{{ url_for('tag_responses') }}">Tag Responses</option>
-                <option value="{{ url_for('uptime_kuma_page') }}">Uptime Kuma</option>
-                <option value="{{ url_for('users') }}">Users</option>
-                <option value="{{ url_for('youtube_subscriptions') }}">YouTube Subscriptions</option>
-                <option value="{{ url_for('logout') }}">Logout</option>
           </select>
         </nav>
       {% endif %}
@@ -3320,6 +3352,7 @@ def _render_layout(
         restart_enabled=restart_enabled,
         web_gui_version=WEB_GUI_VERSION_LABEL,
         theme_options=THEME_OPTIONS,
+        nav_groups=NAV_GROUPS,
         theme_values_json=json.dumps(theme_values),
     )
 
@@ -10268,12 +10301,18 @@ def create_web_app(
                       <button class="btn secondary" type="submit">Set Role</button>
                     </form>
                     <a class="btn secondary" style="margin-left:6px;" href="#edit-user-{escape(email, quote=True)}">Edit</a>
-                    <form method="post" style="display:inline;margin-left:6px;" onsubmit="return confirm({_js_confirm_dialog(f'Delete user {email}? This permanently removes the account and its access. It cannot be undone from the web GUI.')});">
-                      <input type="hidden" name="action" value="delete" />
-                      <input type="hidden" name="email" value="{escape(email, quote=True)}" />
-                      <input type="hidden" name="confirm" value="yes" />
-                      <button class="btn danger" type="submit">Delete</button>
-                    </form>
+                    <details class="inline-confirm" style="display:inline-block;margin-left:6px;vertical-align:top;">
+                      <summary class="btn danger" style="display:inline-block;cursor:pointer;list-style:none;">Delete</summary>
+                      <div style="margin-top:8px;padding:12px;border:1px solid var(--border);border-radius:8px;max-width:360px;">
+                        <p style="margin:0 0 10px;">Delete <strong>{escape(email)}</strong>? This permanently removes the account and its access. It cannot be undone from the web GUI.</p>
+                        <form method="post">
+                          <input type="hidden" name="action" value="delete" />
+                          <input type="hidden" name="email" value="{escape(email, quote=True)}" />
+                          <input type="hidden" name="confirm" value="yes" />
+                          <button class="btn danger" type="submit">Yes, delete this user</button>
+                        </form>
+                      </div>
+                    </details>
                   </td>
                 </tr>
                 <tr>
