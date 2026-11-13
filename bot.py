@@ -12036,6 +12036,53 @@ def run_discourse_stats_ingest() -> dict:
     return {"staff": staff, "topics": topics, "posts": posts}
 
 
+def _discourse_percentile(values: list[int], fraction: float) -> int:
+    """Nearest-rank percentile. SQLite has no percentile function."""
+    if not values:
+        return 0
+    idx = min(len(values) - 1, max(0, int(len(values) * fraction)))
+    return int(values[idx])
+
+
+def build_discourse_activity_payload(days: int = 90, categories=None) -> dict:
+    """Everything the Discourse activity page renders, in one read transaction."""
+    scope = tuple(categories) if categories else DISCOURSE_STATS_CATEGORIES
+    try:
+        days = max(1, min(int(days), 365))
+    except (TypeError, ValueError):
+        days = 90
+
+    conn = get_db_connection()
+    with db_lock:
+        activity = discourse_stats.staff_activity(conn, days=days, categories=scope)
+        responses = discourse_stats.first_response_seconds(conn, days=days, categories=scope)
+        daily = discourse_stats.daily_counts(conn, days=days, categories=scope)
+        hourly = discourse_stats.hourly_counts(conn, days=days, categories=scope)
+        weekly = discourse_stats.weekly_counts(conn, days=days, categories=scope)
+        gaps = sorted(discourse_stats.response_gaps(conn, days=days, categories=scope))
+        staff_total = conn.execute("SELECT COUNT(*) AS c FROM discourse_staff").fetchone()["c"]
+        post_count = conn.execute("SELECT COUNT(*) AS c FROM discourse_posts").fetchone()["c"]
+
+    return {
+        "ok": True,
+        "days": days,
+        "categories": list(scope),
+        "staff_total": int(staff_total or 0),
+        "staff_active": len(activity),
+        "posts_stored": int(post_count or 0),
+        "staff_posts": sum(int(row.get("posts") or 0) for row in activity),
+        "activity": activity,
+        "responses": responses,
+        "daily": daily,
+        "hourly": hourly,
+        "weekly": weekly,
+        "answered": len(gaps),
+        "median_seconds": _discourse_percentile(gaps, 0.5),
+        "p90_seconds": _discourse_percentile(gaps, 0.9),
+        "within_24h": sum(1 for gap in gaps if gap <= 86400),
+    }
+
+
 async def check_discourse_stats_once():
     try:
         result = await asyncio.to_thread(run_discourse_stats_ingest)
