@@ -20,6 +20,7 @@ def _make_app(
     refresh_catalog=None,
     discord_catalog=None,
     member_activity_payload=None,
+    discourse_activity_payload=None,
 ):
     env_file = tmp_path / "env.env"
     env_file.write_text(
@@ -857,6 +858,27 @@ def _make_app(
             "content_type": "application/zip",
             "data": b"PK\x05\x06" + (b"\x00" * 18),
         },
+        on_get_discourse_activity=discourse_activity_payload
+        or (lambda days=90: {
+            "ok": True,
+            "days": days,
+            "categories": ["glrouter"],
+            "staff_total": 2,
+            "staff_active": 1,
+            "posts_stored": 10,
+            "staff_posts": 4,
+            "activity": [
+                {"username": "tester", "posts": 4, "topics": 2, "handled": 1},
+            ],
+            "responses": [{"username": "tester", "mean_seconds": 3600}],
+            "daily": [],
+            "hourly": [{"bucket": 9, "posts": 4}],
+            "weekly": [{"bucket": "2026-W11", "posts": 4}],
+            "answered": 1,
+            "median_seconds": 3600,
+            "p90_seconds": 3600,
+            "within_24h": 1,
+        }),
         on_get_health_status=lambda: dict(health_state),
         on_get_reddit_feeds=get_reddit_feeds,
         on_manage_reddit_feeds=manage_reddit_feeds,

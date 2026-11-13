@@ -45,6 +45,7 @@ from app.http_client import get
 if TYPE_CHECKING:
     from app.tickets import TicketStore
 
+from app import discourse_stats
 from app.beta_programs import (
     fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
 )
@@ -64,6 +65,8 @@ from app.discourse_announcements import (
 from app.discourse_api import (
     DiscourseApiError,
     DiscourseRateLimitError,
+    _raise_for_discourse_status,
+    build_discourse_headers,
     clean_discourse_text,
     fetch_discourse_categories,
     fetch_discourse_category_topics,
@@ -2131,6 +2134,52 @@ def ensure_db_schema():
                 FOREIGN KEY(subscription_id) REFERENCES forum_tag_subscriptions(id) ON DELETE CASCADE
             );
 
+            -- Discourse forum statistics. Raw rows, not aggregates: every metric
+            -- (daily/hourly/weekly counts, threads handled, response time) is a query
+            -- over these, so adding a metric needs no migration.
+            CREATE TABLE IF NOT EXISTS discourse_posts (
+                post_id INTEGER PRIMARY KEY,
+                topic_id INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                post_number INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                ingested_at TEXT NOT NULL
+            );
+
+            -- /posts.json carries no category_id, so category scoping needs this map.
+            CREATE TABLE IF NOT EXISTS discourse_topics (
+                topic_id INTEGER PRIMARY KEY,
+                category_slug TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            -- Current group membership only; Discourse exposes no history of it.
+            CREATE TABLE IF NOT EXISTS discourse_staff (
+                username TEXT PRIMARY KEY,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_discourse_posts_created
+                ON discourse_posts(created_at);
+            CREATE INDEX IF NOT EXISTS idx_discourse_posts_topic
+                ON discourse_posts(topic_id, post_number);
+            CREATE INDEX IF NOT EXISTS idx_discourse_posts_username
+                ON discourse_posts(username);
+            CREATE INDEX IF NOT EXISTS idx_discourse_topics_category
+                ON discourse_topics(category_slug);
+
+            -- Staff posts already joined to their category. Queries read this view so
+            -- the join is not rebuilt by string interpolation in every statement.
+            -- LEFT JOIN on topics: a post in an unmapped topic must still count when
+            -- no category scope is requested, and it drops out only under a scope.
+            DROP VIEW IF EXISTS discourse_staff_posts;
+            CREATE VIEW discourse_staff_posts AS
+            SELECT p.topic_id, p.username, p.post_number, p.created_at, t.category_slug
+            FROM discourse_posts p
+            JOIN discourse_staff s ON s.username = p.username
+            LEFT JOIN discourse_topics t ON t.topic_id = p.topic_id;
+
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
             CREATE INDEX IF NOT EXISTS idx_honeypot_channels_guild_id
                 ON honeypot_channels(guild_id);
@@ -3269,6 +3318,14 @@ def run_web_export_member_activity(guild_id: int, role_id: int | None = None):
         return export_member_activity_archive(guild_id, role_id=role_id)
     except Exception as exc:
         logger.exception("Failed to export member activity archive")
+        return {"ok": False, "error": str(exc)}
+
+
+def run_web_get_discourse_activity(days: int = 90):
+    try:
+        return build_discourse_activity_payload(days=days)
+    except Exception as exc:
+        logger.exception("Failed to build Discourse activity web payload")
         return {"ok": False, "error": str(exc)}
 
 
@@ -11922,6 +11979,189 @@ async def check_forum_tag_updates_once():
         await process_forum_tag_subscription(subscription)
 
 
+# --------------------------------------------------------------------------- #
+#  Discourse forum statistics
+# --------------------------------------------------------------------------- #
+
+DISCOURSE_STATS_ENABLED = is_truthy_env_value(os.getenv("DISCOURSE_STATS_ENABLED", "true"))
+DISCOURSE_STATS_SCHEDULE = os.getenv("DISCOURSE_STATS_SCHEDULE", "15 */6 * * *").strip()
+DISCOURSE_STATS_GROUP = os.getenv("DISCOURSE_STATS_GROUP", "GL.iNet_Staff").strip()
+DISCOURSE_STATS_CATEGORIES = tuple(
+    part.strip()
+    for part in os.getenv(
+        "DISCOURSE_STATS_CATEGORIES", "glrouter,glkvm,goodcloud,iot,feedback"
+    ).split(",")
+    if part.strip()
+)
+try:
+    DISCOURSE_STATS_BACKFILL_DAYS = max(1, int(os.getenv("DISCOURSE_STATS_BACKFILL_DAYS", "90")))
+except ValueError:
+    DISCOURSE_STATS_BACKFILL_DAYS = 90
+
+discourse_stats_task = None
+
+
+def _discourse_stats_fetch_json(guild_id: int):
+    """Return a fetch_json(path) bound to the guild's Discourse config.
+
+    Discourse throttles near 60 requests/minute. A 429 used to abort the whole walk;
+    retry a bounded number of times, honouring Retry-After, and let the error through
+    if it persists. The walk is idempotent, so the next scheduled run resumes.
+    """
+    config = resolve_discourse_forum_settings(guild_id)
+    attempts = 3
+
+    def fetch_json(path: str):
+        for attempt in range(1, attempts + 1):
+            response = requests.get(
+                f"{str(config['base_url']).rstrip('/')}{path}",
+                timeout=config["timeout_seconds"],
+                headers=build_discourse_headers(
+                    user_agent=DISCOURSE_USER_AGENT,
+                    api_key=config["api_key"],
+                    api_username=config["api_username"],
+                ),
+            )
+            if int(getattr(response, "status_code", 0) or 0) == 429 and attempt < attempts:
+                try:
+                    hinted = float(response.headers.get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    hinted = 0.0
+                delay = min(max(hinted, 2.0 ** attempt), 30.0)
+                logger.warning(
+                    "Discourse stats throttled (attempt %d/%d); retrying in %.1fs",
+                    attempt,
+                    attempts,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            _raise_for_discourse_status(response, "Discourse stats", query=path)
+            return response.json()
+
+    return fetch_json
+
+
+def run_discourse_stats_ingest() -> dict:
+    """Refresh the staff roster, the topic map, and the posts. Blocking.
+
+    The ingest functions take `db_lock` per page and release it for each fetch and
+    pacing sleep: holding it across the walk would block message handling for minutes.
+    """
+    guild_id = normalize_target_guild_id(GUILD_ID)
+    fetch_json = _discourse_stats_fetch_json(guild_id)
+    conn = get_db_connection()
+    staff = discourse_stats.refresh_staff_roster(
+        conn, group=DISCOURSE_STATS_GROUP, fetch_json=fetch_json, lock=db_lock
+    )
+    topics = discourse_stats.ingest_topics(
+        conn,
+        categories=DISCOURSE_STATS_CATEGORIES,
+        fetch_json=fetch_json,
+        backfill_days=DISCOURSE_STATS_BACKFILL_DAYS,
+        pace=time.sleep,
+        lock=db_lock,
+    )
+    posts = discourse_stats.ingest_posts(
+        conn,
+        fetch_json=fetch_json,
+        backfill_days=DISCOURSE_STATS_BACKFILL_DAYS,
+        pace=time.sleep,
+        lock=db_lock,
+    )
+    return {"staff": staff, "topics": topics, "posts": posts}
+
+
+def _discourse_percentile(values: list[int], fraction: float) -> int:
+    """Nearest-rank percentile. SQLite has no percentile function."""
+    if not values:
+        return 0
+    idx = min(len(values) - 1, max(0, int(len(values) * fraction)))
+    return int(values[idx])
+
+
+def build_discourse_activity_payload(days: int = 90, categories=None) -> dict:
+    """Everything the Discourse activity page renders, in one read transaction."""
+    scope = tuple(categories) if categories else DISCOURSE_STATS_CATEGORIES
+    try:
+        days = max(1, min(int(days), 365))
+    except (TypeError, ValueError):
+        days = 90
+
+    conn = get_db_connection()
+    with db_lock:
+        activity = discourse_stats.staff_activity(conn, days=days, categories=scope)
+        responses = discourse_stats.first_response_seconds(conn, days=days, categories=scope)
+        daily = discourse_stats.daily_counts(conn, days=days, categories=scope)
+        hourly = discourse_stats.hourly_counts(conn, days=days, categories=scope)
+        weekly = discourse_stats.weekly_counts(conn, days=days, categories=scope)
+        gaps = sorted(discourse_stats.response_gaps(conn, days=days, categories=scope))
+        staff_total = conn.execute("SELECT COUNT(*) AS c FROM discourse_staff").fetchone()["c"]
+        post_count = conn.execute("SELECT COUNT(*) AS c FROM discourse_posts").fetchone()["c"]
+
+    return {
+        "ok": True,
+        "days": days,
+        "categories": list(scope),
+        "staff_total": int(staff_total or 0),
+        "staff_active": len(activity),
+        "posts_stored": int(post_count or 0),
+        "staff_posts": sum(int(row.get("posts") or 0) for row in activity),
+        "activity": activity,
+        "responses": responses,
+        "daily": daily,
+        "hourly": hourly,
+        "weekly": weekly,
+        "answered": len(gaps),
+        "median_seconds": _discourse_percentile(gaps, 0.5),
+        "p90_seconds": _discourse_percentile(gaps, 0.9),
+        "within_24h": sum(1 for gap in gaps if gap <= 86400),
+    }
+
+
+async def check_discourse_stats_once():
+    try:
+        result = await asyncio.to_thread(run_discourse_stats_ingest)
+    except (DiscourseApiError, DiscourseRateLimitError) as exc:
+        logger.warning("Discourse stats ingest failed: %s", exc)
+        return
+    except Exception:
+        logger.exception("Unexpected Discourse stats ingest failure")
+        return
+    logger.info(
+        "Discourse stats ingested: %d staff, %d topics, %d posts (%d new)",
+        result["staff"]["members"],
+        result["topics"]["topics"],
+        result["posts"]["posts_in_window"],
+        result["posts"]["new_rows"],
+    )
+
+
+async def discourse_stats_monitor_loop():
+    if not DISCOURSE_STATS_ENABLED:
+        logger.info("Discourse stats monitor disabled via DISCOURSE_STATS_ENABLED.")
+        return
+    if not croniter.is_valid(DISCOURSE_STATS_SCHEDULE):
+        logger.error(
+            "Discourse stats monitor disabled: invalid DISCOURSE_STATS_SCHEDULE '%s'",
+            DISCOURSE_STATS_SCHEDULE,
+        )
+        return
+
+    logger.info(
+        "Discourse stats monitor active: ingesting on cron '%s' (UTC), categories %s",
+        DISCOURSE_STATS_SCHEDULE,
+        ",".join(DISCOURSE_STATS_CATEGORIES),
+    )
+    await check_discourse_stats_once()
+
+    while not bot.is_closed():
+        now_utc = datetime.now(UTC)
+        next_run_utc = croniter(DISCOURSE_STATS_SCHEDULE, now_utc).get_next(datetime)
+        await asyncio.sleep(max(1, int((next_run_utc - now_utc).total_seconds())))
+        await check_discourse_stats_once()
+
+
 forum_tag_monitor_task = None
 
 
@@ -13268,6 +13508,7 @@ def start_web_admin_server():
                     on_manage_member=run_web_manage_member,
                     on_get_member_activity=run_web_get_member_activity,
                     on_export_member_activity=run_web_export_member_activity,
+                    on_get_discourse_activity=run_web_get_discourse_activity,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_forum_tags=get_forum_tag_web_callbacks().run_web_get_forum_tags,
@@ -14213,6 +14454,7 @@ async def on_ready():
     global forum_announcement_task
     global forum_monitor_task
     global forum_tag_monitor_task
+    global discourse_stats_task
     global service_monitor_task
     global uptime_status_monitor_task
     global member_activity_backfill_task
@@ -14260,6 +14502,8 @@ async def on_ready():
         logger.info("Forum monitor task scheduled")
     if forum_tag_monitor_task is None or forum_tag_monitor_task.done():
         forum_tag_monitor_task = asyncio.create_task(forum_tag_monitor_loop(), name="forum_tag_monitor")
+    if discourse_stats_task is None or discourse_stats_task.done():
+        discourse_stats_task = asyncio.create_task(discourse_stats_monitor_loop(), name="discourse_stats")
     if service_monitor_task is None or service_monitor_task.done():
         service_monitor_task = asyncio.create_task(service_monitor_loop(), name="service_monitor")
     if uptime_status_monitor_task is None or uptime_status_monitor_task.done():

@@ -83,6 +83,7 @@ ADMIN_ONLY_PENDING_MAPPING = (
     "forum_tags_page",
     # support extensions
     "ticket_settings",
+    "discourse_activity_page",
     # system
     "settings",
     "users",
