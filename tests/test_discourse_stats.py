@@ -327,3 +327,33 @@ def test_posts_in_unmapped_topics_count_when_no_scope_is_requested(db):
 
     scoped = discourse_stats.staff_activity(db, days=90, categories=("glrouter",), now=NOW)
     assert scoped == []
+
+
+def test_handled_credit_is_not_given_to_a_follow_up_inside_the_window(db):
+    """A window is a report range, not a redefinition of who answered first."""
+    db.execute("INSERT INTO discourse_staff VALUES ('alice', '', '')")
+    db.execute("INSERT INTO discourse_staff VALUES ('bob', '', '')")
+    db.execute(
+        "INSERT INTO discourse_topics VALUES (7, 'glrouter', ?)", (_iso(days_ago=40),)
+    )
+    db.executemany(
+        "INSERT INTO discourse_posts (post_id, topic_id, username, post_number, created_at, ingested_at)"
+        " VALUES (?, 7, ?, ?, ?, '')",
+        [
+            (70, "someone", 1, _iso(days_ago=40)),
+            (71, "alice", 2, _after(40, 2)),
+            (72, "bob", 3, _iso(days_ago=1)),
+        ],
+    )
+    db.commit()
+
+    week = {row["username"]: row for row in
+            discourse_stats.staff_activity(db, days=7, now=NOW)}
+    assert week["bob"]["posts"] == 1
+    assert week["bob"]["handled"] == 0, "bob followed up; alice answered the thread"
+    assert "alice" not in week, "her reply is outside the seven-day window"
+
+    full = {row["username"]: row for row in
+            discourse_stats.staff_activity(db, days=90, now=NOW)}
+    assert full["alice"]["handled"] == 1
+    assert full["bob"]["handled"] == 0

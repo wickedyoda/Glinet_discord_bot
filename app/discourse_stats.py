@@ -275,23 +275,31 @@ def staff_activity(
     categories: tuple[str, ...] | None = None,
     now: datetime | None = None,
 ) -> list[dict]:
-    """Posts, distinct topics, and threads handled first, per staff member."""
+    """Posts, distinct topics, and threads handled first, per staff member.
+
+    Handled credit is decided over the whole topic, not inside the window: a staff
+    follow-up that happens to fall in a seven-day window is not a first reply. The
+    reply is then counted only if it falls inside the window.
+    """
     now = now or datetime.now(UTC)
     scoped, scoped_again = _scope_params(categories)
+    cutoff = (now - timedelta(days=days)).isoformat()
     rows = conn.execute(
         """
-        WITH staff_posts AS (
+        WITH scoped_posts AS (
             SELECT topic_id, username, post_number, created_at
             FROM discourse_staff_posts
-            WHERE created_at >= ?
-              AND (? IS NULL OR category_slug IN (SELECT value FROM json_each(?)))
+            WHERE (? IS NULL OR category_slug IN (SELECT value FROM json_each(?)))
         ),
         handled AS (
             SELECT topic_id, username FROM (
-                SELECT topic_id, username,
+                SELECT topic_id, username, created_at,
                        ROW_NUMBER() OVER (PARTITION BY topic_id ORDER BY created_at) AS rn
-                FROM staff_posts WHERE post_number > 1
-            ) WHERE rn = 1
+                FROM scoped_posts WHERE post_number > 1
+            ) WHERE rn = 1 AND created_at >= ?
+        ),
+        staff_posts AS (
+            SELECT * FROM scoped_posts WHERE created_at >= ?
         )
         SELECT sp.username,
                COUNT(*) AS posts,
@@ -301,7 +309,7 @@ def staff_activity(
         GROUP BY sp.username
         ORDER BY posts DESC
         """,
-        ((now - timedelta(days=days)).isoformat(), scoped, scoped_again),
+        (scoped, scoped_again, cutoff, cutoff),
     ).fetchall()
     return [dict(row) for row in rows]
 
