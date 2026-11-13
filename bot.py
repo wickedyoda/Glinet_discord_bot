@@ -1181,7 +1181,13 @@ DEFAULT_TAG_RESPONSES = {
     "!betatest": ("✅ Thanks for your interest in the beta! We'll share more details soon.\n🔗 Beta updates: https://forum.gl-inet.com/"),
     "!support": ("🛠️ Need help? Please open a ticket or message a moderator.\n🔗 Support Discord: https://discord.gg/m6UjX6UhKe"),
 }
-DEFAULT_ALLOWED_ROLE_NAMES = {"Employee", "Admin", "Gl.iNet Moderator"}
+DEFAULT_ALLOWED_ROLE_NAMES = {
+    "GL.iNet Staff",        # the guild role; formerly "Employee"
+    "Employee",             # legacy name, kept so a rename cannot lock staff out
+    "Admin",
+    "Gl.iNet Moderators",   # the actual guild role name
+    "Gl.iNet Moderator",    # legacy singular, kept for the same reason
+}
 COMMAND_PERMISSION_MODE_DEFAULT = "default"
 COMMAND_PERMISSION_MODE_PUBLIC = "public"
 COMMAND_PERMISSION_MODE_DISABLED = "disabled"
