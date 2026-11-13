@@ -2169,6 +2169,14 @@ def ensure_db_schema():
             CREATE INDEX IF NOT EXISTS idx_discourse_topics_category
                 ON discourse_topics(category_slug);
 
+            -- Staff posts already joined to their category. Queries read this view so
+            -- the join is not rebuilt by string interpolation in every statement.
+            CREATE VIEW IF NOT EXISTS discourse_staff_posts AS
+            SELECT p.topic_id, p.username, p.post_number, p.created_at, t.category_slug
+            FROM discourse_posts p
+            JOIN discourse_staff s ON s.username = p.username
+            JOIN discourse_topics t ON t.topic_id = p.topic_id;
+
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
             CREATE INDEX IF NOT EXISTS idx_honeypot_channels_guild_id
                 ON honeypot_channels(guild_id);

@@ -11,6 +11,7 @@ The HTTP layer is injected as `fetch_json(path)` so this module has no dependenc
 
 from __future__ import annotations
 
+import json as _json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
@@ -176,28 +177,17 @@ def ingest_posts(
 
 
 # --------------------------------------------------------------------------- #
-#  Queries -- all optionally scoped to a set of category slugs
+#  Queries
+#
+#  No SQL is built by interpolation. The join lives in the discourse_staff_posts
+#  view, and category scoping is a static predicate: pass NULL to query everything,
+#  or a JSON array that json_each() expands. That keeps the statements literal, so
+#  there is no formatted-SQL surface and nothing to suppress.
 # --------------------------------------------------------------------------- #
 
 
-def _scope(categories: tuple[str, ...] | None, params: list) -> str:
-    if not categories:
-        return ""
-    params.extend(categories)
-    return f" AND t.category_slug IN ({','.join('?' for _ in categories)})"
-
-
-def _staff_posts_cte(categories: tuple[str, ...] | None) -> tuple[str, list]:
-    params: list = []
-    scope = _scope(categories, params)
-    cte = f"""
-        SELECT p.topic_id, p.username, p.post_number, p.created_at
-        FROM discourse_posts p
-        JOIN discourse_staff s ON s.username = p.username
-        JOIN discourse_topics t ON t.topic_id = p.topic_id
-        WHERE p.created_at >= ?{scope}
-    """
-    return cte, params
+def _scope_params(categories: tuple[str, ...] | None) -> tuple[object, object]:
+    return (None, None) if not categories else (_json.dumps(list(categories)),) * 2
 
 
 def staff_activity(
@@ -209,11 +199,15 @@ def staff_activity(
 ) -> list[dict]:
     """Posts, distinct topics, and threads handled first, per staff member."""
     now = now or datetime.now(UTC)
-    cte, params = _staff_posts_cte(categories)
-    params.insert(0, (now - timedelta(days=days)).isoformat())
+    scoped, scoped_again = _scope_params(categories)
     rows = conn.execute(
-        f"""
-        WITH staff_posts AS ({cte}),
+        """
+        WITH staff_posts AS (
+            SELECT topic_id, username, post_number, created_at
+            FROM discourse_staff_posts
+            WHERE created_at >= ?
+              AND (? IS NULL OR category_slug IN (SELECT value FROM json_each(?)))
+        ),
         handled AS (
             SELECT topic_id, username FROM (
                 SELECT topic_id, username,
@@ -229,65 +223,64 @@ def staff_activity(
         GROUP BY sp.username
         ORDER BY posts DESC
         """,
-        params,
+        ((now - timedelta(days=days)).isoformat(), scoped, scoped_again),
     ).fetchall()
     return [dict(row) for row in rows]
 
 
-def _bucket_counts(
-    conn,
-    *,
-    expr: str,
-    days: int = DEFAULT_BACKFILL_DAYS,
-    categories: tuple[str, ...] | None = None,
-    now: datetime | None = None,
-) -> list[dict]:
-    now = now or datetime.now(UTC)
-    cte, params = _staff_posts_cte(categories)
-    params.insert(0, (now - timedelta(days=days)).isoformat())
-    rows = conn.execute(
-        f"""
-        WITH staff_posts AS ({cte})
-        SELECT {expr} AS bucket, COUNT(*) AS posts
-        FROM staff_posts GROUP BY bucket ORDER BY bucket
-        """,
-        params,
-    ).fetchall()
-    return [dict(row) for row in rows]
+def daily_counts(conn, *, days: int = DEFAULT_BACKFILL_DAYS,
+                 categories: tuple[str, ...] | None = None,
+                 now: datetime | None = None) -> list[dict]:
+    return _counts(conn, "day", days, categories, now)
 
 
-def daily_counts(conn, **kwargs) -> list[dict]:
-    return _bucket_counts(conn, expr="substr(created_at, 1, 10)", **kwargs)
-
-
-def hourly_counts(conn, **kwargs) -> list[dict]:
+def hourly_counts(conn, *, days: int = DEFAULT_BACKFILL_DAYS,
+                  categories: tuple[str, ...] | None = None,
+                  now: datetime | None = None) -> list[dict]:
     """Posts per UTC hour-of-day; created_at is ISO 8601 with a Z suffix."""
-    return _bucket_counts(conn, expr="CAST(substr(created_at, 12, 2) AS INTEGER)", **kwargs)
+    return _counts(conn, "hour", days, categories, now)
 
 
-def weekly_counts(conn, **kwargs) -> list[dict]:
-    return _bucket_counts(conn, expr="strftime('%Y-W%W', created_at)", **kwargs)
+def weekly_counts(conn, *, days: int = DEFAULT_BACKFILL_DAYS,
+                  categories: tuple[str, ...] | None = None,
+                  now: datetime | None = None) -> list[dict]:
+    return _counts(conn, "week", days, categories, now)
 
 
-def _first_response_cte(categories: tuple[str, ...] | None) -> tuple[str, list]:
-    params: list = []
-    scope = _scope(categories, params)
-    cte = f"""
-        WITH opened AS (
-            SELECT topic_id, created_at FROM discourse_posts WHERE post_number = 1
-        ),
-        first_staff AS (
-            SELECT topic_id, username, created_at FROM (
-                SELECT p.topic_id, p.username, p.created_at,
-                       ROW_NUMBER() OVER (PARTITION BY p.topic_id ORDER BY p.created_at) AS rn
-                FROM discourse_posts p
-                JOIN discourse_staff s ON s.username = p.username
-                JOIN discourse_topics t ON t.topic_id = p.topic_id
-                WHERE p.post_number > 1{scope}
-            ) WHERE rn = 1
-        )
-    """
-    return cte, params
+# The bucket expression is a fixed, module-level choice -- never caller text.
+_BUCKET_SQL = {
+    "day": """
+        SELECT substr(created_at, 1, 10) AS bucket, COUNT(*) AS posts
+        FROM discourse_staff_posts
+        WHERE created_at >= ?
+          AND (? IS NULL OR category_slug IN (SELECT value FROM json_each(?)))
+        GROUP BY bucket ORDER BY bucket
+    """,
+    "hour": """
+        SELECT CAST(substr(created_at, 12, 2) AS INTEGER) AS bucket, COUNT(*) AS posts
+        FROM discourse_staff_posts
+        WHERE created_at >= ?
+          AND (? IS NULL OR category_slug IN (SELECT value FROM json_each(?)))
+        GROUP BY bucket ORDER BY bucket
+    """,
+    "week": """
+        SELECT strftime('%Y-W%W', created_at) AS bucket, COUNT(*) AS posts
+        FROM discourse_staff_posts
+        WHERE created_at >= ?
+          AND (? IS NULL OR category_slug IN (SELECT value FROM json_each(?)))
+        GROUP BY bucket ORDER BY bucket
+    """,
+}
+
+
+def _counts(conn, kind: str, days: int, categories, now) -> list[dict]:
+    now = now or datetime.now(UTC)
+    scoped, scoped_again = _scope_params(categories)
+    rows = conn.execute(
+        _BUCKET_SQL[kind],
+        ((now - timedelta(days=days)).isoformat(), scoped, scoped_again),
+    ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def first_response_seconds(
@@ -299,11 +292,21 @@ def first_response_seconds(
 ) -> list[dict]:
     """Per staff member: threads answered and mean seconds to first reply."""
     now = now or datetime.now(UTC)
-    cte, params = _first_response_cte(categories)
-    params.append((now - timedelta(days=days)).isoformat())
+    scoped, scoped_again = _scope_params(categories)
     rows = conn.execute(
-        f"""
-        {cte}
+        """
+        WITH opened AS (
+            SELECT topic_id, created_at FROM discourse_posts WHERE post_number = 1
+        ),
+        first_staff AS (
+            SELECT topic_id, username, created_at FROM (
+                SELECT p.topic_id, p.username, p.created_at,
+                       ROW_NUMBER() OVER (PARTITION BY p.topic_id ORDER BY p.created_at) AS rn
+                FROM discourse_staff_posts p
+                WHERE p.post_number > 1
+                  AND (? IS NULL OR p.category_slug IN (SELECT value FROM json_each(?)))
+            ) WHERE rn = 1
+        )
         SELECT f.username,
                COUNT(*) AS handled,
                CAST(AVG((julianday(f.created_at) - julianday(o.created_at)) * 86400) AS INTEGER) AS mean_seconds
@@ -314,7 +317,7 @@ def first_response_seconds(
         GROUP BY f.username
         ORDER BY handled DESC
         """,
-        params,
+        (scoped, scoped_again, (now - timedelta(days=days)).isoformat()),
     ).fetchall()
     return [dict(row) for row in rows]
 
@@ -332,17 +335,27 @@ def response_gaps(
     than approximated in SQL.
     """
     now = now or datetime.now(UTC)
-    cte, params = _first_response_cte(categories)
-    params.append((now - timedelta(days=days)).isoformat())
+    scoped, scoped_again = _scope_params(categories)
     rows = conn.execute(
-        f"""
-        {cte}
+        """
+        WITH opened AS (
+            SELECT topic_id, created_at FROM discourse_posts WHERE post_number = 1
+        ),
+        first_staff AS (
+            SELECT topic_id, created_at FROM (
+                SELECT p.topic_id, p.created_at,
+                       ROW_NUMBER() OVER (PARTITION BY p.topic_id ORDER BY p.created_at) AS rn
+                FROM discourse_staff_posts p
+                WHERE p.post_number > 1
+                  AND (? IS NULL OR p.category_slug IN (SELECT value FROM json_each(?)))
+            ) WHERE rn = 1
+        )
         SELECT CAST((julianday(f.created_at) - julianday(o.created_at)) * 86400 AS INTEGER) AS secs
         FROM first_staff f
         JOIN opened o ON o.topic_id = f.topic_id
         WHERE julianday(f.created_at) >= julianday(o.created_at)
           AND f.created_at >= ?
         """,
-        params,
+        (scoped, scoped_again, (now - timedelta(days=days)).isoformat()),
     ).fetchall()
-    return [int(row["secs"]) for row in rows if row["secs"] is not None]
+    return [int(row["secs"]) for row in rows]
