@@ -58,6 +58,7 @@ from app.web_discourse import (
     process_discourse_submission,
     render_discourse_body,
 )
+from app.web_discourse_activity import render_discourse_activity_body
 from app.web_discourse_routes import register_discourse_viewer_blueprint
 from app.web_forum_tags import process_forum_tags_submission, render_forum_tags_body
 from app.web_freshdesk_routes import register_freshdesk_viewer_blueprint
@@ -193,6 +194,7 @@ NAV_GROUPS = (
         "label": "Support & Integrations",
         "items": (
             ("discourse_page", "Discourse"),
+            ("discourse_activity_page", "Discourse Activity"),
             ("discourse_viewer.discourse_viewer_page", "Forum Viewer"),
             ("freshdesk_viewer.freshdesk_viewer_page", "Freshdesk"),
         ),
@@ -3382,6 +3384,7 @@ def create_web_app(
     on_manage_member=None,
     on_get_member_activity=None,
     on_export_member_activity=None,
+    on_get_discourse_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_forum_tags=None,
@@ -3863,6 +3866,7 @@ def create_web_app(
             "translate_channels_page": "Auto-Translate Channels",
             "members_page": "Members",
             "discourse_page": "Discourse",
+            "discourse_activity_page": "Discourse Activity",
             "discourse_viewer_page": "Forum Viewer",
             "freshdesk_viewer_page": "Freshdesk",
             "uptime_kuma_page": "Uptime Kuma",
@@ -5168,6 +5172,12 @@ def create_web_app(
                 "Configure forum API connection, credentials, and guild-scoped Discourse sync toggles.",
                 url_for("discourse_page"),
                 "Open Discourse",
+            ),
+            build_dashboard_card(
+                "Discourse Activity",
+                "Staff reply volume, first-response times, and hourly coverage from the stored forum statistics.",
+                url_for("discourse_activity_page"),
+                "Open Discourse Activity",
             ),
             build_dashboard_card(
                 "Forum Viewer",
@@ -9353,6 +9363,47 @@ def create_web_app(
         )
         return _render_page("Discourse", body, user["email"], bool(user.get("is_admin")))
 
+    @app.route("/admin/discourse-activity", methods=["GET"])
+    @login_required
+    def discourse_activity_page():
+        user = _current_user()
+        windows = (30, 90, 180, 365)
+        try:
+            requested_days = int(request.args.get("days", "90"))
+        except (TypeError, ValueError):
+            requested_days = 90
+        days = requested_days if requested_days in windows else 90
+        payload = (
+            on_get_discourse_activity(days=days)
+            if callable(on_get_discourse_activity)
+            else {"ok": False, "error": "Discourse activity callback is not configured."}
+        )
+        if not isinstance(payload, dict):
+            payload = {"ok": False, "error": "Discourse activity payload was invalid."}
+        window_options = "".join(
+            f"<option value='{value}'{' selected' if value == days else ''}>{value} days</option>"
+            for value in windows
+        )
+        filter_html = f"""
+        <div class="card">
+          <form method="get" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap;">
+            <div>
+              <label for="discourse-activity-days"><strong>Window</strong></label>
+              <select id="discourse-activity-days" name="days">{window_options}</select>
+            </div>
+            <div><button class="btn secondary" type="submit">Apply</button></div>
+          </form>
+        </div>
+        """
+        body = filter_html + render_discourse_activity_body(payload)
+        return _render_page(
+            "Discourse Activity",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
+
     # Register Discourse Forum Viewer blueprint (extracted to app/web_discourse_routes.py)
     register_discourse_viewer_blueprint(
         app,
@@ -10485,6 +10536,7 @@ def start_web_admin_interface(
     on_manage_member=None,
     on_get_member_activity=None,
     on_export_member_activity=None,
+    on_get_discourse_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_forum_tags=None,
@@ -10540,6 +10592,7 @@ def start_web_admin_interface(
         on_manage_member=on_manage_member,
         on_get_member_activity=on_get_member_activity,
         on_export_member_activity=on_export_member_activity,
+        on_get_discourse_activity=on_get_discourse_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
         on_manage_reddit_feeds=on_manage_reddit_feeds,
         on_get_forum_tags=on_get_forum_tags,

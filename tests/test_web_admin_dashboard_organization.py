@@ -40,6 +40,7 @@ _EXPECTED_NAV_PAGES = {
     "Command Status",
     "Dashboard",
     "Discourse",
+    "Discourse Activity",
     "Documentation",
     "Forum Viewer",
     "Freshdesk",

@@ -3318,6 +3318,14 @@ def run_web_export_member_activity(guild_id: int, role_id: int | None = None):
         return {"ok": False, "error": str(exc)}
 
 
+def run_web_get_discourse_activity(days: int = 90):
+    try:
+        return build_discourse_activity_payload(days=days)
+    except Exception as exc:
+        logger.exception("Failed to build Discourse activity web payload")
+        return {"ok": False, "error": str(exc)}
+
+
 def _can_backfill_message_channel(channel, bot_member: discord.Member | None):
     if bot_member is None:
         return False
@@ -13472,6 +13480,7 @@ def start_web_admin_server():
                     on_manage_member=run_web_manage_member,
                     on_get_member_activity=run_web_get_member_activity,
                     on_export_member_activity=run_web_export_member_activity,
+                    on_get_discourse_activity=run_web_get_discourse_activity,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_forum_tags=get_forum_tag_web_callbacks().run_web_get_forum_tags,
