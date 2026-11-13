@@ -2171,11 +2171,14 @@ def ensure_db_schema():
 
             -- Staff posts already joined to their category. Queries read this view so
             -- the join is not rebuilt by string interpolation in every statement.
-            CREATE VIEW IF NOT EXISTS discourse_staff_posts AS
+            -- LEFT JOIN on topics: a post in an unmapped topic must still count when
+            -- no category scope is requested, and it drops out only under a scope.
+            DROP VIEW IF EXISTS discourse_staff_posts;
+            CREATE VIEW discourse_staff_posts AS
             SELECT p.topic_id, p.username, p.post_number, p.created_at, t.category_slug
             FROM discourse_posts p
             JOIN discourse_staff s ON s.username = p.username
-            JOIN discourse_topics t ON t.topic_id = p.topic_id;
+            LEFT JOIN discourse_topics t ON t.topic_id = p.topic_id;
 
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
             CREATE INDEX IF NOT EXISTS idx_honeypot_channels_guild_id
@@ -11999,48 +12002,73 @@ discourse_stats_task = None
 
 
 def _discourse_stats_fetch_json(guild_id: int):
-    """Return a fetch_json(path) bound to the guild's Discourse config."""
+    """Return a fetch_json(path) bound to the guild's Discourse config.
+
+    Discourse throttles near 60 requests/minute. A 429 used to abort the whole walk;
+    retry a bounded number of times, honouring Retry-After, and let the error through
+    if it persists. The walk is idempotent, so the next scheduled run resumes.
+    """
     config = resolve_discourse_forum_settings(guild_id)
+    attempts = 3
 
     def fetch_json(path: str):
-        response = requests.get(
-            f"{str(config['base_url']).rstrip('/')}{path}",
-            timeout=config["timeout_seconds"],
-            headers=build_discourse_headers(
-                user_agent=DISCOURSE_USER_AGENT,
-                api_key=config["api_key"],
-                api_username=config["api_username"],
-            ),
-        )
-        _raise_for_discourse_status(response, "Discourse stats", query=path)
-        return response.json()
+        for attempt in range(1, attempts + 1):
+            response = requests.get(
+                f"{str(config['base_url']).rstrip('/')}{path}",
+                timeout=config["timeout_seconds"],
+                headers=build_discourse_headers(
+                    user_agent=DISCOURSE_USER_AGENT,
+                    api_key=config["api_key"],
+                    api_username=config["api_username"],
+                ),
+            )
+            if int(getattr(response, "status_code", 0) or 0) == 429 and attempt < attempts:
+                try:
+                    hinted = float(response.headers.get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    hinted = 0.0
+                delay = min(max(hinted, 2.0 ** attempt), 30.0)
+                logger.warning(
+                    "Discourse stats throttled (attempt %d/%d); retrying in %.1fs",
+                    attempt,
+                    attempts,
+                    delay,
+                )
+                time.sleep(delay)
+                continue
+            _raise_for_discourse_status(response, "Discourse stats", query=path)
+            return response.json()
 
     return fetch_json
 
 
 def run_discourse_stats_ingest() -> dict:
-    """Refresh the staff roster, the topic map, and the posts. Blocking."""
+    """Refresh the staff roster, the topic map, and the posts. Blocking.
+
+    The ingest functions take `db_lock` per page and release it for each fetch and
+    pacing sleep: holding it across the walk would block message handling for minutes.
+    """
     guild_id = normalize_target_guild_id(GUILD_ID)
     fetch_json = _discourse_stats_fetch_json(guild_id)
     conn = get_db_connection()
-    with db_lock:
-        staff = discourse_stats.refresh_staff_roster(
-            conn, group=DISCOURSE_STATS_GROUP, fetch_json=fetch_json
-        )
-        topics = discourse_stats.ingest_topics(
-            conn,
-            categories=DISCOURSE_STATS_CATEGORIES,
-            fetch_json=fetch_json,
-            backfill_days=DISCOURSE_STATS_BACKFILL_DAYS,
-            pace=time.sleep,
-        )
-        posts = discourse_stats.ingest_posts(
-            conn,
-            fetch_json=fetch_json,
-            backfill_days=DISCOURSE_STATS_BACKFILL_DAYS,
-            pace=time.sleep,
-        )
-        conn.commit()
+    staff = discourse_stats.refresh_staff_roster(
+        conn, group=DISCOURSE_STATS_GROUP, fetch_json=fetch_json, lock=db_lock
+    )
+    topics = discourse_stats.ingest_topics(
+        conn,
+        categories=DISCOURSE_STATS_CATEGORIES,
+        fetch_json=fetch_json,
+        backfill_days=DISCOURSE_STATS_BACKFILL_DAYS,
+        pace=time.sleep,
+        lock=db_lock,
+    )
+    posts = discourse_stats.ingest_posts(
+        conn,
+        fetch_json=fetch_json,
+        backfill_days=DISCOURSE_STATS_BACKFILL_DAYS,
+        pace=time.sleep,
+        lock=db_lock,
+    )
     return {"staff": staff, "topics": topics, "posts": posts}
 
 

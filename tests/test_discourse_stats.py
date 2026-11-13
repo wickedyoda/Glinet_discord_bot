@@ -176,3 +176,154 @@ def test_daily_hourly_weekly_buckets(db):
 
     weekly = discourse_stats.weekly_counts(db, days=90, now=NOW)
     assert sum(r["posts"] for r in weekly) == 3
+
+
+# --------------------------------------------------------------------------- #
+#  Review follow-ups: roster completeness, lock scope, bucket correctness
+# --------------------------------------------------------------------------- #
+
+
+def test_roster_paginates_past_the_first_page(db):
+    """A group larger than the API page size must not look like a mass departure."""
+    calls = []
+    first_page = [{"username": f"user{i}"} for i in range(100)]
+
+    def fetch(path):
+        calls.append(path)
+        if "offset=0" in path:
+            return {"members": first_page, "meta": {"total": 101}}
+        return {"members": [{"username": "last-one"}], "meta": {"total": 101}}
+
+    result = discourse_stats.refresh_staff_roster(db, group="GL.iNet_Staff", fetch_json=fetch)
+
+    assert result["members"] == 101
+    assert any("offset=100" in path for path in calls)
+    assert db.execute("SELECT COUNT(*) c FROM discourse_staff").fetchone()["c"] == 101
+
+
+def test_roster_drops_departed_members_and_their_posts(db):
+    _seed(db)
+
+    result = discourse_stats.refresh_staff_roster(
+        db, group="GL.iNet_Staff", fetch_json=lambda _p: {"members": [{"username": "alice"}]}
+    )
+
+    assert result["removed"] == 1
+    assert {
+        row["username"] for row in db.execute("SELECT username FROM discourse_staff")
+    } == {"alice"}
+    ranking = discourse_stats.staff_activity(db, days=90, now=NOW)
+    assert [row["username"] for row in ranking] == ["alice"]
+
+
+def test_roster_is_not_pruned_on_an_empty_response(db):
+    """An API hiccup returning no members must not be read as 'everyone left'."""
+    _seed(db)
+
+    discourse_stats.refresh_staff_roster(
+        db, group="GL.iNet_Staff", fetch_json=lambda _p: {}
+    )
+
+    assert db.execute("SELECT COUNT(*) c FROM discourse_staff").fetchone()["c"] == 2
+
+
+class _TrackingLock:
+    """Records whether the ingest held the lock while fetching or sleeping."""
+
+    def __init__(self):
+        self.depth = 0
+        self.violations = []
+
+    def __enter__(self):
+        self.depth += 1
+        return self
+
+    def __exit__(self, *exc_info):
+        self.depth -= 1
+        return False
+
+
+def test_ingest_never_holds_the_lock_across_a_fetch_or_sleep(db):
+    lock = _TrackingLock()
+    batches = [
+        {"latest_posts": [
+            {"id": 1, "topic_id": 1, "username": "alice", "post_number": 1,
+             "created_at": _iso(days_ago=1)},
+        ]},
+        {"latest_posts": []},
+    ]
+
+    def fetch(_path):
+        if lock.depth:
+            lock.violations.append("fetch")
+        return batches.pop(0)
+
+    def pace(_seconds):
+        if lock.depth:
+            lock.violations.append("sleep")
+
+    discourse_stats.ingest_posts(
+        db, fetch_json=fetch, backfill_days=90, now=NOW, pace=pace, lock=lock
+    )
+
+    assert lock.violations == []
+    assert lock.depth == 0
+
+
+def test_roster_fetch_runs_outside_the_lock(db):
+    lock = _TrackingLock()
+
+    def fetch(_path):
+        if lock.depth:
+            lock.violations.append("fetch")
+        return {"members": [{"username": "alice"}]}
+
+    discourse_stats.refresh_staff_roster(
+        db, group="GL.iNet_Staff", fetch_json=fetch, lock=lock
+    )
+
+    assert lock.violations == []
+    assert lock.depth == 0
+
+
+def test_weekly_buckets_use_the_iso_week_year(db):
+    """%Y-W%W splits an ISO week across the new year; %G-W%V keeps it whole."""
+    db.execute("INSERT INTO discourse_staff VALUES ('alice', '', '')")
+    db.execute(
+        "INSERT INTO discourse_topics VALUES (5, 'glrouter', '2025-12-30T00:00:00.000Z')"
+    )
+    db.executemany(
+        "INSERT INTO discourse_posts (post_id, topic_id, username, post_number, created_at, ingested_at)"
+        " VALUES (?, 5, 'alice', ?, ?, '')",
+        [
+            (50, 1, "2025-12-30T00:00:00.000Z"),
+            (51, 2, "2026-01-01T00:00:00.000Z"),
+        ],
+    )
+    db.commit()
+
+    buckets = {
+        row["bucket"]: row["posts"]
+        for row in discourse_stats.weekly_counts(
+            db, days=90, now=datetime(2026, 1, 5, 12, 0, tzinfo=UTC)
+        )
+    }
+
+    assert buckets == {"2026-W01": 2}
+
+
+def test_posts_in_unmapped_topics_count_when_no_scope_is_requested(db):
+    """The view must not silently drop posts whose topic was never mapped."""
+    db.execute("INSERT INTO discourse_staff VALUES ('alice', '', '')")
+    db.execute(
+        "INSERT INTO discourse_posts (post_id, topic_id, username, post_number, created_at, ingested_at)"
+        " VALUES (90, 9, 'alice', 1, ?, '')",
+        (_iso(days_ago=1),),
+    )
+    db.commit()
+
+    unscoped = discourse_stats.staff_activity(db, days=90, now=NOW)
+    assert [row["username"] for row in unscoped] == ["alice"]
+
+    scoped = discourse_stats.staff_activity(db, days=90, categories=("glrouter",), now=NOW)
+    assert scoped == []

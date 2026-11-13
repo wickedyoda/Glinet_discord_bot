@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json as _json
 from collections.abc import Callable
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 
 # How far back the first run reaches. Later runs are incremental: INSERT OR IGNORE on
@@ -32,36 +33,91 @@ def parse_discourse_ts(value: str) -> datetime:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
+def _write_lock(lock):
+    """The caller's DB lock, or a no-op.
+
+    Ingest must never hold `db_lock` across an HTTP request or a pacing sleep: the
+    lock is shared with message handling, so a multi-minute backfill would stall the
+    bot. Each write takes it for the duration of the statement only.
+    """
+    return lock if lock is not None else nullcontext()
+
+
+def _fetch_group_members(
+    *, group: str, fetch_json: Callable[[str], dict], page_size: int = 100, max_pages: int = 50
+) -> list[dict]:
+    """Walk the group member list.
+
+    `/groups/<group>/members.json` defaults to 100 per page; a single request would
+    silently truncate a larger group and the next roster refresh would then treat the
+    missing staff as departed.
+    """
+    members: list[dict] = []
+    offset = 0
+    for _ in range(max_pages):
+        payload = fetch_json(
+            f"/groups/{group}/members.json?limit={page_size}&offset={offset}"
+        ) or {}
+        page = payload.get("members") or []
+        members.extend(page)
+        offset += len(page)
+        total = (payload.get("meta") or {}).get("total")
+        if not page or len(page) < page_size:
+            break
+        if isinstance(total, int) and offset >= total:
+            break
+    return members
+
+
 # --------------------------------------------------------------------------- #
 #  Ingest
 # --------------------------------------------------------------------------- #
 
 
-def refresh_staff_roster(conn, *, group: str, fetch_json: Callable[[str], dict]) -> dict:
+def refresh_staff_roster(
+    conn, *, group: str, fetch_json: Callable[[str], dict], lock=None
+) -> dict:
     """Snapshot current group membership.
 
     Membership is *current*, not historical: Discourse exposes no record of who was
-    in the group when, so staff who left are invisible to later queries.
+    in the group when, so a departed member is removed from the roster and their old
+    posts stop counting. Keeping them would contradict the page's own caveat and
+    credit someone who is no longer staff.
+
+    The roster is only pruned from a complete, non-empty fetch: a truncated response
+    must not be read as "everyone left".
     """
-    payload = fetch_json(f"/groups/{group}/members.json?limit=100")
-    members = payload.get("members") or []
+    members = _fetch_group_members(group=group, fetch_json=fetch_json)
     now = _utc_now_iso()
-    added = 0
-    for member in members:
-        username = str(member.get("username") or "").strip().lower()
-        if not username:
-            continue
-        cursor = conn.execute(
-            """
-            INSERT INTO discourse_staff (username, first_seen_at, last_seen_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(username) DO UPDATE SET last_seen_at = excluded.last_seen_at
-            """,
-            (username, now, now),
-        )
-        if cursor.rowcount == 1:
-            added += 1
-    return {"members": len(members), "added": added}
+    usernames = {
+        str(member.get("username") or "").strip().lower()
+        for member in members
+        if str(member.get("username") or "").strip()
+    }
+    added = removed = 0
+    with _write_lock(lock):
+        if usernames:
+            existing = {
+                row["username"]
+                for row in conn.execute("SELECT username FROM discourse_staff").fetchall()
+            }
+            departed = sorted(existing - usernames)
+            for username in departed:
+                conn.execute("DELETE FROM discourse_staff WHERE username = ?", (username,))
+            removed = len(departed)
+        for username in sorted(usernames):
+            cursor = conn.execute(
+                """
+                INSERT INTO discourse_staff (username, first_seen_at, last_seen_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(username) DO UPDATE SET last_seen_at = excluded.last_seen_at
+                """,
+                (username, now, now),
+            )
+            if cursor.rowcount == 1:
+                added += 1
+        conn.commit()
+    return {"members": len(usernames), "added": added, "removed": removed}
 
 
 def ingest_topics(
@@ -73,11 +129,13 @@ def ingest_topics(
     now: datetime | None = None,
     pace: Callable[[float], None] | None = None,
     max_pages: int = MAX_PAGES,
+    lock=None,
 ) -> dict:
     """Build the topic -> category map from each category's latest feed.
 
     `/posts.json` carries no `category_id`, so this pass is what makes category
-    scoping possible at all.
+    scoping possible at all. Writes take the lock per page; the fetch and the pacing
+    sleep stay outside it.
     """
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(days=backfill_days)
@@ -92,6 +150,7 @@ def ingest_topics(
                 break
             pages += 1
             fresh = 0
+            rows = []
             for topic in topics:
                 try:
                     created = parse_discourse_ts(topic["created_at"])
@@ -100,15 +159,20 @@ def ingest_topics(
                 if created < cutoff:
                     continue
                 fresh += 1
-                conn.execute(
-                    """
-                    INSERT INTO discourse_topics (topic_id, category_slug, created_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(topic_id) DO UPDATE SET category_slug = excluded.category_slug
-                    """,
-                    (int(topic["id"]), slug, topic["created_at"]),
-                )
-                total += 1
+                rows.append((int(topic["id"]), slug, topic["created_at"]))
+            if rows:
+                with _write_lock(lock):
+                    for row in rows:
+                        conn.execute(
+                            """
+                            INSERT INTO discourse_topics (topic_id, category_slug, created_at)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(topic_id) DO UPDATE SET category_slug = excluded.category_slug
+                            """,
+                            row,
+                        )
+                    conn.commit()
+                total += len(rows)
             if fresh == 0 and parse_discourse_ts(topics[-1]["created_at"]) < cutoff:
                 break
             page += 1
@@ -126,8 +190,14 @@ def ingest_posts(
     now: datetime | None = None,
     pace: Callable[[float], None] | None = None,
     max_pages: int = MAX_PAGES,
+    lock=None,
 ) -> dict:
-    """Walk /posts.json backwards and store every post inside the window."""
+    """Walk /posts.json backwards and store every post inside the window.
+
+    Each page is fetched and paced outside the lock, then written inside it. A
+    backfill is minutes of network time; holding `db_lock` across it would stall every
+    other database user, including message handling.
+    """
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(days=backfill_days)
     ingested_at = _utc_now_iso()
@@ -142,6 +212,7 @@ def ingest_posts(
         if not batch:
             break
         pages += 1
+        rows = []
         for post in batch:
             try:
                 created = parse_discourse_ts(post["created_at"])
@@ -150,12 +221,7 @@ def ingest_posts(
             if created < cutoff:
                 continue
             seen += 1
-            cursor = conn.execute(
-                """
-                INSERT OR IGNORE INTO discourse_posts
-                    (post_id, topic_id, username, post_number, created_at, ingested_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
+            rows.append(
                 (
                     int(post["id"]),
                     int(post["topic_id"]),
@@ -163,9 +229,21 @@ def ingest_posts(
                     int(post.get("post_number") or 0),
                     post["created_at"],
                     ingested_at,
-                ),
+                )
             )
-            stored += cursor.rowcount
+        if rows:
+            with _write_lock(lock):
+                for row in rows:
+                    cursor = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO discourse_posts
+                            (post_id, topic_id, username, post_number, created_at, ingested_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        row,
+                    )
+                    stored += cursor.rowcount
+                conn.commit()
 
         if parse_discourse_ts(batch[-1]["created_at"]) < cutoff:
             break
@@ -264,7 +342,7 @@ _BUCKET_SQL = {
         GROUP BY bucket ORDER BY bucket
     """,
     "week": """
-        SELECT strftime('%Y-W%W', created_at) AS bucket, COUNT(*) AS posts
+        SELECT strftime('%G-W%V', created_at) AS bucket, COUNT(*) AS posts
         FROM discourse_staff_posts
         WHERE created_at >= ?
           AND (? IS NULL OR category_slug IN (SELECT value FROM json_each(?)))
