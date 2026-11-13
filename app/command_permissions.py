@@ -73,7 +73,13 @@ COMMAND_PERMISSION_MODE_DISABLED = "disabled"
 COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
 
 # Role name sets — overridden at runtime by bot.py during refresh
-DEFAULT_ALLOWED_ROLE_NAMES = {"Employee", "Admin", "Gl.iNet Moderator"}
+DEFAULT_ALLOWED_ROLE_NAMES = {
+    "GL.iNet Staff",        # the guild role; formerly "Employee"
+    "Employee",             # legacy name, kept so a rename cannot lock staff out
+    "Admin",
+    "Gl.iNet Moderators",   # the actual guild role name
+    "Gl.iNet Moderator",    # legacy singular, kept for the same reason
+}
 
 # Admin-only and moderator-only command key sets
 ADMIN_ONLY_COMMAND_KEYS = {
