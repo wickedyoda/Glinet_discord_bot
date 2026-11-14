@@ -256,6 +256,9 @@ REDDIT_FEED_FETCH_LIMIT = 10
 REDDIT_FEED_REQUEST_TIMEOUT_SECONDS = 20
 REDDIT_FEED_SEEN_POST_RETENTION_LIMIT = 500
 REDDIT_FEED_MAX_POSTS_PER_RUN = 5
+# Anonymous Reddit polling is rate-limited (429) and blocked (403), so without OAuth
+# a feed check cannot succeed. The skip is reported once, not on every cycle.
+REDDIT_OAUTH_MISSING_WARNED = {"logged": False}
 # Every 12 hours; override with FORUM_TAG_CHECK_SCHEDULE.
 DEFAULT_FORUM_TAG_CHECK_SCHEDULE = "0 */12 * * *"
 # One Discourse page. A 12-hour cadence can accumulate more than ten new topics,
@@ -10598,9 +10601,12 @@ async def uptime_status_monitor_loop():
     try:
         await check_uptime_status_once()
     except UptimeStatusAuthError as exc:
-        logger.error(
-            "Initial uptime status monitor check failed: %s "
-            "The monitor will stay idle until the Uptime configuration is corrected and reloaded.",
+        # A missing API key is a configuration state, not a crash: the monitor idles by
+        # design. WARNING keeps it visible without mislabelling it as a fault.
+        logger.warning(
+            "Uptime status monitor is idle: %s "
+            "Set UPTIME_STATUS_API_KEY (or UPK_API_KEY_RANDY), or disable the monitor "
+            "with UPTIME_STATUS_ENABLED=false.",
             exc,
         )
         return
@@ -10616,9 +10622,10 @@ async def uptime_status_monitor_loop():
         try:
             await check_uptime_status_once()
         except UptimeStatusAuthError as exc:
-            logger.error(
-                "Uptime status monitor stopped: %s "
-                "The monitor will stay idle until the Uptime configuration is corrected and reloaded.",
+            logger.warning(
+                "Uptime status monitor is idle: %s "
+                "Set UPTIME_STATUS_API_KEY (or UPK_API_KEY_RANDY), or disable the monitor "
+                "with UPTIME_STATUS_ENABLED=false.",
                 exc,
             )
             return
@@ -11368,6 +11375,18 @@ async def process_reddit_feed_subscription(feed: dict):
     channel_id = int(feed.get("channel_id") or 0)
     checked_at = datetime.now(UTC).isoformat()
     if guild_id <= 0 or not get_effective_guild_feature_enabled(guild_id, "reddit_feed_notify_enabled", REDDIT_FEED_NOTIFY_ENABLED):
+        return
+
+    # Reddit answers anonymous requests with 429 (rate limited) or 403 (blocked), so a
+    # check without OAuth cannot succeed and only earns more throttling. Say so once.
+    if not is_reddit_oauth_configured():
+        if not REDDIT_OAUTH_MISSING_WARNED["logged"]:
+            logger.warning(
+                "Reddit feeds are enabled but no OAuth credentials are set "
+                "(REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET, REDDIT_USERNAME, REDDIT_PASSWORD); "
+                "skipping feed checks until they are configured."
+            )
+            REDDIT_OAUTH_MISSING_WARNED["logged"] = True
         return
 
     try:
