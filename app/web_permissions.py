@@ -193,3 +193,80 @@ def write_endpoints_for_permissions(permissions) -> frozenset[str]:
     return frozenset(
         endpoint for endpoint, area in ENDPOINT_AREAS.items() if f"{area}.write" in perms
     )
+
+
+# --------------------------------------------------------------------------- #
+#  Read visibility
+# --------------------------------------------------------------------------- #
+# Until now every authenticated account could open every page and only writes were
+# gated. Visibility now derives from the same matrix: a page is reachable when the
+# account's group holds ``<area>.read`` for the area it belongs to.
+#
+# This never widens access. Every seeded group holds all ``*.read`` permissions, so
+# only a deliberately narrowed custom group sees a difference. Endpoints absent
+# from this map keep their previous behaviour (reachable), and anything in
+# ``ADMIN_ONLY_READ_ENDPOINTS`` stays admin-only whatever the matrix says.
+READ_ENDPOINT_AREAS = {
+    **ENDPOINT_AREAS,
+    # activity
+    "member_activity_page": "activity",
+    "member_activity_export": "activity",
+    "discourse_activity_page": "activity",
+    # moderation and members
+    "honeypot_page": "moderation",
+    "actions_page": "moderation",
+    "bulk_role_csv": "members",
+    # chat automation
+    "translate_channels_page": "chat_automation",
+    "reddit_auto_responds": "chat_automation",
+    "reaction_roles_page": "chat_automation",
+    "invite_links_page": "chat_automation",
+    "post_message_page": "chat_automation",
+    # feeds
+    "forum_tags": "feeds",
+    "forum_tags_page": "feeds",
+    # monitoring
+    "public_observability": "monitoring",
+    "public_observability_alias": "monitoring",
+    "public_observability_everything": "monitoring",
+    # support
+    "discourse_viewer.discourse_viewer_page": "support",
+    "freshdesk_viewer.freshdesk_viewer_page": "support",
+    # bot configuration
+    "settings": "bot_config",
+    "guilds_page": "bot_config",
+    # system
+    "users": "system",
+    "permissions_page": "system",
+    "admin_logs": "system",
+    "admin_logs_export": "system",
+}
+
+# Pages that are admin-only regardless of the matrix: they change the permission
+# model itself, or the runtime the model runs in.
+ADMIN_ONLY_READ_ENDPOINTS = frozenset(
+    {
+        "users",
+        "permissions_page",
+        "admin_logs",
+        "admin_logs_export",
+        "settings",
+    }
+)
+
+
+def read_area_for_endpoint(endpoint: str | None) -> str | None:
+    """The area a page belongs to, for visibility. None means 'not mapped'."""
+    if not endpoint:
+        return None
+    return READ_ENDPOINT_AREAS.get(str(endpoint))
+
+
+def read_endpoints_for_permissions(permissions) -> frozenset[str]:
+    """Endpoints an account may open, derived from its ``<area>.read`` set."""
+    perms = frozenset(permissions or ())
+    return frozenset(
+        endpoint
+        for endpoint, area in READ_ENDPOINT_AREAS.items()
+        if f"{area}.read" in perms
+    )

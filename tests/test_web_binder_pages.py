@@ -227,7 +227,7 @@ def test_users_page_shows_each_accounts_web_gui_group(tmp_path: Path):
     # The seeded admin account is in the Owner group, with its scope spelled out.
     assert "Owner" in text
     assert "Any selected server" in text
-    assert "Edit roles" in text
+    assert "Edit areas" in text
 
 
 def test_nav_offers_users_as_a_menu_leaf(tmp_path: Path):
@@ -267,3 +267,145 @@ def test_account_page_does_not_promise_session_revocation(tmp_path: Path):
     text = BeautifulSoup(response.data, "html.parser").get_text(" ", strip=True)
     assert "signs other sessions out" not in text
     assert "revoke" not in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Roles separate areas: a group only sees what it was approved for
+# ---------------------------------------------------------------------------
+
+
+def _make_members_only_group(tmp_path, email: str) -> None:
+    import sqlite3
+
+    from app.web_groups import assign_user, save_group
+
+    conn = sqlite3.connect(str(tmp_path / "bot_data.db"))
+    conn.row_factory = sqlite3.Row
+    try:
+        created = save_group(
+            conn,
+            None,
+            {
+                "name": "Members Only",
+                "scope_mode": "all",
+                "permissions": ["members.read"],
+            },
+            actor_permissions=frozenset({"members.read", "members.write"}),
+        )
+        assert created["ok"] is True, created
+        assert assign_user(conn, email, created["slug"])["ok"] is True
+    finally:
+        conn.close()
+
+
+def test_a_narrow_group_sees_only_its_own_area(tmp_path: Path):
+    from tests.test_web_admin import _login_as
+    from tests.test_web_permission_groups import _create_account
+
+    app = _make_app(tmp_path)
+    admin_client = app.test_client()
+    _login(admin_client)
+    _select_guild(admin_client)
+    _create_account(admin_client, "members@example.com", "read_only")
+    _make_members_only_group(tmp_path, "members@example.com")
+
+    client = app.test_client()
+    _login_as(client, "members@example.com", "Ab!12xy")
+    _select_guild(client)
+
+    dashboard = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+    assert dashboard.status_code == 200
+    page = BeautifulSoup(dashboard.data, "html.parser")
+
+    # Only the approved tab is on the cover and in the menu.
+    tabs = {card.find("h3").get_text(strip=True) for card in page.select(".binder-grid .binder-card")}
+    assert any("Member Related" in tab for tab in tabs)
+    assert not any("Mod & Perms" in tab for tab in tabs)
+    assert not any("Security" in tab for tab in tabs)
+
+    menu = page.find("select", id="desktop-nav-page-select")
+    labels = {option.get_text(strip=True) for option in menu.find_all("option")}
+    assert "Members" in labels
+    assert "Moderation" not in labels
+    assert "Logs" not in labels
+
+    # The page itself is refused, not just hidden.
+    blocked = client.get("/admin/moderation", base_url="https://docker.example:8443")
+    assert blocked.status_code == 302
+    assert blocked.headers["Location"].endswith("/admin/dashboard")
+
+    allowed = client.get("/admin/members", base_url="https://docker.example:8443")
+    assert allowed.status_code == 200
+
+
+def test_users_page_uses_the_group_picker_not_the_legacy_role(tmp_path: Path):
+    client = _logged_in_client(tmp_path)
+
+    response = client.get("/admin/users", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.data, "html.parser")
+    assert soup.find("select", attrs={"name": "slug"}) is not None
+    assert soup.find("select", attrs={"name": "role"}) is None
+    form = soup.find("form", attrs={"action": "/admin/permissions"})
+    assert form is not None
+    assert form.find("input", attrs={"name": "action", "value": "assign_group"}) is not None
+
+
+def test_group_can_be_changed_from_the_users_page(tmp_path: Path):
+    import sqlite3
+
+    from tests.test_web_admin import _login_as
+    from tests.test_web_permission_groups import _create_account
+    from tests.test_web_post_message import _csrf
+
+    app = _make_app(tmp_path)
+    admin_client = app.test_client()
+    _login(admin_client)
+    _select_guild(admin_client)
+    _create_account(admin_client, "mover@example.com", "read_only")
+
+    token = _csrf(admin_client, "/admin/users")
+    response = admin_client.post(
+        "/admin/permissions",
+        data={
+            "action": "assign_group",
+            "email": "mover@example.com",
+            "slug": "glinet-read-only",
+            "csrf_token": token,
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+
+    conn = sqlite3.connect(str(tmp_path / "bot_data.db"))
+    conn.row_factory = sqlite3.Row
+    try:
+        slug = conn.execute(
+            "SELECT group_slug FROM web_users WHERE LOWER(email) = 'mover@example.com'"
+        ).fetchone()["group_slug"]
+    finally:
+        conn.close()
+    assert slug == "glinet-read-only"
+
+
+def test_the_last_owner_cannot_be_demoted(tmp_path: Path):
+    from tests.test_web_post_message import _csrf
+
+    client = _logged_in_client(tmp_path)
+    token = _csrf(client, "/admin/users")
+
+    response = client.post(
+        "/admin/permissions",
+        data={
+            "action": "assign_group",
+            "email": "admin@example.com",
+            "slug": "read-only",
+            "csrf_token": token,
+        },
+        base_url="https://docker.example:8443",
+        follow_redirects=True,
+    )
+
+    assert "last Owner" in response.get_data(as_text=True)

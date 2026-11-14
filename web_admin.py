@@ -64,6 +64,11 @@ from app.web_discourse_routes import register_discourse_viewer_blueprint
 from app.web_forum_tags import process_forum_tags_submission, render_forum_tags_body
 from app.web_freshdesk_routes import register_freshdesk_viewer_blueprint
 from app.web_groups import (
+    SLUG_LEGACY_ROLES,
+    group_for_user,
+    permissions_for_slug,
+)
+from app.web_groups import (
     assign_user as assign_web_group_user,
 )
 from app.web_groups import (
@@ -71,10 +76,6 @@ from app.web_groups import (
 )
 from app.web_groups import (
     get_group as get_web_group,
-)
-from app.web_groups import (
-    group_for_user,
-    permissions_for_slug,
 )
 from app.web_groups import (
     list_groups as list_web_groups,
@@ -91,7 +92,9 @@ from app.web_members import process_member_action_submission, render_members_bod
 from app.web_moderation import process_moderation_submission, render_moderation_body
 from app.web_permission_groups import render_permissions_body
 from app.web_permissions import (
+    ADMIN_ONLY_READ_ENDPOINTS,
     permissions_for_role,
+    read_area_for_endpoint,
     write_endpoints_for_permissions,
 )
 from app.web_reaction_roles import process_reaction_roles_submission, render_reaction_roles_body
@@ -2395,6 +2398,39 @@ def _inject_csrf_token_inputs(body_html: str, csrf_token: str) -> str:
     )
 
 
+def endpoint_is_visible(endpoint: str, *, is_admin: bool, permissions) -> bool:
+    """True when an account may open the page that belongs to its area.
+
+    Reads never widen access: a page is visible only when the group holds the
+    matching ``<area>.read``, and the permission-model pages stay admin-only.
+    """
+    endpoint = str(endpoint or "")
+    if not endpoint:
+        return False
+    if is_admin:
+        return True
+    if endpoint in ADMIN_ONLY_READ_ENDPOINTS:
+        return False
+    area = read_area_for_endpoint(endpoint)
+    if area is None:
+        return True
+    return f"{area}.read" in frozenset(permissions or ())
+
+
+def visible_nav_groups(permissions, *, is_admin: bool):
+    """The menu an account is allowed to see: same groups, only approved pages."""
+    groups = []
+    for group in NAV_GROUPS:
+        items = tuple(
+            (endpoint, label)
+            for endpoint, label in group["items"]
+            if endpoint_is_visible(endpoint, is_admin=is_admin, permissions=permissions)
+        )
+        if items:
+            groups.append({"label": group["label"], "items": items})
+    return tuple(groups)
+
+
 def _render_layout(
     title: str,
     body_html: str,
@@ -2408,11 +2444,13 @@ def _render_layout(
     github_wiki_url: str = "",
     restart_enabled: bool = False,
     can_write: bool = False,
+    permissions=None,
 ):
     theme_values = [str(option.get("value") or "").strip() for option in THEME_OPTIONS if str(option.get("value") or "").strip()]
     _endpoint = getattr(request, "endpoint", "") if has_request_context() else ""
     announcement = announcement_for(_endpoint)
     current_section = section_for_endpoint(_endpoint)
+    permissions_for_nav = frozenset(permissions or ())
     return render_template_string(
         """
 <!doctype html>
@@ -3491,7 +3529,9 @@ def _render_layout(
         restart_enabled=restart_enabled,
         web_gui_version=WEB_GUI_VERSION_LABEL,
         theme_options=THEME_OPTIONS,
-        nav_groups=NAV_GROUPS,
+        nav_groups=visible_nav_groups(
+            permissions_for_nav, is_admin=bool(is_admin)
+        ),
         announcement=announcement,
         current_section=current_section,
         theme_values_json=json.dumps(theme_values),
@@ -4401,6 +4441,52 @@ def create_web_app(
             recent_login_success.pop(client_ip, None)
         return fresh_entries
 
+    @app.before_request
+    def enforce_area_read_restrictions():
+        """Hides and blocks pages outside the account's approved areas.
+
+        A group is a role: it names the areas the account may see and change. This
+        gate is the enforcement; the nav and section pages only mirror it, because a
+        hidden link is not a control.
+        """
+        endpoint = str(request.endpoint or "")
+        if not endpoint or endpoint == "static":
+            return None
+        if endpoint in {
+            "index",
+            "login",
+            "logout",
+            "dashboard",
+            "section_page",
+            "account",
+            "guilds_page",
+            "select_guild",
+            "healthz",
+            "readyz",
+            "favicon",
+        }:
+            return None
+        user = _current_user()
+        if user is None:
+            return None
+        if _is_admin_user(user):
+            return None
+        if _endpoint_visible(
+            endpoint, is_admin=False, permissions=_permissions_for_user(user)
+        ):
+            return None
+        if logger:
+            logger.info(
+                "Blocked page outside group areas: endpoint=%s ip=%s",
+                endpoint,
+                _client_ip(),
+            )
+        if endpoint in ADMIN_ONLY_READ_ENDPOINTS:
+            flash("Admin privileges are required.", "error")
+        else:
+            flash("Your group does not include that area.", "error")
+        return redirect(url_for("dashboard"))
+
     @app.errorhandler(413)
     def payload_too_large(_exc):
         flash("Upload exceeds maximum allowed request size.", "error")
@@ -4408,6 +4494,19 @@ def create_web_app(
         if user and user.get("is_admin"):
             return redirect(url_for("dashboard"))
         return redirect(url_for("login"))
+
+    def _endpoint_visible(endpoint: str, *, is_admin: bool, permissions) -> bool:
+        return endpoint_is_visible(endpoint, is_admin=is_admin, permissions=permissions)
+
+    def _account_permissions_for(user: dict | None) -> frozenset[str]:
+        """The permission set of the signed-in account, read from the user store."""
+        if user is None:
+            return frozenset()
+        normalized = _normalize_email(str(user.get("email") or ""))
+        for account in _read_users(users_file):
+            if _normalize_email(str(account.get("email") or "")) == normalized:
+                return _permissions_for_user(account)
+        return frozenset()
 
     def _render_page(
         title: str,
@@ -4439,6 +4538,9 @@ def create_web_app(
             resolved_display_name = _default_display_name(normalized_email)
         group_label = _user_role_label(current_role, is_admin=is_admin)
         can_write = bool(is_admin) or bool(_is_admin_user(account_record))
+        account_permissions = (
+            _permissions_for_user(account_record) if account_record is not None else frozenset()
+        )
         if account_record is not None:
             conn = _open_users_db(users_file)
             try:
@@ -4465,6 +4567,7 @@ def create_web_app(
             current_guild_name=(str(current_guild.get("name") or "") if isinstance(current_guild, dict) else ""),
             github_wiki_url=_github_wiki_url(),
             restart_enabled=_restart_enabled(),
+            permissions=account_permissions,
         )
 
     def _load_discord_catalog_options(selected_guild_id: str, *, channel_type: str | None = None):
@@ -5221,15 +5324,30 @@ def create_web_app(
           </section>
             """
 
+        account_permissions = (
+            frozenset() if is_admin else _account_permissions_for(user)
+        )
+        visible_sections = []
+        for section in SECTIONS:
+            allowed_pages = [
+                page
+                for page in section["pages"]
+                if endpoint_is_visible(
+                    page[0], is_admin=is_admin, permissions=account_permissions
+                )
+            ]
+            if allowed_pages:
+                visible_sections.append((section, allowed_pages))
+
         binder_cards = "".join(
             f"""
             <a class="binder-card" href="{escape(url_for('section_page', slug=section['slug']), quote=True)}">
               <h3>{section['icon']} {escape(section['label'])}</h3>
               <p>{escape(section['blurb'])}</p>
-              <span class="binder-count">{len(section['pages'])} page{'s' if len(section['pages']) != 1 else ''}</span>
+              <span class="binder-count">{len(pages)} page{'s' if len(pages) != 1 else ''}</span>
             </a>
             """
-            for section in SECTIONS
+            for section, pages in visible_sections
         )
 
         body = f"""
@@ -5388,8 +5506,15 @@ def create_web_app(
         selected_guild = _selected_guild() or {}
         selected_guild_name = str(selected_guild.get("name") or "selected server")
 
+        section_permissions = (
+            frozenset() if is_admin else _account_permissions_for(user)
+        )
         cards = []
         for endpoint, label, description in section.get("pages", ()):
+            if not endpoint_is_visible(
+                endpoint, is_admin=is_admin, permissions=section_permissions
+            ):
+                continue
             try:
                 href = url_for(endpoint)
             except BuildError:
@@ -10317,7 +10442,21 @@ def create_web_app(
                 first_name = _clean_profile_text(request.form.get("first_name", ""), max_length=80)
                 last_name = _clean_profile_text(request.form.get("last_name", ""), max_length=80)
                 display_name = _clean_profile_text(request.form.get("display_name", ""), max_length=80)
+                requested_group_slug = str(request.form.get("group_slug") or "").strip()
                 requested_role = _normalize_web_user_role(request.form.get("role", "read_only"))
+                group_error = ""
+                if requested_group_slug:
+                    conn = _open_users_db(users_file)
+                    try:
+                        chosen_group = get_web_group(conn, requested_group_slug)
+                    finally:
+                        conn.close()
+                    if not chosen_group:
+                        group_error = "That group no longer exists."
+                    else:
+                        requested_role = _normalize_web_user_role(
+                            SLUG_LEGACY_ROLES.get(requested_group_slug, "read_only")
+                        )
                 guild_group_ids = _normalize_string_id_list(request.form.getlist("guild_group_ids"))
                 is_admin = requested_role == "admin"
                 if not _is_valid_email(email):
@@ -10330,6 +10469,8 @@ def create_web_app(
                     flash("Display name is required.", "error")
                 elif any(entry["email"] == email for entry in users_data):
                     flash("A user with that email already exists.", "error")
+                elif group_error:
+                    flash(group_error, "error")
                 elif requested_role == "guild_admin" and not guild_group_ids:
                     flash("Guild Admin users must be assigned at least one guild group.", "error")
                 elif password != confirm_password:
@@ -10351,6 +10492,7 @@ def create_web_app(
                                 "last_name": last_name,
                                 "display_name": display_name,
                                 "guild_group_ids": guild_group_ids,
+                                "group_slug": requested_group_slug,
                                 "password_changed_at": _now_iso(),
                                 "email_changed_at": _now_iso(),
                                 "created_at": _now_iso(),
@@ -10532,13 +10674,19 @@ def create_web_app(
             }
         finally:
             conn.close()
+        create_group_options_html = "".join(
+            f"<option value='{escape(slug, quote=True)}'>"
+            f"{escape(str(group.get('name') or slug))}</option>"
+            for slug, group in sorted(
+                web_groups_by_slug.items(),
+                key=lambda item: str(item[1].get("name") or item[0]).casefold(),
+            )
+        )
 
         user_rows = []
         for entry in users_data:
             email = entry["email"]
             current_role_value = _normalize_web_user_role(entry.get("role", ""), is_admin=bool(entry.get("is_admin")))
-            is_admin_entry = current_role_value == "admin"
-            role_label = _user_role_label(current_role_value, is_admin=is_admin_entry)
             assigned_group_ids = _normalize_string_id_list(entry.get("guild_group_ids", []))
             assigned_group_names = [group_name_by_id.get(group_id, f"Unknown ({group_id})") for group_id in assigned_group_ids]
             group_scope_label = ", ".join(assigned_group_names) if assigned_group_names else ("All guilds" if current_role_value in {"admin", "read_only"} else "Primary GL.iNet guild only" if current_role_value in {"glinet_read_only", "glinet_rw"} else "No guild groups")
@@ -10550,18 +10698,15 @@ def create_web_app(
                 "assigned": "Only assigned servers",
                 "pinned": "Only the preferred server",
             }.get(str(account_group.get("scope_mode") or "all"), "Any selected server")
-            role_select_html = _render_fixed_select_input(
-                f"role__{email}",
-                current_role_value,
-                [
-                    {"value": "read_only", "label": "Read-only"},
-                    {"value": "guild_admin", "label": "Guild Admin"},
-                    {"value": "glinet_read_only", "label": "Glinet-Read-Only"},
-                    {"value": "glinet_rw", "label": "Glinet-RW"},
-                    {"value": "admin", "label": "Admin"},
-                ],
-                "Select role...",
-            ).replace("<select ", "<select style='min-width:150px;' ")
+            group_options_html = "".join(
+                f"<option value='{escape(slug, quote=True)}'"
+                f"{' selected' if slug == account_group_slug else ''}>"
+                f"{escape(str(candidate.get('name') or slug))}</option>"
+                for slug, candidate in sorted(
+                    web_groups_by_slug.items(),
+                    key=lambda item: str(item[1].get("name") or item[0]).casefold(),
+                )
+            )
             display_name = str(entry.get("display_name") or _default_display_name(email))
             first_name = str(entry.get("first_name") or "")
             last_name = str(entry.get("last_name") or "")
@@ -10575,18 +10720,19 @@ def create_web_app(
                   <td>{escape(display_name)}</td>
                   <td>{escape(full_name or "n/a")}</td>
                   <td class="mono">{escape(email)}</td>
-                  <td>{escape(role_label)}</td>
-                  <td>{escape(account_group_name)}<br><span class="muted">{escape(account_scope_label)}</span><br><a href="{escape(url_for('permissions_page'), quote=True)}">Edit roles</a></td>
+                  <td>
+                    <form method="post" action="{escape(url_for('permissions_page'), quote=True)}" style="display:flex;gap:6px;align-items:center;">
+                      <input type="hidden" name="action" value="assign_group" />
+                      <input type="hidden" name="email" value="{escape(email, quote=True)}" />
+                      <select name="slug" style="min-width:150px;">{group_options_html}</select>
+                      <button class="btn secondary" type="submit">Set</button>
+                    </form>
+                    <span class="muted">{escape(account_group_name)} · {escape(account_scope_label)}</span><br><a href="{escape(url_for('permissions_page'), quote=True)}">Edit areas</a>
+                  </td>
                   <td>{escape(group_scope_label)}</td>
                   <td class="mono">{escape(format_timestamp_display(entry.get("password_changed_at"), blank="n/a"))}</td>
                   <td class="mono">{escape(format_timestamp_display(entry.get("created_at"), blank="n/a"))}</td>
                   <td>
-                    <form method="post" style="display:inline;">
-                      <input type="hidden" name="action" value="set_role" />
-                      <input type="hidden" name="email" value="{escape(email, quote=True)}" />
-                      {role_select_html.replace(f"name='{escape(f'role__{email}', quote=True)}'", "name='role'")}
-                      <button class="btn secondary" type="submit">Set Role</button>
-                    </form>
                     <a class="btn secondary" style="margin-left:6px;" href="#edit-user-{escape(email, quote=True)}">Edit</a>
                     <details class="inline-confirm" style="display:inline-block;margin-left:6px;vertical-align:top;">
                       <summary class="btn danger" style="display:inline-block;cursor:pointer;list-style:none;">Delete</summary>
@@ -10603,7 +10749,7 @@ def create_web_app(
                   </td>
                 </tr>
                 <tr>
-                  <td colspan="9">
+                  <td colspan="8">
                     <details id="edit-user-{escape(email, quote=True)}">
                       <summary>Edit {escape(display_name)}</summary>
                       <div class="grid" style="margin-top:12px;">
@@ -10676,14 +10822,9 @@ def create_web_app(
                   onchange="document.getElementById('create_user_password').type=this.checked?'text':'password';document.getElementById('create_user_password_confirm').type=this.checked?'text':'password';" />
                 Show password
               </label>
-              <label style="margin-top:10px;display:block;">Role</label>
-              <select name="role">
-                <option value="read_only">Read-only</option>
-                <option value="guild_admin">Guild Admin</option>
-                <option value="glinet_read_only">Glinet-Read-Only</option>
-                <option value="glinet_rw">Glinet-RW</option>
-                <option value="admin">Admin</option>
-              </select>
+              <label style="margin-top:10px;display:block;">Role (permission group)</label>
+              <select name="group_slug">{create_group_options_html}</select>
+              <p class="muted">The group decides which areas the account may see and change, and which servers it may act on. Edit the areas under Permissions.</p>
               <label style="margin-top:10px;display:block;">Guild Groups</label>
               {_render_multi_select_input("guild_group_ids", [], group_options, size=6)}
               <p class="muted">Guild Groups only apply to the <strong>Guild Admin</strong> role. Use Ctrl/Cmd-click to select multiple groups.</p>
@@ -10733,7 +10874,7 @@ def create_web_app(
         <div class="card">
           <h2>Existing Users</h2>
           <table>
-            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Role</th><th>Web GUI group</th><th>Guild Scope</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Web GUI group</th><th>Guild Scope</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody>{"".join(user_rows)}</tbody>
           </table>
         </div>
