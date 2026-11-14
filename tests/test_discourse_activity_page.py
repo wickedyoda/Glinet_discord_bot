@@ -150,34 +150,45 @@ def test_unknown_window_falls_back_to_the_default(tmp_path: Path):
     assert "value='90' selected" in response.get_data(as_text=True)
 
 
-def test_dashboard_card_sits_in_the_support_section(tmp_path: Path):
+def test_forum_activity_lives_under_discord_server_related(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
     _select_guild(client)
     response = client.get("/admin/dashboard", base_url=BASE_URL)
     assert response.status_code == 200
-    soup = BeautifulSoup(response.get_data(as_text=True), "html.parser")
+    html = response.get_data(as_text=True)
+    soup = BeautifulSoup(html, "html.parser")
 
-    def section_containing(heading: str):
-        for section in soup.find_all("section", class_="dashboard-section"):
-            h3 = section.find("h3")
-            if h3 and h3.get_text(strip=True) == heading:
-                return section
-        return None
+    # The dashboard carries the tab, not a card for every page.
+    tabs = {card.find("h3").get_text(strip=True) for card in soup.select(".binder-grid .binder-card")}
+    assert any("Discord Server Related" in tab for tab in tabs)
+    assert "Forum Activity" not in soup.select_one(".binder-grid").get_text(" ", strip=True)
 
-    support = section_containing("🎫 Support & Forum Integrations")
-    assert support is not None
-    assert "Discourse Activity" in support.get_text(" ", strip=True)
-    assert "/admin/discourse-activity" in support.decode()
+    # One level down, the tab lists Forum Activity with a working link.
+    section = client.get("/admin/section/discord", base_url=BASE_URL)
+    assert section.status_code == 200
+    section_soup = BeautifulSoup(section.get_data(as_text=True), "html.parser")
+    labels = {
+        card.find("h3").get_text(strip=True)
+        for card in section_soup.select(".binder-grid .binder-card")
+    }
+    assert "Forum Activity" in labels
+    assert "/admin/discourse-activity" in section.get_data(as_text=True)
 
-    for heading in ("📊 User Activity & Statistics", "📡 Notification Feeds & Monitors"):
-        other = section_containing(heading)
-        assert other is not None
-        assert "Discourse Activity" not in other.get_text(" ", strip=True)
+    # It is not filed under members or moderation.
+    for slug in ("members", "moderation"):
+        other = client.get(f"/admin/section/{slug}", base_url=BASE_URL)
+        assert other.status_code == 200
+        other_soup = BeautifulSoup(other.get_data(as_text=True), "html.parser")
+        other_labels = {
+            card.find("h3").get_text(strip=True)
+            for card in other_soup.select(".binder-grid .binder-card")
+        }
+        assert "Forum Activity" not in other_labels
 
 
-def test_nav_offers_the_page_in_both_selects(tmp_path: Path):
+def test_nav_offers_the_forums_tab_in_both_selects(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
@@ -189,13 +200,15 @@ def test_nav_offers_the_page_in_both_selects(tmp_path: Path):
         select = soup.find("select", id=select_id)
         assert select is not None
         labels = [option.get_text(strip=True) for option in select.find_all("option")]
-        assert "Discourse Activity" in labels
+        assert "Forums" in labels
 
-    support_group = None
+    # Forum Activity itself is one level down, not a menu leaf.
+    discord_group = None
     for optgroup in soup.find("select", id="desktop-nav-page-select").find_all("optgroup"):
-        if optgroup.get("label") == "Support & Integrations":
-            support_group = [o.get_text(strip=True) for o in optgroup.find_all("option")]
-    assert support_group == sorted(support_group, key=str.casefold)
+        if optgroup.get("label") == "Discord Server Related":
+            discord_group = [o.get_text(strip=True) for o in optgroup.find_all("option")]
+    assert discord_group == sorted(discord_group, key=str.casefold)
+    assert "Forum Activity" not in discord_group
 
 
 def test_page_is_documented_as_admin_only():
