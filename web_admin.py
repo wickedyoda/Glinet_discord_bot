@@ -179,6 +179,7 @@ NAV_GROUPS = (
         "label": "My Account",
         "items": (
             ("account", "My Account"),
+            ("users", "Users"),
         ),
     },
     {
@@ -5212,7 +5213,6 @@ def create_web_app(
             restart_control = f"""
           <section class="card">
             <h3>Runtime</h3>
-            <p class="muted">Restarting the container drops the bot's Discord connection for a few seconds. It reconnects on its own.</p>
             <form method="post" action="{escape(url_for('restart_service'), quote=True)}" onsubmit="return confirm('Restart the bot container now? It will disconnect from Discord for a few seconds.');">
               <input type="hidden" name="confirm" value="yes" />
               <button class="btn danger" type="submit"{'' if restart_enabled else ' disabled'}>Restart bot</button>
@@ -10524,6 +10524,15 @@ def create_web_app(
                                 "error",
                             )
 
+        web_groups_by_slug = {}
+        conn = _open_users_db(users_file)
+        try:
+            web_groups_by_slug = {
+                str(group.get("slug") or ""): group for group in list_web_groups(conn)
+            }
+        finally:
+            conn.close()
+
         user_rows = []
         for entry in users_data:
             email = entry["email"]
@@ -10533,6 +10542,14 @@ def create_web_app(
             assigned_group_ids = _normalize_string_id_list(entry.get("guild_group_ids", []))
             assigned_group_names = [group_name_by_id.get(group_id, f"Unknown ({group_id})") for group_id in assigned_group_ids]
             group_scope_label = ", ".join(assigned_group_names) if assigned_group_names else ("All guilds" if current_role_value in {"admin", "read_only"} else "Primary GL.iNet guild only" if current_role_value in {"glinet_read_only", "glinet_rw"} else "No guild groups")
+            account_group_slug = group_for_user(entry)
+            account_group = web_groups_by_slug.get(account_group_slug) or {}
+            account_group_name = str(account_group.get("name") or account_group_slug)
+            account_scope_label = {
+                "all": "Any selected server",
+                "assigned": "Only assigned servers",
+                "pinned": "Only the GL.iNet Community server",
+            }.get(str(account_group.get("scope_mode") or "all"), "Any selected server")
             role_select_html = _render_fixed_select_input(
                 f"role__{email}",
                 current_role_value,
@@ -10559,6 +10576,7 @@ def create_web_app(
                   <td>{escape(full_name or "n/a")}</td>
                   <td class="mono">{escape(email)}</td>
                   <td>{escape(role_label)}</td>
+                  <td>{escape(account_group_name)}<br><span class="muted">{escape(account_scope_label)}</span><br><a href="{escape(url_for('permissions_page'), quote=True)}">Edit roles</a></td>
                   <td>{escape(group_scope_label)}</td>
                   <td class="mono">{escape(format_timestamp_display(entry.get("password_changed_at"), blank="n/a"))}</td>
                   <td class="mono">{escape(format_timestamp_display(entry.get("created_at"), blank="n/a"))}</td>
@@ -10585,7 +10603,7 @@ def create_web_app(
                   </td>
                 </tr>
                 <tr>
-                  <td colspan="7">
+                  <td colspan="9">
                     <details id="edit-user-{escape(email, quote=True)}">
                       <summary>Edit {escape(display_name)}</summary>
                       <div class="grid" style="margin-top:12px;">
@@ -10715,7 +10733,7 @@ def create_web_app(
         <div class="card">
           <h2>Existing Users</h2>
           <table>
-            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Role</th><th>Guild Scope</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Display</th><th>Name</th><th>Email</th><th>Role</th><th>Web GUI group</th><th>Guild Scope</th><th>Password Changed</th><th>Created</th><th>Actions</th></tr></thead>
             <tbody>{"".join(user_rows)}</tbody>
           </table>
         </div>
