@@ -11998,6 +11998,9 @@ try:
 except ValueError:
     DISCOURSE_STATS_BACKFILL_DAYS = 90
 
+# One full re-walk a day repairs anything an interrupted incremental run missed.
+DISCOURSE_STATS_FULL_RECONCILE_HOURS = 24
+
 discourse_stats_task = None
 
 
@@ -12042,15 +12045,38 @@ def _discourse_stats_fetch_json(guild_id: int):
     return fetch_json
 
 
+def _discourse_stats_full_ingest_due() -> bool:
+    """Whether the next run should re-walk the whole window.
+
+    Incremental runs stop at the stored watermark, so they cannot see a hole left by
+    an interrupted walk. One full pass a day repairs that without paying for a full
+    walk every six hours.
+    """
+    raw = str(db_kv_get("discourse_stats_last_full_ingest_at") or "").strip()
+    if not raw:
+        return True
+    try:
+        last = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - last) >= timedelta(hours=DISCOURSE_STATS_FULL_RECONCILE_HOURS)
+
+
 def run_discourse_stats_ingest() -> dict:
     """Refresh the staff roster, the topic map, and the posts. Blocking.
 
     The ingest functions take `db_lock` per page and release it for each fetch and
     pacing sleep: holding it across the walk would block message handling for minutes.
+
+    Runs are incremental except for the first run after a day, which re-walks the
+    window to repair anything an interrupted walk left behind.
     """
     guild_id = normalize_target_guild_id(GUILD_ID)
     fetch_json = _discourse_stats_fetch_json(guild_id)
     conn = get_db_connection()
+    full = _discourse_stats_full_ingest_due()
     staff = discourse_stats.refresh_staff_roster(
         conn, group=DISCOURSE_STATS_GROUP, fetch_json=fetch_json, lock=db_lock
     )
@@ -12060,6 +12086,7 @@ def run_discourse_stats_ingest() -> dict:
         fetch_json=fetch_json,
         backfill_days=DISCOURSE_STATS_BACKFILL_DAYS,
         pace=time.sleep,
+        full=full,
         lock=db_lock,
     )
     posts = discourse_stats.ingest_posts(
@@ -12067,9 +12094,12 @@ def run_discourse_stats_ingest() -> dict:
         fetch_json=fetch_json,
         backfill_days=DISCOURSE_STATS_BACKFILL_DAYS,
         pace=time.sleep,
+        full=full,
         lock=db_lock,
     )
-    return {"staff": staff, "topics": topics, "posts": posts}
+    if full:
+        db_kv_set("discourse_stats_last_full_ingest_at", datetime.now(UTC).isoformat())
+    return {"staff": staff, "topics": topics, "posts": posts, "full": full}
 
 
 def _discourse_percentile(values: list[int], fraction: float) -> int:
@@ -12129,11 +12159,13 @@ async def check_discourse_stats_once():
         logger.exception("Unexpected Discourse stats ingest failure")
         return
     logger.info(
-        "Discourse stats ingested: %d staff, %d topics, %d posts (%d new)",
+        "Discourse stats ingested [%s]: %d staff, %d topics, %d posts (%d new), %d page(s)",
+        "full" if result.get("full") else "incremental",
         result["staff"]["members"],
         result["topics"]["topics"],
         result["posts"]["posts_in_window"],
         result["posts"]["new_rows"],
+        result["posts"]["pages"],
     )
 
 

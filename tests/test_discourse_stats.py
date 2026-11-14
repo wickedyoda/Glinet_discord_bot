@@ -357,3 +357,143 @@ def test_handled_credit_is_not_given_to_a_follow_up_inside_the_window(db):
             discourse_stats.staff_activity(db, days=90, now=NOW)}
     assert full["alice"]["handled"] == 1
     assert full["bob"]["handled"] == 0
+
+
+# --------------------------------------------------------------------------- #
+#  Incremental ingest: stop at the watermark, full walk once a day
+# --------------------------------------------------------------------------- #
+
+
+def _seed_two_posts(db):
+    db.execute("INSERT INTO discourse_staff VALUES ('alice', '', '')")
+    db.execute("INSERT INTO discourse_topics VALUES (1, 'glrouter', ?)", (_iso(days_ago=2),))
+    db.executemany(
+        "INSERT INTO discourse_posts (post_id, topic_id, username, post_number, created_at, ingested_at)"
+        " VALUES (?, 1, 'alice', ?, ?, '')",
+        [(10, 1, _iso(days_ago=2)), (11, 2, _iso(days_ago=1))],
+    )
+    db.commit()
+
+
+def _post(post_id, days_ago, post_number=2):
+    return {
+        "id": post_id,
+        "topic_id": 1,
+        "username": "alice",
+        "post_number": post_number,
+        "created_at": _iso(days_ago=days_ago),
+    }
+
+
+def test_posts_stop_at_the_watermark(db):
+    """A quiet run should cost one request, not the whole 90-day walk."""
+    _seed_two_posts(db)
+    calls = []
+
+    def fetch(path):
+        calls.append(path)
+        return {"latest_posts": [_post(11, 1), _post(10, 2)]}
+
+    result = discourse_stats.ingest_posts(
+        db, fetch_json=fetch, backfill_days=90, now=NOW, pace=None
+    )
+
+    assert result["mode"] == "incremental"
+    assert result["pages"] == 1
+    assert len(calls) == 1, "the second page must never be requested"
+    assert result["new_rows"] == 0
+
+
+def test_posts_follow_a_new_page_before_stopping(db):
+    _seed_two_posts(db)
+    pages = [
+        {"latest_posts": [_post(13, 0.2, 4), _post(12, 0.5, 3)]},
+        {"latest_posts": [_post(11, 1), _post(10, 2)]},
+    ]
+
+    result = discourse_stats.ingest_posts(
+        db, fetch_json=lambda _p: pages.pop(0), backfill_days=90, now=NOW, pace=None
+    )
+
+    assert result["pages"] == 2
+    assert result["new_rows"] == 2
+
+
+def test_full_walk_ignores_the_watermark(db):
+    _seed_two_posts(db)
+    calls = []
+    pages = [
+        {"latest_posts": [_post(11, 1), _post(10, 2)]},
+        {"latest_posts": []},
+    ]
+
+    def fetch(path):
+        calls.append(path)
+        return pages.pop(0)
+
+    result = discourse_stats.ingest_posts(
+        db, fetch_json=fetch, backfill_days=90, now=NOW, pace=None, full=True,
+    )
+
+    assert result["mode"] == "full"
+    assert len(calls) == 2, "full mode must request the page after the watermark"
+    assert result["pages"] == 1, "the empty page does not count as walked"
+
+
+def test_topics_incremental_walks_a_bounded_number_of_pages(db):
+    """Activity order makes a topic-id watermark unsound, so the walk is capped."""
+    calls = []
+
+    def fetch(path):
+        calls.append(path)
+        return {"topic_list": {"topics": [
+            {"id": 21, "created_at": _iso(days_ago=1)},
+            {"id": 20, "created_at": _iso(days_ago=2)},
+        ]}}
+
+    result = discourse_stats.ingest_topics(
+        db, categories=("glrouter",), fetch_json=fetch, backfill_days=90, now=NOW, pace=None
+    )
+
+    assert result["mode"] == "incremental"
+    assert len(calls) == discourse_stats.INCREMENTAL_TOPIC_PAGES
+    assert result["pages"] == discourse_stats.INCREMENTAL_TOPIC_PAGES
+
+
+def test_topics_full_walk_reads_until_the_feed_ends(db):
+    calls = []
+    pages = [
+        {"topic_list": {"topics": [{"id": 20, "created_at": _iso(days_ago=2)}]}},
+        {"topic_list": {"topics": []}},
+    ]
+
+    def fetch(path):
+        calls.append(path)
+        return pages.pop(0)
+
+    result = discourse_stats.ingest_topics(
+        db, categories=("glrouter",), fetch_json=fetch,
+        backfill_days=90, now=NOW, pace=None, full=True,
+    )
+
+    assert result["mode"] == "full"
+    assert len(calls) == 2, "full mode must not be capped"
+    assert result["pages"] == 1
+
+
+def test_full_reconcile_is_due_once_a_day(monkeypatch):
+    import bot as bot_module
+
+    monkeypatch.setattr(bot_module, "db_kv_get", lambda _key: None)
+    assert bot_module._discourse_stats_full_ingest_due() is True, "first run must backfill"
+
+    fresh = datetime.now(UTC).isoformat()
+    monkeypatch.setattr(bot_module, "db_kv_get", lambda _key: fresh)
+    assert bot_module._discourse_stats_full_ingest_due() is False
+
+    stale = (datetime.now(UTC) - timedelta(hours=25)).isoformat()
+    monkeypatch.setattr(bot_module, "db_kv_get", lambda _key: stale)
+    assert bot_module._discourse_stats_full_ingest_due() is True
+
+    monkeypatch.setattr(bot_module, "db_kv_get", lambda _key: "not-a-date")
+    assert bot_module._discourse_stats_full_ingest_due() is True
