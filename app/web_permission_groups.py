@@ -17,7 +17,7 @@ from app.web_permissions import AREAS
 _SCOPE_LABELS = {
     "all": "Any selected server",
     "assigned": "Only assigned servers",
-    "pinned": "Only the GL.iNet Community server",
+    "pinned": "Only the preferred server",
 }
 
 
