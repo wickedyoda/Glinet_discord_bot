@@ -309,3 +309,82 @@ def test_assignment_from_the_page_changes_the_accounts_standing(tmp_path):
     body = dashboard.get_data(as_text=True)
     assert "GL.iNet RW" in body
     assert "changes are limited to the areas this group holds" in body
+
+
+def test_a_pinned_group_only_sees_its_own_server(tmp_path):
+    """Scope is stored per group, and an account must not out-select it."""
+    from app.web_groups import save_group as _save_group
+    app = _make_app(tmp_path)
+    admin_client = app.test_client()
+    _login(admin_client)
+    _create_account(admin_client, "pin@example.com", "read_only")
+
+    conn = _sqlite3.connect(str(tmp_path / "bot_data.db"))
+    conn.row_factory = _sqlite3.Row
+    try:
+        created = _save_group(
+            conn,
+            None,
+            {
+                "name": "Pinned Reader",
+                "scope_mode": "pinned",
+                "permissions": ["members.read"],
+            },
+            actor_permissions=frozenset({"members.read", "members.write"}),
+        )
+        assert created["ok"] is True
+        from app.web_groups import assign_user as _assign
+
+        assert _assign(conn, "pin@example.com", created["slug"])["ok"] is True
+    finally:
+        conn.close()
+
+    client = app.test_client()
+    _login_as(client, "pin@example.com", "Ab!12xy")
+    response = client.get("/admin", base_url=BASE_URL, follow_redirects=True)
+    body = response.get_data(as_text=True)
+    assert "Test Guild" in body
+    assert "Support Guild" not in body
+
+
+def test_a_group_name_cannot_break_the_confirmation_dialog(tmp_path):
+    from app.web_permission_groups import render_permissions_body
+
+    hostile = {
+        "slug": "hostile",
+        "name": "Team's <script>alert(1)</script>",
+        "description": "",
+        "permissions": ["members.read"],
+        "scope_mode": "all",
+        "is_system": False,
+    }
+    html = render_permissions_body(
+        [hostile], [], {"hostile": 0}, frozenset({"members.read", "members.write"})
+    )
+    assert "confirm('Save this group?')" in html
+    assert "confirm('Delete this group? Its members move to Read Only.')" in html
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_users_page_role_change_persists_the_group(tmp_path):
+    """A role change must go through the guarded assignment, not be discarded."""
+    app = _make_app(tmp_path)
+    admin_client = app.test_client()
+    _login(admin_client)
+    _create_account(admin_client, "promote@example.com", "read_only")
+    assert _group_slug(tmp_path, "promote@example.com") == "read-only"
+
+    response = admin_client.post(
+        "/admin/users",
+        data={
+            "action": "set_role",
+            "csrf_token": _page_csrf_token(admin_client, "/admin/users"),
+            "email": "promote@example.com",
+            "role": "glinet_rw",
+        },
+        base_url=BASE_URL,
+        follow_redirects=True,
+    )
+    assert response.status_code == 200
+    assert _group_slug(tmp_path, "promote@example.com") == "glinet-rw"

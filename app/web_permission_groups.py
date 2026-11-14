@@ -67,7 +67,7 @@ def _group_card(group: dict, member_count: int, *, actor_permissions: frozenset[
     if editable:
         controls = f"""
           <form method="post" action="/admin/permissions"
-                onsubmit="return confirm('Save changes to {escape(group.get('name', ''), quote=True)}?')">
+                onsubmit="return confirm('Save this group?')">
             <input type="hidden" name="action" value="save_group">
             <input type="hidden" name="slug" value="{escape(slug, quote=True)}">
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin:10px 0;">
@@ -84,7 +84,7 @@ def _group_card(group: dict, member_count: int, *, actor_permissions: frozenset[
         if not group.get("is_system"):
             controls += f"""
           <form method="post" action="/admin/permissions"
-                onsubmit="return confirm('Delete {escape(group.get('name', ''), quote=True)}? Its {member_count} member(s) move to Read Only.')">
+                onsubmit="return confirm('Delete this group? Its members move to Read Only.')">
             <input type="hidden" name="action" value="delete_group">
             <input type="hidden" name="slug" value="{escape(slug, quote=True)}">
             <button class="btn secondary" type="submit">Delete group</button>

@@ -3704,6 +3704,21 @@ def create_web_app(
             str(user.get("role", "")), is_admin=bool(user.get("is_admin"))
         )
 
+    def _group_scope_mode(user: dict | None) -> str:
+        """The account's guild scope, decided by its group.
+
+        Stored scope is not decoration: a pinned group must not be able to select
+        another server just because its legacy role says read_only.
+        """
+        if not user:
+            return "all"
+        conn = _open_users_db(users_file)
+        try:
+            group = get_web_group(conn, group_for_user(user))
+        finally:
+            conn.close()
+        return str((group or {}).get("scope_mode") or "all")
+
     def _guild_groups_by_id():
         return {
             str(entry.get("id") or "").strip(): entry
@@ -3712,8 +3727,14 @@ def create_web_app(
         }
 
     def _allowed_guild_ids_for_user(user: dict | None):
-        if not _is_guild_admin_user(user):
+        scope = _group_scope_mode(user)
+        if scope == "all":
             return None
+        if scope == "pinned":
+            preferred = _preferred_glinet_guild()
+            if isinstance(preferred, dict) and preferred.get("id"):
+                return [str(preferred.get("id"))]
+            return []
         allowed_ids = []
         seen = set()
         for group_id in _normalize_string_id_list((user or {}).get("guild_group_ids", [])):
@@ -3728,9 +3749,6 @@ def create_web_app(
         return allowed_ids
 
     def _filter_guilds_for_user(guilds: list[dict], user: dict | None):
-        if _is_glinet_scoped_user(user):
-            preferred = _preferred_glinet_guild()
-            return [preferred] if isinstance(preferred, dict) else []
         allowed_guild_ids = _allowed_guild_ids_for_user(user)
         if allowed_guild_ids is None:
             return list(guilds)
@@ -7353,7 +7371,7 @@ def create_web_app(
     @login_required
     def service_monitors_page():
         user = _current_user()
-        can_manage = _is_admin_user(user) or _is_glinet_rw_user(user) or _is_guild_admin_user(user)
+        can_manage = _is_admin_user(user) or ("monitoring.write" in _permissions_for_user(user))
         selection_redirect = _require_selected_guild_redirect()
         if selection_redirect is not None:
             return selection_redirect
@@ -7914,7 +7932,7 @@ def create_web_app(
     @login_required
     def uptime_kuma_page():
         user = _current_user()
-        can_manage = _is_admin_user(user) or _is_glinet_rw_user(user) or _is_guild_admin_user(user)
+        can_manage = _is_admin_user(user) or ("monitoring.write" in _permissions_for_user(user))
         selection_redirect = _require_selected_guild_redirect()
         if selection_redirect is not None:
             return selection_redirect
@@ -10407,29 +10425,44 @@ def create_web_app(
                         "error",
                     )
                 else:
-                    changed = False
-                    for entry in users_data:
-                        if entry["email"] == target_email:
-                            if requested_role == "guild_admin" and not _normalize_string_id_list(entry.get("guild_group_ids", [])):
-                                flash("Assign at least one guild group before changing this user to Guild Admin.", "error")
-                                changed = False
-                                break
-                            entry["role"] = requested_role
-                            entry["is_admin"] = target_is_admin
-                            changed = True
-                            break
-                    if changed:
-                        if sum(1 for entry in users_data if entry.get("is_admin")) < 1:
-                            flash("At least one admin account must remain.", "error")
-                        else:
-                            _save_users(users_file, users_data)
+                    # The group is the source of truth now. Assign through the guarded
+                    # path: mutating role/is_admin here would be discarded by
+                    # save_users, which re-derives them from group_slug.
+                    role_to_group = {
+                        "admin": "owner",
+                        "guild_admin": "guild-admin",
+                        "glinet_rw": "glinet-rw",
+                        "glinet_read_only": "glinet-read-only",
+                        "read_only": "read-only",
+                    }
+                    target_group = role_to_group.get(requested_role, "read-only")
+                    needs_guild_group = requested_role == "guild_admin" and not any(
+                        entry["email"] == target_email
+                        and _normalize_string_id_list(entry.get("guild_group_ids", []))
+                        for entry in users_data
+                    )
+                    if needs_guild_group:
+                        flash(
+                            "Assign at least one guild group before changing this user to Guild Admin.",
+                            "error",
+                        )
+                    else:
+                        conn = _open_users_db(users_file)
+                        try:
+                            assignment = assign_web_group_user(conn, target_email, target_group)
+                        finally:
+                            conn.close()
+                        if assignment.get("ok"):
                             flash(
                                 f"Updated role for {target_email} to {_user_role_label(requested_role, is_admin=target_is_admin)}.",
                                 "success",
                             )
                             users_data = _read_users(users_file)
-                    else:
-                        flash("User not found.", "error")
+                        else:
+                            flash(
+                                str(assignment.get("error") or "Could not update the role."),
+                                "error",
+                            )
 
         user_rows = []
         for entry in users_data:
