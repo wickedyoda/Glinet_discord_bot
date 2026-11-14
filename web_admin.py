@@ -27,8 +27,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from flask import Flask, Response, flash, g, redirect, render_template_string, request, send_file, session, url_for
+from flask import Flask, Response, flash, g, has_request_context, redirect, render_template_string, request, send_file, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.routing import BuildError
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
@@ -130,6 +131,12 @@ from app.web_user_store import (
 from app.web_user_store import (
     save_users as _store_save_users,
 )
+from app.webgui_sections import (
+    SECTION_BY_SLUG,
+    SECTIONS,
+    announcement_for,
+    section_for_endpoint,
+)
 
 
 def ensure_process_utc_timezone():
@@ -169,78 +176,45 @@ RECENT_NAV_LIMIT = 6
 # a test enforces that.
 NAV_GROUPS = (
     {
-        "label": "Overview",
+        "label": "My Account",
         "items": (
-            ("dashboard", "Dashboard"),
             ("account", "My Account"),
+        ),
+    },
+    {
+        "label": "Servers",
+        "items": (
             ("guilds_page", "Servers"),
         ),
     },
     {
-        "label": "Moderation & Security",
-        "items": (
-            ("actions_page", "Action History"),
-            ("honeypot_page", "Honeypot"),
-            ("moderation_page", "Moderation"),
-        ),
-    },
-    {
-        "label": "Roles & Onboarding",
-        "items": (
-            ("bulk_role_csv", "Bulk Role CSV"),
-            ("members_page", "Members"),
-            ("reaction_roles_page", "Reaction Roles"),
-            ("role_access_page", "Role Access"),
-        ),
-    },
-    {
-        "label": "User Activity",
+        "label": "Member Related",
         "items": (
             ("member_activity_page", "Member Activity"),
+            ("members_page", "Members"),
         ),
     },
     {
-        "label": "Channels & Chat Automation",
+        "label": "Mod & Perms",
+        "items": (
+            ("moderation_page", "Moderation"),
+            ("permissions_page", "Permissions"),
+        ),
+    },
+    {
+        "label": "Discord Server Related",
         "items": (
             ("translate_channels_page", "Auto-Translate Channels"),
-            ("reddit_auto_responds", "Reddit Auto-Reply"),
-            ("tag_responses", "Tag Responses"),
+            ("discourse_page", "Forums"),
+            ("invite_links_page", "Invite Link Controls"),
+            ("reaction_roles_page", "Reaction Roles"),
         ),
     },
     {
-        "label": "Feeds & Monitors",
+        "label": "Security & Information",
         "items": (
-            ("forum_tags", "Forum Tag Cross-Posts"),
-            ("beta_program_subscriptions", "GL.iNet Beta Programs"),
-            ("linkedin_subscriptions", "LinkedIn Profiles"),
-            ("reddit_feeds", "Reddit Feeds"),
-            ("service_monitors_page", "Service Monitors"),
-            ("uptime_kuma_page", "Uptime Kuma"),
-            ("youtube_subscriptions", "YouTube Subscriptions"),
-        ),
-    },
-    {
-        "label": "Support & Integrations",
-        "items": (
-            ("discourse_page", "Discourse"),
-            ("discourse_activity_page", "Discourse Activity"),
-            ("discourse_viewer.discourse_viewer_page", "Forum Viewer"),
-            ("freshdesk_viewer.freshdesk_viewer_page", "Freshdesk"),
-        ),
-    },
-    {
-        "label": "Configuration & System",
-        "items": (
-            ("bot_profile", "Bot Profile"),
-            ("command_permissions", "Command Permissions"),
-            ("command_status", "Command Status"),
-            ("documentation", "Documentation"),
-            ("settings", "Global Settings"),
-            ("guild_settings", "Guild Settings"),
+            ("honeypot_page", "Honeypot"),
             ("admin_logs", "Logs"),
-            ("public_observability", "Observability"),
-            ("permissions_page", "Permissions"),
-            ("users", "Users"),
         ),
     },
     {
@@ -2435,6 +2409,9 @@ def _render_layout(
     can_write: bool = False,
 ):
     theme_values = [str(option.get("value") or "").strip() for option in THEME_OPTIONS if str(option.get("value") or "").strip()]
+    _endpoint = getattr(request, "endpoint", "") if has_request_context() else ""
+    announcement = announcement_for(_endpoint)
+    current_section = section_for_endpoint(_endpoint)
     return render_template_string(
         """
 <!doctype html>
@@ -3159,6 +3136,69 @@ def _render_layout(
       }
       .members-jump-form input[type=number] { width: 100%; }
     }
+
+    /* --- Binder layout ------------------------------------------------- */
+    .header-server { display: block; margin-top: 8px; text-decoration: none; line-height: 1.15; }
+    .header-server-name { display: block; font-weight: 700; font-size: 1.02rem; color: var(--fg); }
+    .header-server-caption { display: block; font-size: 0.76rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+    .header-server:hover .header-server-name { color: var(--link); }
+
+    .role-pill {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 10px; border-radius: 999px;
+      font-size: 0.74rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+      border: 1px solid var(--border);
+    }
+    .role-pill-admin { background: #14351f; color: #8ef0ac; border-color: #1f6b3a; }
+    .role-pill-editor { background: #1a2c4a; color: #a9ccff; border-color: #2f558c; }
+    .role-pill-guest { background: #2b2438; color: #d9c7ff; border-color: #4d3d6b; }
+    body[data-theme="light"] .role-pill-admin { background: #dcfce7; color: #14532d; border-color: #86efac; }
+    body[data-theme="light"] .role-pill-editor { background: #dbeafe; color: #1e3a8a; border-color: #93c5fd; }
+    body[data-theme="light"] .role-pill-guest { background: #ede9fe; color: #4c1d95; border-color: #c4b5fd; }
+
+    .section-eyebrow {
+      margin: 0 0 6px; font-size: 0.76rem; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--muted); font-weight: 700;
+    }
+
+    .announcement {
+      border: 1px solid var(--border); border-left: 4px solid var(--link);
+      background: var(--card); border-radius: 10px;
+      padding: 12px 14px; margin: 0 0 16px;
+    }
+    .announcement-title { margin: 0 0 6px; font-size: 1.02rem; }
+    .announcement-body { margin: 0; color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
+    .announcement-warning { margin: 8px 0 0; font-size: 0.9rem; color: #fbbf24; line-height: 1.45; }
+    body[data-theme="light"] .announcement-warning { color: #92400e; }
+
+    .server-hero { margin: 4px 0 14px; }
+    .server-hero h1 { margin: 0; font-size: 1.9rem; line-height: 1.15; word-break: break-word; }
+    .server-hero .server-hero-caption {
+      display: block; margin-top: 4px; font-size: 0.8rem; letter-spacing: 0.16em;
+      text-transform: uppercase; color: var(--muted);
+    }
+
+    .binder-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; margin: 0 0 18px; }
+    .binder-card {
+      display: block; text-decoration: none; color: inherit;
+      border: 1px solid var(--border); border-top: 4px solid var(--link);
+      border-radius: 10px; background: var(--card); padding: 12px 14px;
+    }
+    .binder-card:hover { border-color: var(--link); }
+    .binder-card h3 { margin: 0 0 6px; font-size: 1rem; }
+    .binder-card p { margin: 0; color: var(--muted); font-size: 0.88rem; line-height: 1.45; }
+    .binder-card .binder-count { display: block; margin-top: 8px; font-size: 0.78rem; color: var(--muted); letter-spacing: 0.04em; }
+
+    .page-index { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+    .page-index li { border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 10px 12px; }
+    .page-index a { font-weight: 600; text-decoration: none; }
+    .page-index p { margin: 4px 0 0; color: var(--muted); font-size: 0.88rem; }
+
+    .nav-jump-input { width: 100%; margin-bottom: 8px; }
+    .nav-jump-hint { margin: 6px 0 0; font-size: 0.8rem; color: var(--muted); }
+
+    .tips-list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 0.9rem; line-height: 1.55; }
+    .tips-list li { margin-bottom: 6px; }
   </style>
 </head>
 <body data-theme="black">
@@ -3167,8 +3207,18 @@ def _render_layout(
       <div class="header-brand">
         <strong>Discord Bot Admin</strong>
         <span class="header-version">{{ web_gui_version }}</span>
+        {% if current_guild_name %}
+        <a class="header-server" href="{{ url_for('dashboard') }}" title="Back to this server's home page">
+          <span class="header-server-name">{{ current_guild_name }}</span>
+          <span class="header-server-caption">Dashboard</span>
+        </a>
+        {% endif %}
       </div>
       <div class="header-tools">
+        {% if current_email %}
+        <span class="role-pill {{ 'role-pill-admin' if is_admin else ('role-pill-editor' if can_write else 'role-pill-guest') }}"
+              title="Your group: {{ current_role_label }}">{{ 'Admin' if is_admin else ('Editor' if can_write else 'Guest') }}</span>
+        {% endif %}
         {% if current_email %}
         <details class="mobile-nav">
           <summary>Menu</summary>
@@ -3182,52 +3232,21 @@ def _render_layout(
             </div>
             <div class="mobile-panel-section">
               <p class="mobile-panel-title">Quick Jump</p>
+              <label class="sr-only" for="mobile-nav-jump-input">Search pages</label>
+              <input id="mobile-nav-jump-input" class="nav-jump-input" type="search" placeholder="Search pages…" autocomplete="off">
               <label class="sr-only" for="mobile-nav-page-select">Open page</label>
-              <select id="mobile-nav-page-select" class="nav-select nav-page-select">
+              <select id="mobile-nav-page-select" class="nav-select nav-page-select nav-jump-select">
                 <option value="">Go to page...</option>
                 {% for nav_group in nav_groups %}
                 <optgroup label="{{ nav_group.label }}">
                   {% for nav_endpoint, nav_label in nav_group["items"] %}
-                  <option value="{{ url_for(nav_endpoint) }}">{{ nav_label }}</option>
+                  <option value="{{ url_for(nav_endpoint) }}" data-label="{{ nav_label }}">{{ nav_label }}</option>
                   {% endfor %}
                 </optgroup>
                 {% endfor %}
-                {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1">GitHub Wiki</option>{% endif %}
+                {% if github_wiki_url %}<option value="{{ github_wiki_url }}" data-external="1" data-label="GitHub Wiki">GitHub Wiki</option>{% endif %}
               </select>
-            </div>
-            <div class="mobile-panel-section">
-              <p class="mobile-panel-title">Primary Actions</p>
-              <div class="mobile-link-grid">
-                <a class="btn secondary" href="{{ url_for('guilds_page') }}">Servers</a>
-                <a class="btn secondary" href="{{ url_for('account') }}">My Account</a>
-                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
-                <a class="btn secondary" href="{{ url_for('member_activity_page') }}">Member Activity</a>
-                {% if current_role in ("glinet_read_only", "glinet_rw") %}
-                <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-                <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
-                <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
-                <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
-                <a class="btn secondary" href="{{ url_for('honeypot_page') }}">Honeypot</a>
-                <a class="btn secondary" href="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</a>
-                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
-                <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
-                <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
-                <a class="btn secondary" href="{{ url_for('reaction_roles_page') }}">Reaction Roles</a>
-                <a class="btn secondary" href="{{ url_for('guild_settings') }}">Settings</a>
-                {% else %}
-                <a class="btn secondary" href="{{ url_for('dashboard') }}">Dashboard</a>
-                <a class="btn secondary" href="{{ url_for('command_status') }}">Command Status</a>
-                <a class="btn secondary" href="{{ url_for('command_permissions') }}">Permissions</a>
-                <a class="btn secondary" href="{{ url_for('moderation_page') }}">Moderation</a>
-                <a class="btn secondary" href="{{ url_for('honeypot_page') }}">Honeypot</a>
-                <a class="btn secondary" href="{{ url_for('translate_channels_page') }}">Auto-Translate Channels</a>
-                <a class="btn secondary" href="{{ url_for('members_page') }}">Members</a>
-                <a class="btn secondary" href="{{ url_for('discourse_page') }}">Discourse</a>
-                <a class="btn secondary" href="{{ url_for('role_access_page') }}">Role Access</a>
-                <a class="btn secondary" href="{{ url_for('reaction_roles_page') }}">Reaction Roles</a>
-                <a class="btn secondary" href="{{ url_for('admin_logs') }}">Logs</a>
-                {% endif %}
-              </div>
+              <p class="nav-jump-hint" data-nav-jump-hint hidden></p>
             </div>
             <div class="mobile-panel-section">
               <p class="mobile-panel-title">Theme</p>
@@ -3307,6 +3326,18 @@ def _render_layout(
       <div class="flash">{{ current_role_label }} — view only; changes are blocked.</div>
       {% endif %}
     {% endif %}
+    {% if current_section and request.endpoint != "dashboard" %}
+    <p class="section-eyebrow">{{ current_section.icon }} {{ current_section.label }}</p>
+    {% endif %}
+    {% if announcement %}
+    <section class="announcement" role="note">
+      <h2 class="announcement-title">{{ announcement[0] }}</h2>
+      <p class="announcement-body">{{ announcement[1] }}</p>
+      {% if announcement[2] %}
+      <p class="announcement-warning"><strong>Careful:</strong> {{ announcement[2] }}</p>
+      {% endif %}
+    </section>
+    {% endif %}
     {{ body_html | safe }}
   </div>
   <script>
@@ -3366,6 +3397,79 @@ def _render_layout(
         parent.insertBefore(wrapper, table);
         wrapper.appendChild(table);
       });
+
+      // Quick Jump: type to filter the page list, Enter opens the first match.
+      const jumpInput = document.getElementById("mobile-nav-jump-input");
+      const jumpSelect = document.querySelector(".nav-jump-select");
+      const jumpHint = document.querySelector("[data-nav-jump-hint]");
+      if (jumpInput && jumpSelect) {
+        const groups = Array.from(jumpSelect.querySelectorAll("optgroup"));
+        const options = Array.from(jumpSelect.querySelectorAll("option"));
+        const applyFilter = function () {
+          const needle = jumpInput.value.trim().toLowerCase();
+          let matches = 0;
+          options.forEach((option) => {
+            const label = (option.getAttribute("data-label") || option.textContent || "").toLowerCase();
+            const hit = !needle || label.indexOf(needle) !== -1;
+            option.hidden = !hit;
+            if (hit && option.value) {
+              matches += 1;
+            }
+          });
+          groups.forEach((group) => {
+            const anyVisible = Array.from(group.querySelectorAll("option")).some((option) => !option.hidden);
+            group.hidden = !anyVisible;
+          });
+          if (jumpHint) {
+            jumpHint.hidden = !needle;
+            jumpHint.textContent = needle
+              ? (matches === 1 ? "1 page matches" : matches + " pages match")
+              : "";
+          }
+          return matches;
+        };
+        jumpInput.addEventListener("input", applyFilter);
+        jumpInput.addEventListener("keydown", function (event) {
+          if (event.key !== "Enter") {
+            return;
+          }
+          event.preventDefault();
+          applyFilter();
+          const first = options.find((option) => option.value && !option.hidden);
+          if (first) {
+            if (first.getAttribute("data-external") === "1") {
+              window.open(first.value, "_blank", "noopener,noreferrer");
+            } else {
+              window.location.href = first.value;
+            }
+          }
+        });
+      }
+
+      // Ask before any state-changing submit. Forms that already carry an onsubmit
+      // confirm, or that ask for a password (sign-in, password change), are left alone.
+      document.querySelectorAll("form").forEach((form) => {
+        if ((form.getAttribute("method") || "").toLowerCase() !== "post") {
+          return;
+        }
+        if (form.dataset.noConfirm === "1" || form.hasAttribute("onsubmit")) {
+          return;
+        }
+        if (form.querySelector("input[type=password]")) {
+          return;
+        }
+        form.addEventListener("submit", function (event) {
+          if (form.dataset.confirmed === "1") {
+            return;
+          }
+          const message = form.dataset.confirmLabel || "Apply this change?";
+          if (!window.confirm(message)) {
+            event.preventDefault();
+            return;
+          }
+          form.dataset.confirmed = "1";
+        });
+      });
     })();
   </script>
 </body>
@@ -3387,6 +3491,8 @@ def _render_layout(
         web_gui_version=WEB_GUI_VERSION_LABEL,
         theme_options=THEME_OPTIONS,
         nav_groups=NAV_GROUPS,
+        announcement=announcement,
+        current_section=current_section,
         theme_values_json=json.dumps(theme_values),
     )
 
@@ -5072,309 +5178,6 @@ def create_web_app(
         wiki_url = _github_wiki_url()
         restart_enabled = _restart_enabled()
 
-        def build_dashboard_card(
-            title: str,
-            description: str,
-            href: str,
-            button_label: str,
-            *,
-            external: bool = False,
-            primary: bool = False,
-            extra_html: str = "",
-        ) -> str:
-            link_target = " target='_blank' rel='noopener noreferrer'" if external else ""
-            classes = "card dash-card"
-            if primary:
-                classes += " primary"
-            return f"""
-            <div class="{classes}">
-              <h3>{escape(title)}</h3>
-              <p class="muted">{escape(description)}</p>
-              {extra_html}
-              <div class="dash-actions">
-                <a class="btn secondary" href="{escape(href, quote=True)}"{link_target}>{escape(button_label)}</a>
-              </div>
-            </div>
-            """
-
-        def render_dashboard_section(title: str, description: str, section_cards: list[str]) -> str:
-            return f"""
-            <section class="card dashboard-section">
-              <div class="dashboard-section-head">
-                <div>
-                  <h3>{escape(title)}</h3>
-                  <p class="muted">{escape(description)}</p>
-                </div>
-              </div>
-              <div class="dashboard-section-grid">
-                {"".join(section_cards)}
-              </div>
-            </section>
-            """
-
-        moderation_security_cards = [
-            build_dashboard_card(
-                "Moderation",
-                "Configure bad-word filtering, warning thresholds, timeout escalation, and the moderation log channel.",
-                url_for("moderation_page"),
-                "Open Moderation",
-            ),
-            build_dashboard_card(
-                "Honeypot",
-                "Catch spam bots with trap channels, honeypot logging, and new-account join screening.",
-                url_for("honeypot_page"),
-                "Open Honeypot",
-            ),
-            build_dashboard_card(
-                "Action History",
-                "Review recent guild-scoped bot actions, moderation events, and administrative audit history.",
-                url_for("actions_page"),
-                "Open Action History",
-            ),
-        ]
-
-        roles_onboarding_cards = [
-            build_dashboard_card(
-                "Role Access & Invites",
-                "Generate, review, and control invite links paired with 6-digit access codes for self-service role redemption.",
-                url_for("role_access_page"),
-                "Open Role Access",
-            ),
-            build_dashboard_card(
-                "Reaction Roles",
-                "Compose announcements, attach emojis to Discord roles, and manage active reaction-to-role mappings.",
-                url_for("reaction_roles_page"),
-                "Open Reaction Roles",
-            ),
-            build_dashboard_card(
-                "Bulk Role CSV",
-                "Upload a CSV of Discord usernames to batch-assign roles with detailed completion reports.",
-                url_for("bulk_role_csv"),
-                "Open Bulk CSV",
-            ),
-            build_dashboard_card(
-                "Members",
-                "Browse guild members, inspect member details, then kick, ban, timeout, or update roles.",
-                url_for("members_page"),
-                "Open Members",
-            ),
-        ]
-
-        # User activity gets its own section: it is a distinct concern from role
-        # administration, and it is the surface that will grow more platform
-        # sources (currently Discord only).
-        user_activity_cards = [
-            build_dashboard_card(
-                "Member Activity",
-                "Discord engagement: rolling activity windows, hourly message volume, and per-role rankings.",
-                url_for("member_activity_page"),
-                "Open Member Activity",
-            ),
-        ]
-
-        channels_automation_cards = [
-            build_dashboard_card(
-                "Tag Responses",
-                "Manage dynamic tag-response mappings for instant slash and prefix command FAQ answers.",
-                url_for("tag_responses"),
-                "Open Tag Responses",
-            ),
-            build_dashboard_card(
-                "Auto-Translate Channels",
-                "Bridge text channels with real-time multi-language translation and flag emoji reactions.",
-                url_for("translate_channels_page"),
-                "Open Auto-Translate",
-            ),
-            build_dashboard_card(
-                "Reddit Auto-Reply",
-                "Configure automated rule-based replies to matched subreddit submissions and keywords.",
-                url_for("reddit_auto_responds"),
-                "Open Auto-Reply",
-            ),
-        ]
-
-        feeds_monitors_cards = [
-            build_dashboard_card(
-                "Forum Tag Cross-Posts",
-                "Cross-post GL.iNet forum topics carrying a chosen tag into a Discord channel.",
-                url_for("forum_tags"),
-                "Open Forum Tags",
-            ),
-            build_dashboard_card(
-                "Reddit Feeds",
-                "Map subreddit feeds to Discord channels and schedule automatic submission checks.",
-                url_for("reddit_feeds"),
-                "Open Reddit Feeds",
-            ),
-            build_dashboard_card(
-                "YouTube Subscriptions",
-                "Map YouTube channels to Discord channels and post new video uploads automatically.",
-                url_for("youtube_subscriptions"),
-                "Open YouTube",
-            ),
-            build_dashboard_card(
-                "LinkedIn Profiles",
-                "Map public LinkedIn company profiles to Discord channels and post updates automatically.",
-                url_for("linkedin_subscriptions"),
-                "Open LinkedIn",
-            ),
-            build_dashboard_card(
-                "GL.iNet Beta Programs",
-                "Monitor the GL.iNet beta testing portal and notify a channel when new programs open.",
-                url_for("beta_program_subscriptions"),
-                "Open Beta Programs",
-            ),
-            build_dashboard_card(
-                "Service Monitors",
-                "Manage direct HTTP/HTTPS endpoint checks and status alert notifications for this guild.",
-                url_for("service_monitors_page"),
-                "Open Service Monitors",
-            ),
-            build_dashboard_card(
-                "Uptime Kuma",
-                "Configure the Uptime Kuma watcher, import status monitors, and sync service check sets.",
-                url_for("uptime_kuma_page"),
-                "Open Uptime Kuma",
-            ),
-        ]
-
-        support_forum_cards = [
-            build_dashboard_card(
-                "Freshdesk Tickets",
-                "Read-only viewer for GL.iNet customer support tickets, categories, and ticket details.",
-                url_for("freshdesk_viewer.freshdesk_viewer_page"),
-                "Open Freshdesk",
-            ),
-            build_dashboard_card(
-                "Discourse Forum",
-                "Configure forum API connection, credentials, and guild-scoped Discourse sync toggles.",
-                url_for("discourse_page"),
-                "Open Discourse",
-            ),
-            build_dashboard_card(
-                "Discourse Activity",
-                "Staff reply volume, first-response times, and hourly coverage from the stored forum statistics.",
-                url_for("discourse_activity_page"),
-                "Open Discourse Activity",
-            ),
-            build_dashboard_card(
-                "Forum Viewer",
-                "Browse community topics and search GL.iNet forum discussions directly from the web admin.",
-                url_for("discourse_viewer.discourse_viewer_page"),
-                "Open Forum Viewer",
-            ),
-        ]
-
-        server_system_cards = [
-            build_dashboard_card(
-                "Guild Settings",
-                "Set server-specific channels, welcome behavior, and override global defaults for this guild.",
-                url_for("guild_settings"),
-                "Open Guild Settings",
-                primary=True,
-                extra_html="<p class='dashboard-note'>Use this first when a server needs channels, feeds, or feature toggles that differ from global defaults.</p>",
-            ),
-            build_dashboard_card(
-                "Command Status",
-                "Quickly enable or disable slash commands for the selected Discord server.",
-                url_for("command_status"),
-                "Open Command Status",
-                primary=True,
-            ),
-            build_dashboard_card(
-                "Command Permissions",
-                "Set access mode per command and pick restricted roles from Discord role lists.",
-                url_for("command_permissions"),
-                "Open Permissions",
-            ),
-            build_dashboard_card(
-                "Bot Profile",
-                "Rename the bot, update the server nickname, and upload avatar assets.",
-                url_for("bot_profile"),
-                "Open Bot Profile",
-            ),
-            build_dashboard_card(
-                "Servers",
-                "Switch the active Discord server context before opening guild-scoped management pages.",
-                url_for("guilds_page"),
-                "Open Servers",
-            ),
-            build_dashboard_card(
-                "My Account",
-                "Change your password, update your email, and manage profile display details.",
-                url_for("account"),
-                "Open My Account",
-            ),
-            build_dashboard_card(
-                "Global Settings",
-                "Edit global runtime environment settings shared across all Discord servers.",
-                url_for("settings"),
-                "Open Global Settings",
-            ),
-            build_dashboard_card(
-                "Observability",
-                "View container runtime metrics and tail recent log entries.",
-                url_for("public_observability"),
-                "Open Observability",
-            ),
-            build_dashboard_card(
-                "Logs",
-                "View recent runtime logs with log file selection and audit context.",
-                url_for("admin_logs"),
-                "Open Logs",
-            ),
-            build_dashboard_card(
-                "Users",
-                "Create web users, scope access, and reset credentials.",
-                url_for("users"),
-                "Open Users",
-            ),
-            build_dashboard_card(
-                "Documentation",
-                "Browse embedded docs for commands, deployment, and operations.",
-                url_for("documentation"),
-                "Open Docs",
-            ),
-        ]
-
-        if wiki_url:
-            server_system_cards.append(
-                build_dashboard_card(
-                    "GitHub Wiki",
-                    "Open the external project wiki in a new tab.",
-                    wiki_url,
-                    "Open GitHub Wiki",
-                    external=True,
-                )
-            )
-
-        if restart_enabled:
-            if is_admin:
-                server_system_cards.append(
-                    f"""
-                    <div class="card dash-card">
-                      <h3>Restart Container</h3>
-                      <p class="muted">Apply runtime-level changes that require a process restart.</p>
-                      <p class="dashboard-note">Use this after changes that affect startup-time settings, Discord sync, or container-bound runtime behavior.</p>
-                      <form method="post" action="{escape(url_for("restart_service"), quote=True)}"
-                        onsubmit="return confirm('WARNING: This will restart the container and temporarily disconnect the bot. Continue?');">
-                        <input type="hidden" name="confirm" value="yes" />
-                        <button class="btn danger" type="submit">Restart Container</button>
-                      </form>
-                    </div>
-                    """
-                )
-            else:
-                server_system_cards.append(
-                    """
-                    <div class="card dash-card">
-                      <h3>Restart Container</h3>
-                      <p class="muted">Read-only accounts can view this option but cannot restart the container.</p>
-                      <button class="btn danger" type="button" disabled>Restart Container</button>
-                    </div>
-                    """
-                )
-
         role_scope_text = (
             "Pinned to the primary GL.iNet Community Discord server."
             if role_key in {"glinet_read_only", "glinet_rw"}
@@ -5388,77 +5191,211 @@ def create_web_app(
         startup_note = (
             "Some Discord metadata changes still require a container restart after saving."
             if is_admin
-            else "Use the grouped sections below to reach the areas this account is allowed to manage."
+            else "Every section below opens only the pages this account is allowed to manage."
         )
         recent_navigation_html = "".join(
-            f"<div><a href='{escape(str(item.get('href') or ''), quote=True)}'>{escape(str(item.get('label') or 'Open page'))}</a></div>"
+            f'<div><a href="{escape(str(item.get("href") or ""), quote=True)}">{escape(str(item.get("label") or "Open page"))}</a></div>'
             for item in _recent_navigation_entries()
         ) or "No recent pages yet."
 
+        binder_cards = "".join(
+            f"""
+            <a class="binder-card" href="{escape(url_for('section_page', slug=section['slug']), quote=True)}">
+              <h3>{section['icon']} {escape(section['label'])}</h3>
+              <p>{escape(section['blurb'])}</p>
+              <span class="binder-count">{len(section['pages'])} page{'s' if len(section['pages']) != 1 else ''}</span>
+            </a>
+            """
+            for section in SECTIONS
+        )
+
         body = f"""
         <div class="dashboard-shell">
-          <section class="dashboard-hero">
-            <div class="card dashboard-hero-main">
-              <div>
-                <h2>Dashboard</h2>
-                <p class="dashboard-hero-lead">Operational control for <strong>{escape(selected_guild_name)}</strong>. The sections below separate guild controls, community tools, feed automations, and runtime operations so the most-used actions are easier to reach on desktop, tablet, and mobile.</p>
-              </div>
-              <div class="dashboard-pill-row">
-                <div class="dashboard-pill">
-                  <strong>Server</strong>
-                  <span>{escape(selected_guild_name)}</span>
-                </div>
-                <div class="dashboard-pill">
-                  <strong>Access</strong>
-                  <span>{escape(role_label)}</span>
-                </div>
-                <div class="dashboard-pill">
-                  <strong>Scope</strong>
-                  <span>{escape(role_scope_text)}</span>
-                </div>
-                <div class="dashboard-pill">
-                  <strong>Restart</strong>
-                  <span>{'Enabled' if restart_enabled else 'Disabled'}</span>
-                </div>
-              </div>
-              <p class="dashboard-note">{escape(startup_note)}</p>
-            </div>
-            <div class="card dashboard-hero-side">
-              <div>
-                <h3>Quick Notes</h3>
-                <p class="muted">Use the grouped cards below instead of hunting through one long grid.</p>
-              </div>
-              <div class="dashboard-list">
-                <div class="dashboard-list-item">
-                  <strong>Configuration</strong>
-                  <div class="muted">{escape(management_text)}</div>
-                </div>
-                <div class="dashboard-list-item">
-                  <strong>Most common path</strong>
-                  <div class="muted"><a href="{escape(url_for('guild_settings'), quote=True)}">Guild Settings</a>, then <a href="{escape(url_for('command_status'), quote=True)}">Command Status</a>, then feed pages for channel routing.</div>
-                </div>
-                <div class="dashboard-list-item">
-                  <strong>Recent pages</strong>
-                  <div class="muted">{recent_navigation_html}</div>
-                </div>
-                <div class="dashboard-list-item">
-                  <strong>Documentation</strong>
-                  <div class="muted">{'GitHub Wiki is linked here as an external reference.' if wiki_url else 'Embedded docs remain available from this dashboard.'}</div>
-                </div>
-              </div>
-            </div>
+          <section class="server-hero">
+            <h1>{escape(selected_guild_name)}</h1>
+            <span class="server-hero-caption">Dashboard</span>
           </section>
-          {render_dashboard_section("🛡️ Moderation & Security", "Automated spam defenses, chat moderation rules, and action history.", moderation_security_cards)}
-          {render_dashboard_section("👥 Roles & Onboarding", "Member onboarding, invite tracking, reaction roles, and role management.", roles_onboarding_cards)}
-          {render_dashboard_section("📊 User Activity & Statistics", "Engagement statistics per platform. Discord is live; additional platform sources will be added here.", user_activity_cards)}
-          {render_dashboard_section("💬 Channels & Chat Automation", "Automated FAQ tags, auto-translate bridges, and Reddit auto-replies.", channels_automation_cards)}
-          {render_dashboard_section("📡 Notification Feeds & Monitors", "External feeds, social platform alerts, and service health checks.", feeds_monitors_cards)}
-          {render_dashboard_section("🎫 Support & Forum Integrations", "Customer support ticket viewer and Discourse forum community tools.", support_forum_cards)}
-          {render_dashboard_section("⚙️ Bot Configuration & System Administration", "Server settings, command permissions, bot identity, runtime logs, and user access.", server_system_cards)}
+          <section class="announcement" role="note">
+            <h2 class="announcement-title">This server at a glance</h2>
+            <p class="announcement-body">Pick a section below. Each one is a tab in the binder and holds only the pages that belong to it, so nothing has to be hunted for on one long scrolling page.</p>
+          </section>
+          <div class="dashboard-pill-row">
+            <div class="dashboard-pill">
+              <strong>Access</strong>
+              <span>{escape(role_label)}</span>
+            </div>
+            <div class="dashboard-pill">
+              <strong>Scope</strong>
+              <span>{escape(role_scope_text)}</span>
+            </div>
+            <div class="dashboard-pill">
+              <strong>Restart</strong>
+              <span>{'Enabled' if restart_enabled else 'Disabled'}</span>
+            </div>
+          </div>
+          <p class="dashboard-note">{escape(startup_note)}</p>
+          <div class="binder-grid">{binder_cards}</div>
+          <section class="card">
+            <h3>Quick Tips &amp; History</h3>
+            <ul class="tips-list">
+              <li><strong>Configuration</strong> — {escape(management_text)}</li>
+              <li><strong>Most common path</strong> — <a href="{escape(url_for('guild_settings'), quote=True)}">Guild Settings</a>, then <a href="{escape(url_for('command_status'), quote=True)}">Command Status</a>, then the feed pages for channel routing.</li>
+              <li><strong>Recent pages</strong> — {recent_navigation_html}</li>
+              <li><strong>Documentation</strong> — {'GitHub Wiki is linked in the menu.' if wiki_url else 'Embedded docs are under My Account, Documentation.'}</li>
+            </ul>
+          </section>
         </div>
         """
 
         return _render_page("Dashboard", body, user["email"], is_admin)
+
+    @app.route("/admin/section/<slug>", methods=["GET"])
+    @login_required
+    def section_page(slug: str):
+        """The landing page for one binder tab: only that tab's own pages."""
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        section = SECTION_BY_SLUG.get(str(slug or "").strip().lower())
+        if section is None:
+            flash("That section does not exist.", "error")
+            return redirect(url_for("dashboard"))
+        selected_guild = _selected_guild() or {}
+        selected_guild_name = str(selected_guild.get("name") or "selected server")
+
+        cards = []
+        for endpoint, label, description in section.get("pages", ()):
+            try:
+                href = url_for(endpoint)
+            except BuildError:
+                # A blueprint that is not registered in this runtime (e.g. Freshdesk)
+                # should not take the whole section down.
+                continue
+            cards.append(
+                f"""
+            <a class="binder-card" href="{escape(href, quote=True)}">
+              <h3>{escape(label)}</h3>
+              <p>{escape(description)}</p>
+            </a>
+            """
+            )
+        if not cards:
+            cards.append(
+                "<p class='muted'>No page in this section is available in this runtime.</p>"
+            )
+
+        warning_html = (
+            f"<p class=\"announcement-warning\"><strong>Careful:</strong> {escape(section['warning'])}</p>"
+            if section.get("warning")
+            else ""
+        )
+        body = f"""
+        <div class="dashboard-shell">
+          <section class="server-hero">
+            <h1>{section['icon']} {escape(section['label'])}</h1>
+            <span class="server-hero-caption">{escape(selected_guild_name)}</span>
+          </section>
+          <section class="announcement" role="note">
+            <h2 class="announcement-title">{escape(section['label'])}</h2>
+            <p class="announcement-body">{escape(section['blurb'])}</p>
+            {warning_html}
+          </section>
+          <p class="dashboard-note"><a href="{escape(url_for('dashboard'), quote=True)}">&larr; Back to {escape(selected_guild_name)}</a></p>
+          <div class="binder-grid">{''.join(cards)}</div>
+        </div>
+        """
+        return _render_page(str(section["label"]), body, user["email"], is_admin)
+
+    @app.route("/admin/invite-links", methods=["GET"])
+    @login_required
+    def invite_links_page():
+        """Read-only view of invite codes and the role each one grants on join."""
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+
+        payload = (
+            on_get_role_access_mappings(selected_guild_id)
+            if callable(on_get_role_access_mappings)
+            else {"ok": False, "error": "Invite link callbacks are not configured."}
+        )
+        _channels, role_options, _catalog_error = _load_discord_catalog_options(selected_guild_id)
+        role_names = {
+            str(role.get("id")): str(role.get("name") or role.get("id"))
+            for role in role_options
+        }
+
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error_text = (
+                str(payload.get("error") or "Unable to load invite links.")
+                if isinstance(payload, dict)
+                else "Unable to load invite links."
+            )
+            body = (
+                f"<div class='card'><h2>Invite Link Controls</h2>"
+                f"<p class='muted'>Could not load invite links: {escape(error_text)}</p></div>"
+            )
+            return _render_page("Invite Link Controls", body, user["email"], is_admin)
+
+        rows = []
+        for mapping in payload.get("mappings", []) or []:
+            invite_code = str(mapping.get("invite_code") or "").strip()
+            if not invite_code:
+                continue
+            role_id = str(mapping.get("role_id") or "")
+            role_label = role_names.get(role_id) or (f"Role {role_id}" if role_id else "—")
+            invite_url = str(mapping.get("invite_url") or f"https://discord.gg/{invite_code}")
+            rows.append(
+                f"""
+                <tr>
+                  <td><a href="{escape(invite_url, quote=True)}" target="_blank" rel="noopener noreferrer">{escape(invite_code)}</a></td>
+                  <td>{escape(role_label)}</td>
+                  <td>{escape(str(mapping.get('code') or '—'))}</td>
+                  <td>{escape(str(mapping.get('status') or 'active'))}</td>
+                  <td>{escape(format_timestamp_display(mapping.get('created_at'), blank='—'))}</td>
+                </tr>
+                """
+            )
+
+        if rows:
+            table_html = f"""
+            <div class="table-scroll">
+              <table class="metric-table">
+                <thead>
+                  <tr><th>Invite code</th><th>Role granted</th><th>Access code</th><th>Status</th><th>Created</th></tr>
+                </thead>
+                <tbody>{''.join(rows)}</tbody>
+              </table>
+            </div>
+            """
+        else:
+            table_html = (
+                "<p class='muted'>No invite codes are mapped to roles in this server yet. "
+                "Create one from Role Access, or use the bot's invite command in Discord.</p>"
+            )
+
+        body = f"""
+        <div class="dashboard-shell">
+          <section class="server-hero">
+            <h1>Invite Link Controls</h1>
+            <span class="server-hero-caption">{escape(guild_name)}</span>
+          </section>
+          <section class="announcement" role="note">
+            <h2 class="announcement-title">Invite links</h2>
+            <p class="announcement-body">Every invite code the bot knows about in this server, and the role a member receives when they join through it. This page is read-only: create and change the mapping from <a href="{escape(url_for('role_access_page'), quote=True)}">Role Access</a>.</p>
+            <p class="announcement-warning"><strong>Careful:</strong> deleting an invite in Discord does not delete its mapping here, so a stale code can sit in this list until it is removed.</p>
+          </section>
+          <div class="card">{table_html}</div>
+        </div>
+        """
+        return _render_page("Invite Link Controls", body, user["email"], is_admin)
 
     @app.route("/admin/restart", methods=["POST"])
     @admin_required

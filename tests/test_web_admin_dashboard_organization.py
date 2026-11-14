@@ -147,24 +147,72 @@ def test_nav_hides_the_github_wiki_link_when_unset(tmp_path: Path, monkeypatch):
 
 
 def test_nav_grouping_loses_no_page(tmp_path: Path):
-    """Regrouping must not silently drop a page from the menu."""
+    """The menu is deliberately short; every other page must stay reachable.
+
+    The operator asked for twelve menu leaves and everything else one level down,
+    so this checks both halves: the twelve leaves are in the dropdown, and every
+    page in the binder is linked from its section landing page.
+    """
     soup = _load_dashboard_soup(tmp_path)
     select = _nav_select(soup, "desktop-nav-page-select")
 
     rendered = {item for _, items in _group_rows(select) for item in items}
-    missing = _EXPECTED_NAV_PAGES - rendered
-    assert not missing, f"pages missing from the nav: {sorted(missing)}"
+    for label in (
+        "My Account",
+        "Servers",
+        "Member Activity",
+        "Members",
+        "Moderation",
+        "Permissions",
+        "Auto-Translate Channels",
+        "Forums",
+        "Invite Link Controls",
+        "Reaction Roles",
+        "Honeypot",
+        "Logs",
+    ):
+        assert label in rendered, f"{label!r} missing from the nav"
 
     # Logout moved into its own group, not lost
-    assert "Logout" in {o.get_text().strip() for o in select.find_all("option")}
+    assert "Logout" in rendered
 
     # the placeholder stays first, outside any group
     first = select.find("option")
     assert first is not None
     assert first.get_text().strip() == "Go to page..."
 
+    from app.webgui_sections import SECTIONS
 
-def test_dashboard_renders_reorganized_logical_sections(tmp_path: Path):
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    expected = {
+        label
+        for section in SECTIONS
+        for endpoint, label, _description in section["pages"]
+        if "." not in endpoint  # blueprint pages may not be registered here
+    }
+    seen = set()
+    for section in SECTIONS:
+        response = client.get(
+            f"/admin/section/{section['slug']}",
+            base_url="https://docker.example:8443",
+        )
+        assert response.status_code == 200, f"section {section['slug']} did not render"
+        page = BeautifulSoup(response.data, "html.parser")
+        for card in page.find_all("a", class_="binder-card"):
+            heading = card.find("h3")
+            if heading:
+                seen.add(heading.get_text(strip=True))
+
+    missing = expected - seen
+    assert not missing, f"pages not reachable from any section page: {sorted(missing)}"
+
+
+def test_dashboard_renders_the_six_binder_sections(tmp_path: Path):
+    """The dashboard is the binder's cover: six tabs, not seven card sections."""
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
@@ -174,43 +222,51 @@ def test_dashboard_renders_reorganized_logical_sections(tmp_path: Path):
     assert response.status_code == 200
 
     html = response.data.decode("utf-8")
-    assert "Moderation &amp; Security" in html or "Moderation & Security" in html
-    assert "Roles &amp; Onboarding" in html or "Roles & Onboarding" in html
-    assert "Channels &amp; Chat Automation" in html or "Channels & Chat Automation" in html
-    assert "Notification Feeds &amp; Monitors" in html or "Notification Feeds & Monitors" in html
-    assert "Support &amp; Forum Integrations" in html or "Support & Forum Integrations" in html
-    assert "Bot Configuration &amp; System Administration" in html or "Bot Configuration & System Administration" in html
-    assert "User Activity &amp; Statistics" in html or "User Activity & Statistics" in html
+    for label in (
+        "My Account",
+        "Servers",
+        "Member Related",
+        "Mod &amp; Perms",
+        "Discord Server Related",
+        "Security &amp; Information",
+    ):
+        assert label in html, f"dashboard is missing the {label!r} binder tab"
+
+    # The old long-scroll card sections are gone.
+    for retired in (
+        "Roles &amp; Onboarding",
+        "Notification Feeds &amp; Monitors",
+        "Bot Configuration &amp; System Administration",
+    ):
+        assert retired not in html, f"dashboard still renders the retired {retired!r} section"
+
+    # Every tab announces itself in plain language, with a warning where it matters.
+    assert "binder-card" in html
+    assert "announcement" in html
+    assert "Quick Tips &amp; History" in html
 
 
-def test_member_activity_lives_in_its_own_section(tmp_path: Path):
-    """User activity is its own dashboard section, ready for more platforms.
-
-    It used to be the last card under Roles & Onboarding, which conflated
-    engagement statistics with role administration.
-    """
+def test_member_activity_lives_in_the_member_related_tab(tmp_path: Path):
+    """Member activity sits with members, not with role administration."""
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
     _select_guild(client)
 
-    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
-    assert response.status_code == 200
-    soup = BeautifulSoup(response.data, "html.parser")
+    members = client.get("/admin/section/members", base_url="https://docker.example:8443")
+    assert members.status_code == 200
+    members_html = members.data.decode("utf-8")
+    assert "Member Activity" in members_html
+    assert "Members" in members_html
 
-    def section_containing(heading_text: str):
-        for section in soup.find_all("section", class_="dashboard-section"):
-            heading = section.find("h3")
-            if heading and heading.get_text(strip=True) == heading_text:
-                return section
-        return None
-
-    activity = section_containing("📊 User Activity & Statistics")
-    assert activity is not None, "no User Activity & Statistics section on the dashboard"
-    assert "Member Activity" in activity.get_text()
-
-    roles = section_containing("👥 Roles & Onboarding")
-    assert roles is not None
-    assert "Member Activity" not in roles.get_text(), (
-        "Member Activity is still listed under Roles & Onboarding"
+    moderation = client.get(
+        "/admin/section/moderation", base_url="https://docker.example:8443"
     )
+    assert moderation.status_code == 200
+    moderation_soup = BeautifulSoup(moderation.data, "html.parser")
+    moderation_labels = {
+        heading.get_text(strip=True)
+        for heading in moderation_soup.select(".binder-grid .binder-card h3")
+    }
+    assert "Member Activity" not in moderation_labels
+    assert "Moderation" in moderation_labels

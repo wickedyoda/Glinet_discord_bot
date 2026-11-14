@@ -2855,8 +2855,9 @@ def test_dashboard_lists_servers_and_members_cards(tmp_path: Path):
     response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
 
     assert response.status_code == 200
-    assert b"Open Servers" in response.data
-    assert b"Open Members" in response.data
+    # The binder's cover links each tab to its own landing page.
+    assert b'href="/admin/section/servers"' in response.data
+    assert b'href="/admin/section/members"' in response.data
 
 
 def test_moderation_page_renders_controls_and_saves_settings(tmp_path: Path):
