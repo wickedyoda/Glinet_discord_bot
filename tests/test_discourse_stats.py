@@ -440,10 +440,8 @@ def test_full_walk_ignores_the_watermark(db):
     assert result["pages"] == 1, "the empty page does not count as walked"
 
 
-def test_topics_stop_at_the_watermark(db):
-    db.execute("INSERT INTO discourse_topics VALUES (20, 'glrouter', ?)", (_iso(days_ago=2),))
-    db.execute("INSERT INTO discourse_topics VALUES (21, 'glrouter', ?)", (_iso(days_ago=1),))
-    db.commit()
+def test_topics_incremental_walks_a_bounded_number_of_pages(db):
+    """Activity order makes a topic-id watermark unsound, so the walk is capped."""
     calls = []
 
     def fetch(path):
@@ -457,14 +455,12 @@ def test_topics_stop_at_the_watermark(db):
         db, categories=("glrouter",), fetch_json=fetch, backfill_days=90, now=NOW, pace=None
     )
 
-    assert result["pages"] == 1
-    assert result["stopped_early"] == 1
-    assert len(calls) == 1
+    assert result["mode"] == "incremental"
+    assert len(calls) == discourse_stats.INCREMENTAL_TOPIC_PAGES
+    assert result["pages"] == discourse_stats.INCREMENTAL_TOPIC_PAGES
 
 
-def test_topics_full_walk_ignores_the_watermark(db):
-    db.execute("INSERT INTO discourse_topics VALUES (20, 'glrouter', ?)", (_iso(days_ago=2),))
-    db.commit()
+def test_topics_full_walk_reads_until_the_feed_ends(db):
     calls = []
     pages = [
         {"topic_list": {"topics": [{"id": 20, "created_at": _iso(days_ago=2)}]}},
@@ -481,7 +477,7 @@ def test_topics_full_walk_ignores_the_watermark(db):
     )
 
     assert result["mode"] == "full"
-    assert len(calls) == 2, "full mode must request the page after the watermark"
+    assert len(calls) == 2, "full mode must not be capped"
     assert result["pages"] == 1
 
 

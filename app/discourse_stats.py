@@ -20,6 +20,12 @@ from datetime import UTC, datetime, timedelta
 # a primary key of post_id makes re-scanning the same window idempotent.
 DEFAULT_BACKFILL_DAYS = 90
 MAX_PAGES = 800
+# Category feeds are ordered by *activity*, not creation, so a topic-id watermark
+# cannot prove that nothing newer is left: an old topic bumped today sits above a
+# topic created yesterday and never touched since. Incremental runs therefore walk a
+# bounded number of pages, which always covers topics created since the last run, and
+# the daily full pass repairs anything older that was skipped.
+INCREMENTAL_TOPIC_PAGES = 3
 # Discourse throttles around 60 requests/minute per IP. Pacing faster than ~1.05s
 # earns a 429 partway through a long walk, which is worse than a slow one.
 DEFAULT_PACE_SECONDS = 1.05
@@ -47,27 +53,6 @@ def _max_post_id(conn, lock=None) -> int | None:
     with _write_lock(lock):
         row = conn.execute("SELECT MAX(post_id) FROM discourse_posts").fetchone()
     return int(row[0]) if row and row[0] is not None else None
-
-
-def _max_topic_id(conn, category_slug: str, lock=None) -> int | None:
-    with _write_lock(lock):
-        row = conn.execute(
-            "SELECT MAX(topic_id) FROM discourse_topics WHERE category_slug = ?",
-            (category_slug,),
-        ).fetchone()
-    return int(row[0]) if row and row[0] is not None else None
-
-
-def _existing_topic_ids(conn, ids: list[int], lock=None) -> set[int]:
-    if not ids:
-        return set()
-    with _write_lock(lock):
-        rows = conn.execute(
-            "SELECT topic_id FROM discourse_topics"
-            " WHERE topic_id IN (SELECT value FROM json_each(?))",
-            (_json.dumps(ids),),
-        ).fetchall()
-    return {int(row[0]) for row in rows}
 
 
 def _fetch_group_members(
@@ -165,20 +150,20 @@ def ingest_topics(
     scoping possible at all. Writes take the lock per page; the fetch and the pacing
     sleep stay outside it.
 
-    Incremental by default: a category stops once a page adds nothing new and has
-    fallen behind the highest topic id already stored for it. `full=True` walks the
-    whole window, which is what the daily reconcile uses to fill a hole left by an
-    interrupted run.
+    The feed is ordered by activity, not creation, so there is no sound watermark to
+    stop at: an old topic bumped today outranks one created yesterday. Incremental
+    runs therefore read only `INCREMENTAL_TOPIC_PAGES` pages per category, which covers
+    everything created since the last run; `full=True` walks the window and repairs
+    anything older that an incremental run skipped.
     """
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(days=backfill_days)
     total = pages = 0
-    stopped_early = 0
+    page_limit = max_pages if full else min(max_pages, INCREMENTAL_TOPIC_PAGES)
 
     for slug in categories:
-        watermark = None if full else _max_topic_id(conn, slug, lock)
         page = 0
-        while page < max_pages:
+        while page < page_limit:
             payload = fetch_json(f"/c/{slug}/l/latest.json?page={page}")
             topics = payload.get("topic_list", {}).get("topics") or []
             if not topics:
@@ -195,9 +180,6 @@ def ingest_topics(
                     continue
                 fresh += 1
                 rows.append((int(topic["id"]), slug, topic["created_at"]))
-            new_in_page = len(rows) - len(
-                _existing_topic_ids(conn, [row[0] for row in rows], lock)
-            )
             if rows:
                 with _write_lock(lock):
                     for row in rows:
@@ -211,25 +193,14 @@ def ingest_topics(
                         )
                     conn.commit()
                 total += len(rows)
-            if (
-                watermark is not None
-                and new_in_page == 0
-                and int(topics[-1]["id"]) <= watermark
-            ):
-                stopped_early += 1
-                break
             if fresh == 0 and parse_discourse_ts(topics[-1]["created_at"]) < cutoff:
                 break
             page += 1
             if pace is not None:
                 pace(DEFAULT_PACE_SECONDS)
 
-    return {
-        "pages": pages,
-        "topics": total,
-        "mode": "full" if full else "incremental",
-        "stopped_early": stopped_early,
-    }
+    return {"pages": pages, "topics": total, "mode": "full" if full else "incremental"}
+
 
 
 def ingest_posts(
