@@ -164,6 +164,8 @@ def test_dashboard_offers_an_admin_only_restart_control(tmp_path: Path):
             restart_form = form
     assert restart_form is not None, "no restart control on the dashboard"
     assert restart_form.find("input", attrs={"name": "confirm", "value": "yes"}) is not None
+    # The card is the control alone; the explanatory sentence was removed on request.
+    assert "Restarting the container drops" not in admin_page.get_data(as_text=True)
 
     from tests.test_web_permission_groups import _create_account as _make_account
     from tests.test_web_post_message import _csrf as _page_csrf
@@ -209,6 +211,33 @@ def test_scoped_users_can_open_binder_and_invite_pages(tmp_path: Path):
         response = client.get(path, base_url="https://docker.example:8443")
         assert response.status_code == 200, f"{path} bounced a scoped user"
         assert "GL.iNet-scoped access is limited" not in response.get_data(as_text=True)
+
+
+def test_users_page_shows_each_accounts_web_gui_group(tmp_path: Path):
+    """The Users page must show the group that decides what the account may do."""
+    client = _logged_in_client(tmp_path)
+
+    response = client.get("/admin/users", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.data, "html.parser")
+    headers = [th.get_text(strip=True) for th in soup.find_all("th")]
+    assert "Web GUI group" in headers
+    text = soup.get_text(" ", strip=True)
+    # The seeded admin account is in the Owner group, with its scope spelled out.
+    assert "Owner" in text
+    assert "Any selected server" in text
+    assert "Edit roles" in text
+
+
+def test_nav_offers_users_as_a_menu_leaf(tmp_path: Path):
+    client = _logged_in_client(tmp_path)
+    response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+    assert response.status_code == 200
+    soup = BeautifulSoup(response.data, "html.parser")
+    select = soup.find("select", id="desktop-nav-page-select")
+    labels = [option.get_text(strip=True) for option in select.find_all("option")]
+    assert "Users" in labels
 
 
 def test_account_page_does_not_promise_session_revocation(tmp_path: Path):
