@@ -210,3 +210,49 @@ class TestFetchRedditSubredditNewPosts:
             ]
             assert len(reddit_warnings) == 0, \
                 "No WARNING messages about Reddit should be emitted when Atom feed works"
+
+
+# ---------------------------------------------------------------------------
+# No OAuth, no check: anonymous Reddit requests are 429/403
+# ---------------------------------------------------------------------------
+
+
+def test_feed_check_is_skipped_and_reported_once_without_oauth(caplog):
+    """Without OAuth every check fails, so it must not run at all."""
+    import asyncio
+
+    import bot as bot_module
+
+    fetched: list[str] = []
+
+    def _must_not_fetch(name, *args, **kwargs):
+        fetched.append(str(name))
+        raise AssertionError("a feed fetch ran without Reddit OAuth")
+
+    bot_module.REDDIT_OAUTH_MISSING_WARNED["logged"] = False
+    feed = {
+        "id": 1,
+        "guild_id": 123,
+        "subreddit": "glinet",
+        "source_type": "subreddit",
+        "channel_id": 99,
+    }
+    with (
+        patch.object(bot_module, "is_reddit_oauth_configured", lambda: False),
+        patch.object(
+            bot_module, "get_effective_guild_feature_enabled", lambda *a, **k: True
+        ),
+        patch.object(bot_module, "fetch_reddit_subreddit_new_posts", _must_not_fetch),
+        patch.object(bot_module, "fetch_reddit_user_new_posts", _must_not_fetch),
+        caplog.at_level(logging.WARNING),
+    ):
+        asyncio.run(bot_module.process_reddit_feed_subscription(feed))
+        asyncio.run(bot_module.process_reddit_feed_subscription(feed))
+
+    assert fetched == []
+    notices = [
+        record
+        for record in caplog.records
+        if "no OAuth credentials" in record.getMessage()
+    ]
+    assert len(notices) == 1, "the skip must be announced once, not per feed per cycle"
