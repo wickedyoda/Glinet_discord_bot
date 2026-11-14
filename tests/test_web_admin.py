@@ -3346,7 +3346,7 @@ def test_glinet_read_only_role_is_pinned_to_primary_guild(tmp_path: Path):
     )
     assert create_response.status_code == 200
     assert b"glinet@example.com" in create_response.data
-    assert b"Glinet-Read-Only" in create_response.data
+    assert b"GL.iNet Read Only" in create_response.data
 
     client = app.test_client()
     _login_as(client, "glinet@example.com", "Ab!12xy")
@@ -3409,7 +3409,7 @@ def test_glinet_rw_role_can_edit_only_primary_guild_scoped_settings(tmp_path: Pa
     )
     assert create_response.status_code == 200
     assert b"glinet-rw@example.com" in create_response.data
-    assert b"Glinet-RW" in create_response.data
+    assert b"GL.iNet RW" in create_response.data
 
     client = app.test_client()
     _login_as(client, "glinet-rw@example.com", "Ab!12xy")
