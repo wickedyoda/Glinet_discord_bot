@@ -7698,6 +7698,112 @@ def run_web_bulk_role_assignment(guild_id: int, role_input: str, payload: bytes,
         }
 
 
+WEB_POST_MESSAGE_TIMEOUT_SECONDS = 15
+WEB_POST_MESSAGE_MAX_LENGTH = 2000
+
+
+async def run_web_post_channel_message_async(payload: dict, actor_email: str, guild_id: int):
+    """Post a plain message to one channel, as the bot, on behalf of a web admin."""
+    guild = bot.get_guild(normalize_target_guild_id(guild_id))
+    if guild is None:
+        return {"ok": False, "error": "Guild is not currently available to the bot."}
+    if not isinstance(payload, dict):
+        return {"ok": False, "error": "Invalid message payload."}
+
+    raw_channel = str(payload.get("channel_id") or "").strip()
+    content = str(payload.get("content") or "").strip()
+    if not raw_channel.isdigit():
+        return {"ok": False, "error": "Choose a channel to post to."}
+    if not content:
+        return {"ok": False, "error": "The message cannot be empty."}
+    if len(content) > WEB_POST_MESSAGE_MAX_LENGTH:
+        return {
+            "ok": False,
+            "error": f"Discord limits a message to {WEB_POST_MESSAGE_MAX_LENGTH} characters.",
+        }
+
+    channel = guild.get_channel(int(raw_channel))
+    if channel is None:
+        try:
+            channel = await guild.fetch_channel(int(raw_channel))
+        except discord.NotFound:
+            return {"ok": False, "error": "That channel no longer exists in this server."}
+        except discord.Forbidden:
+            return {"ok": False, "error": "I do not have access to that channel."}
+        except discord.HTTPException:
+            logger.exception(
+                "Web admin post: could not fetch channel %s in guild %s", raw_channel, guild.id
+            )
+            return {"ok": False, "error": "Discord could not resolve that channel."}
+
+    send = getattr(channel, "send", None)
+    if not callable(send):
+        return {"ok": False, "error": "That channel cannot receive messages."}
+
+    bot_member = guild.me
+    if bot_member is not None:
+        try:
+            permissions = channel.permissions_for(bot_member)
+        except AttributeError:
+            permissions = None
+        if permissions is not None and not permissions.send_messages:
+            return {
+                "ok": False,
+                "error": f"I do not have permission to post in #{getattr(channel, 'name', 'that channel')}.",
+            }
+
+    try:
+        message = await send(content)
+    except discord.Forbidden:
+        return {
+            "ok": False,
+            "error": f"Discord refused the post in #{getattr(channel, 'name', 'that channel')} (missing permissions).",
+        }
+    except discord.HTTPException:
+        logger.exception(
+            "Web admin post failed for guild %s channel %s", guild.id, raw_channel
+        )
+        return {"ok": False, "error": "Discord rejected the message. Try again."}
+
+    audit_actor = build_web_actor_audit_label(actor_email)
+    logger.info(
+        "Web admin post: actor=%s guild=%s channel=%s message=%s chars=%s",
+        audit_actor,
+        guild.id,
+        channel.id,
+        message.id,
+        len(content),
+    )
+    return {
+        "ok": True,
+        "message_id": message.id,
+        "channel_id": channel.id,
+        "channel_name": str(getattr(channel, "name", "") or ""),
+        "jump_url": str(getattr(message, "jump_url", "") or ""),
+    }
+
+
+def run_web_post_channel_message(payload: dict, actor_email: str, guild_id: int):
+    loop = getattr(bot, "loop", None)
+    if loop is None or not loop.is_running():
+        return {
+            "ok": False,
+            "error": "Bot loop is not running yet. Try again in a few seconds.",
+        }
+    future = asyncio.run_coroutine_threadsafe(
+        run_web_post_channel_message_async(payload, actor_email, guild_id),
+        loop,
+    )
+    try:
+        return future.result(timeout=WEB_POST_MESSAGE_TIMEOUT_SECONDS)
+    except concurrent.futures.TimeoutError:
+        future.cancel()
+        return {"ok": False, "error": "Timed out while posting the message. Try again."}
+    except Exception:
+        logger.exception("Unexpected failure in web admin channel post")
+        return {"ok": False, "error": "Unexpected error while posting the message."}
+
+
 async def fetch_discord_catalog_async(guild_id: int, *, strict: bool = False):
     """Fetch the Discord channel/role catalog for the web GUI.
 
@@ -13529,6 +13635,7 @@ def start_web_admin_server():
                     on_get_tag_responses=run_web_get_tag_responses,
                     on_save_tag_responses=run_web_save_tag_responses,
                     on_bulk_assign_role_csv=run_web_bulk_role_assignment,
+                    on_post_channel_message=run_web_post_channel_message,
                     on_get_discord_catalog=run_web_get_discord_catalog,
                     on_refresh_discord_catalog=run_web_refresh_discord_catalog,
                     on_get_command_permissions=run_web_get_command_permissions,

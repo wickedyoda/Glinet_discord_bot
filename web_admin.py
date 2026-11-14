@@ -3511,6 +3511,7 @@ def create_web_app(
     on_save_tag_responses=None,
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
+    on_post_channel_message=None,
     on_get_discord_catalog=None,
     on_refresh_discord_catalog=None,
     on_get_command_permissions=None,
@@ -4051,6 +4052,7 @@ def create_web_app(
             "member_activity_page": "Member Activity",
             "permissions_page": "Permissions",
             "role_access_page": "Role Access",
+            "post_message_page": "Post as Bot",
             "tag_responses": "Tag Responses",
             "actions_page": "Action History",
             "bulk_role_csv": "Bulk Role CSV",
@@ -4365,6 +4367,8 @@ def create_web_app(
             "tag_responses",
             "bulk_role_csv",
             "bot_profile",
+            "section_page",
+            "invite_links_page",
         }
         if request.endpoint in allowed_endpoints:
             return None
@@ -5198,6 +5202,25 @@ def create_web_app(
             for item in _recent_navigation_entries()
         ) or "No recent pages yet."
 
+        restart_control = ""
+        if is_admin:
+            restart_note = (
+                ""
+                if restart_enabled
+                else "<p class='muted'>Restart is disabled via WEB_RESTART_ENABLED.</p>"
+            )
+            restart_control = f"""
+          <section class="card">
+            <h3>Runtime</h3>
+            <p class="muted">Restarting the container drops the bot's Discord connection for a few seconds. It reconnects on its own.</p>
+            <form method="post" action="{escape(url_for('restart_service'), quote=True)}" onsubmit="return confirm('Restart the bot container now? It will disconnect from Discord for a few seconds.');">
+              <input type="hidden" name="confirm" value="yes" />
+              <button class="btn danger" type="submit"{'' if restart_enabled else ' disabled'}>Restart bot</button>
+            </form>
+            {restart_note}
+          </section>
+            """
+
         binder_cards = "".join(
             f"""
             <a class="binder-card" href="{escape(url_for('section_page', slug=section['slug']), quote=True)}">
@@ -5235,6 +5258,7 @@ def create_web_app(
           </div>
           <p class="dashboard-note">{escape(startup_note)}</p>
           <div class="binder-grid">{binder_cards}</div>
+          {restart_control}
           <section class="card">
             <h3>Quick Tips &amp; History</h3>
             <ul class="tips-list">
@@ -5248,6 +5272,105 @@ def create_web_app(
         """
 
         return _render_page("Dashboard", body, user["email"], is_admin)
+
+    @app.route("/admin/post-message", methods=["GET", "POST"])
+    @admin_required
+    def post_message_page():
+        """Compose a message and post it to one channel as the bot."""
+        user = _current_user()
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "Unknown")
+
+        channel_options, _role_options, catalog_error = _load_discord_catalog_options(
+            selected_guild_id
+        )
+        sendable_channels = [
+            option
+            for option in channel_options
+            if str(option.get("type") or "").strip().lower()
+            not in {"category", "voice", "stage"}
+        ]
+
+        selected_channel_id = str(request.form.get("channel_id") or "").strip()
+        content = str(request.form.get("content") or "")
+
+        if request.method == "POST":
+            confirmed = str(request.form.get("confirm") or "").strip().lower() == "yes"
+            if not confirmed:
+                flash("Tick the confirmation before posting.", "error")
+            elif not selected_channel_id.isdigit():
+                flash("Choose a channel to post to.", "error")
+            elif not content.strip():
+                flash("The message cannot be empty.", "error")
+            elif len(content.strip()) > 2000:
+                flash("Discord limits a message to 2000 characters.", "error")
+            elif not callable(on_post_channel_message):
+                flash("Posting is not configured in this runtime.", "error")
+            else:
+                response = on_post_channel_message(
+                    {"channel_id": selected_channel_id, "content": content.strip()},
+                    user["email"],
+                    selected_guild_id,
+                )
+                if isinstance(response, dict) and response.get("ok"):
+                    posted_to = str(response.get("channel_name") or selected_channel_id)
+                    flash(f"Posted to #{posted_to} as the bot.", "success")
+                    return redirect(url_for("post_message_page"))
+                error_text = (
+                    str(response.get("error") or "") if isinstance(response, dict) else ""
+                ) or "The message was not posted."
+                flash(error_text, "error")
+
+        catalog_note = (
+            f"<p class=\"announcement-warning\"><strong>Careful:</strong> {escape(catalog_error)}</p>"
+            if catalog_error
+            else ""
+        )
+        body = f"""
+        <div class="dashboard-shell">
+          <section class="server-hero">
+            <h1>Post as Bot</h1>
+            <span class="server-hero-caption">{escape(guild_name)}</span>
+          </section>
+          <section class="announcement" role="note">
+            <h2 class="announcement-title">Say something as the bot</h2>
+            <p class="announcement-body">Write a message and pick one channel. It is posted immediately, under the bot's name and avatar, exactly as members will see it. Discord markdown works; mentions you type will ping.</p>
+            <p class="announcement-warning"><strong>Careful:</strong> a posted message is public to everyone who can read that channel. The bot can only post where it has Send Messages.</p>
+            {catalog_note}
+          </section>
+          <div class="card">
+            <form method="post" onsubmit="return confirm('Post this message to the selected channel as the bot?');">
+              <label for="post-channel"><strong>Channel</strong></label>
+              {_render_select_input("channel_id", selected_channel_id, sendable_channels, placeholder="Choose a channel...")}
+              <label for="post-content" style="margin-top:14px;display:block;"><strong>Message</strong></label>
+              <textarea id="post-content" name="content" rows="6" maxlength="2000" required
+                        style="width:100%;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--card);color:var(--fg);font:inherit;"
+                        placeholder="What should the bot say?">{escape(content)}</textarea>
+              <p class="muted"><span id="post-char-count">{len(content)}</span>/2000 characters</p>
+              <label style="display:flex;gap:8px;align-items:flex-start;margin:12px 0;">
+                <input type="checkbox" name="confirm" value="yes" required />
+                <span>I understand this posts publicly as the bot right now.</span>
+              </label>
+              <button type="submit" class="btn">Post message</button>
+            </form>
+          </div>
+        </div>
+        <script>
+          (function () {{
+            const area = document.getElementById("post-content");
+            const count = document.getElementById("post-char-count");
+            if (!area || !count) return;
+            area.addEventListener("input", function () {{
+              count.textContent = String(area.value.length);
+            }});
+          }})();
+        </script>
+        """
+        return _render_page("Post as Bot", body, user["email"], True)
 
     @app.route("/admin/section/<slug>", methods=["GET"])
     @login_required
@@ -10451,7 +10574,7 @@ def create_web_app(
                       <summary class="btn danger" style="display:inline-block;cursor:pointer;list-style:none;">Delete</summary>
                       <div style="margin-top:8px;padding:12px;border:1px solid var(--border);border-radius:8px;max-width:360px;">
                         <p style="margin:0 0 10px;">Delete <strong>{escape(email)}</strong>? This permanently removes the account and its access. It cannot be undone from the web GUI.</p>
-                        <form method="post">
+                        <form method="post" data-no-confirm="1">
                           <input type="hidden" name="action" value="delete" />
                           <input type="hidden" name="email" value="{escape(email, quote=True)}" />
                           <input type="hidden" name="confirm" value="yes" />
@@ -10620,6 +10743,7 @@ def start_web_admin_interface(
     on_save_tag_responses=None,
     on_tag_responses_saved=None,
     on_bulk_assign_role_csv=None,
+    on_post_channel_message=None,
     on_get_discord_catalog=None,
     on_refresh_discord_catalog=None,
     on_get_command_permissions=None,
@@ -10676,6 +10800,7 @@ def start_web_admin_interface(
         on_save_tag_responses=on_save_tag_responses,
         on_tag_responses_saved=on_tag_responses_saved,
         on_bulk_assign_role_csv=on_bulk_assign_role_csv,
+        on_post_channel_message=on_post_channel_message,
         on_get_discord_catalog=on_get_discord_catalog,
         on_refresh_discord_catalog=on_refresh_discord_catalog,
         on_get_command_permissions=on_get_command_permissions,

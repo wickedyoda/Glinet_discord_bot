@@ -73,9 +73,11 @@ SECTIONS = (
         "pages": (
             ("translate_channels_page", "Auto-Translate Channels", "Bridge messages between languages."),
             ("discourse_page", "Forums", "Connect the GL.iNet forum and choose what syncs."),
+            ("discourse_viewer.discourse_viewer_page", "Forum Viewer", "Search and read the connected forum."),
             ("discourse_activity_page", "Forum Activity", "Who answers, and how quickly."),
             ("invite_links_page", "Invite Link Controls", "Invite codes and the roles they grant."),
             ("reaction_roles_page", "Reaction Roles", "Post a message and hand out roles by reaction."),
+            ("post_message_page", "Post as Bot", "Send a message to a channel as the bot."),
             ("tag_responses", "Tag Responses", "Canned replies the bot posts on a tag."),
             ("reddit_auto_responds", "Reddit Auto-Reply", "Replies posted when a subreddit match appears."),
         ),
@@ -119,8 +121,8 @@ ANNOUNCEMENTS = {
     ),
     "account": (
         "Your account",
-        "Your display name, email and password. Changing the password here signs other "
-        "sessions out; the email must stay valid because it is the login.",
+        "Your display name, email and password. The email must stay valid because it is "
+        "the login.",
         "",
     ),
     "bot_profile": (
@@ -219,6 +221,12 @@ ANNOUNCEMENTS = {
         "The GL.iNet forum connection: base URL, API credentials, and which parts sync to Discord.",
         "The API key is a credential. A wrong username with a valid key is rejected as an invalid key.",
     ),
+    "discourse_viewer.discourse_viewer_page": (
+        "Forum viewer",
+        "Read the connected forum without leaving the admin: search topics and open a "
+        "thread to see its posts. Read-only.",
+        "",
+    ),
     "discourse_activity_page": (
         "Forum activity",
         "Staff reply volume, first-response times and hourly coverage from the stored forum "
@@ -235,6 +243,13 @@ ANNOUNCEMENTS = {
         "Post a message with reactions and hand out roles to whoever reacts. The bot needs "
         "Manage Roles above the roles it grants.",
         "A role above the bot's own highest role can never be granted.",
+    ),
+    "post_message_page": (
+        "Post as the bot",
+        "Write a message and pick one channel; it is posted immediately under the bot's "
+        "name and avatar. Discord markdown works and typed mentions will ping.",
+        "The message is public to everyone who can read that channel, and the bot can only "
+        "post where it has Send Messages.",
     ),
     "tag_responses": (
         "Tag responses",

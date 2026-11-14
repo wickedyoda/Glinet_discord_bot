@@ -21,6 +21,7 @@ def _make_app(
     discord_catalog=None,
     member_activity_payload=None,
     discourse_activity_payload=None,
+    post_message=None,
 ):
     env_file = tmp_path / "env.env"
     env_file.write_text(
@@ -1036,6 +1037,7 @@ def _make_app(
         },
         on_get_role_access_mappings=get_role_access_mappings,
         on_manage_role_access_mappings=manage_role_access_mappings,
+        on_post_channel_message=post_message,
         on_get_reaction_roles=get_reaction_roles,
         on_manage_reaction_roles=manage_reaction_roles,
         on_leave_guild=lambda guild_id, actor_email: {
