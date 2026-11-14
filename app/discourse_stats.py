@@ -43,6 +43,33 @@ def _write_lock(lock):
     return lock if lock is not None else nullcontext()
 
 
+def _max_post_id(conn, lock=None) -> int | None:
+    with _write_lock(lock):
+        row = conn.execute("SELECT MAX(post_id) FROM discourse_posts").fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def _max_topic_id(conn, category_slug: str, lock=None) -> int | None:
+    with _write_lock(lock):
+        row = conn.execute(
+            "SELECT MAX(topic_id) FROM discourse_topics WHERE category_slug = ?",
+            (category_slug,),
+        ).fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def _existing_topic_ids(conn, ids: list[int], lock=None) -> set[int]:
+    if not ids:
+        return set()
+    with _write_lock(lock):
+        rows = conn.execute(
+            "SELECT topic_id FROM discourse_topics"
+            " WHERE topic_id IN (SELECT value FROM json_each(?))",
+            (_json.dumps(ids),),
+        ).fetchall()
+    return {int(row[0]) for row in rows}
+
+
 def _fetch_group_members(
     *, group: str, fetch_json: Callable[[str], dict], page_size: int = 100, max_pages: int = 50
 ) -> list[dict]:
@@ -129,6 +156,7 @@ def ingest_topics(
     now: datetime | None = None,
     pace: Callable[[float], None] | None = None,
     max_pages: int = MAX_PAGES,
+    full: bool = False,
     lock=None,
 ) -> dict:
     """Build the topic -> category map from each category's latest feed.
@@ -136,12 +164,19 @@ def ingest_topics(
     `/posts.json` carries no `category_id`, so this pass is what makes category
     scoping possible at all. Writes take the lock per page; the fetch and the pacing
     sleep stay outside it.
+
+    Incremental by default: a category stops once a page adds nothing new and has
+    fallen behind the highest topic id already stored for it. `full=True` walks the
+    whole window, which is what the daily reconcile uses to fill a hole left by an
+    interrupted run.
     """
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(days=backfill_days)
     total = pages = 0
+    stopped_early = 0
 
     for slug in categories:
+        watermark = None if full else _max_topic_id(conn, slug, lock)
         page = 0
         while page < max_pages:
             payload = fetch_json(f"/c/{slug}/l/latest.json?page={page}")
@@ -160,6 +195,9 @@ def ingest_topics(
                     continue
                 fresh += 1
                 rows.append((int(topic["id"]), slug, topic["created_at"]))
+            new_in_page = len(rows) - len(
+                _existing_topic_ids(conn, [row[0] for row in rows], lock)
+            )
             if rows:
                 with _write_lock(lock):
                     for row in rows:
@@ -173,13 +211,25 @@ def ingest_topics(
                         )
                     conn.commit()
                 total += len(rows)
+            if (
+                watermark is not None
+                and new_in_page == 0
+                and int(topics[-1]["id"]) <= watermark
+            ):
+                stopped_early += 1
+                break
             if fresh == 0 and parse_discourse_ts(topics[-1]["created_at"]) < cutoff:
                 break
             page += 1
             if pace is not None:
                 pace(DEFAULT_PACE_SECONDS)
 
-    return {"pages": pages, "topics": total}
+    return {
+        "pages": pages,
+        "topics": total,
+        "mode": "full" if full else "incremental",
+        "stopped_early": stopped_early,
+    }
 
 
 def ingest_posts(
@@ -190,6 +240,7 @@ def ingest_posts(
     now: datetime | None = None,
     pace: Callable[[float], None] | None = None,
     max_pages: int = MAX_PAGES,
+    full: bool = False,
     lock=None,
 ) -> dict:
     """Walk /posts.json backwards and store every post inside the window.
@@ -197,10 +248,16 @@ def ingest_posts(
     Each page is fetched and paced outside the lock, then written inside it. A
     backfill is minutes of network time; holding `db_lock` across it would stall every
     other database user, including message handling.
+
+    Incremental by default: the walk stops at the first page that adds nothing new
+    once it has fallen behind the highest post id already stored. A quiet six-hourly
+    run costs one request instead of ~140. `full=True` re-walks the window, which the
+    daily reconcile uses to fill a hole left by an interrupted run.
     """
     now = now or datetime.now(UTC)
     cutoff = now - timedelta(days=backfill_days)
     ingested_at = _utc_now_iso()
+    watermark = None if full else _max_post_id(conn, lock)
 
     seen = stored = pages = 0
     before = None
@@ -212,6 +269,7 @@ def ingest_posts(
         if not batch:
             break
         pages += 1
+        stored_before = stored
         rows = []
         for post in batch:
             try:
@@ -245,13 +303,25 @@ def ingest_posts(
                     stored += cursor.rowcount
                 conn.commit()
 
+        if (
+            watermark is not None
+            and stored == stored_before
+            and int(batch[-1]["id"]) <= watermark
+        ):
+            break
+
         if parse_discourse_ts(batch[-1]["created_at"]) < cutoff:
             break
         before = batch[-1]["id"]
         if pace is not None:
             pace(DEFAULT_PACE_SECONDS)
 
-    return {"pages": pages, "posts_in_window": seen, "new_rows": stored}
+    return {
+        "pages": pages,
+        "posts_in_window": seen,
+        "new_rows": stored,
+        "mode": "full" if full else "incremental",
+    }
 
 
 # --------------------------------------------------------------------------- #
