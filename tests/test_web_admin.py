@@ -3370,7 +3370,8 @@ def test_glinet_read_only_role_is_pinned_to_primary_guild(tmp_path: Path):
     )
     assert dashboard_response.status_code == 200
     assert b"Dashboard" in dashboard_response.data
-    assert b"Glinet-Read-Only account" in dashboard_response.data
+    assert b"GL.iNet Read Only" in dashboard_response.data
+    assert b"view only; changes are blocked" in dashboard_response.data
 
     settings_response = client.get(
         "/admin/settings",

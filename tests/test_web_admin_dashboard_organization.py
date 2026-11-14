@@ -56,6 +56,7 @@ _EXPECTED_NAV_PAGES = {
     "Moderation",
     "My Account",
     "Observability",
+    "Permissions",
     "Reaction Roles",
     "Reddit Auto-Reply",
     "Reddit Feeds",

@@ -62,11 +62,37 @@ from app.web_discourse_activity import render_discourse_activity_body
 from app.web_discourse_routes import register_discourse_viewer_blueprint
 from app.web_forum_tags import process_forum_tags_submission, render_forum_tags_body
 from app.web_freshdesk_routes import register_freshdesk_viewer_blueprint
+from app.web_groups import (
+    assign_user as assign_web_group_user,
+)
+from app.web_groups import (
+    delete_group as delete_web_group,
+)
+from app.web_groups import (
+    get_group as get_web_group,
+)
+from app.web_groups import (
+    group_for_user,
+    permissions_for_slug,
+)
+from app.web_groups import (
+    list_groups as list_web_groups,
+)
+from app.web_groups import (
+    member_counts as web_group_member_counts,
+)
+from app.web_groups import (
+    save_group as save_web_group,
+)
 from app.web_guild_settings import process_guild_settings_submission, render_guild_settings_body
 from app.web_honeypot import process_honeypot_submission, render_honeypot_body
 from app.web_members import process_member_action_submission, render_members_body
 from app.web_moderation import process_moderation_submission, render_moderation_body
-from app.web_permissions import write_endpoints_for_role
+from app.web_permission_groups import render_permissions_body
+from app.web_permissions import (
+    permissions_for_role,
+    write_endpoints_for_permissions,
+)
 from app.web_reaction_roles import process_reaction_roles_submission, render_reaction_roles_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
@@ -88,6 +114,9 @@ from app.web_user_store import (
 )
 from app.web_user_store import (
     normalize_string_id_list as _normalize_string_id_list,
+)
+from app.web_user_store import (
+    open_users_db as _open_users_db,
 )
 from app.web_user_store import (
     read_guild_groups as _store_read_guild_groups,
@@ -210,6 +239,7 @@ NAV_GROUPS = (
             ("guild_settings", "Guild Settings"),
             ("admin_logs", "Logs"),
             ("public_observability", "Observability"),
+            ("permissions_page", "Permissions"),
             ("users", "Users"),
         ),
     },
@@ -2402,6 +2432,7 @@ def _render_layout(
     current_guild_name: str = "",
     github_wiki_url: str = "",
     restart_enabled: bool = False,
+    can_write: bool = False,
 ):
     theme_values = [str(option.get("value") or "").strip() for option in THEME_OPTIONS if str(option.get("value") or "").strip()]
     return render_template_string(
@@ -3269,12 +3300,12 @@ def _render_layout(
         <div class="flash {{ category }}">{{ message }}</div>
       {% endfor %}
     {% endwith %}
-    {% if current_email and current_role == "read_only" %}
-      <div class="flash">Read-only account: you can view all pages, but configuration and management changes are blocked.</div>
-    {% elif current_email and current_role == "glinet_read_only" %}
-      <div class="flash">Glinet-Read-Only account: access is pinned to the primary GL.iNet Community Discord server and limited to view-only access there.</div>
-    {% elif current_email and current_role == "glinet_rw" %}
-      <div class="flash">Glinet-RW account: access is pinned to the primary GL.iNet Community Discord server and limited to guild-scoped changes there.</div>
+    {% if current_email and not is_admin %}
+      {% if can_write %}
+      <div class="flash">{{ current_role_label }} — changes are limited to the areas this group holds.</div>
+      {% else %}
+      <div class="flash">{{ current_role_label }} — view only; changes are blocked.</div>
+      {% endif %}
     {% endif %}
     {{ body_html | safe }}
   </div>
@@ -3349,6 +3380,7 @@ def _render_layout(
         is_admin=is_admin,
         current_role_label=current_role_label,
         current_role=current_role,
+        can_write=can_write,
         current_guild_name=current_guild_name,
         github_wiki_url=github_wiki_url,
         restart_enabled=restart_enabled,
@@ -3653,6 +3685,25 @@ def create_web_app(
                 return user
         return None
 
+    def _permissions_for_user(user: dict | None):
+        """Effective capabilities: the account's group, else its legacy role.
+
+        The group table is read on demand rather than cached, so an edit applies on
+        the account's next request instead of at the next restart.
+        """
+        if not user:
+            return frozenset()
+        conn = _open_users_db(users_file)
+        try:
+            permissions = permissions_for_slug(conn, group_for_user(user))
+        finally:
+            conn.close()
+        if permissions:
+            return permissions
+        return permissions_for_role(
+            str(user.get("role", "")), is_admin=bool(user.get("is_admin"))
+        )
+
     def _guild_groups_by_id():
         return {
             str(entry.get("id") or "").strip(): entry
@@ -3874,6 +3925,7 @@ def create_web_app(
             "command_permissions": "Command Permissions",
             "bot_profile": "Bot Profile",
             "member_activity_page": "Member Activity",
+            "permissions_page": "Permissions",
             "role_access_page": "Role Access",
             "tag_responses": "Tag Responses",
             "actions_page": "Action History",
@@ -4115,24 +4167,14 @@ def create_web_app(
             return None
         if _is_admin_user(user):
             return None
-        if _is_glinet_rw_user(user):
-            glinet_rw_write_endpoints = write_endpoints_for_role("glinet_rw")
-            if request.endpoint in glinet_rw_write_endpoints:
-                if request.endpoint == "bot_profile":
-                    action = str(request.form.get("action", "") or "").strip().lower()
-                    if action not in {"nickname"}:
-                        flash("Glinet-RW can only edit the bot nickname for the GL.iNet Community Discord.", "error")
-                        return redirect(url_for("bot_profile"))
-                return None
-        if _is_guild_admin_user(user):
-            guild_admin_write_endpoints = write_endpoints_for_role("guild_admin")
-            if request.endpoint in guild_admin_write_endpoints:
-                if request.endpoint == "bot_profile":
-                    action = str(request.form.get("action", "") or "").strip().lower()
-                    if action not in {"nickname"}:
-                        flash("Guild Admin can only edit the bot nickname inside allowed servers.", "error")
-                        return redirect(url_for("bot_profile"))
-                return None
+        allowed_write_endpoints = write_endpoints_for_permissions(_permissions_for_user(user))
+        if request.endpoint in allowed_write_endpoints:
+            if request.endpoint == "bot_profile":
+                action = str(request.form.get("action", "") or "").strip().lower()
+                if action not in {"nickname"}:
+                    flash("This group may only edit the bot nickname.", "error")
+                    return redirect(url_for("bot_profile"))
+            return None
         if logger:
             logger.warning(
                 "Blocked write request for read-only user: endpoint=%s method=%s ip=%s",
@@ -4140,7 +4182,7 @@ def create_web_app(
                 request.method,
                 _client_ip(),
             )
-        flash("Read-only account: this action is not allowed.", "error")
+        flash("This action is not allowed for your permission group.", "error")
         safe_view_endpoints = {
             "bot_profile",
             "command_status",
@@ -4249,20 +4291,37 @@ def create_web_app(
         resolved_display_name = _clean_profile_text(current_display_name, max_length=80)
         normalized_email = _normalize_email(current_email)
         current_role = _normalize_web_user_role("", is_admin=is_admin)
-        if not resolved_display_name and normalized_email:
+        account_record = None
+        if normalized_email:
             for account in _read_users(users_file):
                 if account.get("email") == normalized_email:
-                    resolved_display_name = _clean_profile_text(
-                        str(account.get("display_name", "")),
-                        max_length=80,
-                    )
-                    current_role = _normalize_web_user_role(
-                        str(account.get("role", "")),
-                        is_admin=bool(account.get("is_admin")),
-                    )
+                    account_record = account
                     break
+        if account_record is not None:
+            current_role = _normalize_web_user_role(
+                str(account_record.get("role", "")),
+                is_admin=bool(account_record.get("is_admin")),
+            )
+            if not resolved_display_name:
+                resolved_display_name = _clean_profile_text(
+                    str(account_record.get("display_name", "")), max_length=80
+                )
         if not resolved_display_name and normalized_email:
             resolved_display_name = _default_display_name(normalized_email)
+        group_label = _user_role_label(current_role, is_admin=is_admin)
+        can_write = bool(is_admin) or bool(_is_admin_user(account_record))
+        if account_record is not None:
+            conn = _open_users_db(users_file)
+            try:
+                group = get_web_group(conn, group_for_user(account_record))
+            finally:
+                conn.close()
+            if group:
+                group_label = str(group.get("name") or group_label)
+            can_write = bool(is_admin) or any(
+                str(permission).endswith(".write")
+                for permission in _permissions_for_user(account_record)
+            )
         current_guild = _selected_guild() if normalized_email else None
         return _render_layout(
             title,
@@ -4271,8 +4330,9 @@ def create_web_app(
             resolved_display_name,
             csrf_token,
             is_admin,
-            current_role_label=_user_role_label(current_role, is_admin=is_admin),
+            current_role_label=group_label,
             current_role=current_role,
+            can_write=can_write,
             current_guild_name=(str(current_guild.get("name") or "") if isinstance(current_guild, dict) else ""),
             github_wiki_url=_github_wiki_url(),
             restart_enabled=_restart_enabled(),
@@ -10007,6 +10067,71 @@ def create_web_app(
         {report_html}
         """
         return _render_page("Bulk Role CSV", body, user["email"], bool(user.get("is_admin")))
+
+    @app.route("/admin/permissions", methods=["GET", "POST"])
+    @admin_required
+    def permissions_page():
+        user = _current_user()
+        if request.method == "POST":
+            action = str(request.form.get("action") or "").strip()
+            actor_permissions = _permissions_for_user(user)
+            conn = _open_users_db(users_file)
+            try:
+                if action == "save_group":
+                    result = save_web_group(
+                        conn,
+                        str(request.form.get("slug") or "").strip() or None,
+                        {
+                            "name": request.form.get("name", ""),
+                            "description": request.form.get("description", ""),
+                            "scope_mode": request.form.get("scope_mode", "all"),
+                            "permissions": request.form.getlist("permissions"),
+                        },
+                        actor_permissions=actor_permissions,
+                    )
+                elif action == "delete_group":
+                    result = delete_web_group(
+                        conn, str(request.form.get("slug") or "").strip()
+                    )
+                elif action == "assign_group":
+                    result = assign_web_group_user(
+                        conn,
+                        str(request.form.get("email") or "").strip(),
+                        str(request.form.get("slug") or "").strip(),
+                    )
+                else:
+                    result = {"ok": False, "error": "Unknown action."}
+            finally:
+                conn.close()
+            if result.get("ok"):
+                flash("Permission group saved.", "message")
+            else:
+                flash(str(result.get("error") or "Could not save the group."), "error")
+            return redirect(url_for("permissions_page"))
+
+        conn = _open_users_db(users_file)
+        try:
+            groups = list_web_groups(conn)
+            counts = web_group_member_counts(conn)
+        finally:
+            conn.close()
+        accounts = [
+            {"email": account["email"], "group_slug": group_for_user(account)}
+            for account in _read_users(users_file)
+        ]
+        body = render_permissions_body(
+            groups,
+            accounts,
+            counts,
+            _permissions_for_user(user),
+        )
+        return _render_page(
+            "Permissions",
+            body,
+            user["email"],
+            bool(user.get("is_admin")),
+            str(user.get("display_name") or ""),
+        )
 
     @app.route("/admin/users", methods=["GET", "POST"])
     @admin_required

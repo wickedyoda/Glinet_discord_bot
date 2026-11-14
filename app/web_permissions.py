@@ -184,7 +184,12 @@ def write_endpoints_for_role(role: str | None, *, is_admin: bool = False) -> fro
     Replaces the hand-written allow-lists. Anything not in ``ENDPOINT_AREAS`` is
     admin-only, which is the deny-by-default rule.
     """
-    perms = permissions_for_role(role, is_admin=is_admin)
+    return write_endpoints_for_permissions(permissions_for_role(role, is_admin=is_admin))
+
+
+def write_endpoints_for_permissions(permissions) -> frozenset[str]:
+    """The same derivation, for a caller holding a permission set rather than a role."""
+    perms = frozenset(permissions or ())
     return frozenset(
         endpoint for endpoint, area in ENDPOINT_AREAS.items() if f"{area}.write" in perms
     )

@@ -201,6 +201,14 @@ def open_users_db(users_db_file: Path) -> sqlite3.Connection:
         """
     )
     ensure_users_table_columns(conn)
+    # Groups are seeded and backfilled here so every reader (web GUI, tests, CLI)
+    # sees the same table; the migration is idempotent.
+    try:
+        from app.web_groups import ensure_groups_schema
+
+        ensure_groups_schema(conn)
+    except Exception:  # pragma: no cover - a broken groups table must not lock the GUI
+        pass
     try:
         os.chmod(users_db_file, 0o600)
     except (PermissionError, OSError):
@@ -225,6 +233,7 @@ def read_users(
                 previous_password_hash,
                 is_admin,
                 role,
+                group_slug,
                 first_name,
                 last_name,
                 display_name,
@@ -254,6 +263,7 @@ def read_users(
                 "password_hash": password_hash,
                 "previous_password_hash": str(row["previous_password_hash"] or "").strip(),
                 "role": role,
+                "group_slug": str(row["group_slug"] or "").strip(),
                 "is_admin": role == "admin",
                 "first_name": clean_profile_text(str(row["first_name"] or ""), max_length=80),
                 "last_name": clean_profile_text(str(row["last_name"] or ""), max_length=80),
@@ -292,6 +302,13 @@ def save_users(
                 if not email or not password_hash:
                     continue
                 role = normalize_role(str(entry.get("role", "")), is_admin=bool(entry.get("is_admin", False)))
+                group_slug = str(entry.get("group_slug", "") or "").strip()
+                if group_slug:
+                    # The group is the source of truth; keep the legacy role/is_admin
+                    # pair in step so the two can never disagree.
+                    from app.web_groups import SLUG_LEGACY_ROLES
+
+                    role = SLUG_LEGACY_ROLES.get(group_slug, "read_only")
                 is_admin = 1 if role == "admin" else 0
                 first_name = clean_profile_text(str(entry.get("first_name", "")), max_length=80)
                 last_name = clean_profile_text(str(entry.get("last_name", "")), max_length=80)
@@ -308,6 +325,7 @@ def save_users(
                         previous_password_hash,
                         is_admin,
                         role,
+                        group_slug,
                         first_name,
                         last_name,
                         display_name,
@@ -317,7 +335,7 @@ def save_users(
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         email,
@@ -325,6 +343,7 @@ def save_users(
                         previous_password_hash,
                         is_admin,
                         role,
+                        group_slug,
                         first_name,
                         last_name,
                         display_name,
