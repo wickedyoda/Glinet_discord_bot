@@ -240,6 +240,24 @@ def test_nav_offers_users_as_a_menu_leaf(tmp_path: Path):
     assert "Users" in labels
 
 
+def test_pinned_scope_names_no_specific_server(tmp_path: Path):
+    """Pinned resolves to the primary or the only guild, not necessarily GL.iNet."""
+    from tests.test_web_permission_groups import _create_account
+
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+    _create_account(client, "scoped@example.com", "glinet_read_only")
+
+    response = client.get("/admin/users", base_url="https://docker.example:8443")
+
+    assert response.status_code == 200
+    text = response.get_data(as_text=True)
+    assert "Only the preferred server" in text
+    assert "Only the GL.iNet Community server" not in text
+
+
 def test_account_page_does_not_promise_session_revocation(tmp_path: Path):
     client = _logged_in_client(tmp_path)
 

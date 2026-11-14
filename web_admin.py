@@ -10548,7 +10548,7 @@ def create_web_app(
             account_scope_label = {
                 "all": "Any selected server",
                 "assigned": "Only assigned servers",
-                "pinned": "Only the GL.iNet Community server",
+                "pinned": "Only the preferred server",
             }.get(str(account_group.get("scope_mode") or "all"), "Any selected server")
             role_select_html = _render_fixed_select_input(
                 f"role__{email}",
