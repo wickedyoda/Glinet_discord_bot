@@ -102,8 +102,9 @@ WRITE_EXEMPT_ENDPOINTS = frozenset(
 #  Roles
 # --------------------------------------------------------------------------- #
 
-# Every area grants read to every authenticated role; write is what the matrix
-# governs. Hiding a button is not the control -- the write gate is.
+# The matrix governs both halves now: <area>.read decides whether the page is
+# offered and reachable, <area>.write whether it can change anything. A hidden
+# link is not a control, so READ_ENDPOINT_AREAS is enforced by a request gate.
 _OPERATOR_WRITE_AREAS = frozenset(
     {
         "moderation",
