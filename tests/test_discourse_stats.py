@@ -497,3 +497,45 @@ def test_full_reconcile_is_due_once_a_day(monkeypatch):
 
     monkeypatch.setattr(bot_module, "db_kv_get", lambda _key: "not-a-date")
     assert bot_module._discourse_stats_full_ingest_due() is True
+
+
+def test_activity_payload_is_cached_until_invalidated(monkeypatch):
+    """The page is a set of scans over every post; a short cache keeps repeat loads cheap."""
+    import sqlite3
+    import threading
+
+    import bot as bot_module
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE discourse_staff (username TEXT)")
+    conn.execute("CREATE TABLE discourse_posts (post_id INTEGER)")
+
+    calls = {"activity": 0}
+
+    def counting_activity(*args, **kwargs):
+        calls["activity"] += 1
+        return []
+
+    monkeypatch.setattr(bot_module, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(bot_module, "db_lock", threading.Lock())
+    monkeypatch.setattr(bot_module.discourse_stats, "staff_activity", counting_activity)
+    for name in (
+        "first_response_seconds",
+        "daily_counts",
+        "hourly_counts",
+        "weekly_counts",
+        "response_gaps",
+    ):
+        monkeypatch.setattr(bot_module.discourse_stats, name, lambda *a, **k: [])
+
+    bot_module.invalidate_discourse_payload_cache()
+    scope = ("glrouter",)
+    first = bot_module.build_discourse_activity_payload(90, scope)
+    second = bot_module.build_discourse_activity_payload(90, scope)
+    assert first is second
+    assert calls["activity"] == 1, "the second identical load must come from cache"
+
+    bot_module.invalidate_discourse_payload_cache()
+    bot_module.build_discourse_activity_payload(90, scope)
+    assert calls["activity"] == 2, "an ingest must force a rebuild"
