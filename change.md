@@ -2,6 +2,48 @@
 
 All notable changes to this project are documented in this file.
 
+## [2026-11-14] - Binder UI, Area Roles, Forum Statistics
+
+### Added
+- Six-tab binder shell: My Account, Servers, Member Related, Mod & Perms,
+  Discord Server Related, Security & Information
+- Server home page with the server's name, a role pill (Admin / Editor / Guest)
+  and one card per tab, replacing the seven long-scroll dashboard sections
+- `/admin/section/<slug>` landing pages that list only their own tab's pages
+- `/admin/invite-links`: read-only view of invite codes and the role each grants
+- `/admin/post-message`: compose and post a message to a channel as the bot,
+  with a 2000-character limit, permission check and confirmation
+- Permission groups stored as data (`web_groups`): name, server scope and a
+  read/write tick per area, with a grant ceiling and last-Owner protection
+- Discourse statistics: staff roster, topics, posts, first-response times,
+  hourly/weekly buckets, incremental ingest and a daily full reconcile
+
+### Changed
+- A group *is* the role. The Users page assigns the group directly and the
+  legacy role dropdown is gone from both the table and the create form
+- Pages outside an account's areas are refused, not merely hidden: the menu,
+  section pages and dashboard tabs all derive from the same permission check
+- Quick Jump is a search box over the page list rather than a dropdown only
+- The uptime monitor reports a missing API key as a warning and idles, instead
+  of logging an error at every start
+
+### Fixed
+- Announcement blocks rendered empty because the layout computed them but never
+  passed them to the template
+- User deletion was blocked when browser dialogs are suppressed; the inline
+  confirmation panel is now exempt from the global dialog handler
+- GL.iNet-scoped and guild-admin accounts could not open tab or invite pages
+- Reddit feed checks no longer poll anonymously, which earned HTTP 429/403 and
+  could never succeed without OAuth
+
+### Security
+- Verified the Discord token in the historical `.env` commits (2025-07-05) is
+  revoked: Discord answers HTTP 401 and its hash differs from the live token
+- Triaged the gitleaks history findings: one false positive (empty
+  `FRESHDESK_API_KEY=` followed by a poll interval) and two copies of that
+  revoked token
+
+
 ## [2026-07-21] - Ticket System and Ticket-Beta Docker Image
 
 ### Added

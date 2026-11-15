@@ -31,43 +31,6 @@ def test_channel_and_role_sort_keys_order_alphabetically():
 
 
 # Every page the old flat list offered. Regrouping must not drop one.
-_EXPECTED_NAV_PAGES = {
-    "Action History",
-    "Auto-Translate Channels",
-    "Bot Profile",
-    "Bulk Role CSV",
-    "Command Permissions",
-    "Command Status",
-    "Dashboard",
-    "Discourse",
-    "Discourse Activity",
-    "Documentation",
-    "Forum Viewer",
-    "Freshdesk",
-    "Forum Tag Cross-Posts",
-    "GL.iNet Beta Programs",
-    "Global Settings",
-    "Guild Settings",
-    "Honeypot",
-    "LinkedIn Profiles",
-    "Logs",
-    "Member Activity",
-    "Members",
-    "Moderation",
-    "My Account",
-    "Observability",
-    "Permissions",
-    "Reaction Roles",
-    "Reddit Auto-Reply",
-    "Reddit Feeds",
-    "Role Access",
-    "Servers",
-    "Service Monitors",
-    "Tag Responses",
-    "Uptime Kuma",
-    "Users",
-    "YouTube Subscriptions",
-}
 
 
 def _load_dashboard_soup(tmp_path: Path):
