@@ -202,11 +202,19 @@ def parse_int_set(raw: str) -> list[int]:
         cleaned = token.strip()
         if cleaned.startswith("<@&") and cleaned.endswith(">"):
             cleaned = cleaned[3:-1]
-        if not cleaned.isdigit():
+        # isdigit() is true for characters like "²" that int() refuses, so check the
+        # ASCII range and still guard the conversion: a form typo must be a validation
+        # error, never an unhandled ValueError.
+        if not cleaned.isascii() or not cleaned.isdigit():
             raise OptionValueError(
                 f"MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS contains a non-numeric role id: {token!r}"
             )
-        value = int(cleaned)
+        try:
+            value = int(cleaned)
+        except ValueError as exc:  # pragma: no cover - guarded by the check above
+            raise OptionValueError(
+                f"MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS contains a non-numeric role id: {token!r}"
+            ) from exc
         if value <= 0:
             raise OptionValueError(
                 f"MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS contains a non-positive role id: {token!r}"

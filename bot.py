@@ -300,8 +300,6 @@ BETA_PROGRAM_REQUEST_USER_AGENT = (
     "Chrome/137.0.0.0 Safari/537.36"
 )
 BETA_PROGRAM_MAX_NOTIFICATIONS_PER_RUN = 10
-MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = 200
-MEMBER_ACTIVITY_WEB_TOP_LIMIT = 20
 MEMBER_ACTIVITY_WINDOW_SPECS = (
     ("last_180_days", "Last 180 Days", timedelta(days=180)),
     ("last_90_days", "Last 90 Days", timedelta(days=90)),
@@ -553,6 +551,28 @@ log_permission_notices = ensure_log_storage_security(
     LOG_HARDEN_FILE_PERMISSIONS,
 )
 logger = logging.getLogger("invite_bot")
+
+
+def _env_int_setting(name: str, default: int, minimum: int = 1, maximum: int | None = None) -> int:
+    """Read an integer setting, keeping the default when the value is unusable.
+
+    These are values an operator can save from the GUI. A typo must not stop the bot
+    starting, and it must not silently become 0 either -- an out-of-range value falls
+    back to the default and says so in the log.
+    """
+    raw = str(os.getenv(name, "") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Ignoring non-numeric %s=%r; using %s", name, raw, default)
+        return default
+    if value < minimum or (maximum is not None and value > maximum):
+        logger.warning("Ignoring out-of-range %s=%s; using %s", name, value, default)
+        return default
+    return value
+
 logger.setLevel(to_logging_level(LOG_LEVEL))
 logging.Formatter.converter = time.gmtime
 formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -2185,9 +2205,6 @@ def ensure_db_schema():
             LEFT JOIN discourse_topics t ON t.topic_id = p.topic_id;
 
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
-            -- Guild-scoped top-N for the member ranking, so the planner does not sort.
-            CREATE INDEX IF NOT EXISTS idx_member_activity_summary_guild_total
-                ON member_activity_summary(guild_id, total_messages);
             CREATE INDEX IF NOT EXISTS idx_honeypot_channels_guild_id
                 ON honeypot_channels(guild_id);
             CREATE INDEX IF NOT EXISTS idx_honeypot_channels_enabled
@@ -2792,6 +2809,16 @@ def ensure_db_schema():
                 """
             )
 
+        # Created after the rebuild above: on a database that predates guild_id the
+        # column does not exist until that migration has run, and creating the index
+        # earlier makes the whole schema script fail at startup.
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_member_activity_summary_guild_total
+                ON member_activity_summary(guild_id, total_messages)
+            """
+        )
+
         member_activity_recent_columns = {
             str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_recent_hourly)").fetchall()
         }
@@ -3184,6 +3211,16 @@ def purge_expired_guild_archives():
 
 
 member_activity_manager = None
+
+
+# Bounds match the Activity Options form, so a saved value and a hand-edited one behave
+# the same way. Both are read here rather than hardcoded, or the form would be a lie.
+MEMBER_ACTIVITY_RECENT_RETENTION_DAYS = _env_int_setting(
+    "MEMBER_ACTIVITY_RECENT_RETENTION_DAYS", 200, minimum=7
+)
+MEMBER_ACTIVITY_WEB_TOP_LIMIT = _env_int_setting(
+    "MEMBER_ACTIVITY_WEB_TOP_LIMIT", 20, minimum=1, maximum=100
+)
 
 
 def _get_member_activity_manager():
@@ -12092,6 +12129,9 @@ async def check_forum_tag_updates_once():
 DISCOURSE_STATS_ENABLED = is_truthy_env_value(os.getenv("DISCOURSE_STATS_ENABLED", "true"))
 DISCOURSE_STATS_SCHEDULE = os.getenv("DISCOURSE_STATS_SCHEDULE", "15 */6 * * *").strip()
 DISCOURSE_STATS_GROUP = os.getenv("DISCOURSE_STATS_GROUP", "GL.iNet_Staff").strip()
+DISCOURSE_STATS_FULL_RECONCILE_HOURS = _env_int_setting(
+    "DISCOURSE_STATS_FULL_RECONCILE_HOURS", 24, minimum=1, maximum=720
+)
 DISCOURSE_STATS_CATEGORIES = tuple(
     part.strip()
     for part in os.getenv(
@@ -12105,7 +12145,7 @@ except ValueError:
     DISCOURSE_STATS_BACKFILL_DAYS = 90
 
 # One full re-walk a day repairs anything an interrupted incremental run missed.
-DISCOURSE_STATS_FULL_RECONCILE_HOURS = 24
+
 
 discourse_stats_task = None
 
@@ -12243,12 +12283,15 @@ def build_discourse_activity_payload(days: int = 90, categories=None) -> dict:
         days = 90
 
     cache_key = (days, scope)
+    # One snapshot for both the check and the return: an ingest can clear the entry, or
+    # another request can replace it with a different window, between two separate reads.
+    cached = dict(_discourse_payload_cache)
     if (
-        _discourse_payload_cache["payload"] is not None
-        and _discourse_payload_cache["key"] == cache_key
-        and (time.time() - _discourse_payload_cache["at"]) < DISCOURSE_PAYLOAD_CACHE_SECONDS
+        cached["payload"] is not None
+        and cached["key"] == cache_key
+        and (time.time() - cached["at"]) < DISCOURSE_PAYLOAD_CACHE_SECONDS
     ):
-        return _discourse_payload_cache["payload"]
+        return cached["payload"]
 
     conn = get_db_connection()
     with db_lock:

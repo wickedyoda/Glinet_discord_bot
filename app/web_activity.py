@@ -32,44 +32,74 @@ def _seconds_to_text(seconds) -> str:
 
 
 def summarize_member_activity(payload) -> dict:
-    """Pick the headline numbers out of the member-activity payload."""
+    """Pick the headline numbers out of the member-activity payload.
+
+    Two things the payload makes easy to get wrong:
+
+    * Display names are not unique, so entries are keyed by ``user_id`` and the name is
+      only ever shown, never used to merge two people.
+    * The windows overlap by design (180, 90, 30 and 7 days, plus 24 hours). Adding
+      them together counts the same message several times and ranks by recency, so the
+      top list comes from one explicitly named window.
+    """
     if not isinstance(payload, dict) or not payload.get("ok"):
         return {
             "ok": False,
             "error": str(payload.get("error") if isinstance(payload, dict) else "") or "Member activity is unavailable.",
             "windows": [],
             "top": [],
+            "top_window_label": "",
             "tracked": 0,
         }
 
     windows = []
-    top_members: dict[str, dict] = {}
     for window in payload.get("windows", []) or []:
         members = window.get("members", []) if isinstance(window, dict) else []
         windows.append(
             {
+                "key": str(window.get("key") or ""),
                 "label": str(window.get("label") or window.get("key") or ""),
                 "count": len(members),
                 "messages": sum(_int(row.get("message_count")) for row in members if isinstance(row, dict)),
             }
         )
-        for row in members:
-            if not isinstance(row, dict):
-                continue
-            name = str(row.get("display_name") or row.get("username") or row.get("user_id") or "").strip()
-            if not name:
-                continue
-            entry = top_members.setdefault(name, {"name": name, "messages": 0, "active_days": 0})
-            entry["messages"] += _int(row.get("message_count"))
-            entry["active_days"] = max(entry["active_days"], _int(row.get("active_days")))
 
-    ordered = sorted(top_members.values(), key=lambda item: item["messages"], reverse=True)
+    # The widest window the payload carries: it is the honest answer to "who talks most",
+    # and the label travels with the list so the page cannot imply it covers everything.
+    chosen = None
+    if isinstance(payload.get("windows"), list) and payload["windows"]:
+        first = payload["windows"][0]
+        if isinstance(first, dict):
+            chosen = first
+
+    top: list[dict] = []
+    seen: set[str] = set()
+    for row in (chosen or {}).get("members", []) or []:
+        if not isinstance(row, dict):
+            continue
+        identity = str(row.get("user_id") or "").strip()
+        if not identity:
+            identity = "name:" + str(row.get("username") or row.get("display_name") or "").strip()
+        if not identity or identity in seen:
+            continue
+        seen.add(identity)
+        name = str(row.get("display_name") or row.get("username") or identity).strip()
+        top.append(
+            {
+                "name": name,
+                "messages": _int(row.get("message_count")),
+                "active_days": _int(row.get("active_days")),
+            }
+        )
+    top.sort(key=lambda entry: entry["messages"], reverse=True)
+
     return {
         "ok": True,
         "error": "",
         "windows": windows,
-        "top": ordered[:10],
-        "tracked": len(ordered),
+        "top": top[:10],
+        "top_window_label": str((chosen or {}).get("label") or ""),
+        "tracked": len(seen),
         "excluded_role_count": len(payload.get("excluded_role_ids") or []),
         "top_limit": _int(payload.get("top_limit"), 20),
     }
@@ -156,7 +186,9 @@ def render_activity_overview_body(discord_summary: dict, forum_summary: dict) ->
                 )
             parts.append("</tbody></table>")
         if discord_summary.get("top"):
-            parts.append("<h4>Most messages</h4><ol class='compact-list'>")
+            window_label = str(discord_summary.get("top_window_label") or "").strip()
+            heading = f"Most messages ({window_label})" if window_label else "Most messages"
+            parts.append(f"<h4>{escape(heading)}</h4><ol class='compact-list'>")
             for row in discord_summary["top"]:
                 parts.append(
                     "<li>"

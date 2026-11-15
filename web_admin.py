@@ -5650,9 +5650,14 @@ def create_web_app(
                     file_values = merged
                     saved = True
 
-        options = resolve_activity_options(
-            {str(key): str(value) for key, value in file_values.items()}
-        )
+        # Resolved through the same reader the settings page uses, so a value supplied
+        # only through the container environment is shown (and therefore not silently
+        # dropped when an unrelated option is saved).
+        resolved_values = {
+            option.key: str(_read_env_value(file_values, option.key) or "")
+            for option in ACTIVITY_OPTIONS
+        }
+        options = resolve_activity_options(resolved_values)
         body = f"""
         <div class="dashboard-shell">
           <section class="server-hero">
