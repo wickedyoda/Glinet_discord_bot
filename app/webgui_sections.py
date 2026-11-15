@@ -61,6 +61,7 @@ SECTIONS = (
             ("activity_page", "Overview", "Discord and forum activity side by side."),
             ("member_activity_page", "Discord Activity", "Message volume and active days per member."),
             ("discourse_activity_page", "Forum Activity", "Who answers, and how quickly."),
+            ("discourse_query_page", "Forum Query", "Search the archive: who posted, where and when."),
             ("activity_options_page", "Activity Options", "Every tracking and ingest setting in one form."),
         ),
     },
@@ -252,6 +253,14 @@ ANNOUNCEMENTS = {
         "Read the connected forum without leaving the admin: search topics and open a "
         "thread to see its posts. Read-only.",
         "",
+    ),
+    "discourse_query_page": (
+        "Forum query",
+        "Ask the stored forum archive a question: who posted, in which category, between "
+        "two dates, and how fast one person answers. Choose a username for a card with their "
+        "threads, replies and median reply delay; leave it blank for everyone.",
+        "The archive holds usernames, topics and timestamps only -- no post text and no titles. "
+        "Topic links open the real thread on the forum.",
     ),
     "discourse_activity_page": (
         "Forum activity",
