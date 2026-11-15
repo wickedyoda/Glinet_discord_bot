@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from app.tickets import TicketStore
 
 from app import discourse_stats
+from app.activity_options import parse_int_set as parse_member_activity_excluded_role_ids
 from app.beta_programs import (
     fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
 )
@@ -5912,33 +5913,6 @@ def normalize_role_ids(values):
         seen.add(role_id)
         normalized.append(role_id)
     return normalized
-
-
-def parse_member_activity_excluded_role_ids(raw_value):
-    """Strictly parse MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS.
-
-    Unlike normalize_role_ids(), a malformed token raises instead of being
-    silently dropped. That difference matters: a typo has to be rejected so the
-    activity manager keeps its last good exclusion list, rather than quietly
-    resolving to [] and re-including members an operator meant to hide. A blank
-    value is still valid and clears the exclusions.
-    """
-    text = str(raw_value or "").strip()
-    if not text:
-        return []
-    parsed = []
-    for token in re.split(r"[\s,]+", text):
-        cleaned = token.strip()
-        if not cleaned:
-            continue
-        if cleaned.startswith("<@&") and cleaned.endswith(">"):
-            cleaned = cleaned[3:-1]
-        if not cleaned.isdigit():
-            raise ValueError(f"MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS contains a non-numeric role id: {token!r}")
-        role_id = int(cleaned)
-        if role_id > 0 and role_id not in parsed:
-            parsed.append(role_id)
-    return parsed
 
 
 def _load_member_activity_excluded_role_ids():

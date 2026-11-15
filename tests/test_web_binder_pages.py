@@ -28,7 +28,8 @@ def test_section_page_lists_only_its_own_pages(tmp_path: Path):
         heading.get_text(strip=True)
         for heading in soup.select(".binder-grid .binder-card h3")
     }
-    assert {"Members", "Member Activity"} <= labels
+    assert {"Members", "Bulk Role CSV", "Role Access"} <= labels
+    assert "Member Activity" not in labels  # it moved to the Activity tab
     assert "Moderation" not in labels
     assert "Invite Link Controls" not in labels
 
@@ -355,7 +356,6 @@ def test_users_page_uses_the_group_picker_not_the_legacy_role(tmp_path: Path):
 def test_group_can_be_changed_from_the_users_page(tmp_path: Path):
     import sqlite3
 
-    from tests.test_web_admin import _login_as
     from tests.test_web_permission_groups import _create_account
     from tests.test_web_post_message import _csrf
 

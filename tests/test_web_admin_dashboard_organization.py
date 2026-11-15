@@ -123,7 +123,9 @@ def test_nav_grouping_loses_no_page(tmp_path: Path):
     for label in (
         "My Account",
         "Servers",
-        "Member Activity",
+        "Activity",
+        "Discord Activity",
+        "Forum Activity",
         "Members",
         "Moderation",
         "Permissions",

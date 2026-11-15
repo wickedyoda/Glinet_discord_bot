@@ -150,34 +150,33 @@ def test_unknown_window_falls_back_to_the_default(tmp_path: Path):
     assert "value='90' selected" in response.get_data(as_text=True)
 
 
-def test_forum_activity_lives_under_discord_server_related(tmp_path: Path):
+def test_forum_activity_lives_under_the_activity_tab(tmp_path: Path):
     app = _make_app(tmp_path)
     client = app.test_client()
     _login(client)
     _select_guild(client)
     response = client.get("/admin/dashboard", base_url=BASE_URL)
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    soup = BeautifulSoup(html, "html.parser")
+    soup = BeautifulSoup(response.get_data(as_text=True), "html.parser")
 
     # The dashboard carries the tab, not a card for every page.
     tabs = {card.find("h3").get_text(strip=True) for card in soup.select(".binder-grid .binder-card")}
-    assert any("Discord Server Related" in tab for tab in tabs)
+    assert any("Activity" in tab for tab in tabs)
     assert "Forum Activity" not in soup.select_one(".binder-grid").get_text(" ", strip=True)
 
-    # One level down, the tab lists Forum Activity with a working link.
-    section = client.get("/admin/section/discord", base_url=BASE_URL)
+    # One level down, the Activity tab lists Forum Activity with a working link.
+    section = client.get("/admin/section/activity", base_url=BASE_URL)
     assert section.status_code == 200
     section_soup = BeautifulSoup(section.get_data(as_text=True), "html.parser")
     labels = {
         card.find("h3").get_text(strip=True)
         for card in section_soup.select(".binder-grid .binder-card")
     }
-    assert "Forum Activity" in labels
+    assert {"Discord Activity", "Forum Activity", "Activity Options"} <= labels
     assert "/admin/discourse-activity" in section.get_data(as_text=True)
 
-    # It is not filed under members or moderation.
-    for slug in ("members", "moderation"):
+    # It is filed under Activity only.
+    for slug in ("members", "moderation", "discord"):
         other = client.get(f"/admin/section/{slug}", base_url=BASE_URL)
         assert other.status_code == 200
         other_soup = BeautifulSoup(other.get_data(as_text=True), "html.parser")
