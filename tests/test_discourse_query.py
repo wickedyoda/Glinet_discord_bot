@@ -242,3 +242,41 @@ def test_renderer_escapes_usernames():
     html = render_discourse_query_body(payload, "Guild")
     assert "<script>alert(1)</script>" not in html
     assert "&lt;script&gt;" in html
+
+
+def test_reply_delay_uses_the_earliest_reply_not_the_first_in_range(archive):
+    """A reply today to a thread answered months ago is not a months-long response time."""
+    archive.execute(
+        "INSERT INTO discourse_posts VALUES (16,1,'bob',4,'2026-01-05T10:00:00.000Z')"
+    )
+    archive.commit()
+
+    payload = build_discourse_query(
+        archive,
+        {"from": "2026-01-05", "to": "2026-01-05", "username": "bob"},
+        "",
+    )
+
+    card = payload["user_card"]
+    assert card["posts"] == 1, "only the in-range post counts as activity"
+    # Topic 1 was created 2026-01-01T00:00 and bob first replied at 02:00 that day.
+    assert card["median_seconds"] == 2 * 3600
+
+
+def test_answered_topics_counts_a_topic_without_metadata(archive):
+    """A post can exist without a topics row; it still counts as a topic answered."""
+    archive.execute(
+        "INSERT INTO discourse_posts VALUES (17,99,'bob',2,'2026-01-03T00:00:00.000Z')"
+    )
+    archive.commit()
+
+    payload = build_discourse_query(
+        archive,
+        {"from": "2026-01-03", "to": "2026-01-03", "username": "bob"},
+        "",
+    )
+
+    card = payload["user_card"]
+    assert card["replies"] == 1
+    assert card["answered_topics"] == 1, "a topic with no metadata still counts as answered"
+    assert card["median_seconds"] == 0, "no topic timestamp means no delay to report"

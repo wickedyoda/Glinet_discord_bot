@@ -386,3 +386,9 @@ def test_an_environment_only_option_is_shown_and_survives_a_save(tmp_path: Path,
     data.update({"activity_options": "1", "confirm": "yes", "DISCOURSE_STATS_GROUP": "Staff"})
     saved = _post_options(client, data)
     assert "Activity options saved" in saved.get_data(as_text=True)
+
+
+def test_the_forum_query_page_is_in_the_activity_area():
+    from app.web_permissions import read_area_for_endpoint
+
+    assert read_area_for_endpoint("discourse_query_page") == "activity"

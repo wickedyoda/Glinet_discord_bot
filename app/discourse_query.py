@@ -222,22 +222,34 @@ def _user_card(db, filters: dict) -> dict | None:
         params,
     ).fetchone()
 
-    # Delay from the topic's creation to this user's first reply in it.
+    # Which topics this user answered inside the range.
     reply_rows = db.execute(
         "SELECT p.topic_id AS topic_id, t.created_at AS topic_created, "
-        "MIN(p.created_at) AS first_reply "
+        # The delay is measured from the user's earliest reply *anywhere* in the
+        # archive, not the earliest one inside the range: replying to an older thread
+        # today would otherwise be scored as a many-day response.
+        "(SELECT MIN(p2.created_at) FROM discourse_posts p2 "
+        " WHERE p2.topic_id = p.topic_id AND p2.username = p.username "
+        " AND p2.post_number > 1) AS first_reply "
         + _FROM
         + "WHERE "
         + where
         + " AND p.post_number > 1 GROUP BY p.topic_id",
         params,
     ).fetchall()
+
     gaps: list[int] = []
     for reply in reply_rows:
+        topic_created = str(reply["topic_created"] or "")
+        first_reply = str(reply["first_reply"] or "")
+        if not topic_created or not first_reply:
+            # No topic metadata, or no stored reply to measure: the topic still counts
+            # as answered, it just contributes no delay.
+            continue
         try:
-            started = datetime.fromisoformat(str(reply["topic_created"]).replace("Z", "+00:00"))
-            answered = datetime.fromisoformat(str(reply["first_reply"]).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
+            started = datetime.fromisoformat(topic_created.replace("Z", "+00:00"))
+            answered = datetime.fromisoformat(first_reply.replace("Z", "+00:00"))
+        except ValueError:
             continue
         gap = int((answered - started).total_seconds())
         if gap >= 0:
@@ -248,7 +260,9 @@ def _user_card(db, filters: dict) -> dict | None:
         "posts": int(row["posts"] or 0),
         "threads_started": int(row["threads_started"] or 0),
         "replies": int(row["replies"] or 0),
-        "answered_topics": len(gaps),
+        # Every topic with a matching reply counts, whether or not a delay could be
+        # computed from it.
+        "answered_topics": len(reply_rows),
         "median_seconds": _percentile(gaps, 0.5),
         "p90_seconds": _percentile(gaps, 0.9),
     }
