@@ -2184,6 +2184,9 @@ def ensure_db_schema():
             LEFT JOIN discourse_topics t ON t.topic_id = p.topic_id;
 
             CREATE INDEX IF NOT EXISTS idx_actions_created_at ON actions(created_at);
+            -- Guild-scoped top-N for the member ranking, so the planner does not sort.
+            CREATE INDEX IF NOT EXISTS idx_member_activity_summary_guild_total
+                ON member_activity_summary(guild_id, total_messages);
             CREATE INDEX IF NOT EXISTS idx_honeypot_channels_guild_id
                 ON honeypot_channels(guild_id);
             CREATE INDEX IF NOT EXISTS idx_honeypot_channels_enabled
@@ -2576,10 +2579,14 @@ def ensure_db_schema():
                 ON tag_responses(guild_id)
             """
         )
+        # The action list filters by guild and orders by time. The composite index
+        # serves both, so the single-column one it supersedes is dropped rather than
+        # maintained twice on every insert.
+        conn.execute("DROP INDEX IF EXISTS idx_actions_guild_id")
         conn.execute(
             """
-            CREATE INDEX IF NOT EXISTS idx_actions_guild_id
-                ON actions(guild_id)
+            CREATE INDEX IF NOT EXISTS idx_actions_guild_created
+                ON actions(guild_id, created_at)
             """
         )
         conn.execute(
@@ -12224,6 +12231,13 @@ def run_discourse_stats_ingest() -> dict:
     )
     if full:
         db_kv_set("discourse_stats_last_full_ingest_at", datetime.now(UTC).isoformat())
+    # New rows change the selectivity estimates these queries depend on, and the page
+    # cache would otherwise hide the rows the run just fetched.
+    try:
+        conn.execute("PRAGMA optimize")
+    except sqlite3.Error:
+        logger.debug("PRAGMA optimize failed after Discourse ingest", exc_info=True)
+    invalidate_discourse_payload_cache()
     return {"staff": staff, "topics": topics, "posts": posts, "full": full}
 
 
@@ -12235,6 +12249,17 @@ def _discourse_percentile(values: list[int], fraction: float) -> int:
     return int(values[idx])
 
 
+# The activity page runs several scans over every stored post, so it gets slower as
+# the archive grows. Nothing on it changes between ingests, so a short cache keeps
+# repeat loads cheap without ever serving data older than the last ingest.
+DISCOURSE_PAYLOAD_CACHE_SECONDS = 60
+_discourse_payload_cache = {"key": None, "at": 0.0, "payload": None}
+
+
+def invalidate_discourse_payload_cache() -> None:
+    _discourse_payload_cache.update({"key": None, "at": 0.0, "payload": None})
+
+
 def build_discourse_activity_payload(days: int = 90, categories=None) -> dict:
     """Everything the Discourse activity page renders, in one read transaction."""
     scope = tuple(categories) if categories else DISCOURSE_STATS_CATEGORIES
@@ -12242,6 +12267,14 @@ def build_discourse_activity_payload(days: int = 90, categories=None) -> dict:
         days = max(1, min(int(days), 365))
     except (TypeError, ValueError):
         days = 90
+
+    cache_key = (days, scope)
+    if (
+        _discourse_payload_cache["payload"] is not None
+        and _discourse_payload_cache["key"] == cache_key
+        and (time.time() - _discourse_payload_cache["at"]) < DISCOURSE_PAYLOAD_CACHE_SECONDS
+    ):
+        return _discourse_payload_cache["payload"]
 
     conn = get_db_connection()
     with db_lock:
@@ -12254,7 +12287,7 @@ def build_discourse_activity_payload(days: int = 90, categories=None) -> dict:
         staff_total = conn.execute("SELECT COUNT(*) AS c FROM discourse_staff").fetchone()["c"]
         post_count = conn.execute("SELECT COUNT(*) AS c FROM discourse_posts").fetchone()["c"]
 
-    return {
+    payload = {
         "ok": True,
         "days": days,
         "categories": list(scope),
@@ -12272,6 +12305,8 @@ def build_discourse_activity_payload(days: int = 90, categories=None) -> dict:
         "p90_seconds": _discourse_percentile(gaps, 0.9),
         "within_24h": sum(1 for gap in gaps if gap <= 86400),
     }
+    _discourse_payload_cache.update({"key": cache_key, "at": time.time(), "payload": payload})
+    return payload
 
 
 async def check_discourse_stats_once():
