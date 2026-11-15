@@ -27,7 +27,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from flask import Flask, Response, flash, g, has_request_context, redirect, render_template_string, request, send_file, session, url_for
+from flask import Flask, Response, flash, g, has_request_context, redirect, request, send_file, session, url_for
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.routing import BuildError
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -99,6 +99,7 @@ from app.web_permissions import (
 )
 from app.web_reaction_roles import process_reaction_roles_submission, render_reaction_roles_body
 from app.web_role_access import process_role_access_submission, render_role_access_body
+from app.web_template_cache import render_cached_template as render_template_string
 from app.web_time import format_timestamp_display, parse_iso_datetime_utc
 from app.web_translate_channels import (
     process_translate_channels_submission,

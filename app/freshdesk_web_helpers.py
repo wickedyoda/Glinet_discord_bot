@@ -77,7 +77,6 @@ def render_freshdesk_viewer_body(
     allowed_role_names: list[str] | None = None,
     moderator_role_ids: list[int] | None = None,
     discord_role_options: list[dict[str, Any]] | None = None,
-    freshdesk_role_options: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render the Freshdesk viewer page showing integration settings, live ticket data,
     and Freshdesk command role restrictions.
@@ -97,7 +96,6 @@ def render_freshdesk_viewer_body(
         List of allowed role names (from the payload).
     discord_role_options
         List of role option dicts from the Discord catalog, each with ``id`` and ``name``.
-    freshdesk_role_options
         List of role option dicts for Freshdesk role selection, each with ``id`` and ``name``.
         If provided, renders multi-select dropdowns for ADMIN/USER roles.
     """

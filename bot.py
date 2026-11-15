@@ -792,7 +792,7 @@ def install_asyncio_exception_logging(loop: asyncio.AbstractEventLoop):
     if loop is None or getattr(loop, "_invite_bot_exception_logging", False):
         return
 
-    def _asyncio_exception_handler(active_loop, context):
+    def _asyncio_exception_handler(_loop, context):
         message = str(context.get("message") or "Unhandled asyncio exception")
         exception = context.get("exception")
         if exception is not None:
@@ -14364,9 +14364,8 @@ def normalize_search_terms(query: str):
 
 
 def clean_search_text(value: str):
-    no_html = re.sub(r"<[^>]+>", " ", value or "")
-    # Use str.strip() for whitespace trimming instead of regex
-    return unescape(no_html).replace("\n", " ").replace("\r", " ").strip()
+    # Strip HTML, then collapse every run of whitespace -- newlines, tabs and the
+    # double spaces the tag removal leaves behind -- into one space.
     no_html = re.sub(r"<[^>]+>", " ", value or "")
     return re.sub(r"\s+", " ", unescape(no_html)).strip()
 

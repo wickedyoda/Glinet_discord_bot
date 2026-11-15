@@ -4078,3 +4078,19 @@ def test_saving_activity_exclusions_updates_the_running_process(tmp_path: Path, 
     assert bot_module.normalize_role_ids(
         os.getenv("MEMBER_ACTIVITY_EXCLUDED_ROLE_IDS", "")
     ) == [1138303172595687554, 111]
+
+
+def test_admin_layout_template_is_compiled_once_per_app(tmp_path: Path):
+    """render_template_string recompiles per call; the layout is cached per environment."""
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+
+    for _ in range(3):
+        response = client.get("/admin/dashboard", base_url="https://docker.example:8443")
+        assert response.status_code == 200
+
+    cache = app.jinja_env.__dict__.get("_source_template_cache")
+    assert cache, "the layout template should be compiled and kept"
+    assert len(cache) == 1, f"expected one compiled template, found {len(cache)}"
