@@ -222,12 +222,13 @@ def _user_card(db, filters: dict) -> dict | None:
         params,
     ).fetchone()
 
-    # Which topics this user answered inside the range.
+    # Which topics this user answered inside the range. The delay is measured from the
+    # user's earliest reply anywhere in the archive, not the earliest one inside the
+    # range: answering an older thread again today would otherwise be scored as a
+    # many-day response. The comment sits outside the string chain deliberately -- a
+    # statement split by a comment reads as ad-hoc SQL to static analysis.
     reply_rows = db.execute(
-        "SELECT p.topic_id AS topic_id, t.created_at AS topic_created, "
-        # The delay is measured from the user's earliest reply *anywhere* in the
-        # archive, not the earliest one inside the range: replying to an older thread
-        # today would otherwise be scored as a many-day response.
+        "SELECT p.topic_id AS topic_id, t.created_at AS topic_created, "  # nosec B608 - constant SQL, bound params
         "(SELECT MIN(p2.created_at) FROM discourse_posts p2 "
         " WHERE p2.topic_id = p.topic_id AND p2.username = p.username "
         " AND p2.post_number > 1) AS first_reply "
