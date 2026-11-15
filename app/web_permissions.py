@@ -210,6 +210,8 @@ def write_endpoints_for_permissions(permissions) -> frozenset[str]:
 READ_ENDPOINT_AREAS = {
     **ENDPOINT_AREAS,
     # activity
+    "activity_page": "activity",
+    "activity_options_page": "activity",
     "member_activity_page": "activity",
     "member_activity_export": "activity",
     "discourse_activity_page": "activity",

@@ -33,6 +33,7 @@ from werkzeug.routing import BuildError
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
+from app.activity_options import ACTIVITY_OPTIONS, resolve_activity_options, validate_submission
 from app.freshdesk_api import build_freshdesk_config
 from app.service_monitor import (
     annotate_uptime_import_targets,
@@ -53,6 +54,12 @@ from app.uptime_status import (
     extract_service_monitor_targets_from_uptime_metrics,
     fetch_uptime_metrics_text,
     fetch_uptime_public_config,
+)
+from app.web_activity import (
+    render_activity_options_body,
+    render_activity_overview_body,
+    summarize_discourse_activity,
+    summarize_member_activity,
 )
 from app.web_audit import should_log_web_audit_event
 from app.web_discourse import (
@@ -193,9 +200,16 @@ NAV_GROUPS = (
         ),
     },
     {
+        "label": "Activity",
+        "items": (
+            ("activity_page", "Activity"),
+            ("member_activity_page", "Discord Activity"),
+            ("discourse_activity_page", "Forum Activity"),
+        ),
+    },
+    {
         "label": "Member Related",
         "items": (
-            ("member_activity_page", "Member Activity"),
             ("members_page", "Members"),
         ),
     },
@@ -5556,6 +5570,109 @@ def create_web_app(
         </div>
         """
         return _render_page(str(section["label"]), body, user["email"], is_admin)
+
+    @app.route("/admin/activity", methods=["GET"])
+    @login_required
+    def activity_page():
+        """Discord and forum activity in one view, with their options one click away."""
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "selected server")
+
+        discord_payload = (
+            on_get_member_activity(selected_guild_id, "")
+            if callable(on_get_member_activity)
+            else {"ok": False, "error": "Member activity callback is not configured."}
+        )
+        forum_payload = (
+            on_get_discourse_activity(90)
+            if callable(on_get_discourse_activity)
+            else {"ok": False, "error": "Forum activity callback is not configured."}
+        )
+        body = f"""
+        <div class="dashboard-shell">
+          <section class="server-hero">
+            <h1>&#128200; Activity</h1>
+            <span class="server-hero-caption">{escape(guild_name)}</span>
+          </section>
+          <p class="dashboard-note">
+            <a class="btn secondary" href="{escape(url_for('activity_options_page'), quote=True)}">Activity options</a>
+          </p>
+          {render_activity_overview_body(summarize_member_activity(discord_payload), summarize_discourse_activity(forum_payload))}
+        </div>
+        """
+        return _render_page("Activity", body, user["email"], is_admin)
+
+    @app.route("/admin/activity/options", methods=["GET", "POST"])
+    @admin_required
+    def activity_options_page():
+        """Every Discord- and forum-activity knob, saved through the settings pipeline."""
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+
+        file_values = _load_effective_env_values(env_file, fallback_env_file)
+        errors: list[str] = []
+        saved = False
+
+        if request.method == "POST" and str(request.form.get("activity_options") or "") == "1":
+            if str(request.form.get("confirm") or "").strip().lower() != "yes":
+                errors.append("Tick the confirmation box before saving.")
+            submitted = {
+                option.key: request.form.get(option.key, "") for option in ACTIVITY_OPTIONS
+            }
+            values, validation_errors = validate_submission(submitted)
+            errors.extend(validation_errors)
+            if not errors:
+                merged = {str(key): str(value) for key, value in file_values.items()}
+                merged.update(values)
+                written, write_error, saved_env_file, _skipped = _try_write_env_file_with_fallback(
+                    env_file,
+                    fallback_env_file,
+                    merged,
+                )
+                if not written:
+                    errors.append(write_error)
+                else:
+                    os.environ["WEB_ENV_FILE"] = str(saved_env_file)
+                    for key, value in values.items():
+                        if value == "":
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = value
+                    file_values = merged
+                    saved = True
+
+        # Resolved through the same reader the settings page uses, so a value supplied
+        # only through the container environment is shown (and therefore not silently
+        # dropped when an unrelated option is saved).
+        resolved_values = {
+            option.key: str(_read_env_value(file_values, option.key) or "")
+            for option in ACTIVITY_OPTIONS
+        }
+        options = resolve_activity_options(resolved_values)
+        body = f"""
+        <div class="dashboard-shell">
+          <section class="server-hero">
+            <h1>&#128200; Activity options</h1>
+            <span class="server-hero-caption">{escape(str((_selected_guild() or {}).get("name") or "selected server"))}</span>
+          </section>
+          <p class="dashboard-note">
+            <a href="{escape(url_for('activity_page'), quote=True)}">&larr; Back to activity</a>
+          </p>
+          <form method="post" action="{escape(url_for('activity_options_page'), quote=True)}">
+          {render_activity_options_body(options, errors=errors, saved=saved)}
+          </form>
+        </div>
+        """
+        return _render_page("Activity options", body, user["email"], is_admin)
 
     @app.route("/admin/invite-links", methods=["GET"])
     @login_required

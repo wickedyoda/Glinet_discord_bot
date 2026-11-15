@@ -47,9 +47,21 @@ SECTIONS = (
         "warning": "Bulk Role CSV changes roles for many members at once — check the file first.",
         "pages": (
             ("members_page", "Members", "Search members and manage their roles."),
-            ("member_activity_page", "Member Activity", "Message volume and active days per member."),
             ("bulk_role_csv", "Bulk Role CSV", "Assign one role from a spreadsheet."),
             ("role_access_page", "Role Access", "Which roles may use which commands."),
+        ),
+    },
+    {
+        "slug": "activity",
+        "label": "Activity",
+        "icon": "📈",
+        "blurb": "Who is talking in Discord, who is answering on the forum, and every option that governs both.",
+        "warning": "Changing the excluded roles reshapes the rankings; shortening retention deletes hourly history at the next message.",
+        "pages": (
+            ("activity_page", "Overview", "Discord and forum activity side by side."),
+            ("member_activity_page", "Discord Activity", "Message volume and active days per member."),
+            ("discourse_activity_page", "Forum Activity", "Who answers, and how quickly."),
+            ("activity_options_page", "Activity Options", "Every tracking and ingest setting in one form."),
         ),
     },
     {
@@ -74,7 +86,6 @@ SECTIONS = (
             ("translate_channels_page", "Auto-Translate Channels", "Bridge messages between languages."),
             ("discourse_page", "Forums", "Connect the GL.iNet forum and choose what syncs."),
             ("discourse_viewer.discourse_viewer_page", "Forum Viewer", "Search and read the connected forum."),
-            ("discourse_activity_page", "Forum Activity", "Who answers, and how quickly."),
             ("invite_links_page", "Invite Link Controls", "Invite codes and the roles they grant."),
             ("reaction_roles_page", "Reaction Roles", "Post a message and hand out roles by reaction."),
             ("post_message_page", "Post as Bot", "Send a message to a channel as the bot."),
@@ -177,10 +188,25 @@ ANNOUNCEMENTS = {
         "as the form is submitted.",
         "The bot can only manage roles below its own highest role.",
     ),
+    "activity_page": (
+        "Activity",
+        "Two features in one place: what members do in Discord, and how staff answer on the "
+        "forum. Each card links to the full page, and Activity Options holds every setting "
+        "that governs both.",
+        "Rankings only count messages the bot can see; a channel it cannot read contributes nothing.",
+    ),
+    "activity_options_page": (
+        "Activity options",
+        "The complete option set for Discord tracking and forum ingest: which roles are "
+        "excluded, how many rows a ranking shows, how long hourly counts are kept, and which "
+        "forum categories, group and schedule feed the statistics.",
+        "Retention pruning runs on the next message, so a shorter window takes history with it. "
+        "Only the excluded-role list applies without a restart.",
+    ),
     "member_activity_page": (
-        "Member activity",
-        "Message counts and active days per member over rolling windows. Moderators and "
-        "admins are excluded from the ranking.",
+        "Discord activity",
+        "Message counts and active days per member over rolling windows. Roles listed as "
+        "excluded are hidden from the ranking and from this page's role picker.",
         "Counts are recorded per message; a member who talks only in threads may look quiet here.",
     ),
     "bulk_role_csv": (
@@ -230,7 +256,7 @@ ANNOUNCEMENTS = {
     "discourse_activity_page": (
         "Forum activity",
         "Staff reply volume, first-response times and hourly coverage from the stored forum "
-        "statistics.",
+        "statistics. Categories and the staff group come from Activity Options.",
         "Handled means first staff reply, not resolution; the forum has no resolution signal.",
     ),
     "invite_links_page": (
