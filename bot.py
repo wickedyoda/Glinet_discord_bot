@@ -82,6 +82,7 @@ from app.discourse_integration import (
     normalize_discourse_override,
     parse_discourse_features,
 )
+from app.discourse_query import build_discourse_query
 from app.feed_web_callbacks import FeedWebCallbacks
 from app.forum_monitor import (
     FORUM_MONITOR_CATEGORIES,
@@ -3366,6 +3367,20 @@ def run_web_export_member_activity(guild_id: int, role_id: int | None = None):
         return export_member_activity_archive(guild_id, role_id=role_id)
     except Exception as exc:
         logger.exception("Failed to export member activity archive")
+        return {"ok": False, "error": str(exc)}
+
+
+def run_web_query_discourse_activity(filters=None):
+    """Answer one forum-archive query for the admin GUI."""
+    try:
+        base_url = ""
+        try:
+            base_url = str(resolve_discourse_forum_settings().get("base_url") or "")
+        except Exception:
+            logger.debug("Could not resolve the forum base URL for the query page", exc_info=True)
+        return build_discourse_query(get_db_connection(), filters or {}, base_url=base_url)
+    except Exception as exc:
+        logger.exception("Failed to run the Discourse activity query")
         return {"ok": False, "error": str(exc)}
 
 
@@ -13719,6 +13734,7 @@ def start_web_admin_server():
                     on_get_member_activity=run_web_get_member_activity,
                     on_export_member_activity=run_web_export_member_activity,
                     on_get_discourse_activity=run_web_get_discourse_activity,
+                    on_query_discourse_activity=run_web_query_discourse_activity,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_forum_tags=get_forum_tag_web_callbacks().run_web_get_forum_tags,

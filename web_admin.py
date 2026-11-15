@@ -67,6 +67,7 @@ from app.web_discourse import (
     render_discourse_body,
 )
 from app.web_discourse_activity import render_discourse_activity_body
+from app.web_discourse_query import render_discourse_query_body
 from app.web_discourse_routes import register_discourse_viewer_blueprint
 from app.web_forum_tags import process_forum_tags_submission, render_forum_tags_body
 from app.web_freshdesk_routes import register_freshdesk_viewer_blueprint
@@ -3580,6 +3581,7 @@ def create_web_app(
     on_get_member_activity=None,
     on_export_member_activity=None,
     on_get_discourse_activity=None,
+    on_query_discourse_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_forum_tags=None,
@@ -5570,6 +5572,36 @@ def create_web_app(
         </div>
         """
         return _render_page(str(section["label"]), body, user["email"], is_admin)
+
+    @app.route("/admin/discourse-query", methods=["GET"])
+    @login_required
+    def discourse_query_page():
+        """Query the stored forum archive: who posted, where, and when."""
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        guild_name = str((_selected_guild() or {}).get("name") or "selected server")
+        filters = {
+            key: str(request.args.get(key, "") or "")
+            for key in ("username", "category", "from", "to", "staff_only", "page")
+        }
+        payload = (
+            on_query_discourse_activity(filters)
+            if callable(on_query_discourse_activity)
+            else {"ok": False, "error": "The forum query callback is not configured."}
+        )
+        body = f"""
+        <div class="dashboard-shell">
+          <section class="server-hero">
+            <h1>&#128269; Forum query</h1>
+            <span class="server-hero-caption">{escape(guild_name)}</span>
+          </section>
+          {render_discourse_query_body(payload, guild_name)}
+        </div>
+        """
+        return _render_page("Forum query", body, user["email"], is_admin)
 
     @app.route("/admin/activity", methods=["GET"])
     @login_required
@@ -11033,6 +11065,7 @@ def start_web_admin_interface(
     on_get_member_activity=None,
     on_export_member_activity=None,
     on_get_discourse_activity=None,
+    on_query_discourse_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
     on_get_forum_tags=None,
@@ -11090,6 +11123,7 @@ def start_web_admin_interface(
         on_get_member_activity=on_get_member_activity,
         on_export_member_activity=on_export_member_activity,
         on_get_discourse_activity=on_get_discourse_activity,
+        on_query_discourse_activity=on_query_discourse_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
         on_manage_reddit_feeds=on_manage_reddit_feeds,
         on_get_forum_tags=on_get_forum_tags,

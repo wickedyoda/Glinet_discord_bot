@@ -212,6 +212,7 @@ READ_ENDPOINT_AREAS = {
     # activity
     "activity_page": "activity",
     "activity_options_page": "activity",
+    "discourse_query_page": "activity",
     "member_activity_page": "activity",
     "member_activity_export": "activity",
     "discourse_activity_page": "activity",
