@@ -29,6 +29,7 @@ _LEGACY_ALLOWLIST = {
     "command_status",
     "guild_settings",
     "moderation_page",
+    "automod_page",
     "members_page",
     "discourse_page",
     "command_permissions",
