@@ -1,5 +1,6 @@
 # Use official Python image for reproducibility
-FROM python:3.15-slim
+# Pinned by digest: a tag can be repointed at a different image without warning.
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 # Refresh base OS packages so security fixes from the Debian slim image
 # are applied even when the parent image lags behind the latest point release.
@@ -37,13 +38,9 @@ RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs && chown -R bot:bot /a
 # so pip can write to global site-packages
 WORKDIR /app
 COPY --chown=bot:bot requirements.txt .
-RUN python -m pip install --no-cache-dir --upgrade \
-    pip \
-    "setuptools>=78.1.1" \
-    "msgpack>=1.2.1" \
-    "cryptography>=48.0.1" \
-    "wheel>=0.46.2" \
-    "jaraco.context>=6.1.0" \
+# pip is pinned exactly like every other dependency; the build tools that used to be
+# listed here are in requirements.txt already, and pinning them twice invites drift.
+RUN python -m pip install --no-cache-dir "pip==26.3" \
   && python -m pip install --no-cache-dir -r requirements.txt
 
 # Copy the bot code and env files into the container

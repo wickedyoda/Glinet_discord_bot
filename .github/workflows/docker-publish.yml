@@ -29,11 +29,10 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
-# Called workflows can only reduce these, so grant the union they need.
+# The workflow token is read-only. Each job raises only what it needs -- a called
+# workflow can only reduce the caller's grant, so the write lives on the calling job.
 permissions:
   contents: read
-  packages: write
-  security-events: write
 
 jobs:
   # --------------------------------------------------------------------------- #
@@ -45,6 +44,9 @@ jobs:
 
   security-scan:
     name: Security Scan
+    permissions:
+      contents: read
+      security-events: write
     uses: ./.github/workflows/security-scan.yml
 
   secret-scan:
@@ -57,6 +59,9 @@ jobs:
 
   container-security-scan:
     name: Container Security Scan
+    permissions:
+      contents: read
+      security-events: write
     uses: ./.github/workflows/container-security-scan.yml
 
   dast-scan:
@@ -68,6 +73,10 @@ jobs:
   # --------------------------------------------------------------------------- #
   build:
     name: Build and Push
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     needs:
       - ci-integrity
       - security-scan
@@ -87,17 +96,17 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # 7.0.1
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # 3
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # 3
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # 4.4.1
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # 3
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550  # 4.8.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
