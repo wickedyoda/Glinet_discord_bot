@@ -2795,16 +2795,16 @@ def ensure_db_schema():
         moderation_warning_columns = {
             str(row["name"]) for row in conn.execute("PRAGMA table_info(moderation_warnings)").fetchall()
         }
-        for column_name, column_ddl in (
-            ("reason", "TEXT NOT NULL DEFAULT ''"),
-            ("moderator", "TEXT NOT NULL DEFAULT ''"),
-            ("cleared_at", "TEXT NOT NULL DEFAULT ''"),
-            ("case_id", "INTEGER NOT NULL DEFAULT 0"),
+        # Complete statements, not a formatted template: the column names are fixed and
+        # a literal keeps both the SQL scanner and a reader happy.
+        for column_name, statement in (
+            ("reason", "ALTER TABLE moderation_warnings ADD COLUMN reason TEXT NOT NULL DEFAULT ''"),
+            ("moderator", "ALTER TABLE moderation_warnings ADD COLUMN moderator TEXT NOT NULL DEFAULT ''"),
+            ("cleared_at", "ALTER TABLE moderation_warnings ADD COLUMN cleared_at TEXT NOT NULL DEFAULT ''"),
+            ("case_id", "ALTER TABLE moderation_warnings ADD COLUMN case_id INTEGER NOT NULL DEFAULT 0"),
         ):
             if column_name not in moderation_warning_columns:
-                conn.execute(
-                    f"ALTER TABLE moderation_warnings ADD COLUMN {column_name} {column_ddl}"
-                )
+                conn.execute(statement)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_moderation_warnings_guild_user_case "
             "ON moderation_warnings(guild_id, user_id, case_id)"

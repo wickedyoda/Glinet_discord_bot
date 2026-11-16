@@ -75,13 +75,21 @@ def query_cases(conn, guild_id: int, raw_filters: dict | None, *, page_size: int
     filters["guild_id"] = int(guild_id)
     where, params = _where(filters)
 
-    total = int(conn.execute(f"SELECT COUNT(*) FROM moderation_warnings WHERE {where}", params).fetchone()[0] or 0)
+    # The WHERE clause is assembled from constant fragments; every value is bound
+    # through `params`.
+    total = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM moderation_warnings WHERE {where}",  # nosec B608
+            params,
+        ).fetchone()[0]
+        or 0
+    )
     page_size = max(1, min(int(page_size), 10000))
     offset = (filters["page"] - 1) * page_size
     rows = conn.execute(
         "SELECT id, case_id, user_id, created_at, warning_type, reason, moderator, "
         "matched_term, action_taken, cleared_at "
-        f"FROM moderation_warnings WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",
+        f"FROM moderation_warnings WHERE {where} ORDER BY id DESC LIMIT ? OFFSET ?",  # nosec B608
         params + [page_size, offset],
     ).fetchall()
 
