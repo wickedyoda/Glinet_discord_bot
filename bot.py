@@ -143,8 +143,10 @@ from app.moderation_tools import (
     build_history,
     clear_warnings,
     format_history_text,
+    get_case,
     list_notes,
     list_warnings,
+    update_case_reason,
 )
 from app.reaction_role_web_callbacks import ReactionRolesWebCallbacks
 from app.reaction_roles import (
@@ -20863,6 +20865,61 @@ async def history_slash(interaction: discord.Interaction, member: discord.Member
         history = build_history(conn, interaction.guild.id, member.id)
     await interaction.response.send_message(
         f"**History for {member.mention}**\n{format_history_text(history)}", ephemeral=True
+    )
+
+
+@tree.command(name="case", description="Show one moderation case by number")
+@app_commands.describe(case="Case number")
+async def case_slash(interaction: discord.Interaction, case: int):
+    if not await _require_moderator(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    with with_db() as conn:
+        record = get_case(conn, interaction.guild.id, case)
+    if record is None:
+        await interaction.response.send_message(f"❌ Case #{case} was not found.", ephemeral=True)
+        return
+    state = "cleared" if record["cleared_at"] else "active"
+    lines = [
+        f"**Case #{record['case_id']}** ({state})",
+        f"Member: <@{record['user_id']}> (`{record['user_id']}`)",
+        f"When: {record['created_at'][:19].replace('T', ' ')}",
+        f"Type: {record['type']}",
+        f"Reason: {record['reason'] or record['matched_term'] or '—'}",
+        f"By: {record['moderator'] or '—'}",
+    ]
+    await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
+
+
+@tree.command(name="reason", description="Edit the reason on a case")
+@app_commands.describe(case="Case number", text="The corrected reason")
+async def reason_slash(interaction: discord.Interaction, case: int, text: str):
+    if not await _require_moderator(interaction):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    reason_text = str(text or "").strip()
+    if not reason_text:
+        await interaction.response.send_message("❌ A reason is required.", ephemeral=True)
+        return
+    with with_db(commit=True) as conn:
+        updated = update_case_reason(
+            conn, interaction.guild.id, case, reason=reason_text, editor=str(interaction.user)
+        )
+    if not updated:
+        await interaction.response.send_message(f"❌ Case #{case} was not found.", ephemeral=True)
+        return
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "case_reason_edit",
+        reason=f"case #{case}: {reason_text}",
+    )
+    await interaction.response.send_message(
+        f"✅ Case #{case} reason updated. The previous text is kept in the record.", ephemeral=True
     )
 
 

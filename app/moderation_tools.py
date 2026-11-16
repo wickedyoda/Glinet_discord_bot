@@ -96,6 +96,49 @@ def list_warnings(conn, guild_id: int, user_id: int, *, include_cleared: bool = 
     ]
 
 
+def get_case(conn, guild_id: int, case_id: int) -> dict | None:
+    """One case by its number, or None when it does not belong to this guild."""
+    row = conn.execute(
+        "SELECT id, case_id, user_id, created_at, warning_type, reason, moderator, "
+        "matched_term, action_taken, cleared_at "
+        "FROM moderation_warnings WHERE guild_id = ? AND case_id = ?",
+        (int(guild_id), int(case_id)),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "case_id": int(row["case_id"] or row["id"]),
+        "user_id": str(row["user_id"]),
+        "created_at": str(row["created_at"] or ""),
+        "type": str(row["warning_type"] or ""),
+        "reason": str(row["reason"] or ""),
+        "moderator": str(row["moderator"] or ""),
+        "matched_term": str(row["matched_term"] or ""),
+        "action_taken": str(row["action_taken"] or ""),
+        "cleared_at": str(row["cleared_at"] or ""),
+    }
+
+
+def update_case_reason(conn, guild_id: int, case_id: int, *, reason: str, editor: str) -> bool:
+    """Rewrite a case's reason, keeping who changed it in the text.
+
+    The original reason is not lost: it is appended, because a case that can be quietly
+    rewritten is not a record.
+    """
+    case = get_case(conn, guild_id, case_id)
+    if case is None:
+        return False
+    new_reason = _clip(reason, MAX_REASON_LENGTH)
+    if not new_reason:
+        return False
+    history = f"{case['reason']} [edited by {_clip(editor, 120)}: {new_reason}]"
+    conn.execute(
+        "UPDATE moderation_warnings SET reason = ? WHERE guild_id = ? AND case_id = ?",
+        (_clip(history, MAX_REASON_LENGTH * 2), int(guild_id), int(case_id)),
+    )
+    return True
+
+
 def clear_warnings(conn, guild_id: int, user_id: int, *, case_id: int | None = None) -> int:
     """Clear one warning, or all of them, and return how many were cleared."""
     stamp = _now()

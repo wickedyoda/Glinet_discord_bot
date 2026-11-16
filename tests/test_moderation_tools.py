@@ -256,3 +256,38 @@ def test_the_cases_page_renders_and_exports(tmp_path):
     assert export.status_code == 200
     assert export.headers["Content-Type"].startswith("text/csv")
     assert b"spamming" in export.data
+
+
+def test_a_case_can_be_read_back_by_number(db):
+    from app.moderation_tools import get_case
+
+    case_id = add_warning(db, GUILD, USER, reason="original", moderator="mod#1")
+    db.commit()
+
+    record = get_case(db, GUILD, case_id)
+    assert record is not None
+    assert record["user_id"] == str(USER)
+    assert record["reason"] == "original"
+    assert get_case(db, GUILD, case_id + 999) is None
+    assert get_case(db, 999, case_id) is None, "a case must not leak across guilds"
+
+
+def test_editing_a_reason_keeps_the_original(db):
+    from app.moderation_tools import get_case, update_case_reason
+
+    case_id = add_warning(db, GUILD, USER, reason="was rude", moderator="mod#1")
+    db.commit()
+
+    assert update_case_reason(db, GUILD, case_id, reason="was rude in #help", editor="mod#2")
+    db.commit()
+
+    record = get_case(db, GUILD, case_id)
+    assert "was rude in #help" in record["reason"]
+    assert "was rude" in record["reason"], "the original text must survive the edit"
+    assert "mod#2" in record["reason"]
+
+
+def test_editing_a_missing_case_reports_failure(db):
+    from app.moderation_tools import update_case_reason
+
+    assert update_case_reason(db, GUILD, 424242, reason="x", editor="mod") is False
