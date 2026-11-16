@@ -75,6 +75,8 @@ SECTIONS = (
             ("moderation_page", "Moderation", "Warnings, timeouts and bad-word rules."),
             ("permissions_page", "Permissions", "Groups, capabilities and guild scope."),
             ("actions_page", "Action History", "What moderation has already done."),
+            ("cases_page", "Cases", "Every warning, filterable and exportable."),
+            ("automod_page", "Automod", "Spam rules, raid guard and the escalation ladder."),
         ),
     },
     {
@@ -232,6 +234,22 @@ ANNOUNCEMENTS = {
         "What an account may do, and on which servers. Capability is per area — read or write — "
         "and scope is set by the group.",
         "You cannot grant more than you hold, and the Owner group cannot be edited.",
+    ),
+    "automod_page": (
+        "Automod",
+        "The rules that act on their own: floods, repeats, mention spam, invites and links, "
+        "regex patterns, executable attachments, overnight tightening, the raid guard and "
+        "the escalation ladder that turns warnings into timeouts, kicks and bans.",
+        "Automod is off until it is enabled here, and every action it takes is recorded as "
+        "a warning with the reason attached. Check the thresholds before switching it on.",
+    ),
+    "cases_page": (
+        "Cases",
+        "Every warning recorded for this server, with the case number a member can quote, "
+        "who issued it, and whether it is still active. Filter by member, status or date, "
+        "and download the result as CSV.",
+        "Clearing a warning is a decision with a name attached, so it is done from the "
+        "member page or the /clearwarnings command, not from this table.",
     ),
     "actions_page": (
         "Action history",
