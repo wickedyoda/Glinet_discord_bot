@@ -7,7 +7,9 @@ rather than storing a value that will silently misbehave later.
 
 from __future__ import annotations
 
-import re
+import math
+
+import regex as _regex
 
 from app.automod import (
     DEFAULT_BLOCKED_EXTENSIONS,
@@ -19,6 +21,7 @@ from app.automod import (
     DEFAULT_MAX_MESSAGES,
     DEFAULT_MAX_ZALGO,
     DEFAULT_WINDOW_SECONDS,
+    MAX_PATTERN_LENGTH,
 )
 from app.escalation import DEFAULT_LADDER, parse_ladder
 
@@ -40,7 +43,9 @@ def _float(raw, default: float, minimum: float, maximum: float) -> float:
         value = float(str(raw).strip())
     except (TypeError, ValueError):
         return default
-    if value < minimum or value > maximum:
+    # NaN compares false with everything, so a plain range check lets it through and it
+    # explodes later in the multiplier. Only finite numbers are settings.
+    if not math.isfinite(value) or value < minimum or value > maximum:
         return default
     return value
 
@@ -79,11 +84,17 @@ def parse_regex_lines(raw: str) -> list[dict]:
             pattern, reason = text, "blocked pattern"
         if not pattern:
             continue
+        # Validate exactly what will be stored: truncating after validation can turn a
+        # valid pattern into an invalid one (a character class losing its bracket).
+        if len(pattern) > MAX_PATTERN_LENGTH:
+            raise ValueError(
+                f"line {index}: the pattern is longer than {MAX_PATTERN_LENGTH} characters"
+            )
         try:
-            re.compile(pattern)
-        except re.error as exc:
+            _regex.compile(pattern, _regex.IGNORECASE)
+        except _regex.error as exc:
             raise ValueError(f"line {index}: {exc}") from exc
-        rules.append({"pattern": pattern[:200], "reason": (reason or "blocked pattern")[:120]})
+        rules.append({"pattern": pattern, "reason": (reason or "blocked pattern")[:120]})
         if len(rules) > MAX_REGEX_RULES:
             raise ValueError(f"at most {MAX_REGEX_RULES} regex rules")
     return rules

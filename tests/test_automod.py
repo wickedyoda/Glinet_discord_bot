@@ -422,3 +422,85 @@ def test_saving_without_the_confirmation_box_changes_nothing(tmp_path):
 
     assert "Tick the confirmation box" in response.get_data(as_text=True)
     assert called["saved"] is False
+
+
+# --- the review's findings ----------------------------------------------------
+
+
+def test_a_catastrophic_regex_is_bounded():
+    import time as _time
+
+    tracker = MessageTracker()
+    config = _config(regex_rules=(RegexRule(r"(a+)+$", "evil"),))
+    started = _time.monotonic()
+    verdict = _send(tracker, config, "a" * 500 + "!")
+    elapsed = _time.monotonic() - started
+    assert verdict is None, "a near-match must not be treated as a match"
+    assert elapsed < 2.0, f"the match took {elapsed:.2f}s — the timeout did not apply"
+
+
+def test_the_tracker_is_bounded_by_capacity_and_idleness():
+    tracker = MessageTracker(max_members=3, idle_seconds=60)
+    for user in range(5):
+        tracker.state_for(GUILD, user, now=float(user))
+    assert tracker.size() == 3, "the oldest entries are evicted at capacity"
+
+    # Everyone seen before the idle window goes; the member just seen stays.
+    tracker.state_for(GUILD, 4, now=10_000.0)
+    assert tracker.evict_idle(now=10_000.0) == 2
+    assert tracker.size() == 1
+
+
+def test_forgetting_a_member_clears_their_state():
+    tracker = MessageTracker()
+    tracker.state_for(GUILD, USER)
+    tracker.forget(GUILD, USER)
+    assert tracker.size() == 0
+
+
+def test_a_duplicate_threshold_of_twenty_still_works():
+    tracker = MessageTracker()
+    config = _config(max_messages=60, duplicate_count=20)
+    for _ in range(19):
+        assert _send(tracker, config, "same text") is None
+    verdict = _send(tracker, config, "same text")
+    assert verdict is not None and verdict.code == DUPLICATE
+
+
+def test_url_userinfo_cannot_borrow_an_allowed_hostname():
+    tracker = MessageTracker()
+    config = _config(block_links=True, allowed_domains=("gl-inet.com",))
+    verdict = _send(tracker, config, "see https://gl-inet.com:x@evil.example/path")
+    assert verdict is not None and verdict.code == LINK
+
+
+def test_a_nan_multiplier_is_not_a_setting():
+    from app.automod_settings import normalize_automod
+
+    config, errors = normalize_automod({"quiet_multiplier": "nan"})
+    assert errors == []
+    assert config["quiet_multiplier"] == 1.0
+
+
+def test_a_pattern_is_not_truncated_into_invalidity():
+    from app.automod_settings import normalize_automod
+
+    pattern = "[" + "a" * 199 + "]"
+    _, errors = normalize_automod({"regex_rules": pattern})
+    assert errors and "longer than" in errors[0]
+
+
+def test_the_automod_page_is_writable():
+    from app.web_permissions import ENDPOINT_AREAS, READ_ENDPOINT_AREAS
+
+    assert ENDPOINT_AREAS.get("automod_page") == "moderation"
+    assert READ_ENDPOINT_AREAS.get("automod_page") == "moderation"
+
+
+def test_a_message_reference_is_decoded_or_refused():
+    decode = bot_module.decode_message_reference
+    assert decode("https://discord.com/channels/1/222/333", 9) == (222, 333)
+    assert decode("444", 9) == (9, 444)
+    assert decode("-1", 9) == (0, 0)
+    assert decode("not-a-message", 9) == (0, 0)
+    assert decode("", 9) == (0, 0)

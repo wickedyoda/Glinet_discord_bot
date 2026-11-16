@@ -17,6 +17,9 @@ import unicodedata
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
+
+import regex as _regex
 
 # Violation codes. The bot maps these to actions; the web UI shows them verbatim.
 RATE = "rate"
@@ -40,7 +43,7 @@ DEFAULT_MAX_ZALGO = 12
 DEFAULT_MAX_ATTACHMENT_MB = 25
 
 _INVITE_RE = re.compile(r"(?:discord\.(?:gg|com/invite)|discordapp\.com/invite)/[A-Za-z0-9\-_]+", re.I)
-_URL_RE = re.compile(r"https?://([^/\s]+)", re.I)
+_URL_RE = re.compile(r"https?://[^\s<>\"')]+", re.I)
 _EMOJI_RE = re.compile(
     "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F1E6-\U0001F1FF" "\U00002B00-\U00002BFF" "]"
 )
@@ -53,16 +56,40 @@ DEFAULT_BLOCKED_EXTENSIONS = (
 )
 
 
+# A regex is the one rule an operator writes by hand, so it is also the one that can
+# backtrack catastrophically. `regex` accepts a per-match timeout that re honours not at
+# all: without it a pattern like `(a+)+$` blocks the event loop -- and every guild's
+# heartbeats -- for as long as the input is long. The cap on matching text is the second
+# guard, for the cost of the match itself.
+REGEX_TIMEOUT_SECONDS = 0.05
+REGEX_TEXT_LIMIT = 1000
+MAX_PATTERN_LENGTH = 200
+
+
 @dataclass(frozen=True)
 class RegexRule:
     pattern: str
     reason: str = "matched a blocked pattern"
 
     def compiled(self):
-        try:
-            return re.compile(self.pattern, re.I)
-        except re.error:
+        if len(self.pattern) > MAX_PATTERN_LENGTH:
             return None
+        try:
+            return _regex.compile(self.pattern, _regex.IGNORECASE)
+        except _regex.error:
+            return None
+
+    def matches(self, text: str) -> bool:
+        """True on a match; False on no match, an unusable pattern, or a timeout."""
+        compiled = self.compiled()
+        if compiled is None:
+            return False
+        try:
+            return compiled.search(text[:REGEX_TEXT_LIMIT], timeout=REGEX_TIMEOUT_SECONDS) is not None
+        except TimeoutError:
+            return False
+        except _regex.error:
+            return False
 
 
 @dataclass(frozen=True)
@@ -128,25 +155,65 @@ class Verdict:
 @dataclass
 class MemberState:
     timestamps: deque = field(default_factory=lambda: deque(maxlen=64))
-    texts: deque = field(default_factory=lambda: deque(maxlen=16))
+    # The form allows a duplicate threshold of 20; the deque must be able to hold it.
+    texts: deque = field(default_factory=lambda: deque(maxlen=32))
 
 
 class MessageTracker:
-    """Per-member message history, kept in memory and bounded."""
+    """Per-member message history, kept in memory and bounded in both directions.
 
-    def __init__(self) -> None:
+    Each deque is bounded; the dictionary around them must be too, or a long-running bot
+    remembers every speaker it has ever seen. Entries carry a last-seen stamp, are
+    evicted when idle, and the oldest goes when the capacity is reached.
+    """
+
+    def __init__(self, max_members: int = 5000, idle_seconds: float = 3600.0) -> None:
         self._state: dict[tuple[int, int], MemberState] = {}
+        self._last_seen: dict[tuple[int, int], float] = {}
+        self._max_members = max(1, int(max_members))
+        self._idle_seconds = max(60.0, float(idle_seconds))
+        self._evict_every = 500
+        self._evaluations = 0
 
-    def state_for(self, guild_id: int, user_id: int) -> MemberState:
+    def state_for(self, guild_id: int, user_id: int, *, now: float | None = None) -> MemberState:
         key = (int(guild_id), int(user_id))
+        stamp = time.monotonic() if now is None else float(now)
+        self._last_seen[key] = stamp
         state = self._state.get(key)
         if state is None:
+            if len(self._state) >= self._max_members:
+                self._evict_oldest()
             state = MemberState()
             self._state[key] = state
+        self._evaluations += 1
+        if self._evaluations % self._evict_every == 0:
+            self.evict_idle(now=stamp)
         return state
 
+    def evict_idle(self, *, now: float | None = None) -> int:
+        stamp = time.monotonic() if now is None else float(now)
+        cutoff = stamp - self._idle_seconds
+        stale = [key for key, seen in self._last_seen.items() if seen < cutoff]
+        for key in stale:
+            self._state.pop(key, None)
+            self._last_seen.pop(key, None)
+        return len(stale)
+
+    def _evict_oldest(self) -> None:
+        if not self._last_seen:
+            return
+        oldest = min(self._last_seen, key=self._last_seen.get)
+        self._state.pop(oldest, None)
+        self._last_seen.pop(oldest, None)
+
     def forget(self, guild_id: int, user_id: int) -> None:
-        self._state.pop((int(guild_id), int(user_id)), None)
+        key = (int(guild_id), int(user_id))
+        self._state.pop(key, None)
+        self._last_seen.pop(key, None)
+
+    def forget_guild(self, guild_id: int) -> None:
+        for key in [key for key in self._state if key[0] == int(guild_id)]:
+            self.forget(*key)
 
     def size(self) -> int:
         return len(self._state)
@@ -173,7 +240,20 @@ def _zalgo_count(text: str) -> int:
 
 
 def _domains(text: str) -> list[str]:
-    return [match.group(1).lower().split(":")[0] for match in _URL_RE.finditer(text or "")]
+    """The real hostname of every URL, via urlsplit.
+
+    Regex alone would read `https://gl-inet.com:x@evil.example/` as gl-inet.com; the
+    authority ends at the `@`, and urlsplit knows it. A URL that will not parse yields
+    an empty host, which never matches an allowlist entry -- unknown is blocked.
+    """
+    hosts: list[str] = []
+    for match in _URL_RE.finditer(text or ""):
+        try:
+            host = (urlsplit(match.group(0).rstrip(".,;:!?")).hostname or "").lower()
+        except ValueError:
+            host = ""
+        hosts.append(host)
+    return hosts
 
 
 def _extension(name: str) -> str:
@@ -204,7 +284,7 @@ def evaluate(
     hour = datetime.now(UTC).hour
     config = config.effective(hour)
 
-    state = tracker.state_for(guild_id, user_id)
+    state = tracker.state_for(guild_id, user_id, now=stamp)
 
     # Rate: count messages inside the window, including this one.
     while state.timestamps and stamp - state.timestamps[0] > config.window_seconds:
@@ -234,8 +314,7 @@ def evaluate(
                 return Verdict(LINK, f"link to {domain}", severity=2)
 
     for rule in config.regex_rules:
-        compiled = rule.compiled()
-        if compiled is not None and compiled.search(body):
+        if rule.matches(body):
             return Verdict(REGEX, rule.reason, severity=2)
 
     if _caps_ratio(body) > config.max_caps_ratio:

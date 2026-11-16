@@ -44,6 +44,7 @@ AREAS = (
 ENDPOINT_AREAS = {
     # moderation
     "moderation_page": "moderation",
+    "automod_page": "moderation",
     # members
     "members_page": "members",
     "role_access_page": "members",
