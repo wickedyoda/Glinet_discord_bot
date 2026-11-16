@@ -44,9 +44,11 @@ DEFAULT_MAX_ATTACHMENT_MB = 25
 
 _INVITE_RE = re.compile(r"(?:discord\.(?:gg|com/invite)|discordapp\.com/invite)/[A-Za-z0-9\-_]+", re.I)
 _URL_RE = re.compile(r"https?://[^\s<>\"')]+", re.I)
-_EMOJI_RE = re.compile(
-    "[" "\U0001F300-\U0001FAFF" "\U00002600-\U000027BF" "\U0001F1E6-\U0001F1FF" "\U00002B00-\U00002BFF" "]"
-)
+# Unicode properties rather than hand-written ranges: the ranges drift as Unicode adds
+# blocks, and a range that overlaps another is exactly what CodeQL warns about. This
+# counts pictographs and flag regionals, and deliberately not the digits that also carry
+# the Emoji property.
+_EMOJI_RE = _regex.compile(r"\p{Extended_Pictographic}|\p{Regional_Indicator}")
 _ZALGO_RE = re.compile("[\u0300-\u036f\u0489\u1ab0-\u1aff\u1dc0-\u1dff\u20d0-\u20ff\ufe20-\ufe2f]")
 
 # Extensions that are executable on the platforms people actually use.
