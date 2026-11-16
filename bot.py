@@ -135,7 +135,19 @@ from app.member_activity_backfill import (
 from app.member_activity_backfill import (
     state_key as member_activity_backfill_state_key,
 )
+from app.moderation_cases import cases_to_csv, query_cases
 from app.moderation_runtime import apply_bad_word_moderation as apply_bad_word_moderation_impl
+from app.moderation_tools import (
+    add_note,
+    add_warning,
+    build_history,
+    clear_warnings,
+    format_history_text,
+    get_case,
+    list_notes,
+    list_warnings,
+    update_case_reason,
+)
 from app.reaction_role_web_callbacks import ReactionRolesWebCallbacks
 from app.reaction_roles import (
     delete_reaction_role_mapping as delete_reaction_role_mapping_impl,
@@ -1284,6 +1296,18 @@ COMMAND_PERMISSION_DEFAULTS = {
     "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "enter_role": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "getaccess": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "warn": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "warnings": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "clearwarnings": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "note": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "notes": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "history": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "softban": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "slowmode": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "lock": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "unlock": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "case": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "reason": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "clear_country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "create_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
@@ -1347,6 +1371,54 @@ COMMAND_PERMISSION_METADATA = {
     "ping": {
         "label": "/ping",
         "description": "Check that the bot is online.",
+    },
+    "warn": {
+        "label": "/warn",
+        "description": "Record a warning against a member.",
+    },
+    "warnings": {
+        "label": "/warnings",
+        "description": "List a member's active warnings.",
+    },
+    "clearwarnings": {
+        "label": "/clearwarnings",
+        "description": "Clear one warning, or all of them.",
+    },
+    "note": {
+        "label": "/note",
+        "description": "Attach a staff note to a member.",
+    },
+    "notes": {
+        "label": "/notes",
+        "description": "Show a member's staff notes.",
+    },
+    "history": {
+        "label": "/history",
+        "description": "Warnings, notes and actions for a member.",
+    },
+    "softban": {
+        "label": "/softban",
+        "description": "Ban, delete recent messages, then unban.",
+    },
+    "slowmode": {
+        "label": "/slowmode",
+        "description": "Set a channel's slowmode.",
+    },
+    "lock": {
+        "label": "/lock",
+        "description": "Stop @everyone from posting in a channel.",
+    },
+    "unlock": {
+        "label": "/unlock",
+        "description": "Let @everyone post in a channel again.",
+    },
+    "case": {
+        "label": "/case",
+        "description": "Show one moderation case by number.",
+    },
+    "reason": {
+        "label": "/reason",
+        "description": "Edit the reason on a case.",
     },
     "sayhi": {
         "label": "/sayhi",
@@ -1951,6 +2023,17 @@ def ensure_db_schema():
                 matched_term TEXT NOT NULL DEFAULT '',
                 message_excerpt TEXT NOT NULL DEFAULT '',
                 action_taken TEXT NOT NULL DEFAULT ''
+            );
+
+            -- Staff notes are separate from warnings: a note is context, not a strike,
+            -- and it must never count toward an escalation threshold.
+            CREATE TABLE IF NOT EXISTS moderation_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                author TEXT NOT NULL DEFAULT '',
+                note TEXT NOT NULL DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS firmware_seen (
@@ -2766,6 +2849,34 @@ def ensure_db_schema():
         if "last_error" not in youtube_subscription_columns:
             conn.execute("ALTER TABLE youtube_subscriptions ADD COLUMN last_error TEXT NOT NULL DEFAULT ''")
 
+        # Manual warnings need a reason, an author, a cleared stamp and a case number.
+        # Added here rather than in the CREATE above so an existing database gains them
+        # without a rebuild.
+        moderation_warning_columns = {
+            str(row["name"]) for row in conn.execute("PRAGMA table_info(moderation_warnings)").fetchall()
+        }
+        # Complete statements, not a formatted template: the column names are fixed and
+        # a literal keeps both the SQL scanner and a reader happy.
+        for column_name, statement in (
+            ("reason", "ALTER TABLE moderation_warnings ADD COLUMN reason TEXT NOT NULL DEFAULT ''"),
+            ("moderator", "ALTER TABLE moderation_warnings ADD COLUMN moderator TEXT NOT NULL DEFAULT ''"),
+            ("cleared_at", "ALTER TABLE moderation_warnings ADD COLUMN cleared_at TEXT NOT NULL DEFAULT ''"),
+            ("case_id", "ALTER TABLE moderation_warnings ADD COLUMN case_id INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column_name not in moderation_warning_columns:
+                conn.execute(statement)
+        # Rows written before case_id existed carry 0, while the UI shows their row id.
+        # Backfilling makes the number a member quotes the number that clears.
+        conn.execute("UPDATE moderation_warnings SET case_id = id WHERE case_id = 0")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_moderation_warnings_guild_user_case "
+            "ON moderation_warnings(guild_id, user_id, case_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_moderation_notes_guild_user "
+            "ON moderation_notes(guild_id, user_id)"
+        )
+
         member_activity_summary_columns = {
             str(row["name"]) for row in conn.execute("PRAGMA table_info(member_activity_summary)").fetchall()
         }
@@ -3100,6 +3211,7 @@ def count_recent_moderation_warnings(guild_id: int | None, user_id: int, *, with
             SELECT COUNT(*) AS total
             FROM moderation_warnings
             WHERE guild_id = ? AND user_id = ? AND created_at >= ?
+              AND (cleared_at IS NULL OR cleared_at = '')
             """,
             (safe_guild_id, int(user_id), cutoff),
         ).fetchone()
@@ -3367,6 +3479,48 @@ def run_web_export_member_activity(guild_id: int, role_id: int | None = None):
         return export_member_activity_archive(guild_id, role_id=role_id)
     except Exception as exc:
         logger.exception("Failed to export member activity archive")
+        return {"ok": False, "error": str(exc)}
+
+
+def run_web_get_moderation_cases(guild_id, filters=None):
+    """Case list for the web panel."""
+    try:
+        return query_cases(
+            get_db_connection(), normalize_target_guild_id(guild_id), filters or {}
+        )
+    except Exception as exc:
+        logger.exception("Failed to load moderation cases")
+        return {"ok": False, "error": str(exc)}
+
+
+def run_web_export_moderation_cases(guild_id, filters=None):
+    """Every matching case as CSV, not just the visible page."""
+    try:
+        conn = get_db_connection()
+        safe_guild_id = normalize_target_guild_id(guild_id)
+        collected: list[dict] = []
+        page = 1
+        while True:
+            payload = query_cases(
+                conn, safe_guild_id, {**(filters or {}), "page": page}, page_size=1000
+            )
+            if not payload.get("ok"):
+                return payload
+            batch = payload.get("cases") or []
+            collected.extend(batch)
+            if len(batch) < 1000 or page >= int(payload.get("pages") or 1):
+                break
+            page += 1
+        payload = {"ok": True, "cases": collected}
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M")
+        return {
+            "ok": True,
+            "filename": f"moderation-cases-{stamp}.csv",
+            "content_type": "text/csv",
+            "data": cases_to_csv(payload.get("cases") or []).encode("utf-8"),
+        }
+    except Exception as exc:
+        logger.exception("Failed to export moderation cases")
         return {"ok": False, "error": str(exc)}
 
 
@@ -13735,6 +13889,8 @@ def start_web_admin_server():
                     on_export_member_activity=run_web_export_member_activity,
                     on_get_discourse_activity=run_web_get_discourse_activity,
                     on_query_discourse_activity=run_web_query_discourse_activity,
+                    on_get_moderation_cases=run_web_get_moderation_cases,
+                    on_export_moderation_cases=run_web_export_moderation_cases,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
                     on_get_forum_tags=get_forum_tag_web_callbacks().run_web_get_forum_tags,
@@ -20596,6 +20752,403 @@ async def translate_channels_remove(
         )
     else:
         await interaction.response.send_message("ℹ️ No matching auto-translate mapping found.", ephemeral=True)
+
+
+# --------------------------------------------------------------------------- #
+#  Staff moderation commands
+# --------------------------------------------------------------------------- #
+# Warnings used to exist only as a side effect of the bad-word filter, so a moderator
+# had no way to record a decision or to see one later. These commands write to the same
+# tables the web panel reads, and every one of them is gated on a moderator role.
+
+
+def _moderation_actor_allowed(interaction: discord.Interaction) -> bool:
+    member = interaction.user
+    if not isinstance(member, discord.Member):
+        return False
+    return has_moderator_access(member) or has_admin_access(member)
+
+
+async def _require_moderator(interaction: discord.Interaction, command_key: str) -> bool:
+    """Authorise through the per-guild command permissions, not a hardcoded role check.
+
+    The default policy for these keys is moderator roles, so the behaviour is unchanged
+    out of the box -- but an administrator can now disable a command or narrow it to
+    custom roles from Command Permissions, which a role check would have ignored.
+    """
+    return await ensure_interaction_command_access(interaction, command_key)
+
+
+async def _dm_member(member: discord.Member, text: str) -> bool:
+    try:
+        await member.send(text)
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+
+
+@tree.command(name="warn", description="Record a warning against a member")
+@app_commands.describe(member="Member to warn", reason="Why, in one line")
+async def warn_slash(interaction: discord.Interaction, member: discord.Member, reason: str):
+    if not await _require_moderator(interaction, "warn"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    if member.bot:
+        await interaction.response.send_message("❌ Bots cannot be warned.", ephemeral=True)
+        return
+    reason_text = str(reason or "").strip()
+    if not reason_text:
+        await interaction.response.send_message("❌ A reason is required.", ephemeral=True)
+        return
+
+    with with_db(commit=True) as conn:
+        case_id = add_warning(
+            conn,
+            interaction.guild.id,
+            member.id,
+            reason=reason_text,
+            moderator=str(interaction.user),
+        )
+
+    delivered = await _dm_member(
+        member,
+        f"You received a warning in **{interaction.guild.name}**: {reason_text}\n"
+        f"Case #{case_id}. If you think this is wrong, reply to the moderators.",
+    )
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "warn",
+        target=member,
+        reason=reason_text,
+        details=f"case #{case_id}; DM {'sent' if delivered else 'blocked'}",
+    )
+    await interaction.response.send_message(
+        f"✅ Warning **#{case_id}** recorded for {member.mention}."
+        + ("" if delivered else " (Their DMs are closed, so they were not notified.)"),
+        ephemeral=True,
+    )
+
+
+@tree.command(name="warnings", description="List a member's active warnings")
+@app_commands.describe(member="Member to look up")
+async def warnings_slash(interaction: discord.Interaction, member: discord.Member):
+    if not await _require_moderator(interaction, "warnings"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    with with_db() as conn:
+        warnings = list_warnings(conn, interaction.guild.id, member.id)
+
+    if not warnings:
+        await interaction.response.send_message(
+            f"✅ {member.mention} has no active warnings.", ephemeral=True
+        )
+        return
+
+    lines = [f"**{len(warnings)} active warning(s) for {member.mention}**"]
+    for warning in warnings[:15]:
+        reason = warning["reason"] or warning["matched_term"] or warning["type"]
+        lines.append(f"• `#{warning['case_id']}` {warning['created_at'][:10]} — {reason}")
+    await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
+
+
+@tree.command(name="clearwarnings", description="Clear one warning, or all of them")
+@app_commands.describe(member="Member whose warnings to clear", case="Case number to clear; omit for all")
+async def clearwarnings_slash(
+    interaction: discord.Interaction, member: discord.Member, case: int | None = None
+):
+    if not await _require_moderator(interaction, "clearwarnings"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    with with_db(commit=True) as conn:
+        cleared = clear_warnings(conn, interaction.guild.id, member.id, case_id=case)
+
+    if not cleared:
+        await interaction.response.send_message(
+            "ℹ️ Nothing to clear for that member.", ephemeral=True
+        )
+        return
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "clearwarnings",
+        target=member,
+        reason=f"cleared {cleared} warning(s)" + (f" (case #{case})" if case else ""),
+    )
+    await interaction.response.send_message(
+        f"✅ Cleared {cleared} warning(s) for {member.mention}.", ephemeral=True
+    )
+
+
+@tree.command(name="note", description="Attach a staff note to a member")
+@app_commands.describe(member="Member the note is about", text="The note")
+async def note_slash(interaction: discord.Interaction, member: discord.Member, text: str):
+    if not await _require_moderator(interaction, "note"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    note_text = str(text or "").strip()
+    if not note_text:
+        await interaction.response.send_message("❌ A note cannot be empty.", ephemeral=True)
+        return
+    with with_db(commit=True) as conn:
+        note_id = add_note(
+            conn, interaction.guild.id, member.id, note=note_text, author=str(interaction.user)
+        )
+    await interaction.response.send_message(
+        f"✅ Note **#{note_id}** saved for {member.mention}.", ephemeral=True
+    )
+
+
+@tree.command(name="notes", description="Show a member's staff notes")
+@app_commands.describe(member="Member to look up")
+async def notes_slash(interaction: discord.Interaction, member: discord.Member):
+    if not await _require_moderator(interaction, "notes"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    with with_db() as conn:
+        notes = list_notes(conn, interaction.guild.id, member.id)
+    if not notes:
+        await interaction.response.send_message(f"ℹ️ No notes for {member.mention}.", ephemeral=True)
+        return
+    lines = [f"**Notes for {member.mention}**"]
+    for note in notes[:15]:
+        lines.append(f"• {note['created_at'][:10]} — {note['note']}")
+    await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
+
+
+@tree.command(name="history", description="Warnings, notes and actions for a member")
+@app_commands.describe(member="Member to look up")
+async def history_slash(interaction: discord.Interaction, member: discord.Member):
+    if not await _require_moderator(interaction, "history"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    with with_db() as conn:
+        history = build_history(conn, interaction.guild.id, member.id)
+    await interaction.response.send_message(
+        f"**History for {member.mention}**\n{format_history_text(history)}", ephemeral=True
+    )
+
+
+@tree.command(name="case", description="Show one moderation case by number")
+@app_commands.describe(case="Case number")
+async def case_slash(interaction: discord.Interaction, case: int):
+    if not await _require_moderator(interaction, "case"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    with with_db() as conn:
+        record = get_case(conn, interaction.guild.id, case)
+    if record is None:
+        await interaction.response.send_message(f"❌ Case #{case} was not found.", ephemeral=True)
+        return
+    state = "cleared" if record["cleared_at"] else "active"
+    lines = [
+        f"**Case #{record['case_id']}** ({state})",
+        f"Member: <@{record['user_id']}> (`{record['user_id']}`)",
+        f"When: {record['created_at'][:19].replace('T', ' ')}",
+        f"Type: {record['type']}",
+        f"Reason: {record['reason'] or record['matched_term'] or '—'}",
+        f"By: {record['moderator'] or '—'}",
+    ]
+    await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
+
+
+@tree.command(name="reason", description="Edit the reason on a case")
+@app_commands.describe(case="Case number", text="The corrected reason")
+async def reason_slash(interaction: discord.Interaction, case: int, text: str):
+    if not await _require_moderator(interaction, "reason"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    reason_text = str(text or "").strip()
+    if not reason_text:
+        await interaction.response.send_message("❌ A reason is required.", ephemeral=True)
+        return
+    with with_db(commit=True) as conn:
+        updated = update_case_reason(
+            conn, interaction.guild.id, case, reason=reason_text, editor=str(interaction.user)
+        )
+    if not updated:
+        await interaction.response.send_message(f"❌ Case #{case} was not found.", ephemeral=True)
+        return
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "case_reason_edit",
+        reason=f"case #{case}: {reason_text}",
+    )
+    await interaction.response.send_message(
+        f"✅ Case #{case} reason updated. The previous text is kept in the record.", ephemeral=True
+    )
+
+
+@tree.command(name="softban", description="Ban, delete recent messages, then unban")
+@app_commands.describe(
+    member="Member to softban",
+    reason="Why",
+    days="Days of messages to delete (0-7)",
+)
+async def softban_slash(
+    interaction: discord.Interaction,
+    member: discord.Member,
+    reason: str = "No reason given",
+    days: int = 1,
+):
+    if not await _require_moderator(interaction, "softban"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    me = interaction.guild.me
+    if me is None or not me.guild_permissions.ban_members:
+        await interaction.response.send_message(
+            "❌ I need the Ban Members permission to softban.", ephemeral=True
+        )
+        return
+    allowed, refusal = validate_moderation_target(interaction.user, member, me)
+    if not allowed:
+        await interaction.response.send_message(refusal, ephemeral=True)
+        return
+
+    delete_days = max(0, min(int(days), 7))
+    reason_text = str(reason or "No reason given").strip() or "No reason given"
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await interaction.guild.ban(
+            member,
+            reason=f"Softban by {interaction.user}: {reason_text}",
+            delete_message_seconds=delete_days * 86400,
+        )
+        await interaction.guild.unban(
+            discord.Object(id=member.id), reason=f"Softban release: {reason_text}"
+        )
+    except discord.Forbidden:
+        await interaction.followup.send("❌ Discord refused the ban.", ephemeral=True)
+        return
+    except discord.HTTPException as exc:
+        logger.exception("Softban failed for %s", member.id)
+        await interaction.followup.send(f"❌ Discord error: {exc}", ephemeral=True)
+        return
+
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "softban",
+        target=member,
+        reason=reason_text,
+        details=f"deleted {delete_days} day(s) of messages",
+    )
+    await interaction.followup.send(
+        f"✅ Softbanned {member.mention} and deleted {delete_days} day(s) of messages.",
+        ephemeral=True,
+    )
+
+
+@tree.command(name="slowmode", description="Set a channel's slowmode")
+@app_commands.describe(seconds="Seconds between messages (0 disables)", channel="Channel; defaults to this one")
+async def slowmode_slash(
+    interaction: discord.Interaction,
+    seconds: int,
+    channel: discord.TextChannel | None = None,
+):
+    if not await _require_moderator(interaction, "slowmode"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        await interaction.response.send_message("❌ Choose a text channel.", ephemeral=True)
+        return
+    value = max(0, min(int(seconds), 21600))
+    try:
+        await target.edit(slowmode_delay=value, reason=f"Slowmode by {interaction.user}")
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I need Manage Channels to change slowmode.", ephemeral=True
+        )
+        return
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "slowmode",
+        reason=f"#{target.name} set to {value}s",
+    )
+    await interaction.response.send_message(
+        f"✅ Slowmode in {target.mention} set to {value}s.", ephemeral=True
+    )
+
+
+async def _set_channel_lock(
+    interaction: discord.Interaction, channel: discord.TextChannel | None, locked: bool, reason: str
+):
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    target = channel or interaction.channel
+    if not isinstance(target, discord.TextChannel):
+        await interaction.response.send_message("❌ Choose a text channel.", ephemeral=True)
+        return
+    # set_permissions replaces the whole overwrite, so read it first: a channel that
+    # hides itself from @everyone must stay hidden after a lock or an unlock.
+    overwrite = target.overwrites_for(interaction.guild.default_role)
+    overwrite.send_messages = False if locked else None
+    try:
+        await target.set_permissions(
+            interaction.guild.default_role,
+            overwrite=overwrite,
+            reason=f"{'Lock' if locked else 'Unlock'} by {interaction.user}: {reason}",
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "❌ I need Manage Channels to lock or unlock a channel.", ephemeral=True
+        )
+        return
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "lock" if locked else "unlock",
+        reason=f"#{target.name}: {reason}",
+    )
+    await interaction.response.send_message(
+        f"✅ {target.mention} {'locked' if locked else 'unlocked'}.", ephemeral=True
+    )
+
+
+@tree.command(name="lock", description="Stop @everyone from posting in a channel")
+@app_commands.describe(channel="Channel; defaults to this one", reason="Why")
+async def lock_slash(
+    interaction: discord.Interaction,
+    channel: discord.TextChannel | None = None,
+    reason: str = "No reason given",
+):
+    if not await _require_moderator(interaction, "lock"):
+        return
+    await _set_channel_lock(interaction, channel, True, str(reason or "No reason given"))
+
+
+@tree.command(name="unlock", description="Let @everyone post in a channel again")
+@app_commands.describe(channel="Channel; defaults to this one")
+async def unlock_slash(
+    interaction: discord.Interaction, channel: discord.TextChannel | None = None
+):
+    if not await _require_moderator(interaction, "unlock"):
+        return
+    await _set_channel_lock(interaction, channel, False, "unlocked")
 
 
 if __name__ == "__main__":
