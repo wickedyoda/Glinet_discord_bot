@@ -32,8 +32,7 @@ jobs:
 
       - name: Install CycloneDX tool
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install cyclonedx-bom
+          python -m pip install -r requirements-dev.txt
 
       - name: Generate dependency SBOM
         run: cyclonedx-py requirements -i requirements.txt -o sbom.cdx.json
