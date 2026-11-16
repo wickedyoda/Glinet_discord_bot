@@ -15,6 +15,10 @@ on:
   push:
     branches:
       - main
+    # A release tag publishes the same image under its version, so a deployment can
+    # pin 2.5 instead of chasing :latest.
+    tags:
+      - "v*"
   workflow_dispatch:
 
 # A newer push to the same ref supersedes the previous run.
@@ -102,8 +106,24 @@ jobs:
       - name: Prepare variables
         id: vars
         run: |
-          echo "DATE_TAG=$(date +'%Y%m%d')" >> "$GITHUB_OUTPUT"
-          echo "IMAGE=ghcr.io/${{ github.actor }}/glinet_discord_bot" >> "$GITHUB_OUTPUT"
+          IMAGE="ghcr.io/${{ github.actor }}/glinet_discord_bot"
+          DATE_TAG="$(date +'%Y%m%d')"
+          VERSION_TAG=""
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION_TAG="${GITHUB_REF#refs/tags/v}"
+          fi
+          echo "IMAGE=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "DATE_TAG=${DATE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "VERSION_TAG=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
+          {
+            echo "TAGS<<EOF"
+            echo "${IMAGE}:latest"
+            echo "${IMAGE}:${DATE_TAG}"
+            if [ -n "${VERSION_TAG}" ]; then
+              echo "${IMAGE}:${VERSION_TAG}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # 6
@@ -113,7 +133,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           # Pull requests build but never publish.
           push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ steps.vars.outputs.IMAGE }}:latest
-            ${{ steps.vars.outputs.IMAGE }}:${{ steps.vars.outputs.DATE_TAG }}
+          tags: ${{ steps.vars.outputs.TAGS }}
           no-cache: true
