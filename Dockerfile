@@ -1,5 +1,5 @@
 # Use official Python image for reproducibility
-FROM python:3.11-slim
+FROM python:3.15-slim
 
 # Refresh base OS packages so security fixes from the Debian slim image
 # are applied even when the parent image lags behind the latest point release.
