@@ -20,7 +20,7 @@ jobs:
       TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db
     steps:
       - name: Checkout code
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # 5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # 7.0.1
 
       - name: Build Docker image
         run: docker build -t local/glinet_discord_bot:${{ github.sha }} .
