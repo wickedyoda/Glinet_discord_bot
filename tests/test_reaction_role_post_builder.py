@@ -335,3 +335,124 @@ def test_post_reaction_role_message_for_guild_async_requires_manage_roles():
         )
         assert res["ok"] is False
         assert "Manage Roles" in res["error"]
+
+
+# --- a rejected post must not throw away what the operator typed ---------------
+
+
+def _render(draft=None):
+    return render_reaction_roles_body(
+        guild_name="Test Guild",
+        mappings=[],
+        channel_options=[{"id": "123", "label": "#general"}],
+        role_options=[{"id": "111", "label": "@Gamer"}],
+        catalog_error="",
+        render_select_input=lambda name, value, options, placeholder="", form_id=None: (
+            f"<select name='{name}' data-value='{value}'></select>"
+        ),
+        render_fixed_select_input=lambda name, value, options, placeholder="", form_id=None: (
+            f"<select name='{name}' data-value='{value}'></select>"
+        ),
+        draft=draft,
+    )
+
+
+def test_the_post_form_is_empty_without_a_draft():
+    html = _render()
+    assert "React for roles" not in html
+    assert "data-value=''" in html
+
+
+def test_a_draft_restores_the_message_and_the_rows():
+    html = _render(
+        {
+            "channel_id": "123",
+            "message_content": "React for roles:\n🎮 = Gamer",
+            "pairs": [{"emoji": "🎮", "role_id": "111"}],
+        }
+    )
+    assert "React for roles:" in html
+    assert "🎮 = Gamer" in html
+    assert "value=\"🎮\"" in html
+    assert "data-value='123'" in html
+    assert "data-value='111'" in html
+
+
+def test_a_draft_with_more_rows_than_the_default_keeps_them():
+    pairs = [{"emoji": f"e{index}", "role_id": str(index)} for index in range(1, 12)]
+    html = _render({"message_content": "x", "pairs": pairs})
+    assert 'name="post_emoji_11"' in html
+
+
+def test_a_rejected_post_keeps_the_composed_message_on_the_page(tmp_path, monkeypatch):
+    """The bug: an invalid emoji re-rendered the form empty, losing the whole message."""
+    import web_admin
+    from tests.test_web_admin import _extract_csrf_token, _login, _make_app, _select_guild
+
+    monkeypatch.setattr(
+        web_admin,
+        "process_reaction_roles_submission",
+        lambda **kwargs: (None, [("Invalid emoji: nope", "error")]),
+    )
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+    page = client.get("/admin/reaction-roles", base_url="https://docker.example:8443")
+    token = _extract_csrf_token(page)
+
+    response = client.post(
+        "/admin/reaction-roles",
+        data={
+            "action": "post_message",
+            "post_channel_id": "123",
+            "post_message_content": "React for roles:\n🎮 = Gamer",
+            "post_emoji_1": "nope",
+            "post_role_id_1": "111",
+        },
+        base_url="https://docker.example:8443",
+        headers={"X-CSRF-Token": token},
+        follow_redirects=True,
+    )
+
+    html = response.get_data(as_text=True)
+    assert response.status_code == 200
+    assert "Invalid emoji: nope" in html
+    assert "React for roles:" in html, "the composed message was thrown away"
+    assert "🎮 = Gamer" in html
+    assert 'value="nope"' in html, "the rejected emoji was not kept for correction"
+
+
+def test_a_successful_post_clears_the_form(tmp_path, monkeypatch):
+    import web_admin
+    from tests.test_web_admin import _extract_csrf_token, _login, _make_app, _select_guild
+
+    monkeypatch.setattr(
+        web_admin,
+        "process_reaction_roles_submission",
+        lambda **kwargs: ({"ok": True, "mappings": []}, [("Posted.", "success")]),
+    )
+    app = _make_app(tmp_path)
+    client = app.test_client()
+    _login(client)
+    _select_guild(client)
+    page = client.get("/admin/reaction-roles", base_url="https://docker.example:8443")
+    token = _extract_csrf_token(page)
+
+    response = client.post(
+        "/admin/reaction-roles",
+        data={
+            "action": "post_message",
+            "post_channel_id": "123",
+            "post_message_content": "React for roles:",
+            "post_emoji_1": "🎮",
+            "post_role_id_1": "111",
+        },
+        base_url="https://docker.example:8443",
+        headers={"X-CSRF-Token": token},
+        follow_redirects=True,
+    )
+
+    html = response.get_data(as_text=True)
+    assert "Posted." in html
+    assert "React for roles:" not in html, "a successful post should leave a clean form"
