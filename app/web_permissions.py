@@ -218,6 +218,7 @@ READ_ENDPOINT_AREAS = {
     "discourse_activity_page": "activity",
     # moderation and members
     "cases_page": "moderation",
+    "automod_page": "moderation",
     "cases_export": "moderation",
     "honeypot_page": "moderation",
     "actions_page": "moderation",

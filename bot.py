@@ -47,6 +47,15 @@ if TYPE_CHECKING:
 
 from app import discourse_stats
 from app.activity_options import parse_int_set as parse_member_activity_excluded_role_ids
+from app.automod import (
+    AutomodConfig,
+    MessageTracker,
+    RegexRule,
+)
+from app.automod import evaluate as evaluate_automod
+from app.automod import is_exempt as automod_is_exempt
+from app.automod import normalise_text as normalise_automod_text
+from app.automod_settings import normalize_automod, normalize_ladder, normalize_raid
 from app.beta_programs import (
     fetch_beta_testing_programs as fetch_beta_testing_programs_impl,
 )
@@ -83,6 +92,8 @@ from app.discourse_integration import (
     parse_discourse_features,
 )
 from app.discourse_query import build_discourse_query
+from app.escalation import ACTION_BAN, ACTION_KICK, ACTION_TIMEOUT, parse_ladder
+from app.escalation import decide as decide_escalation
 from app.feed_web_callbacks import FeedWebCallbacks
 from app.forum_monitor import (
     FORUM_MONITOR_CATEGORIES,
@@ -148,6 +159,7 @@ from app.moderation_tools import (
     list_warnings,
     update_case_reason,
 )
+from app.raid_guard import JoinTracker, RaidConfig, evaluate_join
 from app.reaction_role_web_callbacks import ReactionRolesWebCallbacks
 from app.reaction_roles import (
     delete_reaction_role_mapping as delete_reaction_role_mapping_impl,
@@ -188,6 +200,10 @@ from app.service_monitor import (
     normalize_service_monitor_targets,
     run_service_monitor_check,
 )
+from app.shared_bans import add_ban as add_shared_ban
+from app.shared_bans import get_ban as get_shared_ban
+from app.shared_bans import list_bans as list_shared_bans
+from app.shared_bans import remove_ban as remove_shared_ban
 from app.translate import get_lang_for_flag, translate_text
 from app.translate_channels import AutoTranslateChannelStore
 from app.uptime_status import (
@@ -1308,6 +1324,11 @@ COMMAND_PERMISSION_DEFAULTS = {
     "unlock": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "case": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "reason": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "report": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "appeal": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "shareban": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "unshareban": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "sharedbans": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "clear_country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "create_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
@@ -1420,6 +1441,11 @@ COMMAND_PERMISSION_METADATA = {
         "label": "/reason",
         "description": "Edit the reason on a case.",
     },
+    "report": {"label": "/report", "description": "Report a message to the moderators."},
+    "appeal": {"label": "/appeal", "description": "Appeal a moderation case."},
+    "shareban": {"label": "/shareban", "description": "Add a member to the shared ban list."},
+    "unshareban": {"label": "/unshareban", "description": "Remove a member from the shared ban list."},
+    "sharedbans": {"label": "/sharedbans", "description": "Show the shared ban list."},
     "sayhi": {
         "label": "/sayhi",
         "description": "Post a short bot introduction and point users to /help.",
@@ -2023,6 +2049,38 @@ def ensure_db_schema():
                 matched_term TEXT NOT NULL DEFAULT '',
                 message_excerpt TEXT NOT NULL DEFAULT '',
                 action_taken TEXT NOT NULL DEFAULT ''
+            );
+
+            -- One strike list across the servers this bot runs in.
+            CREATE TABLE IF NOT EXISTS shared_bans (
+                user_id INTEGER PRIMARY KEY,
+                reason TEXT NOT NULL DEFAULT '',
+                added_by TEXT NOT NULL DEFAULT '',
+                added_at TEXT NOT NULL,
+                source_guild_id INTEGER NOT NULL DEFAULT 0
+            );
+
+            -- Member reports waiting on a moderator, and the appeals they file later.
+            CREATE TABLE IF NOT EXISTS moderation_reports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                reporter_id INTEGER NOT NULL DEFAULT 0,
+                target_id INTEGER NOT NULL DEFAULT 0,
+                channel_id INTEGER NOT NULL DEFAULT 0,
+                message_id INTEGER NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS moderation_appeals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id INTEGER NOT NULL DEFAULT 0,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                case_id INTEGER NOT NULL DEFAULT 0,
+                text TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL
             );
 
             -- Staff notes are separate from warnings: a note is context, not a strike,
@@ -3480,6 +3538,32 @@ def run_web_export_member_activity(guild_id: int, role_id: int | None = None):
     except Exception as exc:
         logger.exception("Failed to export member activity archive")
         return {"ok": False, "error": str(exc)}
+
+
+def run_web_get_automod(guild_id):
+    """The stored automod, raid and ladder settings for the form."""
+    gid = normalize_target_guild_id(guild_id)
+    return {
+        "ok": True,
+        "automod": _load_guild_json("automod_config", gid),
+        "raid": _load_guild_json("raid_config", gid),
+        "ladder": _load_guild_json("escalation_ladder", gid),
+    }
+
+
+def run_web_save_automod(guild_id, form):
+    """Validate and store; refuse everything when any part is wrong."""
+    gid = normalize_target_guild_id(guild_id)
+    automod, errors = normalize_automod(form)
+    raid, raid_errors = normalize_raid(form)
+    ladder, ladder_errors = normalize_ladder(form)
+    errors = list(errors) + list(raid_errors) + list(ladder_errors)
+    if errors:
+        return {"ok": False, "error": "; ".join(errors)}
+    db_kv_set(f"automod_config:{gid}", json.dumps(automod))
+    db_kv_set(f"raid_config:{gid}", json.dumps(raid))
+    db_kv_set(f"escalation_ladder:{gid}", json.dumps(ladder))
+    return {"ok": True, "message": "Automod settings saved."}
 
 
 def run_web_get_moderation_cases(guild_id, filters=None):
@@ -13890,6 +13974,8 @@ def start_web_admin_server():
                     on_get_discourse_activity=run_web_get_discourse_activity,
                     on_query_discourse_activity=run_web_query_discourse_activity,
                     on_get_moderation_cases=run_web_get_moderation_cases,
+                    on_get_automod=run_web_get_automod,
+                    on_save_automod=run_web_save_automod,
                     on_export_moderation_cases=run_web_export_moderation_cases,
                     on_get_reddit_feeds=run_web_get_reddit_feeds,
                     on_manage_reddit_feeds=run_web_manage_reddit_feeds,
@@ -15017,6 +15103,11 @@ async def on_member_join(member: discord.Member):
             return
     except Exception:
         logger.exception("Failed applying honeypot join guard for %s in guild %s", member, guild.id)
+    try:
+        if await apply_join_guard(member):
+            return
+    except Exception:
+        logger.exception("Failed applying the join guard for %s in guild %s", member, guild.id)
     guild_invite_roles = invite_roles_by_guild.get(guild.id) or {}
     guild_invite_uses = invite_uses_by_guild.setdefault(guild.id, {})
     used_invite = None
@@ -15514,6 +15605,15 @@ async def on_message(message: discord.Message):
                     getattr(message.guild, "id", "unknown"),
                 )
     if message.guild is not None and isinstance(message.author, discord.Member) and not has_moderator_access(message.author):
+        try:
+            if await apply_automod(message):
+                return
+        except Exception:
+            logger.exception(
+                "Automod failed for message %s in guild %s",
+                getattr(message, "id", "unknown"),
+                getattr(message.guild, "id", "unknown"),
+            )
         try:
             if await apply_bad_word_moderation(message):
                 return
@@ -20755,6 +20855,346 @@ async def translate_channels_remove(
 
 
 # --------------------------------------------------------------------------- #
+#  Automod, raid protection, reports and appeals
+# --------------------------------------------------------------------------- #
+# The rules live in app/automod.py and app/raid_guard.py; this is the wiring: read the
+# per-guild config, decide, act, and record. Everything is off until a server turns it
+# on, so a fresh install behaves exactly as before.
+
+automod_tracker = MessageTracker()
+join_tracker = JoinTracker()
+
+
+def _load_guild_json(key: str, guild_id: int | None) -> dict:
+    raw = db_kv_get(f"{key}:{normalize_target_guild_id(guild_id)}")
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring unreadable %s setting for guild %s", key, guild_id)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_automod_config(guild_id: int | None) -> AutomodConfig:
+    data = _load_guild_json("automod_config", guild_id)
+    if not data:
+        return AutomodConfig()
+    defaults = AutomodConfig()
+
+    def _ints(value):
+        if not isinstance(value, (list, tuple)):
+            return ()
+        result = []
+        for item in value:
+            try:
+                result.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return tuple(result)
+
+    rules = tuple(
+        RegexRule(str(rule.get("pattern") or ""), str(rule.get("reason") or "blocked pattern"))
+        for rule in (data.get("regex_rules") or [])
+        if isinstance(rule, dict) and rule.get("pattern")
+    )
+    return AutomodConfig(
+        enabled=bool(data.get("enabled", False)),
+        window_seconds=int(data.get("window_seconds") or defaults.window_seconds),
+        max_messages=int(data.get("max_messages") or defaults.max_messages),
+        duplicate_count=int(data.get("duplicate_count") or defaults.duplicate_count),
+        max_mentions=int(data.get("max_mentions") or defaults.max_mentions),
+        max_caps_ratio=float(data.get("max_caps_ratio") or defaults.max_caps_ratio),
+        max_emoji=int(data.get("max_emoji") or defaults.max_emoji),
+        max_zalgo=int(data.get("max_zalgo") or defaults.max_zalgo),
+        block_invites=bool(data.get("block_invites", True)),
+        block_links=bool(data.get("block_links", False)),
+        allowed_domains=tuple(str(item).lower() for item in (data.get("allowed_domains") or [])),
+        blocked_extensions=tuple(
+            str(item).lower().lstrip(".")
+            for item in (data.get("blocked_extensions") or defaults.blocked_extensions)
+        ),
+        max_attachment_mb=int(data.get("max_attachment_mb") or defaults.max_attachment_mb),
+        regex_rules=rules,
+        exempt_role_ids=_ints(data.get("exempt_role_ids")),
+        exempt_channel_ids=_ints(data.get("exempt_channel_ids")),
+        quiet_start_hour=data.get("quiet_start_hour"),
+        quiet_end_hour=data.get("quiet_end_hour"),
+        quiet_multiplier=float(data.get("quiet_multiplier") or 1.0),
+        delete_on_violation=bool(data.get("delete_on_violation", True)),
+    )
+
+
+def load_raid_config(guild_id: int | None) -> RaidConfig:
+    data = _load_guild_json("raid_config", guild_id)
+    if not data:
+        return RaidConfig()
+    defaults = RaidConfig()
+    return RaidConfig(
+        enabled=bool(data.get("enabled", False)),
+        max_joins_per_minute=int(data.get("max_joins_per_minute") or defaults.max_joins_per_minute),
+        min_account_age_hours=int(data.get("min_account_age_hours") or 0),
+        quarantine_role_id=int(data.get("quarantine_role_id") or 0),
+        auto_lockdown=bool(data.get("auto_lockdown", False)),
+        lockdown_minutes=int(data.get("lockdown_minutes") or defaults.lockdown_minutes),
+    )
+
+
+def _escalation_ladder(guild_id: int | None):
+    data = _load_guild_json("escalation_ladder", guild_id)
+    return parse_ladder(data.get("steps")) if data else parse_ladder(None)
+
+
+async def apply_escalation(guild: discord.Guild, member: discord.Member, *, reason: str):
+    """Apply the rung this member has reached, if any."""
+    with with_db() as conn:
+        strikes = len(list_warnings(conn, guild.id, member.id))
+    step = decide_escalation(strikes, _escalation_ladder(guild.id))
+    if step is None:
+        return None
+    try:
+        if step.action == ACTION_TIMEOUT:
+            await member.timeout(
+                discord.utils.utcnow() + timedelta(seconds=max(60, step.seconds)), reason=reason
+            )
+        elif step.action == ACTION_KICK:
+            await member.kick(reason=reason)
+        elif step.action == ACTION_BAN:
+            await member.ban(reason=reason, delete_message_seconds=86400)
+    except discord.Forbidden:
+        logger.warning("Cannot apply escalation %s to %s in guild %s", step.action, member.id, guild.id)
+        return None
+    except discord.HTTPException:
+        logger.exception("Escalation %s failed for %s", step.action, member.id)
+        return None
+    await send_moderation_log(
+        guild,
+        bot.user,
+        f"escalation_{step.action}",
+        target=member,
+        reason=reason,
+        details=f"{strikes} active strike(s)",
+    )
+    return step
+
+
+async def apply_automod(message: discord.Message) -> bool:
+    """Check one message against the server's rules. True when it was actioned."""
+    guild = message.guild
+    if guild is None or not isinstance(message.author, discord.Member):
+        return False
+    config = load_automod_config(guild.id)
+    if not config.enabled:
+        return False
+    if automod_is_exempt(
+        config,
+        role_ids=[role.id for role in message.author.roles],
+        channel_id=message.channel.id,
+    ):
+        return False
+
+    verdict = evaluate_automod(
+        automod_tracker,
+        config,
+        guild_id=guild.id,
+        user_id=message.author.id,
+        text=message.content,
+        mention_count=len(message.mentions),
+        attachments=[
+            {"filename": attachment.filename, "size": attachment.size}
+            for attachment in message.attachments
+        ],
+    )
+    if verdict is None:
+        return False
+
+    if config.delete_on_violation:
+        try:
+            await message.delete()
+            _bot_deleted_message_ids.add(message.id)
+        except discord.HTTPException:
+            logger.warning("Automod could not delete message %s", message.id)
+
+    with with_db(commit=True) as conn:
+        case_id = add_warning(
+            conn,
+            guild.id,
+            message.author.id,
+            reason=f"automod {verdict.as_text()}",
+            moderator="automod",
+            warning_type="automod",
+            message_excerpt=normalise_automod_text(message.content),
+        )
+
+    await send_moderation_log(
+        guild,
+        bot.user,
+        "automod",
+        target=message.author,
+        reason=verdict.as_text(),
+        details=f"case #{case_id}",
+    )
+    await apply_escalation(guild, message.author, reason=f"automod: {verdict.code}")
+    return True
+
+
+async def apply_join_guard(member: discord.Member) -> bool:
+    """Shared ban list, then the raid rules. True when the join was actioned."""
+    guild = member.guild
+    with with_db() as conn:
+        banned = get_shared_ban(conn, member.id)
+    if banned:
+        try:
+            await guild.ban(member, reason=f"Shared ban list: {banned['reason']}")
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning("Could not ban %s from the shared list in guild %s", member.id, guild.id)
+        return True
+
+    config = load_raid_config(guild.id)
+    if not config.enabled:
+        return False
+
+    age_hours = (discord.utils.utcnow() - member.created_at).total_seconds() / 3600
+    verdict = evaluate_join(
+        join_tracker, config, guild_id=guild.id, account_age_hours=age_hours
+    )
+    if verdict is None:
+        return False
+
+    quarantined = False
+    if config.quarantine_role_id:
+        role = guild.get_role(config.quarantine_role_id)
+        if role is not None:
+            try:
+                await member.add_roles(role, reason=f"Raid guard: {verdict.detail}")
+                quarantined = True
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning("Could not quarantine %s in guild %s", member.id, guild.id)
+
+    await send_moderation_log(
+        guild,
+        bot.user,
+        "raid_guard",
+        target=member,
+        reason=verdict.detail,
+        details="quarantined" if quarantined else "flagged",
+    )
+    return True
+
+
+@bot.event
+async def on_audit_log_entry_create(entry: discord.AuditLogEntry):
+    """Mirror audit-log entries into the server's log channel."""
+    guild = entry.guild
+    if guild is None or not is_managed_guild_id(guild.id):
+        return
+    channel_id = get_effective_logging_channel_id(guild.id)
+    if channel_id <= 0:
+        return
+    channel = guild.get_channel(channel_id)
+    if channel is None:
+        return
+    actor = f"{entry.user} (`{entry.user.id}`)" if entry.user else "unknown"
+    target = ""
+    if entry.target is not None:
+        target = f" on {entry.target}"
+    reason = f" — {entry.reason}" if entry.reason else ""
+    try:
+        await channel.send(
+            f"**Audit:** {entry.action.name}{target} by {actor}{reason}"[:1900]
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        logger.warning("Could not mirror audit entry %s in guild %s", entry.action, guild.id)
+
+
+class ReportActionView(discord.ui.View):
+    """Buttons on a report: delete the message, timeout, ban, or ignore it."""
+
+    def __init__(self, *, guild_id: int, target_id: int, message_id: int):
+        super().__init__(timeout=86400)
+        self.guild_id = guild_id
+        self.target_id = target_id
+        self.reported_message_id = message_id
+
+    async def _moderator(self, interaction: discord.Interaction) -> bool:
+        if _moderation_actor_allowed(interaction):
+            return True
+        await interaction.response.send_message(
+            "❌ Only moderators can act on a report.", ephemeral=True
+        )
+        return False
+
+    async def _finish(self, interaction: discord.Interaction, note: str):
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.response.edit_message(view=self)
+        except discord.HTTPException:
+            pass
+        await interaction.followup.send(note, ephemeral=True)
+
+    @discord.ui.button(label="Delete message", style=discord.ButtonStyle.secondary)
+    async def delete_message(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._moderator(interaction):
+            return
+        channel = interaction.channel
+        try:
+            message = await channel.fetch_message(self.reported_message_id)
+            await message.delete()
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            await interaction.response.send_message(
+                "❌ That message is already gone, or I cannot delete it.", ephemeral=True
+            )
+            return
+        await self._finish(interaction, "✅ Message deleted.")
+
+    @discord.ui.button(label="Timeout 10m", style=discord.ButtonStyle.primary)
+    async def timeout_member(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._moderator(interaction):
+            return
+        guild = interaction.guild
+        member = guild.get_member(self.target_id)
+        if member is None:
+            await interaction.response.send_message("❌ That member is no longer here.", ephemeral=True)
+            return
+        try:
+            await member.timeout(
+                discord.utils.utcnow() + timedelta(minutes=10), reason=f"Report action by {interaction.user}"
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.response.send_message("❌ I cannot time that member out.", ephemeral=True)
+            return
+        await self._finish(interaction, "✅ Member timed out for 10 minutes.")
+
+    @discord.ui.button(label="Ban", style=discord.ButtonStyle.danger)
+    async def ban_member(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._moderator(interaction):
+            return
+        guild = interaction.guild
+        member = guild.get_member(self.target_id)
+        if member is None:
+            await interaction.response.send_message("❌ That member is no longer here.", ephemeral=True)
+            return
+        allowed, refusal = validate_moderation_target(interaction.user, member, guild.me)
+        if not allowed:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
+        try:
+            await member.ban(reason=f"Report action by {interaction.user}", delete_message_seconds=86400)
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.response.send_message("❌ I cannot ban that member.", ephemeral=True)
+            return
+        await self._finish(interaction, "✅ Member banned.")
+
+    @discord.ui.button(label="Ignore", style=discord.ButtonStyle.secondary)
+    async def ignore_report(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await self._moderator(interaction):
+            return
+        await self._finish(interaction, "Ignored.")
+
+
+# --------------------------------------------------------------------------- #
 #  Staff moderation commands
 # --------------------------------------------------------------------------- #
 # Warnings used to exist only as a side effect of the bad-word filter, so a moderator
@@ -21149,6 +21589,171 @@ async def unlock_slash(
     if not await _require_moderator(interaction, "unlock"):
         return
     await _set_channel_lock(interaction, channel, False, "unlocked")
+
+
+@tree.command(name="report", description="Report a message to the moderators")
+@app_commands.describe(member="Who is being reported", reason="What happened")
+async def report_slash(interaction: discord.Interaction, member: discord.Member, reason: str):
+    if not await ensure_interaction_command_access(interaction, "report"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    if member.id == interaction.user.id:
+        await interaction.response.send_message("❌ You cannot report yourself.", ephemeral=True)
+        return
+
+    reason_text = str(reason or "").strip()[:500] or "No reason given"
+    channel_id = get_effective_logging_channel_id(interaction.guild.id)
+    channel = interaction.guild.get_channel(channel_id) if channel_id > 0 else None
+    if channel is None:
+        await interaction.response.send_message(
+            "❌ No moderation log channel is configured, so the report cannot be filed.",
+            ephemeral=True,
+        )
+        return
+
+    with with_db(commit=True) as conn:
+        cursor = conn.execute(
+            "INSERT INTO moderation_reports (guild_id, reporter_id, target_id, channel_id, "
+            "message_id, reason, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'open', ?)",
+            (
+                interaction.guild.id,
+                interaction.user.id,
+                member.id,
+                interaction.channel_id or 0,
+                interaction.id,
+                reason_text,
+                datetime.now(UTC).isoformat(),
+            ),
+        )
+        report_id = int(cursor.lastrowid or 0)
+
+    embed = discord.Embed(
+        title=f"Report #{report_id}",
+        description=reason_text,
+        colour=discord.Color.orange(),
+    )
+    embed.add_field(name="Reported", value=f"{member.mention} (`{member.id}`)", inline=True)
+    embed.add_field(name="By", value=f"{interaction.user.mention}", inline=True)
+    view = ReportActionView(
+        guild_id=interaction.guild.id,
+        target_id=member.id,
+        message_id=interaction.id,
+    )
+    try:
+        await channel.send(embed=embed, view=view)
+    except (discord.Forbidden, discord.HTTPException):
+        await interaction.response.send_message(
+            "❌ I could not post the report to the moderation channel.", ephemeral=True
+        )
+        return
+
+    await interaction.response.send_message(
+        f"✅ Report #{report_id} filed. The moderators will see it.", ephemeral=True
+    )
+
+
+@tree.command(name="appeal", description="Appeal a moderation case")
+@app_commands.describe(case="The case number", text="Why the case should be reviewed")
+async def appeal_slash(interaction: discord.Interaction, case: int, text: str):
+    if not await ensure_interaction_command_access(interaction, "appeal"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    appeal_text = str(text or "").strip()[:1000]
+    if not appeal_text:
+        await interaction.response.send_message("❌ An appeal needs some text.", ephemeral=True)
+        return
+
+    with with_db(commit=True) as conn:
+        cursor = conn.execute(
+            "INSERT INTO moderation_appeals (guild_id, user_id, case_id, text, status, created_at) "
+            "VALUES (?, ?, ?, ?, 'open', ?)",
+            (interaction.guild.id, interaction.user.id, int(case), appeal_text, datetime.now(UTC).isoformat()),
+        )
+        appeal_id = int(cursor.lastrowid or 0)
+
+    channel_id = get_effective_logging_channel_id(interaction.guild.id)
+    channel = interaction.guild.get_channel(channel_id) if channel_id > 0 else None
+    if channel is not None:
+        try:
+            await channel.send(
+                f"**Appeal #{appeal_id}** for case #{case} by {interaction.user.mention}: {appeal_text}"[:1900]
+            )
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning("Could not post appeal %s to the log channel", appeal_id)
+
+    await interaction.response.send_message(
+        f"✅ Appeal #{appeal_id} filed for case #{case}. A moderator will review it.", ephemeral=True
+    )
+
+
+@tree.command(name="shareban", description="Add a member to the shared ban list")
+@app_commands.describe(member="Member to add", reason="Why")
+async def shareban_slash(interaction: discord.Interaction, member: discord.Member, reason: str):
+    if not await _require_moderator(interaction, "shareban"):
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
+        return
+    reason_text = str(reason or "").strip() or "No reason given"
+    with with_db(commit=True) as conn:
+        created = add_shared_ban(
+            conn,
+            member.id,
+            reason=reason_text,
+            added_by=str(interaction.user),
+            guild_id=interaction.guild.id,
+        )
+    try:
+        await interaction.guild.ban(
+            member, reason=f"Shared ban list: {reason_text}", delete_message_seconds=86400
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        logger.warning("Could not ban %s locally while sharing the ban", member.id)
+    await send_moderation_log(
+        interaction.guild,
+        interaction.user,
+        "shareban",
+        target=member,
+        reason=reason_text,
+        details="added" if created else "updated",
+    )
+    await interaction.response.send_message(
+        f"✅ {member.mention} {'added to' if created else 'updated on'} the shared ban list.",
+        ephemeral=True,
+    )
+
+
+@tree.command(name="unshareban", description="Remove a member from the shared ban list")
+@app_commands.describe(member="Member to remove")
+async def unshareban_slash(interaction: discord.Interaction, member: discord.Member):
+    if not await _require_moderator(interaction, "unshareban"):
+        return
+    with with_db(commit=True) as conn:
+        removed = remove_shared_ban(conn, member.id)
+    await interaction.response.send_message(
+        f"✅ Removed {member.mention} from the shared ban list." if removed
+        else f"ℹ️ {member.mention} was not on the shared ban list.",
+        ephemeral=True,
+    )
+
+
+@tree.command(name="sharedbans", description="Show the shared ban list")
+async def sharedbans_slash(interaction: discord.Interaction):
+    if not await _require_moderator(interaction, "sharedbans"):
+        return
+    with with_db() as conn:
+        entries = list_shared_bans(conn, limit=25)
+    if not entries:
+        await interaction.response.send_message("ℹ️ The shared ban list is empty.", ephemeral=True)
+        return
+    lines = ["**Shared ban list**"]
+    for entry in entries:
+        lines.append(f"• <@{entry['user_id']}> — {entry['reason'] or 'no reason'} ({entry['added_by']})")
+    await interaction.response.send_message("\n".join(lines)[:1900], ephemeral=True)
 
 
 if __name__ == "__main__":
