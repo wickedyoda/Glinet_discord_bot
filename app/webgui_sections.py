@@ -75,6 +75,7 @@ SECTIONS = (
             ("moderation_page", "Moderation", "Warnings, timeouts and bad-word rules."),
             ("permissions_page", "Permissions", "Groups, capabilities and guild scope."),
             ("actions_page", "Action History", "What moderation has already done."),
+            ("cases_page", "Cases", "Every warning, filterable and exportable."),
         ),
     },
     {
@@ -232,6 +233,14 @@ ANNOUNCEMENTS = {
         "What an account may do, and on which servers. Capability is per area — read or write — "
         "and scope is set by the group.",
         "You cannot grant more than you hold, and the Owner group cannot be edited.",
+    ),
+    "cases_page": (
+        "Cases",
+        "Every warning recorded for this server, with the case number a member can quote, "
+        "who issued it, and whether it is still active. Filter by member, status or date, "
+        "and download the result as CSV.",
+        "Clearing a warning is a decision with a name attached, so it is done from the "
+        "member page or the /clearwarnings command, not from this table.",
     ),
     "actions_page": (
         "Action history",
