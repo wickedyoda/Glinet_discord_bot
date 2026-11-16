@@ -106,7 +106,11 @@ jobs:
       - name: Prepare variables
         id: vars
         run: |
-          IMAGE="ghcr.io/${{ github.actor }}/glinet_discord_bot"
+          # The owner, not the actor: a Dependabot PR runs as `dependabot[bot]`, which
+          # is not a legal image path, and buildx validates the tag even when it will
+          # not push. Lowercased because GHCR requires it.
+          OWNER="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          IMAGE="ghcr.io/${OWNER}/glinet_discord_bot"
           DATE_TAG="$(date +'%Y%m%d')"
           VERSION_TAG=""
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
