@@ -1296,6 +1296,18 @@ COMMAND_PERMISSION_DEFAULTS = {
     "bulk_assign_role_csv": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "enter_role": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "getaccess": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    "warn": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "warnings": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "clearwarnings": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "note": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "notes": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "history": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "softban": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "slowmode": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "lock": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "unlock": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "case": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    "reason": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
     "country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "clear_country": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "create_role": COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
@@ -1359,6 +1371,54 @@ COMMAND_PERMISSION_METADATA = {
     "ping": {
         "label": "/ping",
         "description": "Check that the bot is online.",
+    },
+    "warn": {
+        "label": "/warn",
+        "description": "Record a warning against a member.",
+    },
+    "warnings": {
+        "label": "/warnings",
+        "description": "List a member's active warnings.",
+    },
+    "clearwarnings": {
+        "label": "/clearwarnings",
+        "description": "Clear one warning, or all of them.",
+    },
+    "note": {
+        "label": "/note",
+        "description": "Attach a staff note to a member.",
+    },
+    "notes": {
+        "label": "/notes",
+        "description": "Show a member's staff notes.",
+    },
+    "history": {
+        "label": "/history",
+        "description": "Warnings, notes and actions for a member.",
+    },
+    "softban": {
+        "label": "/softban",
+        "description": "Ban, delete recent messages, then unban.",
+    },
+    "slowmode": {
+        "label": "/slowmode",
+        "description": "Set a channel's slowmode.",
+    },
+    "lock": {
+        "label": "/lock",
+        "description": "Stop @everyone from posting in a channel.",
+    },
+    "unlock": {
+        "label": "/unlock",
+        "description": "Let @everyone post in a channel again.",
+    },
+    "case": {
+        "label": "/case",
+        "description": "Show one moderation case by number.",
+    },
+    "reason": {
+        "label": "/reason",
+        "description": "Edit the reason on a case.",
     },
     "sayhi": {
         "label": "/sayhi",
@@ -2805,6 +2865,9 @@ def ensure_db_schema():
         ):
             if column_name not in moderation_warning_columns:
                 conn.execute(statement)
+        # Rows written before case_id existed carry 0, while the UI shows their row id.
+        # Backfilling makes the number a member quotes the number that clears.
+        conn.execute("UPDATE moderation_warnings SET case_id = id WHERE case_id = 0")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_moderation_warnings_guild_user_case "
             "ON moderation_warnings(guild_id, user_id, case_id)"
@@ -3148,6 +3211,7 @@ def count_recent_moderation_warnings(guild_id: int | None, user_id: int, *, with
             SELECT COUNT(*) AS total
             FROM moderation_warnings
             WHERE guild_id = ? AND user_id = ? AND created_at >= ?
+              AND (cleared_at IS NULL OR cleared_at = '')
             """,
             (safe_guild_id, int(user_id), cutoff),
         ).fetchone()
@@ -3432,14 +3496,22 @@ def run_web_get_moderation_cases(guild_id, filters=None):
 def run_web_export_moderation_cases(guild_id, filters=None):
     """Every matching case as CSV, not just the visible page."""
     try:
-        payload = query_cases(
-            get_db_connection(),
-            normalize_target_guild_id(guild_id),
-            {**(filters or {}), "page": 1},
-            page_size=10000,
-        )
-        if not payload.get("ok"):
-            return payload
+        conn = get_db_connection()
+        safe_guild_id = normalize_target_guild_id(guild_id)
+        collected: list[dict] = []
+        page = 1
+        while True:
+            payload = query_cases(
+                conn, safe_guild_id, {**(filters or {}), "page": page}, page_size=1000
+            )
+            if not payload.get("ok"):
+                return payload
+            batch = payload.get("cases") or []
+            collected.extend(batch)
+            if len(batch) < 1000 or page >= int(payload.get("pages") or 1):
+                break
+            page += 1
+        payload = {"ok": True, "cases": collected}
         stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M")
         return {
             "ok": True,
@@ -20697,13 +20769,14 @@ def _moderation_actor_allowed(interaction: discord.Interaction) -> bool:
     return has_moderator_access(member) or has_admin_access(member)
 
 
-async def _require_moderator(interaction: discord.Interaction) -> bool:
-    if _moderation_actor_allowed(interaction):
-        return True
-    await interaction.response.send_message(
-        "❌ You need a moderator role to use this command.", ephemeral=True
-    )
-    return False
+async def _require_moderator(interaction: discord.Interaction, command_key: str) -> bool:
+    """Authorise through the per-guild command permissions, not a hardcoded role check.
+
+    The default policy for these keys is moderator roles, so the behaviour is unchanged
+    out of the box -- but an administrator can now disable a command or narrow it to
+    custom roles from Command Permissions, which a role check would have ignored.
+    """
+    return await ensure_interaction_command_access(interaction, command_key)
 
 
 async def _dm_member(member: discord.Member, text: str) -> bool:
@@ -20717,7 +20790,7 @@ async def _dm_member(member: discord.Member, text: str) -> bool:
 @tree.command(name="warn", description="Record a warning against a member")
 @app_commands.describe(member="Member to warn", reason="Why, in one line")
 async def warn_slash(interaction: discord.Interaction, member: discord.Member, reason: str):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "warn"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20762,7 +20835,7 @@ async def warn_slash(interaction: discord.Interaction, member: discord.Member, r
 @tree.command(name="warnings", description="List a member's active warnings")
 @app_commands.describe(member="Member to look up")
 async def warnings_slash(interaction: discord.Interaction, member: discord.Member):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "warnings"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20788,7 +20861,7 @@ async def warnings_slash(interaction: discord.Interaction, member: discord.Membe
 async def clearwarnings_slash(
     interaction: discord.Interaction, member: discord.Member, case: int | None = None
 ):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "clearwarnings"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20816,7 +20889,7 @@ async def clearwarnings_slash(
 @tree.command(name="note", description="Attach a staff note to a member")
 @app_commands.describe(member="Member the note is about", text="The note")
 async def note_slash(interaction: discord.Interaction, member: discord.Member, text: str):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "note"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20837,7 +20910,7 @@ async def note_slash(interaction: discord.Interaction, member: discord.Member, t
 @tree.command(name="notes", description="Show a member's staff notes")
 @app_commands.describe(member="Member to look up")
 async def notes_slash(interaction: discord.Interaction, member: discord.Member):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "notes"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20856,7 +20929,7 @@ async def notes_slash(interaction: discord.Interaction, member: discord.Member):
 @tree.command(name="history", description="Warnings, notes and actions for a member")
 @app_commands.describe(member="Member to look up")
 async def history_slash(interaction: discord.Interaction, member: discord.Member):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "history"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20871,7 +20944,7 @@ async def history_slash(interaction: discord.Interaction, member: discord.Member
 @tree.command(name="case", description="Show one moderation case by number")
 @app_commands.describe(case="Case number")
 async def case_slash(interaction: discord.Interaction, case: int):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "case"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20896,7 +20969,7 @@ async def case_slash(interaction: discord.Interaction, case: int):
 @tree.command(name="reason", description="Edit the reason on a case")
 @app_commands.describe(case="Case number", text="The corrected reason")
 async def reason_slash(interaction: discord.Interaction, case: int, text: str):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "reason"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20935,7 +21008,7 @@ async def softban_slash(
     reason: str = "No reason given",
     days: int = 1,
 ):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "softban"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -20946,13 +21019,9 @@ async def softban_slash(
             "❌ I need the Ban Members permission to softban.", ephemeral=True
         )
         return
-    if member.id == interaction.user.id:
-        await interaction.response.send_message("❌ You cannot softban yourself.", ephemeral=True)
-        return
-    if member.top_role >= me.top_role:
-        await interaction.response.send_message(
-            "❌ That member's highest role is above mine, so I cannot ban them.", ephemeral=True
-        )
+    allowed, refusal = validate_moderation_target(interaction.user, member, me)
+    if not allowed:
+        await interaction.response.send_message(refusal, ephemeral=True)
         return
 
     delete_days = max(0, min(int(days), 7))
@@ -20996,7 +21065,7 @@ async def slowmode_slash(
     seconds: int,
     channel: discord.TextChannel | None = None,
 ):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "slowmode"):
         return
     if interaction.guild is None:
         await interaction.response.send_message("❌ This command only works in a server.", ephemeral=True)
@@ -21034,10 +21103,14 @@ async def _set_channel_lock(
     if not isinstance(target, discord.TextChannel):
         await interaction.response.send_message("❌ Choose a text channel.", ephemeral=True)
         return
+    # set_permissions replaces the whole overwrite, so read it first: a channel that
+    # hides itself from @everyone must stay hidden after a lock or an unlock.
+    overwrite = target.overwrites_for(interaction.guild.default_role)
+    overwrite.send_messages = False if locked else None
     try:
         await target.set_permissions(
             interaction.guild.default_role,
-            send_messages=False if locked else None,
+            overwrite=overwrite,
             reason=f"{'Lock' if locked else 'Unlock'} by {interaction.user}: {reason}",
         )
     except discord.Forbidden:
@@ -21063,7 +21136,7 @@ async def lock_slash(
     channel: discord.TextChannel | None = None,
     reason: str = "No reason given",
 ):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "lock"):
         return
     await _set_channel_lock(interaction, channel, True, str(reason or "No reason given"))
 
@@ -21073,7 +21146,7 @@ async def lock_slash(
 async def unlock_slash(
     interaction: discord.Interaction, channel: discord.TextChannel | None = None
 ):
-    if not await _require_moderator(interaction):
+    if not await _require_moderator(interaction, "unlock"):
         return
     await _set_channel_lock(interaction, channel, False, "unlocked")
 

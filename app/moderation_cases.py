@@ -8,9 +8,9 @@ table row that can be clicked by accident.
 
 from __future__ import annotations
 
-import csv
-import io
 from datetime import UTC, date, datetime, timedelta
+
+from app.csv_utils import build_csv_bytes
 
 DEFAULT_RANGE_DAYS = 90
 MAX_RANGE_DAYS = 3650
@@ -53,12 +53,14 @@ def normalize_filters(raw: dict | None) -> dict:
         "date_to": date_to,
         "page": page,
         "from_iso": f"{date_from.isoformat()}T00:00:00",
-        "to_iso": f"{date_to.isoformat()}T23:59:59",
+        # Exclusive next-day midnight: a timestamp like 23:59:59.123 sorts after
+        # "23:59:59" as text, so an inclusive bound silently drops the last second.
+        "to_iso": f"{(date_to + timedelta(days=1)).isoformat()}T00:00:00",
     }
 
 
 def _where(filters: dict) -> tuple[str, list]:
-    clauses = ["guild_id = ?", "created_at >= ?", "created_at <= ?"]
+    clauses = ["guild_id = ?", "created_at >= ?", "created_at < ?"]
     params: list = [filters["guild_id"], filters["from_iso"], filters["to_iso"]]
     if filters["status"] == "active":
         clauses.append("(cleared_at IS NULL OR cleared_at = '')")
@@ -123,19 +125,23 @@ def query_cases(conn, guild_id: int, raw_filters: dict | None, *, page_size: int
 
 
 def cases_to_csv(cases: list[dict]) -> str:
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["case", "user_id", "created_at", "type", "reason", "moderator", "cleared_at"])
-    for case in cases:
-        writer.writerow(
-            [
-                case.get("case_id", ""),
-                case.get("user_id", ""),
-                case.get("created_at", ""),
-                case.get("type", ""),
-                case.get("reason", ""),
-                case.get("moderator", ""),
-                case.get("cleared_at", ""),
-            ]
-        )
-    return buffer.getvalue()
+    """CSV with spreadsheet-safe cells.
+
+    A reason beginning with "=" is a formula to Excel, not text, so the shared helper
+    prefixes the dangerous ones. Staff open these files on their own machines.
+    """
+    rows = [
+        [
+            case.get("case_id", ""),
+            case.get("user_id", ""),
+            case.get("created_at", ""),
+            case.get("type", ""),
+            case.get("reason", ""),
+            case.get("moderator", ""),
+            case.get("cleared_at", ""),
+        ]
+        for case in cases
+    ]
+    return build_csv_bytes(
+        ["case", "user_id", "created_at", "type", "reason", "moderator", "cleared_at"], rows
+    ).decode("utf-8")

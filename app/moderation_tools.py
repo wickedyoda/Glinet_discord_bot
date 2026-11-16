@@ -143,11 +143,13 @@ def clear_warnings(conn, guild_id: int, user_id: int, *, case_id: int | None = N
     """Clear one warning, or all of them, and return how many were cleared."""
     stamp = _now()
     if case_id is not None:
+        # Match the row id as well: rows written before case_id existed display their
+        # row id as the case number, so that is the number a moderator will type.
         cursor = conn.execute(
             "UPDATE moderation_warnings SET cleared_at = ? "
-            "WHERE guild_id = ? AND user_id = ? AND case_id = ? "
+            "WHERE guild_id = ? AND user_id = ? AND (case_id = ? OR id = ?) "
             "AND (cleared_at IS NULL OR cleared_at = '')",
-            (stamp, int(guild_id), int(user_id), int(case_id)),
+            (stamp, int(guild_id), int(user_id), int(case_id), int(case_id)),
         )
     else:
         cursor = conn.execute(
@@ -189,10 +191,19 @@ def build_history(conn, guild_id: int, user_id: int, *, limit: int = MAX_HISTORY
     warnings = list_warnings(conn, guild_id, user_id, include_cleared=True)
     notes = list_notes(conn, guild_id, user_id)
     try:
+        # Recorded actions store the target as "name (`id`)" or "name (id)", so an
+        # equality check on the bare id would hide every real action from the history.
         action_rows = conn.execute(
             "SELECT created_at, action, status, moderator, reason FROM actions "
-            "WHERE guild_id = ? AND target = ? ORDER BY id DESC LIMIT ?",
-            (int(guild_id), str(user_id), int(limit)),
+            "WHERE guild_id = ? AND (target = ? OR target LIKE ? OR target LIKE ?) "
+            "ORDER BY id DESC LIMIT ?",
+            (
+                int(guild_id),
+                str(user_id),
+                f"%(`{user_id}`)%",
+                f"%({user_id})%",
+                int(limit),
+            ),
         ).fetchall()
     except Exception:  # noqa: BLE001 - the actions table is optional in older databases
         action_rows = []

@@ -291,3 +291,70 @@ def test_editing_a_missing_case_reports_failure(db):
     from app.moderation_tools import update_case_reason
 
     assert update_case_reason(db, GUILD, 424242, reason="x", editor="mod") is False
+
+
+# --- the review's findings, each pinned ---------------------------------------
+
+
+def test_cleared_warnings_do_not_count_toward_escalation(db):
+    """A cleared strike must not fire the bad-word timeout later."""
+    case_id = add_warning(db, GUILD, USER, reason="first", moderator="mod")
+    db.commit()
+    assert bot_module.count_recent_moderation_warnings(GUILD, USER) == 1
+
+    clear_warnings(db, GUILD, USER, case_id=case_id)
+    db.commit()
+
+    assert bot_module.count_recent_moderation_warnings(GUILD, USER) == 0
+
+
+def test_a_legacy_warning_clears_by_the_number_it_displays(db):
+    """Rows written before case_id existed show their row id; that number must work."""
+    db.execute(
+        "INSERT INTO moderation_warnings (guild_id, user_id, created_at, warning_type, reason, moderator, cleared_at, case_id) "
+        "VALUES (?, ?, '2026-01-01T00:00:00+00:00', 'bad_word', '', '', '', 0)",
+        (GUILD, USER),
+    )
+    db.commit()
+    row_id = int(db.execute("SELECT id FROM moderation_warnings").fetchone()[0])
+
+    assert clear_warnings(db, GUILD, USER, case_id=row_id) == 1
+    db.commit()
+    assert list_warnings(db, GUILD, USER) == []
+
+
+def test_history_finds_actions_stored_with_a_name_and_id(db):
+    db.execute(
+        "INSERT INTO actions (guild_id, created_at, action, status, moderator, target, reason) "
+        "VALUES (?, '2026-01-01T00:00:00+00:00', 'timeout', 'success', 'mod', ?, 'cool off')",
+        (GUILD, f"Some Member (`{USER}`)"),
+    )
+    db.commit()
+
+    history = build_history(db, GUILD, USER)
+    assert len(history["actions"]) == 1, "an action stored as name (id) was not matched"
+
+
+def test_csv_export_neutralises_spreadsheet_formulas(db):
+    from app.moderation_cases import cases_to_csv, query_cases
+
+    add_warning(db, GUILD, USER, reason="=HYPERLINK(\"http://evil\")", moderator="+mod")
+    db.commit()
+
+    text = cases_to_csv(query_cases(db, GUILD, {"status": "all"})["cases"])
+    assert "'=HYPERLINK" in text, "a formula must be prefixed so a spreadsheet treats it as text"
+    assert "'+mod" in text
+
+
+def test_the_date_range_includes_the_last_second_of_the_end_day(db):
+    from app.moderation_cases import query_cases
+
+    db.execute(
+        "INSERT INTO moderation_warnings (guild_id, user_id, created_at, warning_type, reason, moderator, cleared_at, case_id) "
+        "VALUES (?, ?, '2026-03-10T23:59:59.500000+00:00', 'manual', 'late', 'mod', '', 1)",
+        (GUILD, USER),
+    )
+    db.commit()
+
+    payload = query_cases(db, GUILD, {"status": "all", "from": "2026-03-10", "to": "2026-03-10"})
+    assert payload["total"] == 1, "a warning in the final second of the range was dropped"
