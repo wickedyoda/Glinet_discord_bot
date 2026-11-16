@@ -105,6 +105,7 @@ def render_reaction_roles_body(
     render_select_input,
     render_fixed_select_input,
     catalog_fetched_at: str = "",
+    draft: dict | None = None,
 ):
     refreshed_note = ""
     if catalog_fetched_at:
@@ -190,19 +191,26 @@ def render_reaction_roles_body(
             """
         )
 
-    # Post builder inputs
+    # Post builder inputs. A rejected post comes back with the operator's own text and
+    # rows in `draft`: losing a composed message because one emoji was wrong is the
+    # difference between a correction and retyping the whole thing.
+    draft = draft or {}
+    draft_pairs = [pair for pair in (draft.get("pairs") or []) if isinstance(pair, dict)]
     post_channel_input = render_select_input(
         "post_channel_id",
-        "",
+        str(draft.get("channel_id") or ""),
         channel_options,
         placeholder="Select channel to post message in...",
     )
+    draft_message = str(draft.get("message_content") or "")
 
     pairing_rows = []
-    for idx in range(1, 9):
+    row_count = max(8, len(draft_pairs))
+    for idx in range(1, row_count + 1):
+        draft_pair = draft_pairs[idx - 1] if idx - 1 < len(draft_pairs) else {}
         pairing_role_select = render_select_input(
             f"post_role_id_{idx}",
-            "",
+            str(draft_pair.get("role_id") or ""),
             role_options,
             placeholder=f"Select role for emoji {idx}...",
         )
@@ -210,7 +218,7 @@ def render_reaction_roles_body(
             f"""
             <tr>
               <td class="muted mono" style="width:40px;text-align:center;">{idx}</td>
-              <td style="width:160px;"><input type="text" name="post_emoji_{idx}" placeholder="e.g. 🎮 or <:custom:123>" style="width:100%;box-sizing:border-box;" /></td>
+              <td style="width:160px;"><input type="text" name="post_emoji_{idx}" value="{escape(str(draft_pair.get('emoji') or ''), quote=True)}" placeholder="e.g. 🎮 or <:custom:123>" style="width:100%;box-sizing:border-box;" /></td>
               <td>{pairing_role_select}</td>
             </tr>
             """
@@ -239,7 +247,7 @@ def render_reaction_roles_body(
             <label>Target Channel</label>
             {post_channel_input}
             <label style="margin-top:12px;display:block;">Message Content</label>
-            <textarea name="post_message_content" rows="4" placeholder="React to this message to get your roles:&#10;🎮 = Gamer&#10;📢 = Announcements&#10;💻 = Developer" style="width:100%;box-sizing:border-box;resize:vertical;" required></textarea>
+            <textarea name="post_message_content" rows="4" placeholder="React to this message to get your roles:&#10;🎮 = Gamer&#10;📢 = Announcements&#10;💻 = Developer" style="width:100%;box-sizing:border-box;resize:vertical;" required>{escape(draft_message)}</textarea>
             <div style="margin-top:16px;">
               <h3 style="margin-bottom:6px;">Emoji & Role Connections</h3>
               <p class="muted" style="margin-top:0;">Connect emojis to server roles below. Leave unused rows blank.</p>

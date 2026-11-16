@@ -9057,6 +9057,7 @@ def create_web_app(
             else {"ok": False, "error": "Reaction role callbacks are not configured."}
         )
 
+        draft = None
         if request.method == "POST":
             action = str(request.form.get("action") or "").strip().lower()
             if action == "refresh_catalog":
@@ -9073,6 +9074,23 @@ def create_web_app(
                     flash(message, category)
                 if isinstance(response, dict):
                     payload = response
+                elif action == "post_message":
+                    # The post was rejected (a bad emoji, a missing role). Hand the
+                    # operator's own text and rows back to the form instead of
+                    # re-rendering it empty and making them retype the message.
+                    draft = {
+                        "channel_id": str(request.form.get("post_channel_id") or ""),
+                        "message_content": str(request.form.get("post_message_content") or ""),
+                        "pairs": [
+                            {
+                                "emoji": str(request.form.get(f"post_emoji_{idx}") or ""),
+                                "role_id": str(request.form.get(f"post_role_id_{idx}") or ""),
+                            }
+                            for idx in range(1, 11)
+                            if str(request.form.get(f"post_emoji_{idx}") or "").strip()
+                            or str(request.form.get(f"post_role_id_{idx}") or "").strip()
+                        ],
+                    }
 
         # Reload after a refresh so newly created Discord channels/roles appear immediately.
         channel_options, role_options, catalog_error = _load_discord_catalog_options(selected_guild_id)
@@ -9103,6 +9121,7 @@ def create_web_app(
             catalog_fetched_at=(
                 "" if catalog_error else _discord_catalog_fetched_at(selected_guild_id)
             ),
+            draft=draft,
         )
         return _render_page("Reaction Roles", body, user["email"], bool(user.get("is_admin")))
 
