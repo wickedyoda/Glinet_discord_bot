@@ -44,6 +44,7 @@ AREAS = (
 ENDPOINT_AREAS = {
     # moderation
     "moderation_page": "moderation",
+    "automod_page": "moderation",
     # members
     "members_page": "members",
     "role_access_page": "members",
@@ -217,6 +218,9 @@ READ_ENDPOINT_AREAS = {
     "member_activity_export": "activity",
     "discourse_activity_page": "activity",
     # moderation and members
+    "cases_page": "moderation",
+    "automod_page": "moderation",
+    "cases_export": "moderation",
     "honeypot_page": "moderation",
     "actions_page": "moderation",
     "bulk_role_csv": "members",

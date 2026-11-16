@@ -16,6 +16,13 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Etc/UTC"
+    # Wait before adopting a release: most malicious or broken publishes are caught and
+    # yanked within days, and an immediate bump is the whole attack window.
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+      semver-minor-days: 5
+      semver-patch-days: 2
     open-pull-requests-limit: 5
     commit-message:
       prefix: "chore(deps)"
@@ -37,6 +44,13 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Etc/UTC"
+    # Wait before adopting a release: most malicious or broken publishes are caught and
+    # yanked within days, and an immediate bump is the whole attack window.
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+      semver-minor-days: 5
+      semver-patch-days: 2
     open-pull-requests-limit: 5
     commit-message:
       prefix: "ci(deps)"
@@ -58,6 +72,13 @@ updates:
       day: "monday"
       time: "06:00"
       timezone: "Etc/UTC"
+    # Wait before adopting a release: most malicious or broken publishes are caught and
+    # yanked within days, and an immediate bump is the whole attack window.
+    cooldown:
+      default-days: 3
+      semver-major-days: 14
+      semver-minor-days: 5
+      semver-patch-days: 2
     open-pull-requests-limit: 3
     commit-message:
       prefix: "build(deps)"
