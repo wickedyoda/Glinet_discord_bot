@@ -62,6 +62,8 @@ from app.web_activity import (
     summarize_member_activity,
 )
 from app.web_audit import should_log_web_audit_event
+from app.web_automod import render_automod_body
+from app.web_cases import render_cases_body
 from app.web_discourse import (
     process_discourse_submission,
     render_discourse_body,
@@ -3581,6 +3583,10 @@ def create_web_app(
     on_get_member_activity=None,
     on_export_member_activity=None,
     on_get_discourse_activity=None,
+    on_get_moderation_cases=None,
+    on_get_automod=None,
+    on_save_automod=None,
+    on_export_moderation_cases=None,
     on_query_discourse_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
@@ -4372,6 +4378,9 @@ def create_web_app(
             "command_status",
             "command_permissions",
             "moderation_page",
+            "cases_page",
+            "automod_page",
+            "cases_export",
             "members_page",
             "discourse_page",
             "reddit_feeds",
@@ -4408,6 +4417,9 @@ def create_web_app(
             "dashboard",
             "guild_settings",
             "moderation_page",
+            "cases_page",
+            "automod_page",
+            "cases_export",
             "members_page",
             "discourse_page",
             "actions_page",
@@ -9125,6 +9137,116 @@ def create_web_app(
         )
         return _render_page("Reaction Roles", body, user["email"], bool(user.get("is_admin")))
 
+    @app.route("/admin/automod", methods=["GET", "POST"])
+    @login_required
+    def automod_page():
+        """Rules, raid guard and the escalation ladder for this server."""
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "selected server")
+
+        errors: list[str] = []
+        saved = False
+        if request.method == "POST":
+            if not callable(on_save_automod):
+                errors.append("Saving automod settings is not configured.")
+            elif str(request.form.get("confirm") or "").strip().lower() != "yes":
+                errors.append("Tick the confirmation box before saving.")
+            else:
+                response = on_save_automod(selected_guild_id, request.form)
+                if isinstance(response, dict) and response.get("ok"):
+                    saved = True
+                    flash(str(response.get("message") or "Automod settings saved."), "success")
+                else:
+                    errors.append(
+                        str(response.get("error") if isinstance(response, dict) else "Could not save.")
+                    )
+
+        payload = (
+            on_get_automod(selected_guild_id)
+            if callable(on_get_automod)
+            else {"ok": False, "error": "The automod callback is not configured."}
+        )
+        body = f"""
+        <div class="dashboard-shell">
+          <section class="server-hero">
+            <h1>&#129302; Automod</h1>
+            <span class="server-hero-caption">{escape(guild_name)}</span>
+          </section>
+          <form method="post" action="{escape(url_for('automod_page'), quote=True)}">
+          {render_automod_body(payload.get("automod") or {}, payload.get("raid") or {}, payload.get("ladder") or {}, errors=errors, saved=saved)}
+          </form>
+        </div>
+        """
+        return _render_page("Automod", body, user["email"], is_admin)
+
+    @app.route("/admin/cases", methods=["GET"])
+    @login_required
+    def cases_page():
+        """Every warning, filterable, with a CSV export."""
+        user = _current_user()
+        is_admin = _is_admin_user(user)
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild = _selected_guild() or {}
+        selected_guild_id = str(selected_guild.get("id") or "")
+        guild_name = str(selected_guild.get("name") or "selected server")
+        filters = {
+            key: str(request.args.get(key, "") or "")
+            for key in ("user_id", "status", "from", "to", "page")
+        }
+        payload = (
+            on_get_moderation_cases(selected_guild_id, filters)
+            if callable(on_get_moderation_cases)
+            else {"ok": False, "error": "The case list callback is not configured."}
+        )
+        body = f"""
+        <div class="dashboard-shell">
+          <section class="server-hero">
+            <h1>&#128203; Cases</h1>
+            <span class="server-hero-caption">{escape(guild_name)}</span>
+          </section>
+          {render_cases_body(payload)}
+        </div>
+        """
+        return _render_page("Cases", body, user["email"], is_admin)
+
+    @app.route("/admin/cases.csv", methods=["GET"])
+    @login_required
+    def cases_export():
+        selection_redirect = _require_selected_guild_redirect()
+        if selection_redirect is not None:
+            return selection_redirect
+        selected_guild_id = str((_selected_guild() or {}).get("id") or "")
+        if not callable(on_export_moderation_cases):
+            flash("Case export is not configured.", "error")
+            return redirect(url_for("cases_page"))
+        filters = {
+            key: str(request.args.get(key, "") or "")
+            for key in ("user_id", "status", "from", "to")
+        }
+        payload = on_export_moderation_cases(selected_guild_id, filters)
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            flash(
+                str(payload.get("error") or "Failed to export cases.")
+                if isinstance(payload, dict)
+                else "Failed to export cases.",
+                "error",
+            )
+            return redirect(url_for("cases_page"))
+        return send_file(
+            BytesIO(payload.get("data") or b""),
+            mimetype=str(payload.get("content_type") or "text/csv"),
+            as_attachment=True,
+            download_name=str(payload.get("filename") or "moderation-cases.csv"),
+        )
+
     @app.route("/admin/command-status", methods=["GET", "POST"])
     @login_required
     def command_status():
@@ -11084,6 +11206,10 @@ def start_web_admin_interface(
     on_get_member_activity=None,
     on_export_member_activity=None,
     on_get_discourse_activity=None,
+    on_get_moderation_cases=None,
+    on_get_automod=None,
+    on_save_automod=None,
+    on_export_moderation_cases=None,
     on_query_discourse_activity=None,
     on_get_reddit_feeds=None,
     on_manage_reddit_feeds=None,
@@ -11142,6 +11268,10 @@ def start_web_admin_interface(
         on_get_member_activity=on_get_member_activity,
         on_export_member_activity=on_export_member_activity,
         on_get_discourse_activity=on_get_discourse_activity,
+        on_get_moderation_cases=on_get_moderation_cases,
+        on_get_automod=on_get_automod,
+        on_save_automod=on_save_automod,
+        on_export_moderation_cases=on_export_moderation_cases,
         on_query_discourse_activity=on_query_discourse_activity,
         on_get_reddit_feeds=on_get_reddit_feeds,
         on_manage_reddit_feeds=on_manage_reddit_feeds,
