@@ -12,7 +12,6 @@ env:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   bandit:
@@ -28,7 +27,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Bandit
-        run: pip install bandit bandit-sarif-formatter
+        run: pip install -r requirements-dev.txt
 
       - name: Run Bandit
         run: |
@@ -51,8 +50,12 @@ jobs:
   semgrep:
     name: Semgrep Security Analysis
     runs-on: ubuntu-latest
+    # Only this job writes alerts; the workflow token stays read-only.
+    permissions:
+      contents: read
+      security-events: write
     container:
-      image: semgrep/semgrep:latest
+      image: semgrep/semgrep:latest@sha256:cc1b68266f267878b39739373ea9985b9a78e5d64497dd875c8de100b22695ed
     steps:
       - name: Checkout code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09  # 5

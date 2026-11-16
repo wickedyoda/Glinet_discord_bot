@@ -10,11 +10,13 @@ env:
 
 permissions:
   contents: read
-  security-events: write
 
 jobs:
   trivy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
     timeout-minutes: 20
     env:
       TRIVY_DB_REPOSITORY: ghcr.io/aquasecurity/trivy-db

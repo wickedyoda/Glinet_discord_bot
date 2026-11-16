@@ -29,11 +29,10 @@ concurrency:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
-# Called workflows can only reduce these, so grant the union they need.
+# The workflow token is read-only. Each job raises only what it needs -- a called
+# workflow can only reduce the caller's grant, so the write lives on the calling job.
 permissions:
   contents: read
-  packages: write
-  security-events: write
 
 jobs:
   # --------------------------------------------------------------------------- #
@@ -45,6 +44,9 @@ jobs:
 
   security-scan:
     name: Security Scan
+    permissions:
+      contents: read
+      security-events: write
     uses: ./.github/workflows/security-scan.yml
 
   secret-scan:
@@ -57,6 +59,9 @@ jobs:
 
   container-security-scan:
     name: Container Security Scan
+    permissions:
+      contents: read
+      security-events: write
     uses: ./.github/workflows/container-security-scan.yml
 
   dast-scan:
@@ -68,6 +73,10 @@ jobs:
   # --------------------------------------------------------------------------- #
   build:
     name: Build and Push
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
     needs:
       - ci-integrity
       - security-scan

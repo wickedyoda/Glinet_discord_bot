@@ -37,7 +37,6 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
       - name: Start web admin
@@ -61,7 +60,7 @@ jobs:
           chmod 777 zap-report
           docker run --rm --network host \
             -v "$PWD/zap-report:/zap/wrk:rw" \
-            ghcr.io/zaproxy/zaproxy:stable \
+            ghcr.io/zaproxy/zaproxy:stable@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af \
             zap-baseline.py \
               -t http://127.0.0.1:8082 \
               -J report.json \
