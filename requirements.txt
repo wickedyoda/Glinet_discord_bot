@@ -10,6 +10,6 @@ setuptools>=78.1.1
 wheel==0.46.2
 jaraco.context==6.1.0
 openpyxl==3.1.5
-msgpack>=1.2.1
+msgpack>=1.2.4
 irc==20.5.0
 emoji==2.16.0
