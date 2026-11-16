@@ -22,6 +22,10 @@ def _make_app(
     member_activity_payload=None,
     discourse_activity_payload=None,
     discourse_query_payload=None,
+    moderation_cases=None,
+    automod_get=None,
+    automod_save=None,
+    moderation_cases_export=None,
     post_message=None,
 ):
     env_file = tmp_path / "env.env"
@@ -861,6 +865,10 @@ def _make_app(
             "data": b"PK\x05\x06" + (b"\x00" * 18),
         },
         on_query_discourse_activity=discourse_query_payload,
+        on_get_moderation_cases=moderation_cases,
+        on_get_automod=automod_get,
+        on_save_automod=automod_save,
+        on_export_moderation_cases=moderation_cases_export,
         on_get_discourse_activity=discourse_activity_payload
         or (lambda days=90: {
             "ok": True,
