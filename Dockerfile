@@ -44,7 +44,13 @@ COPY --chown=bot:bot requirements.txt .
 # pip is pinned exactly like every other dependency; the build tools that used to be
 # listed here are in requirements.txt already, and pinning them twice invites drift.
 RUN python -m pip install --no-cache-dir "pip==26.3" \
-  && python -m pip install --no-cache-dir -r requirements.txt
+  && python -m pip install --no-cache-dir -r requirements.txt \
+  # pip ships a CycloneDX BOM describing the versions its vendored code was built
+  # against -- including setuptools 70.3.0, which is not installed here. Image
+  # scanners read it as an installed package and report three setuptools CVEs
+  # against a version that does not exist in the image; the resolved setuptools is
+  # 84.2.1, above every one of those fixes. Nothing reads this file at runtime.
+  && rm -f /usr/local/lib/python*/site-packages/pip/_vendor/bom.cdx.json
 
 # Copy the bot code and env files into the container
 COPY --chown=bot:bot . .
