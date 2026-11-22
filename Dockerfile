@@ -2,11 +2,15 @@
 # Pinned by digest: a tag can be repointed at a different image without warning.
 FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
-# Refresh base OS packages so security fixes from the Debian slim image
-# are applied even when the parent image lags behind the latest point release.
-# Upgrades OS packages to latest patched versions (not just installed ones)
-# to address Trivy container alerts for libblkid1, perl, openssl, ncurses,
-# gzip, libacl, etc.
+# Refresh base OS packages so security fixes from the Debian slim image are applied
+# even when the parent image lags behind the latest point release. The explicit list
+# pulls the patched build of each package the scanner reported, rather than trusting
+# whatever the parent image shipped.
+#
+# `perl` is deliberately absent: the full interpreter is not used by this image, and it
+# pulled in perl-modules-5.40 and libperl5.40, three packages carrying a HIGH advisory
+# with no Debian fix. `perl-base` stays -- dpkg and apt need it -- and the bot, the
+# healthcheck and the test suite all run without the full package.
 RUN apt-get update \
   && apt-get upgrade -y --no-install-recommends \
   && apt-get install -y --no-install-recommends \
@@ -22,7 +26,6 @@ RUN apt-get update \
     libssl3t64 \
     openssl-provider-legacy \
     perl-base \
-    perl \
     gzip \
     libacl1 \
   && apt-get clean \
