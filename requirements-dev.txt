@@ -3,4 +3,4 @@ bandit-sarif-formatter==1.1.1
 cyclonedx-bom==8.0.1
 pip-audit==2.10.1
 pytest==9.2.0
-ruff==0.17.5
+ruff==0.17.6
