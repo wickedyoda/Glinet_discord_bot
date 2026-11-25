@@ -63,6 +63,7 @@ from app.web_activity import (
 )
 from app.web_audit import should_log_web_audit_event
 from app.web_automod import render_automod_body
+from app.web_blueprints import build_liveness_blueprint
 from app.web_cases import render_cases_body
 from app.web_discourse import (
     process_discourse_submission,
@@ -2531,8 +2532,8 @@ def _render_layout(
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="csrf-token" content="{{ csrf_token }}" />
   <title>{{ title }} | {{ title_suffix }}</title>
-  <link rel="icon" type="image/png" href="{{ url_for('favicon') }}" />
-  <link rel="apple-touch-icon" href="{{ url_for('favicon') }}" />
+  <link rel="icon" type="image/png" href="{{ url_for('liveness.favicon') }}" />
+  <link rel="apple-touch-icon" href="{{ url_for('liveness.favicon') }}" />
   <style>
     * { box-sizing: border-box; }
     html { -webkit-text-size-adjust: 100%; }
@@ -4793,34 +4794,10 @@ def create_web_app(
             payload.update(result)
         return payload
 
-    @app.route("/healthz", methods=["GET"])
-    def healthz():
-        payload = _build_health_status_payload()
-        status_code = 200 if bool(payload.get("ok", True)) else 503
-        return payload, status_code
 
-    @app.route("/readyz", methods=["GET"])
-    def readyz():
-        payload = _build_health_status_payload()
-        status_code = 200 if bool(payload.get("ready", False)) else 503
-        return payload, status_code
 
-    @app.route("/favicon.ico", methods=["GET"])
-    def favicon():
-        if favicon_file.exists() and favicon_file.is_file():
-            return send_file(favicon_file, mimetype="image/png", max_age=86400)
-        return ("", 204)
 
-    @app.route("/", methods=["GET"])
-    def index():
-        if _current_user():
-            return redirect(url_for("guilds_page"))
-        return redirect(url_for("login"))
 
-    @app.route("/admin/home", methods=["GET"])
-    @login_required
-    def legacy_gui2_home():
-        return redirect(url_for("dashboard"))
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -6239,17 +6216,8 @@ def create_web_app(
             return redirect(url_for("public_observability", refresh=refresh))
         return redirect(url_for("public_observability"))
 
-    @app.route("/staus", methods=["GET"])
-    def public_observability_alias():
-        return _redirect_to_observability()
 
-    @app.route("/status/everything", methods=["GET"])
-    def public_observability_everything():
-        return _redirect_to_observability()
 
-    @app.route("/admin/observability", methods=["GET"])
-    def observability():
-        return _redirect_to_observability()
 
     @app.route("/admin/logs", methods=["GET"])
     @login_required
@@ -6553,10 +6521,6 @@ def create_web_app(
         )
         return _render_page(title, body, user["email"], bool(user.get("is_admin")))
 
-    @app.route("/admin/wiki", methods=["GET"])
-    @login_required
-    def wiki_viewer():
-        return redirect(url_for("documentation"))
 
     @app.route("/admin/bot-profile", methods=["GET", "POST"])
     @login_required
@@ -11128,6 +11092,16 @@ def create_web_app(
         </div>
         """
         return _render_page("Users", body, user["email"], bool(user.get("is_admin")))
+
+    app.register_blueprint(
+        build_liveness_blueprint(
+            build_health_payload=_build_health_status_payload,
+            favicon_path=favicon_file,
+            current_user=_current_user,
+            redirect_to_observability=_redirect_to_observability,
+            login_required=login_required,
+        )
+    )
 
     return app
 
