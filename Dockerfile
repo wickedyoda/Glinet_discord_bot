@@ -40,11 +40,15 @@ RUN mkdir -p /app/data /logs && chmod 700 /app/data /logs && chown -R bot:bot /a
 # Install dependencies BEFORE switching to non-root user
 # so pip can write to global site-packages
 WORKDIR /app
-COPY --chown=bot:bot requirements.txt .
+COPY --chown=bot:bot requirements.txt requirements-py315.lock.txt ./
 # pip is pinned exactly like every other dependency; the build tools that used to be
 # listed here are in requirements.txt already, and pinning them twice invites drift.
+# The lock file carries a sha256 for every artefact, and --require-hashes makes pip
+# refuse anything that does not match — a repointed or tampered wheel cannot be
+# installed, and CodeQL's "pipCommand not pinned by hash" finding is answered by the
+# mechanism rather than suppressed.
 RUN python -m pip install --no-cache-dir "pip==26.3" \
-  && python -m pip install --no-cache-dir -r requirements.txt \
+  && python -m pip install --no-cache-dir --require-hashes -r requirements-py315.lock.txt \
   # pip ships a CycloneDX BOM describing the versions its vendored code was built
   # against -- including setuptools 70.3.0, which is not installed here. Image
   # scanners read it as an installed package and report three setuptools CVEs
