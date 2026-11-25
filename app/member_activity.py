@@ -90,6 +90,21 @@ class MemberActivityManager:
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (guild_id, message_id)
             );
+
+            -- Per-channel and per-thread volume. The summary table answers "who",
+            -- this one answers "where": without it a thread's traffic is
+            -- indistinguishable from the parent channel's, or from nowhere at all.
+            CREATE TABLE IF NOT EXISTS member_activity_channels (
+                guild_id INTEGER NOT NULL,
+                channel_id INTEGER NOT NULL,
+                parent_channel_id INTEGER NOT NULL DEFAULT 0,
+                is_thread INTEGER NOT NULL DEFAULT 0,
+                channel_name TEXT NOT NULL DEFAULT '',
+                hour_bucket TEXT NOT NULL,
+                message_count INTEGER NOT NULL DEFAULT 0,
+                last_message_at TEXT NOT NULL,
+                PRIMARY KEY (guild_id, channel_id, hour_bucket)
+            );
             """
         )
 
@@ -337,6 +352,10 @@ class MemberActivityManager:
         display_name: str,
         message_id: int,
         message_dt: datetime,
+        channel_id: int = 0,
+        parent_channel_id: int = 0,
+        is_thread: bool = False,
+        channel_name: str = "",
     ):
         safe_guild_id = self.require_managed_guild_id(guild_id, context="member activity guild")
         encrypted_username = self.encrypt_member_activity_identity(username)
@@ -445,6 +464,41 @@ class MemberActivityManager:
                 message_iso,
             ),
         )
+
+        if channel_id and channel_id > 0:
+            conn.execute(
+                """
+                INSERT INTO member_activity_channels (
+                    guild_id,
+                    channel_id,
+                    parent_channel_id,
+                    is_thread,
+                    channel_name,
+                    hour_bucket,
+                    message_count,
+                    last_message_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(guild_id, channel_id, hour_bucket) DO UPDATE SET
+                    message_count = member_activity_channels.message_count + 1,
+                    last_message_at = excluded.last_message_at,
+                    parent_channel_id = excluded.parent_channel_id,
+                    is_thread = excluded.is_thread,
+                    channel_name = CASE
+                        WHEN excluded.channel_name <> '' THEN excluded.channel_name
+                        ELSE member_activity_channels.channel_name
+                    END
+                """,
+                (
+                    safe_guild_id,
+                    int(channel_id),
+                    int(parent_channel_id or 0),
+                    1 if is_thread else 0,
+                    str(channel_name or "")[:120],
+                    hour_bucket,
+                    message_iso,
+                ),
+            )
         return True
 
     def record_member_message_activity(self, message: discord.Message):
@@ -457,6 +511,11 @@ class MemberActivityManager:
         # Schema (and the one-time identity encryption migration) is ensured
         # once at startup via initialize_storage() in bot.py; keep DDL off the
         # per-message hot path.
+        channel = getattr(message, "channel", None)
+        channel_id = int(getattr(channel, "id", 0) or 0)
+        is_thread = bool(getattr(channel, "parent_id", None))
+        parent_channel_id = int(getattr(channel, "parent_id", 0) or 0)
+        channel_name = self.clip_text(str(getattr(channel, "name", "") or ""), max_chars=120)
         with self.db_lock:
             changed = self.record_member_message_activity_locked(
                 conn,
@@ -466,6 +525,10 @@ class MemberActivityManager:
                 display_name=self.clip_text(getattr(message.author, "display_name", str(message.author)), max_chars=120),
                 message_id=int(message.id),
                 message_dt=self.normalize_activity_timestamp(getattr(message, "created_at", None)),
+                channel_id=channel_id,
+                parent_channel_id=parent_channel_id,
+                is_thread=is_thread,
+                channel_name=channel_name,
             )
             conn.commit()
         return changed
@@ -579,6 +642,60 @@ class MemberActivityManager:
         except Exception:
             self.logger.exception("Failed resolving guild members for activity rankings (guild=%s).", guild_id)
             return {}
+
+    def list_member_activity_channels_window(self, guild_id: int | None, window_key: str, limit: int):
+        """Top channels and threads by message volume inside one window.
+
+        Returns threads as their own rows with `parent_channel_id` set, so a forum
+        thread's traffic is not folded into — or lost behind — its parent channel.
+        """
+        safe_guild_id = self.require_managed_guild_id(guild_id, context="member activity guild")
+        safe_limit = max(1, min(int(limit or self.member_activity_web_top_limit), 100))
+        now_dt = datetime.now(UTC)
+        conn = self.get_db_connection()
+        with self.db_lock:
+            self.ensure_member_activity_schema_locked(conn)
+            window_duration = next((duration for key, _label, duration in self.member_activity_window_specs if key == window_key), None)
+            if window_duration is None:
+                raise ValueError(f"Unsupported member activity window: {window_key}")
+            cutoff_dt = now_dt - window_duration
+            rows = conn.execute(
+                """
+                SELECT
+                    c.channel_id,
+                    c.parent_channel_id,
+                    c.is_thread,
+                    MAX(c.channel_name) AS channel_name,
+                    MAX(c.last_message_at) AS last_message_at,
+                    SUM(c.message_count) AS message_count,
+                    COUNT(DISTINCT substr(c.hour_bucket, 1, 10)) AS active_days
+                FROM member_activity_channels c
+                WHERE c.guild_id = ?
+                  AND c.hour_bucket >= ?
+                GROUP BY c.channel_id, c.parent_channel_id, c.is_thread
+                ORDER BY message_count DESC, last_message_at DESC
+                LIMIT ?
+                """,
+                (
+                    safe_guild_id,
+                    cutoff_dt.replace(minute=0, second=0, microsecond=0).isoformat(),
+                    safe_limit,
+                ),
+            ).fetchall()
+        channels = []
+        for row in rows:
+            channels.append(
+                {
+                    "channel_id": int(row["channel_id"] or 0),
+                    "parent_channel_id": int(row["parent_channel_id"] or 0),
+                    "is_thread": bool(row["is_thread"]),
+                    "name": str(row["channel_name"] or ""),
+                    "message_count": int(row["message_count"] or 0),
+                    "active_days": int(row["active_days"] or 0),
+                    "last_message_at": row["last_message_at"],
+                }
+            )
+        return channels
 
     def list_member_activity_top_window(
         self,
@@ -741,6 +858,11 @@ class MemberActivityManager:
                         window_key,
                         limit=self.member_activity_web_top_limit,
                         role_id=safe_role_id,
+                    ),
+                    "channels": self.list_member_activity_channels_window(
+                        safe_guild_id,
+                        window_key,
+                        limit=self.member_activity_web_top_limit,
                     ),
                 }
             )

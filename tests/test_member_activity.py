@@ -45,12 +45,20 @@ class DummyGuild:
         self.id = guild_id
 
 
+class DummyChannel:
+    def __init__(self, channel_id=555, name="general", parent_id=None):
+        self.id = channel_id
+        self.name = name
+        self.parent_id = parent_id
+
+
 class DummyMessage:
-    def __init__(self, message_id: int, created_at: datetime):
+    def __init__(self, message_id: int, created_at: datetime, channel=None):
         self.id = message_id
         self.created_at = created_at
         self.guild = DummyGuild()
         self.author = DummyAuthor()
+        self.channel = channel
 
 
 def _normalize_timestamp(value=None):
@@ -384,3 +392,84 @@ def test_production_provider_rejects_a_malformed_exclusion(monkeypatch):
     assert manager.current_excluded_role_ids() == ()
 
     monkeypatch.setattr(bot_module, "member_activity_manager", None, raising=False)
+
+
+def _channel_rows(conn):
+    return [
+        dict(row)
+        for row in conn.execute(
+            "SELECT guild_id, channel_id, parent_channel_id, is_thread, channel_name, hour_bucket, message_count"
+            " FROM member_activity_channels ORDER BY channel_id, hour_bucket"
+        ).fetchall()
+    ]
+
+
+def test_activity_records_channel_attribution():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    manager = build_manager(conn=conn)
+    now = datetime(2026, 3, 20, 12, 30, tzinfo=UTC)
+
+    manager.record_member_message_activity(DummyMessage(2001, now, channel=DummyChannel(700, "general")))
+    manager.record_member_message_activity(DummyMessage(2002, now + timedelta(minutes=5), channel=DummyChannel(700, "general")))
+
+    rows = _channel_rows(conn)
+    assert len(rows) == 1
+    assert rows[0]["guild_id"] == 123
+    assert rows[0]["channel_id"] == 700
+    assert rows[0]["is_thread"] == 0
+    assert rows[0]["parent_channel_id"] == 0
+    assert rows[0]["channel_name"] == "general"
+    assert rows[0]["message_count"] == 2
+
+
+def test_activity_records_threads_separately_from_their_parent_channel():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    manager = build_manager(conn=conn)
+    now = datetime(2026, 3, 20, 9, 0, tzinfo=UTC)
+
+    manager.record_member_message_activity(DummyMessage(3001, now, channel=DummyChannel(800, "support")))
+    manager.record_member_message_activity(DummyMessage(3002, now, channel=DummyChannel(900, "ticket-42", parent_id=800)))
+
+    rows = _channel_rows(conn)
+    by_channel = {row["channel_id"]: row for row in rows}
+    assert by_channel[800]["is_thread"] == 0
+    assert by_channel[900]["is_thread"] == 1
+    assert by_channel[900]["parent_channel_id"] == 800
+    assert by_channel[900]["channel_name"] == "ticket-42"
+
+
+def test_activity_without_a_channel_still_records_member_counts():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    manager = build_manager(conn=conn)
+
+    assert manager.record_member_message_activity(DummyMessage(4001, datetime(2026, 3, 20, 8, 0, tzinfo=UTC))) is True
+
+    assert _channel_rows(conn) == []
+    assert conn.execute("SELECT total_messages FROM member_activity_summary").fetchone()[0] == 1
+
+
+def test_channel_window_ranks_by_volume_and_keeps_threads_apart():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    manager = build_manager(conn=conn)
+    now = datetime.now(UTC).replace(minute=10, second=0, microsecond=0)
+
+    for index in range(3):
+        manager.record_member_message_activity(
+            DummyMessage(5000 + index, now, channel=DummyChannel(810, "busy"))
+        )
+    manager.record_member_message_activity(DummyMessage(5100, now, channel=DummyChannel(820, "quiet")))
+    manager.record_member_message_activity(DummyMessage(5200, now, channel=DummyChannel(830, "busy-thread", parent_id=810)))
+
+    ranked = manager.list_member_activity_channels_window(123, "last_24h", limit=10)
+
+    assert [row["channel_id"] for row in ranked] == [810, 820, 830]
+    assert ranked[0]["message_count"] == 3
+    assert ranked[0]["is_thread"] is False
+    thread_rows = [row for row in ranked if row["is_thread"]]
+    assert len(thread_rows) == 1
+    assert thread_rows[0]["parent_channel_id"] == 810
+    assert thread_rows[0]["channel_id"] == 830

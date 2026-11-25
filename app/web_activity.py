@@ -93,12 +93,33 @@ def summarize_member_activity(payload) -> dict:
         )
     top.sort(key=lambda entry: entry["messages"], reverse=True)
 
+    channels: list[dict] = []
+    for row in (chosen or {}).get("channels", []) or []:
+        if not isinstance(row, dict):
+            continue
+        channel_id = _int(row.get("channel_id"))
+        if channel_id <= 0:
+            continue
+        channels.append(
+            {
+                "channel_id": channel_id,
+                "name": str(row.get("name") or f"#{channel_id}"),
+                "messages": _int(row.get("message_count")),
+                "active_days": _int(row.get("active_days")),
+                "is_thread": bool(row.get("is_thread")),
+                "parent_channel_id": _int(row.get("parent_channel_id")),
+            }
+        )
+    channels.sort(key=lambda entry: entry["messages"], reverse=True)
+
     return {
         "ok": True,
         "error": "",
         "windows": windows,
         "top": top[:10],
         "top_window_label": str((chosen or {}).get("label") or ""),
+        "channels": channels[:10],
+        "channel_count": len(channels),
         "tracked": len(seen),
         "excluded_role_count": len(payload.get("excluded_role_ids") or []),
         "top_limit": _int(payload.get("top_limit"), 20),
@@ -200,6 +221,24 @@ def render_activity_overview_body(discord_summary: dict, forum_summary: dict) ->
                     + " active days</li>"
                 )
             parts.append("</ol>")
+        if discord_summary.get("channels"):
+            parts.append("<h4>Busiest channels and threads</h4><ol class='compact-list'>")
+            for row in discord_summary["channels"]:
+                label = "#" + str(row.get("name") or row.get("channel_id"))
+                if row.get("is_thread"):
+                    parent = row.get("parent_channel_id") or 0
+                    label = "🧵 " + label + (f" (thread in <#{parent}>)" if parent else " (thread)")
+                parts.append(
+                    "<li>"
+                    + escape(label)
+                    + " — "
+                    + str(_int(row.get("messages")))
+                    + " messages over "
+                    + str(_int(row.get("active_days")))
+                    + " active days</li>"
+                )
+            parts.append("</ol>")
+
     parts.append("<p><a class='btn secondary' href='/admin/member-activity'>Open Discord activity</a></p></div>")
 
     parts.append("<div class='card'><h3>Forum activity</h3>")
