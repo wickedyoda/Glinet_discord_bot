@@ -14,7 +14,7 @@ import statistics
 import time
 import urllib.request
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 BASE = "https://forum.gl-inet.com"
 DAYS = 90
@@ -50,7 +50,7 @@ def fmt(seconds: float) -> str:
 
 
 def main() -> int:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=DAYS)
+    cutoff = datetime.now(UTC) - timedelta(days=DAYS)
     staff = {m["username"].lower() for m in get(f"/groups/{GROUP}/members.json?limit=100")["members"]}
 
     posts, before, pages = [], None, 0
@@ -121,7 +121,7 @@ def main() -> int:
     with open("/tmp/discourse_90d_detail.json", "w") as fh:
         json.dump(
             {
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "days": DAYS,
                 "posts_scanned": len(posts),
                 "per_user_posts": dict(per_user_posts),

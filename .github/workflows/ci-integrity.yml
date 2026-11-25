@@ -29,8 +29,8 @@ jobs:
           python -m pip install -r requirements.txt
           python -m pip install -r requirements-dev.txt
 
-      - name: Run critical Ruff checks
-        run: ruff check --select E9,F63,F7,F82 .
+      - name: Run Ruff lint
+        run: ruff check .
 
       - name: Compile Python sources
         run: python -m py_compile bot.py web_admin.py
