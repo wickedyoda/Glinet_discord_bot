@@ -27,7 +27,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Bandit
-        run: pip install -r requirements-dev.txt
+        run: pip install --require-hashes -r requirements-dev.lock.txt
 
       - name: Run Bandit
         run: |

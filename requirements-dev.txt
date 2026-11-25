@@ -4,3 +4,5 @@ cyclonedx-bom==8.0.1
 pip-audit==2.10.1
 pytest==9.2.0
 ruff==0.17.6
+setuptools==84.2.1
+wheel==0.48.0
