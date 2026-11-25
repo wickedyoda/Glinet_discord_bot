@@ -546,11 +546,28 @@ class GuildStateManager:
         return bool(fallback_value)
 
     def get_effective_logging_channel_id(self, guild_id: int | None):
-        safe_guild_id = self.normalize_target_guild_id(guild_id)
-        bot_log_channel_id = self.get_effective_guild_setting(safe_guild_id, "bot_log_channel_id", self.bot_log_channel_id)
+        """Resolve the log channel for one guild, never another guild's.
+
+        A missing or unusable guild id resolves to 0 rather than to the default guild.
+        The default exists for single-guild deployments; silently substituting it is how
+        one server's events end up in another server's log channel, which is a data leak
+        between communities rather than a cosmetic routing bug.
+        """
+        try:
+            resolved_guild_id = int(guild_id) if guild_id is not None else 0
+        except (TypeError, ValueError):
+            resolved_guild_id = 0
+        if resolved_guild_id <= 0:
+            if self.logger:
+                self.logger.warning(
+                    "Log channel requested without a usable guild id (%r); refusing to fall back to the default guild.",
+                    guild_id,
+                )
+            return 0
+        bot_log_channel_id = self.get_effective_guild_setting(resolved_guild_id, "bot_log_channel_id", self.bot_log_channel_id)
         if bot_log_channel_id > 0:
             return bot_log_channel_id
-        return self.get_effective_guild_setting(safe_guild_id, "mod_log_channel_id", self.mod_log_channel_id)
+        return self.get_effective_guild_setting(resolved_guild_id, "mod_log_channel_id", self.mod_log_channel_id)
 
     def record_action_safe(
         self,

@@ -377,3 +377,61 @@ def test_save_and_load_guild_settings_persists_discourse_configuration():
     assert settings["discourse_profile_name"] == "Guild Forum Bot"
     assert settings["discourse_request_timeout_seconds"] == 20
     assert settings["discourse_features_json"] == '["search","topic_lookup"]'
+
+
+def test_log_channel_refuses_missing_guild_instead_of_using_the_default(monkeypatch):
+    """A nameless event must resolve to nothing, not to the primary guild's channel.
+
+    Falling back to the default guild is how one server's activity ends up in another
+    server's log channel.
+    """
+    manager = build_manager()
+    resolved = []
+
+    def fake_setting(guild_id, key, fallback_value=0):
+        resolved.append((guild_id, key))
+        return fallback_value
+
+    monkeypatch.setattr(manager, "get_effective_guild_setting", fake_setting)
+
+    assert manager.get_effective_logging_channel_id(None) == 0
+    assert manager.get_effective_logging_channel_id(0) == 0
+    assert manager.get_effective_logging_channel_id(-5) == 0
+    assert manager.get_effective_logging_channel_id("not-a-guild") == 0
+    assert manager.get_effective_logging_channel_id("") == 0
+    # No channel was ever looked up for a nameless guild.
+    assert resolved == []
+
+
+def test_log_channel_is_resolved_per_guild(monkeypatch):
+    """Two guilds resolve to their own channels; neither can see the other's."""
+    manager = build_manager()
+    per_guild = {111: 9001, 222: 9002}
+
+    def fake_setting(guild_id, key, fallback_value=0):
+        if key != "bot_log_channel_id":
+            return 0
+        return per_guild.get(int(guild_id), 0)
+
+    monkeypatch.setattr(manager, "get_effective_guild_setting", fake_setting)
+
+    assert manager.get_effective_logging_channel_id(111) == 9001
+    assert manager.get_effective_logging_channel_id(222) == 9002
+    assert manager.get_effective_logging_channel_id(111) != manager.get_effective_logging_channel_id(222)
+    # Numeric strings are accepted, not silently mapped to another guild.
+    assert manager.get_effective_logging_channel_id("222") == 9002
+
+
+def test_log_channel_uses_mod_channel_only_within_the_same_guild(monkeypatch):
+    """The mod-log fallback applies to the same guild, never to the default one."""
+    manager = build_manager()
+
+    def fake_setting(guild_id, key, fallback_value=0):
+        if int(guild_id) != 111:
+            return 0
+        return {"bot_log_channel_id": 0, "mod_log_channel_id": 9010}.get(key, 0)
+
+    monkeypatch.setattr(manager, "get_effective_guild_setting", fake_setting)
+
+    assert manager.get_effective_logging_channel_id(111) == 9010
+    assert manager.get_effective_logging_channel_id(222) == 0
