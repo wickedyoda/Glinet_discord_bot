@@ -3466,6 +3466,10 @@ def _record_member_message_activity_locked(
     display_name: str,
     message_id: int,
     message_dt: datetime,
+    channel_id: int = 0,
+    parent_channel_id: int = 0,
+    is_thread: bool = False,
+    channel_name: str = "",
 ):
     return _get_member_activity_manager().record_member_message_activity_locked(
         conn,
@@ -3475,6 +3479,10 @@ def _record_member_message_activity_locked(
         display_name=display_name,
         message_id=message_id,
         message_dt=message_dt,
+        channel_id=channel_id,
+        parent_channel_id=parent_channel_id,
+        is_thread=is_thread,
+        channel_name=channel_name,
     )
 
 
@@ -3844,6 +3852,10 @@ async def member_activity_backfill_job():
                                 display_name=clip_text(getattr(message.author, "display_name", str(message.author)), max_chars=120),
                                 message_id=int(message.id),
                                 message_dt=normalize_activity_timestamp(getattr(message, "created_at", None)),
+                                channel_id=int(getattr(channel, "id", 0) or 0),
+                                parent_channel_id=int(getattr(channel, "parent_id", 0) or 0),
+                                is_thread=bool(getattr(channel, "parent_id", None)),
+                                channel_name=clip_text(str(getattr(channel, "name", "") or ""), max_chars=120),
                             )
                             if changed:
                                 conn.commit()
