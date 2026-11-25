@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 VENV="${TMPDIR:-/tmp}/glinet-lockenv"
 if [ ! -x "$VENV/bin/pip-compile" ]; then
   python3 -m venv "$VENV"
-  "$VENV/bin/pip" install --quiet --upgrade pip pip-tools
+  "$VENV/bin/pip" install --quiet --require-hashes -r scripts/pip-tools.lock.txt
 fi
 
 "$VENV/bin/pip-compile" --quiet --generate-hashes --strip-extras \
@@ -33,7 +33,7 @@ rm -rf "$check"
 # pulls audioop-lts only on >=3.13. One lock cannot serve both, so the image gets its own,
 # compiled inside the same base image it will be installed into.
 docker run --rm -v "$PWD:/w" -w /w python:3.15-slim sh -c '
-  pip install -q --upgrade pip pip-tools
+  pip install -q --require-hashes -r scripts/pip-tools.lock.txt
   pip-compile --quiet --generate-hashes --strip-extras --output-file requirements-py315.lock.txt requirements.txt
   python -m venv /v && /v/bin/pip install -q --require-hashes -r requirements-py315.lock.txt
 '
