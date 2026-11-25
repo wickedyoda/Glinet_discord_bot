@@ -13,7 +13,7 @@ import os
 import time
 import urllib.request
 from collections import defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 BASE = "https://forum.gl-inet.com"
 DAYS = 90
@@ -41,7 +41,7 @@ def parse_ts(value: str) -> datetime:
 
 
 def main() -> int:
-    cutoff = datetime.now(timezone.utc) - timedelta(days=DAYS)
+    cutoff = datetime.now(UTC) - timedelta(days=DAYS)
 
     staff = {m["username"].lower() for m in get(f"/groups/{GROUP}/members.json?limit=100")["members"]}
     print(f"staff set: {len(staff)} members from {GROUP}")
@@ -61,8 +61,6 @@ def main() -> int:
         for p in batch:
             if parse_ts(p["created_at"]) >= cutoff:
                 posts.append(p)
-            else:
-                batch_done = True
         if oldest_seen < cutoff:
             break
         before = batch[-1]["id"]
@@ -110,7 +108,7 @@ def main() -> int:
     with open("/tmp/discourse_90d.json", "w") as fh:
         json.dump(
             {
-                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generated_at": datetime.now(UTC).isoformat(),
                 "days": DAYS,
                 "staff_count": len(staff),
                 "posts_scanned": len(posts),

@@ -17,7 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from collections import Counter, defaultdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 BASE = "https://forum.gl-inet.com"
 DAYS = 90
@@ -39,7 +39,7 @@ if _key:
 def get(path):
     """GET with 429 backoff -- a long walk will otherwise die partway through."""
     last = None
-    for attempt, wait in enumerate((0,) + RETRY_BACKOFF):
+    for _attempt, wait in enumerate((0,) + RETRY_BACKOFF):
         if wait:
             time.sleep(wait)
         try:
@@ -69,7 +69,7 @@ def fmt(sec):
 
 
 def main():
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     cutoff = now - timedelta(days=DAYS)
 
     staff = {m["username"].lower() for m in get(f"/groups/{GROUP}/members.json?limit=100")["members"]}
