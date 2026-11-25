@@ -1237,60 +1237,24 @@ DEFAULT_TAG_RESPONSES = {
     "!betatest": ("✅ Thanks for your interest in the beta! We'll share more details soon.\n🔗 Beta updates: https://forum.gl-inet.com/"),
     "!support": ("🛠️ Need help? Please open a ticket or message a moderator.\n🔗 Support Discord: https://discord.gg/m6UjX6UhKe"),
 }
-DEFAULT_ALLOWED_ROLE_NAMES = {
-    "GL.iNet Staff",        # the guild role; formerly "Employee"
-    "Employee",             # legacy name, kept so a rename cannot lock staff out
-    "Admin",
-    "Gl.iNet Moderators",   # the actual guild role name
-    "Gl.iNet Moderator",    # legacy singular, kept for the same reason
-}
-COMMAND_PERMISSION_MODE_DEFAULT = "default"
-COMMAND_PERMISSION_MODE_PUBLIC = "public"
-COMMAND_PERMISSION_MODE_DISABLED = "disabled"
-COMMAND_PERMISSION_MODE_CUSTOM_ROLES = "custom_roles"
-COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC = "public"
-COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES = "allowed_role_names"
-COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS = "moderator_role_ids"
-COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR = "administrator"
-ADMIN_ONLY_COMMAND_KEYS = {
-    "honeypot_create",
-    "honeypot_edit",
-    "honeypot_list",
-    "honeypot_info",
-    "honeypot_delete",
-    "honeypot_delete_all",
-    "honeypot_log_set_channel",
-    "honeypot_log_clear_channel",
-    "honeypot_log_set_role",
-    "honeypot_log_clear_role",
-    "honeypot_log_show",
-    "honeypot_join_guard_set",
-    "honeypot_join_guard_disable",
-    "honeypot_join_guard_show",
-    "set_hello_channel",
-    "set_hello_text",
-}
-MODERATOR_ONLY_COMMAND_KEYS = {
-    "add_role_member",
-    "ban_member",
-    "bulk_assign_role_csv",
-    "clear_member_nickname",
-    "create_role",
-    "delete_role",
-    "edit_role",
-    "kick_member",
-    "random_choice",
-    "restore_code",
-    "remove_role_member",
-    "set_member_nickname",
-    "timeout_member",
-    "unban_member",
-    "untimeout_member",
-    "voice_deafen_member",
-    "voice_disconnect_member",
-    "voice_move_member",
-    "voice_mute_member",
-}
+# Shared with the web layer. These were duplicated here and in
+# app/command_permissions.py, so a rename (Employee -> GL.iNet Staff) had to be made
+# twice or staff silently lost access. One definition, imported.
+from app.command_permissions import (  # noqa: E402
+    ADMIN_ONLY_COMMAND_KEYS,
+    COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR,
+    COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES,
+    COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS,
+    COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
+    COMMAND_PERMISSION_MODE_CUSTOM_ROLES,
+    COMMAND_PERMISSION_MODE_DEFAULT,
+    COMMAND_PERMISSION_MODE_DISABLED,
+    COMMAND_PERMISSION_MODE_PUBLIC,
+    COMMAND_PERMISSION_POLICY_LABELS,
+    DEFAULT_ALLOWED_ROLE_NAMES,
+    MODERATOR_ONLY_COMMAND_KEYS,
+)
+
 COMMAND_PERMISSION_DEFAULTS = {
     "list": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
     "help": COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC,
@@ -1726,12 +1690,6 @@ COMMAND_PERMISSION_METADATA = {
         "label": "/translate_channels_*",
         "description": "Moderator: list, add, or remove auto-translate channel mappings.",
     },
-}
-COMMAND_PERMISSION_POLICY_LABELS = {
-    COMMAND_PERMISSION_DEFAULT_POLICY_PUBLIC: "Public (any member)",
-    COMMAND_PERMISSION_DEFAULT_POLICY_ALLOWED_NAMES: "Named roles: Employee/Admin/Gl.iNet Moderator",
-    COMMAND_PERMISSION_DEFAULT_POLICY_MODERATOR_IDS: "Moderator/Admin role IDs (env)",
-    COMMAND_PERMISSION_DEFAULT_POLICY_ADMINISTRATOR: "Server administrators only",
 }
 
 intents = discord.Intents.default()

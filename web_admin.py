@@ -2105,6 +2105,59 @@ def _extract_hostname_from_value(value: str):
     return str(parsed.hostname or "").strip().lower()
 
 
+
+def _extract_hostname(value: str):
+    """Hostname from a URL or a bare host:port, lowercased."""
+    return _extract_hostname_from_value(value)
+
+
+def _fetch_json_url(url: str, *, verify_tls: bool = True):
+                response = _safe_outbound_get(
+                    str(url or "").strip(),
+                    timeout=15,
+                    verify_tls=verify_tls,
+                    headers={
+                        "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                        "Accept": "application/json",
+                    },
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Status page API returned an unexpected payload.")
+                return payload
+
+def _fetch_text_url(url: str, *, api_key: str = "", verify_tls: bool = True):
+                request_headers = {
+                    "User-Agent": "glinet-discord-bot-web-admin/1.0",
+                    "Accept": "text/plain, application/openmetrics-text;q=0.9, */*;q=0.8",
+                }
+                normalized_api_key = str(api_key or "").strip()
+                auth_variants = [{}]
+                if normalized_api_key:
+                    encoded = base64.b64encode(f":{normalized_api_key}".encode()).decode("ascii")
+                    auth_variants = [
+                        {"Authorization": f"Basic {encoded}"},
+                        {"Authorization": f"Bearer {normalized_api_key}"},
+                        {"X-API-Key": normalized_api_key},
+                    ]
+                last_response = None
+                for auth_headers in auth_variants:
+                    response = _safe_outbound_get(
+                        str(url or "").strip(),
+                        timeout=15,
+                        verify_tls=verify_tls,
+                        headers={**request_headers, **auth_headers},
+                    )
+                    last_response = response
+                    if response.status_code == 401 and normalized_api_key and auth_headers is not auth_variants[-1]:
+                        continue
+                    response.raise_for_status()
+                    return response.text
+                if last_response is not None:
+                    last_response.raise_for_status()
+                raise ValueError("Uptime Kuma instance did not return any response.")
+
 def _is_private_or_local_ip(raw_value: str):
     ip_value = ipaddress.ip_address(str(raw_value or "").strip())
     return (
@@ -4046,12 +4099,6 @@ def create_web_app(
     def _public_base_url():
         return str(os.getenv("WEB_PUBLIC_BASE_URL", "")).strip()
 
-    def _extract_hostname(value: str):
-        text = str(value or "").strip()
-        if not text:
-            return ""
-        parsed = urlparse(text if "://" in text else f"//{text}")
-        return str(parsed.hostname or "").strip().lower()
 
     def _client_ip():
         x_forwarded_for = str(request.headers.get("X-Forwarded-For", "")).strip()
@@ -7729,52 +7776,7 @@ def create_web_app(
         guild_name = str(selected_guild.get("name") or "Unknown")
         fallback_env_file = _env_fallback_file_path(data_dir)
 
-        def _fetch_json_url(url: str, *, verify_tls: bool = True):
-            response = _safe_outbound_get(
-                str(url or "").strip(),
-                timeout=15,
-                verify_tls=verify_tls,
-                headers={
-                    "User-Agent": "glinet-discord-bot-web-admin/1.0",
-                    "Accept": "application/json",
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise ValueError("Status page API returned an unexpected payload.")
-            return payload
 
-        def _fetch_text_url(url: str, *, api_key: str = "", verify_tls: bool = True):
-            request_headers = {
-                "User-Agent": "glinet-discord-bot-web-admin/1.0",
-                "Accept": "text/plain, application/openmetrics-text;q=0.9, */*;q=0.8",
-            }
-            normalized_api_key = str(api_key or "").strip()
-            auth_variants = [{}]
-            if normalized_api_key:
-                encoded = base64.b64encode(f":{normalized_api_key}".encode()).decode("ascii")
-                auth_variants = [
-                    {"Authorization": f"Basic {encoded}"},
-                    {"Authorization": f"Bearer {normalized_api_key}"},
-                    {"X-API-Key": normalized_api_key},
-                ]
-            last_response = None
-            for auth_headers in auth_variants:
-                response = _safe_outbound_get(
-                    str(url or "").strip(),
-                    timeout=15,
-                    verify_tls=verify_tls,
-                    headers={**request_headers, **auth_headers},
-                )
-                last_response = response
-                if response.status_code == 401 and normalized_api_key and auth_headers is not auth_variants[-1]:
-                    continue
-                response.raise_for_status()
-                return response.text
-            if last_response is not None:
-                last_response.raise_for_status()
-            raise ValueError("Uptime Kuma instance did not return any response.")
 
         def _load_page_state():
             file_values = _load_effective_env_values(env_file, fallback_env_file)
@@ -8290,52 +8292,7 @@ def create_web_app(
         guild_name = str(selected_guild.get("name") or "Unknown")
         fallback_env_file = _env_fallback_file_path(data_dir)
 
-        def _fetch_json_url(url: str, *, verify_tls: bool = True):
-            response = _safe_outbound_get(
-                str(url or "").strip(),
-                timeout=15,
-                verify_tls=verify_tls,
-                headers={
-                    "User-Agent": "glinet-discord-bot-web-admin/1.0",
-                    "Accept": "application/json",
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise ValueError("Status page API returned an unexpected payload.")
-            return payload
 
-        def _fetch_text_url(url: str, *, api_key: str = "", verify_tls: bool = True):
-            request_headers = {
-                "User-Agent": "glinet-discord-bot-web-admin/1.0",
-                "Accept": "text/plain, application/openmetrics-text;q=0.9, */*;q=0.8",
-            }
-            normalized_api_key = str(api_key or "").strip()
-            auth_variants = [{}]
-            if normalized_api_key:
-                encoded = base64.b64encode(f":{normalized_api_key}".encode()).decode("ascii")
-                auth_variants = [
-                    {"Authorization": f"Basic {encoded}"},
-                    {"Authorization": f"Bearer {normalized_api_key}"},
-                    {"X-API-Key": normalized_api_key},
-                ]
-            last_response = None
-            for auth_headers in auth_variants:
-                response = _safe_outbound_get(
-                    str(url or "").strip(),
-                    timeout=15,
-                    verify_tls=verify_tls,
-                    headers={**request_headers, **auth_headers},
-                )
-                last_response = response
-                if response.status_code == 401 and normalized_api_key and auth_headers is not auth_variants[-1]:
-                    continue
-                response.raise_for_status()
-                return response.text
-            if last_response is not None:
-                last_response.raise_for_status()
-            raise ValueError("Uptime Kuma instance did not return any response.")
 
         def _load_page_state():
             file_values = _load_effective_env_values(env_file, fallback_env_file)
